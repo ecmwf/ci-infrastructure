@@ -1,0 +1,93 @@
+name: Download and unpack artifact
+description: >
+  Downloads a tar artifact from the S3 artifact store by name and extracts it
+  under $RUNNER_TEMP/install/<install-subdir> (the same base as
+  actions/install-prefix and the resolved dep tree). Use this in jobs that need
+  a package built by an earlier job (e.g. a test job consuming a build job's
+  output) — the artifact is addressed purely by name, so it resolves regardless
+  of which run produced it.
+
+  The extraction directory is exposed as the install-path output. Always consume
+  it via that output (a $RUNNER_TEMP-derived, in-container-correct absolute path)
+  rather than reconstructing it from the runner.temp expression, which bakes the
+  runner-host path and is wrong inside self-hosted container jobs.
+
+  Requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment
+  (the same credentials used for sccache).
+
+inputs:
+  artifact-name:
+    description: 'Name of the artifact to download (usually from a job output)'
+    required: true
+  install-subdir:
+    description: 'Directory under $RUNNER_TEMP/install to extract into (typically the package name)'
+    required: true
+  s3-bucket:
+    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    required: false
+    default: ''
+  s3-endpoint:
+    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    required: false
+    default: ''
+  s3-key-prefix:
+    description: 'Key prefix for artifact objects. Empty reads them from the bucket root.'
+    required: false
+    default: ''
+  s3-ca-bundle:
+    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    required: false
+    default: ''
+
+outputs:
+  install-path:
+    description: 'Absolute path the artifact was extracted into ($RUNNER_TEMP/install/<install-subdir>)'
+    value: ${{ steps.extract.outputs.install-path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Configure S3 artifact store
+      shell: bash
+      env:
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
+        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
+      run: |
+        set -euo pipefail
+        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
+
+    - name: Download and extract to install path
+      id: extract
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INSTALL_SUBDIR: ${{ inputs.install-subdir }}
+      run: |
+        set -euo pipefail
+        tar_dst="$RUNNER_TEMP/${ARTIFACT_NAME}.tar.gz"
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.s3_store download \
+          --name "$ARTIFACT_NAME" \
+          --dest "$tar_dst"
+        dest="$RUNNER_TEMP/install/${INSTALL_SUBDIR}"
+        mkdir -p "$dest"
+        tar -xzf "$tar_dst" -C "$dest"
+        echo "install-path=$dest" >> "$GITHUB_OUTPUT"

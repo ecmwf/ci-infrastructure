@@ -1,0 +1,39 @@
+name: Validate generated downstream-CI workflows
+description: >
+  Re-renders this repo's .github/workflows/{triggered-by-upstream,trigger-downstream}.yml
+  from .ci/manifest.toml plus sibling manifests fetched via the GitHub API, and fails
+  the step if the locally checked-in files have drifted. Pulls only manifest blobs over
+  GraphQL (no clones), so the cost is one batched query per BFS layer regardless of repo
+  size.
+
+inputs:
+  token:
+    description: >
+      GitHub token with contents:read on every repo named in [[deps]] and
+      [[trigger-downstream]]. Use a GitHub App token (via actions/create-github-app-token)
+      for higher rate limits and least-privilege scoping.
+    required: false
+    default: ''
+  self-path:
+    description: 'Path to the repo root being validated (almost always ".").'
+    required: false
+    default: '.'
+  manifest-path:
+    description: 'Path to the manifest within each repo.'
+    required: false
+    default: '.ci/manifest.toml'
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Validate generated workflows
+      shell: bash
+      working-directory: ${{ inputs.self-path }}
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+      run: |
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci \
+          --manifest-path "${{ inputs.manifest-path }}" \
+          --check

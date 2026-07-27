@@ -1,0 +1,109 @@
+name: Report a check run back to the dispatcher
+description: >
+  Post a GitHub check run onto the dispatcher's commit so a cross-repo
+  dispatched run surfaces its pass/fail on the dispatcher's PR WITHOUT exposing
+  its logs. Used when a public upstream dispatches a private consumer (see
+  dispatch-and-wait / render_orchestrator_workflow): the private run executes in
+  its own repo, so its logs stay private, and this check run is the only thing
+  that crosses back. The check's name and conclusion are public (allowed — repo
+  names/existence may be public); the `details_url` points at the private run
+  and needs repo access to open.
+
+  Two phases:
+    - phase=start   -> create an in-progress check run, output its id.
+    - phase=finish  -> complete the check run with a conclusion. If no id was
+                       captured at start (e.g. the create call failed), it
+                       creates a fresh completed check run instead, so the
+                       dispatcher still sees a final state.
+
+inputs:
+  token:
+    description: >
+      Token with checks:write on head-repo. The dispatched job mints an App
+      installation token (owner-scoped) that reaches the dispatcher repo.
+    required: true
+  head-repo:
+    description: 'owner/repo whose commit the check run is attached to (the dispatcher / from-repo).'
+    required: true
+  head-sha:
+    description: 'Commit SHA on head-repo to attach the check run to (from-sha).'
+    required: true
+  name:
+    description: 'Check run name, e.g. "cxxmath/build (clang++-18, ubuntu-24.04)".'
+    required: true
+  details-url:
+    description: 'URL the check links to — this (private) run. Behind auth.'
+    required: true
+  phase:
+    description: 'start | finish'
+    required: true
+  conclusion:
+    description: 'For phase=finish: the run conclusion (success | failure | cancelled | skipped ...).'
+    required: false
+    default: 'success'
+  check-run-id:
+    description: 'For phase=finish: the id output by the phase=start invocation.'
+    required: false
+    default: ''
+
+outputs:
+  check-run-id:
+    description: 'The created check run id (set on phase=start).'
+    value: ${{ steps.report.outputs.check-run-id }}
+
+runs:
+  using: composite
+  steps:
+    - id: report
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        HEAD_REPO: ${{ inputs.head-repo }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        CHECK_NAME: ${{ inputs.name }}
+        DETAILS_URL: ${{ inputs.details-url }}
+        PHASE: ${{ inputs.phase }}
+        CONCLUSION: ${{ inputs.conclusion }}
+        CHECK_RUN_ID: ${{ inputs.check-run-id }}
+      run: |
+        set -uo pipefail
+        # Never fail the job over check-run bookkeeping: status reporting is
+        # best-effort. A dropped check leaves the PR without this signal, but it
+        # must not turn a green build red (or a red build green).
+        if [ "$PHASE" = "start" ]; then
+          id=$(gh api -X POST "repos/$HEAD_REPO/check-runs" \
+                 -f name="$CHECK_NAME" \
+                 -f head_sha="$HEAD_SHA" \
+                 -f status=in_progress \
+                 -f details_url="$DETAILS_URL" \
+                 --jq .id 2>/dev/null) || id=""
+          if [ -z "$id" ]; then
+            echo "::warning title=check-run::Could not create in-progress check '$CHECK_NAME' on $HEAD_REPO."
+          fi
+          echo "check-run-id=$id" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ "$PHASE" = "finish" ]; then
+          if [ -n "$CHECK_RUN_ID" ]; then
+            gh api -X PATCH "repos/$HEAD_REPO/check-runs/$CHECK_RUN_ID" \
+              -f status=completed \
+              -f conclusion="$CONCLUSION" \
+              -f details_url="$DETAILS_URL" >/dev/null 2>&1 \
+              || echo "::warning title=check-run::Could not update check $CHECK_RUN_ID on $HEAD_REPO."
+          else
+            # No id from start — create a terminal check so the dispatcher still
+            # sees a conclusion.
+            gh api -X POST "repos/$HEAD_REPO/check-runs" \
+              -f name="$CHECK_NAME" \
+              -f head_sha="$HEAD_SHA" \
+              -f status=completed \
+              -f conclusion="$CONCLUSION" \
+              -f details_url="$DETAILS_URL" >/dev/null 2>&1 \
+              || echo "::warning title=check-run::Could not create terminal check '$CHECK_NAME' on $HEAD_REPO."
+          fi
+          exit 0
+        fi
+
+        echo "::error title=check-run::Unknown phase '$PHASE' (expected start|finish)." >&2
+        exit 1

@@ -1,0 +1,275 @@
+"""Tests for the runner<->cluster tree transfers.
+
+These drive ship_source / fetch_install against a recording fake connection and
+a real local tar, so they exercise the command sequence and the tar round-trip
+with no ssh and no cluster.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import tarfile
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from ci_infrastructure._errors import CIError
+from ci_infrastructure.hpc import transfer
+
+
+class FakeProc:
+    def __init__(self, returncode: int = 0, stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self._stderr = stderr
+
+    def communicate(self) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+
+class FakeConnection:
+    """Records execute/sendfile/getfile calls; execute returns a canned proc."""
+
+    def __init__(self, exec_returncode: int = 0, exec_stderr: bytes = b"") -> None:
+        self.executed: list[list[str]] = []
+        self.sent: list[tuple[str, str]] = []
+        self.fetched: list[tuple[str, str]] = []
+        self._exec_returncode = exec_returncode
+        self._exec_stderr = exec_stderr
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        self.executed.append([str(c) for c in command])
+        return FakeProc(self._exec_returncode, self._exec_stderr)
+
+    def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        self.sent.append((str(src), str(dst)))
+
+    def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        self.fetched.append((str(src), str(dst)))
+
+
+def _make_tree(root: Path, name: str, body: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / name).write_text(body)
+    return root
+
+
+# --------------------------------------------------------------------------- #
+# ship_source (submit-then-poll: tar -> scp tarball -> touch marker)
+# --------------------------------------------------------------------------- #
+def test_ship_source_clears_stages_and_marks(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    conn = FakeConnection()
+
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir="/remote/staging/art",
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+    )
+
+    # A local tarball was produced and scp'd into the staging dir under the fixed name.
+    assert conn.sent == [(str(tmp_path / "stage" / "42-1.src.tgz"), "/remote/staging/art/source.tgz")]
+    # Remote: reset the staging tree via an atomic rename-aside rather than a bare
+    # `rm -rf staging_dir` (which races a concurrent shipper / sibling job reading
+    # <staging>/deps and fails with ENOTEMPTY). The old tree is moved to a per-run
+    # trash name, deleted best-effort, and the dir recreated; the marker drops LAST.
+    assert conn.executed[0][:2] == ["bash", "-c"]
+    reset = conn.executed[0][2]
+    assert "mv /remote/staging/art /remote/staging/art.trash.42-1" in reset
+    assert "rm -rf /remote/staging/art.trash.42-1" in reset
+    assert reset.rstrip().endswith("mkdir -p /remote/staging/art")
+    assert conn.executed[1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+
+
+def test_ship_source_ships_and_unpacks_dep_prefixes_before_the_marker(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    dep0 = _make_tree(tmp_path / "dep0", "libfoo.a", "x")
+    dep1 = _make_tree(tmp_path / "dep1", "libbar.a", "y")
+    conn = FakeConnection()
+
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir="/remote/staging/art",
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+        local_prefixes=[str(dep0), str(dep1)],
+        remote_deps_dir="/remote/staging/art/deps",
+    )
+
+    # Source tarball plus one tarball per dep prefix were scp'd to <deps>/<i>.tgz.
+    assert (str(tmp_path / "stage" / "42-1.src.tgz"), "/remote/staging/art/source.tgz") in conn.sent
+    assert (str(tmp_path / "stage" / "42-1.dep0.tgz"), "/remote/staging/art/deps/0.tgz") in conn.sent
+    assert (str(tmp_path / "stage" / "42-1.dep1.tgz"), "/remote/staging/art/deps/1.tgz") in conn.sent
+    # Each dep dir is created and its tarball unpacked into it on the cluster.
+    assert ["mkdir", "-p", "/remote/staging/art/deps/0"] in conn.executed
+    assert ["mkdir", "-p", "/remote/staging/art/deps/1"] in conn.executed
+    untars = [c[2] for c in conn.executed if c[:2] == ["bash", "-c"]]
+    assert any("tar -xzf" in u and "/remote/staging/art/deps/0" in u for u in untars)
+    # Marker LAST, after source and every dep are staged.
+    assert conn.executed[-1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+
+
+def test_ship_source_dryrun_does_nothing(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    conn = FakeConnection()
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir="/remote/staging/art",
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+        dryrun=True,
+    )
+    assert conn.executed == [] and conn.sent == []
+    assert not (tmp_path / "stage").exists()  # no local tarball either
+
+
+def test_ship_source_raises_on_remote_failure(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    conn = FakeConnection(exec_returncode=1, exec_stderr=b"permission denied")
+    with pytest.raises(CIError, match="Staging reset failed.*permission denied"):
+        transfer.ship_source(
+            conn,
+            local_source_dir=str(src),
+            staging_dir="/remote/staging/art",
+            run_id="42-1",
+            tar_dir=str(tmp_path / "stage"),
+        )
+
+
+def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
+    """A staging dir left populated by a prior/concurrent shipper — including a
+    populated deps subtree and a stale marker — is reset cleanly. Executing the
+    reset for real proves the rename-aside empties it (a bare rmdir of a
+    concurrently repopulated deps is what raised ENOTEMPTY in the field)."""
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    staging = tmp_path / "remote" / "staging" / "art"
+    (staging / "deps" / "0").mkdir(parents=True)
+    (staging / "deps" / "0" / "wheel.whl").write_text("stale")
+    (staging / "TRANSFER_COMPLETED_00-0").write_text("")
+
+    class RealExecConnection(FakeConnection):
+        def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().sendfile(src, dst)
+            Path(dst).parent.mkdir(parents=True, exist_ok=True)
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+            proc = super().execute(command, stdout, stderr, dryrun)
+            argv = [str(c) for c in command]
+            subprocess.run(
+                argv[2] if argv[:2] == ["bash", "-c"] else argv, shell=argv[:2] == ["bash", "-c"], check=True
+            )
+            return proc
+
+    transfer.ship_source(
+        RealExecConnection(),
+        local_source_dir=str(src),
+        staging_dir=str(staging),
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+    )
+
+    # The stale marker and old deps tree are gone; only this run's inputs remain.
+    assert not (staging / "TRANSFER_COMPLETED_00-0").exists()
+    assert not (staging / "deps").exists()
+    assert not (staging.parent / "art.trash.42-1").exists()  # moved-aside copy deleted
+    assert (staging / "source.tgz").is_file()
+    assert (staging / "TRANSFER_COMPLETED_42-1").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# marker_exists
+# --------------------------------------------------------------------------- #
+def test_marker_exists_true_on_zero_exit() -> None:
+    conn = FakeConnection(exec_returncode=0)
+    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art", run_id="42-1") is True
+    assert conn.executed[0] == ["test", "-f", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+
+
+def test_marker_exists_false_on_nonzero_exit() -> None:
+    conn = FakeConnection(exec_returncode=1)
+    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art", run_id="42-1") is False
+
+
+# --------------------------------------------------------------------------- #
+# fetch_install
+# --------------------------------------------------------------------------- #
+def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
+    class TarballConnection(FakeConnection):
+        # fetch_install really untars what getfile delivered, so hand it a valid
+        # (empty) tarball rather than a no-op.
+        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().getfile(src, dst)
+            with tarfile.open(dst, "w:gz"):
+                pass
+
+    conn = TarballConnection()
+    transfer.fetch_install(
+        conn,
+        remote_install_dir="/remote/install/art",
+        local_install_dir=str(tmp_path / "local-install"),
+        tar_dir=str(tmp_path / "stage"),
+    )
+    # Remote tar first, then scp back to the staging dir.
+    assert conn.executed[0][:2] == ["bash", "-c"]
+    assert "tar -czf" in conn.executed[0][2] and "/remote/install/art" in conn.executed[0][2]
+    assert conn.fetched == [("/remote/install/art.install.tgz", str(tmp_path / "stage" / "art.install.tgz"))]
+    assert (tmp_path / "local-install").is_dir()
+
+
+def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
+    """The tarball ship stages unpacks intact, and fetch_install brings a tree back."""
+    src = _make_tree(tmp_path / "checkout", "hello.txt", "content-xyz")
+
+    class CopyingConnection(FakeConnection):
+        # Emulate scp by really copying the file, and run the remote commands
+        # locally so the round-trip actually moves bytes.
+        def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().sendfile(src, dst)
+            Path(dst).parent.mkdir(parents=True, exist_ok=True)
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().getfile(src, dst)
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+            proc = super().execute(command, stdout, stderr, dryrun)
+            argv = [str(c) for c in command]
+            if argv[:2] == ["bash", "-c"]:
+                subprocess.run(argv[2], shell=True, check=True)
+            else:
+                subprocess.run(argv, check=True)  # rm -rf / mkdir -p / touch
+            return proc
+
+    conn = CopyingConnection()
+    staging = tmp_path / "remote" / "staging" / "art"
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir=str(staging),
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+    )
+    # The staged tarball + marker are present; unpacking the tarball (what the
+    # job does) reproduces the checkout.
+    assert (staging / "source.tgz").is_file()
+    assert (staging / "TRANSFER_COMPLETED_42-1").is_file()
+    unpacked = tmp_path / "unpacked"
+    unpacked.mkdir()
+    with tarfile.open(staging / "source.tgz") as tar:
+        tar.extractall(unpacked, filter="data")
+    assert (unpacked / "hello.txt").read_text() == "content-xyz"
+
+    fetched = tmp_path / "back"
+    transfer.fetch_install(
+        conn,
+        remote_install_dir=str(unpacked),
+        local_install_dir=str(fetched),
+        tar_dir=str(tmp_path / "stage2"),
+    )
+    assert (fetched / "hello.txt").read_text() == "content-xyz"

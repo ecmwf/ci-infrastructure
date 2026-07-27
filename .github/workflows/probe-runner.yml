@@ -1,0 +1,49 @@
+name: Probe image-build runner
+
+# One-shot diagnostic: reports what the self-hosted ARC runner can do, so the
+# ci-container-images repo's docker build tool (buildah vs docker buildx) is
+# chosen from fact rather than guesswork. Run it manually once from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label to probe
+        default: ubuntu-latest
+        required: false
+
+jobs:
+  probe:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Report build capabilities
+        env:
+          REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+        run: |
+          echo "== whoami / user namespaces =="
+          id
+          echo "max_user_namespaces: $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo '?')"
+          grep CapEff /proc/self/status || true
+
+          echo "== docker daemon =="
+          if command -v docker >/dev/null 2>&1; then
+            docker version 2>&1 | head -20 || true
+          else
+            echo "docker: not on PATH"
+          fi
+          ls -l /var/run/docker.sock 2>&1 || true
+
+          echo "== build / registry tools present =="
+          for t in docker buildah skopeo podman fuse-overlayfs; do
+            if command -v "$t" >/dev/null 2>&1; then
+              printf '%-16s %s\n' "$t" "$("$t" --version 2>&1 | head -1)"
+            else
+              printf '%-16s %s\n' "$t" "MISSING"
+            fi
+          done
+
+          echo "== registry reachable? (expect 200 or 401) =="
+          if [ -n "$REGISTRY" ]; then
+            curl -sS -o /dev/null -w 'HTTP %{http_code}\n' "${REGISTRY%/}/v2/" || echo "curl failed"
+          else
+            echo "skipped: set the CONTAINER_REGISTRY repo/org variable to probe a registry"
+          fi

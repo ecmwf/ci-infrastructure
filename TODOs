@@ -1,0 +1,33 @@
+- make python infrastructure more exception based
+
+- create documentation
+
+- use Macbook images
+
+- give a link to the artifact [SECURITY]
+
+- improve output of ctest, perhaps there is an available action?
+
+- enforce issue template,
+    https://raw.githubusercontent.com/ecmwf/.github/refs/heads/main/.github/PULL_REQUEST_TEMPLATE.md
+
+- use ubuntu-slim where possible
+
+- after troika is typed. drop the ignore missing imports
+
+
+HPC:
+
+- SLURM execution path implemented: `execution = "hpc"` matrix kinds, the
+  build-on-hpc action, and the ci_infrastructure.hpc backend (troika as a
+  library). See HPC.md.
+
+- remaining: wire an HPC leg into a real playground repo, regenerate its
+  workflows, and run an end-to-end job on the cluster (needs cluster access);
+  validate reattach-after-cancel and cache-hit-after-success on the real site.
+
+- set the org-level HPC_CI_WORK_DIR variable + TROIKA_USER secret and confirm
+  the login-node runner's $RUNNER_TEMP + work-dir are on the shared filesystem.
+
+
+- declare version for troika and pin to it

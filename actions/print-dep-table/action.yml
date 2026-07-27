@@ -1,0 +1,109 @@
+name: Print dependency table
+description: >
+  Renders a Markdown table of the OWN package and its resolved upstream
+  dependencies to the job's step summary. The Package and SHA columns
+  link to the upstream repo and commit, so log readers can click through
+  to the source of every dep.
+
+  Inputs are the JSON the resolver emits via _resolved.deps and the
+  per-leg own-* fields. Pass them straight from the matrix entry.
+
+  Columns: Package | Ref | SHA | Deps hash | Platform | Compiler | Python | Build type | Source
+
+inputs:
+  deps-json:
+    description: 'JSON array of resolved dep dicts (matrix._resolved.deps)'
+    required: false
+    default: '[]'
+  own-name:
+    description: 'OWN package name (omit to skip the OWN row)'
+    required: false
+    default: ''
+  own-repo:
+    description: 'OWN package repo as owner/name'
+    required: false
+    default: ${{ github.repository }}
+  own-sha:
+    description: 'OWN package commit SHA'
+    required: false
+    default: ${{ github.sha }}
+  own-artifact-name:
+    description: 'OWN package artifact name (matrix._resolved.own-artifact-name)'
+    required: false
+    default: ''
+  own-source:
+    description: 'OWN package source label (built / artifact / triggered rebuild)'
+    required: false
+    default: 'built'
+  own-ref:
+    description: 'OWN package branch/tag (matrix._resolved.own-ref); blank if a SHA was pinned'
+    required: false
+    default: ''
+  own-platform:
+    description: 'OWN package platform slug (matrix._resolved.own-platform)'
+    required: false
+    default: ''
+  own-compiler:
+    description: 'OWN package compiler (matrix._resolved.own-compiler)'
+    required: false
+    default: ''
+  own-python:
+    description: 'OWN package python version (matrix._resolved.own-python)'
+    required: false
+    default: ''
+  own-build-type:
+    description: 'OWN package build type (matrix._resolved.own-build-type)'
+    required: false
+    default: ''
+  own-deps-hash:
+    description: 'OWN package deps hash (matrix._resolved.own-deps-hash)'
+    required: false
+    default: ''
+  title:
+    description: 'Heading for the Markdown table section'
+    required: false
+    default: 'Resolved dependencies'
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Print dependency table to step summary
+      shell: bash
+      env:
+        OWN_NAME: ${{ inputs.own-name }}
+        OWN_REPO: ${{ inputs.own-repo }}
+        OWN_SHA: ${{ inputs.own-sha }}
+        OWN_ARTIFACT: ${{ inputs.own-artifact-name }}
+        OWN_SOURCE: ${{ inputs.own-source }}
+        OWN_REF: ${{ inputs.own-ref }}
+        OWN_PLATFORM: ${{ inputs.own-platform }}
+        OWN_COMPILER: ${{ inputs.own-compiler }}
+        OWN_PYTHON: ${{ inputs.own-python }}
+        OWN_BUILD_TYPE: ${{ inputs.own-build-type }}
+        OWN_DEPS_HASH: ${{ inputs.own-deps-hash }}
+      run: |
+        own_arg=()
+        if [ -n "$OWN_NAME" ] && [ -n "$OWN_ARTIFACT" ]; then
+          own_json=$("$CI_INFRASTRUCTURE_PYTHON" -c '
+        import json, os
+        print(json.dumps({
+            "name": os.environ["OWN_NAME"],
+            "repo": os.environ["OWN_REPO"],
+            "ref": os.environ["OWN_REF"],
+            "sha": os.environ["OWN_SHA"],
+            "artifact-name": os.environ["OWN_ARTIFACT"],
+            "source": os.environ["OWN_SOURCE"],
+            "platform": os.environ["OWN_PLATFORM"],
+            "compiler": os.environ["OWN_COMPILER"],
+            "python-version": os.environ["OWN_PYTHON"],
+            "build-type": os.environ["OWN_BUILD_TYPE"],
+            "deps-hash": os.environ["OWN_DEPS_HASH"],
+        }))')
+          own_arg=(--own "$own_json")
+        fi
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.print_dep_table \
+          --deps-json '${{ inputs.deps-json }}' \
+          --title "${{ inputs.title }}" \
+          "${own_arg[@]}"

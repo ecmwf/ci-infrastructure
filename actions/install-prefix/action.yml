@@ -1,0 +1,16 @@
+name: Install prefix
+description: >
+  Outputs the canonical base install directory used across all CI packages.
+  Change this one file to relocate all CI install trees.
+
+outputs:
+  base:
+    description: 'Base install directory (append /<package> for each package)'
+    value: ${{ steps.prefix.outputs.base }}
+
+runs:
+  using: composite
+  steps:
+    - id: prefix
+      shell: bash
+      run: echo "base=$RUNNER_TEMP/install" >> "$GITHUB_OUTPUT"

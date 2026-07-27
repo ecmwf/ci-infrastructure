@@ -1,0 +1,58 @@
+name: HPC nightly cleanup
+
+# Age-based GC of the cluster HPC work dir. The submit-then-poll build path
+# leaves per-artifact staging/source/install trees and job output under
+# vars.HPC_CI_REMOTE_WORK_DIR; this sweeps the ones older than the threshold so
+# disk does not accumulate. Runs on the login-node self-hosted runner and reaches
+# the cluster over troika's ssh connection (no S3, no scheduler).
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      older-than-days:
+        description: Age threshold in days
+        required: false
+        default: '7'
+      dryrun:
+        description: List what would be removed without deleting
+        required: false
+        default: 'false'
+
+concurrency:
+  group: hpc-nightly-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: [hpc]
+    steps:
+      - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+      - name: Garbage-collect the cluster work dir
+        shell: bash
+        env:
+          REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+          TROIKA_USER: ${{ secrets.HPC_CI_SSH_USER }}
+          OLDER_THAN_DAYS: ${{ github.event.inputs.older-than-days || '7' }}
+          DRYRUN: ${{ github.event.inputs.dryrun || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
+            echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
+            exit 1
+          fi
+          if [ -z "$REMOTE_WORK_DIR" ]; then
+            echo "::error::HPC_CI_REMOTE_WORK_DIR is empty; nothing to sweep." >&2
+            exit 1
+          fi
+          # Passed through verbatim: a spec like '$SCRATCH/downstream-ci' is
+          # expanded on the cluster, so it must not be expanded by this shell.
+          args=(
+            --site hpc-batch
+            --remote-work-dir "$REMOTE_WORK_DIR"
+            --older-than-days "$OLDER_THAN_DAYS"
+          )
+          if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+          if [ "$DRYRUN" = "true" ]; then args+=(--dryrun); fi
+          "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc gc "${args[@]}"

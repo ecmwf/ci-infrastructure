@@ -1,0 +1,53 @@
+name: Pick downstream ref
+description: >
+  Probe the consumer repo for a branch matching the upstream's ref and emit
+  the chosen ref. Returns `try-branch` when it exists in `repo`, otherwise
+  `fallback-ref`. Used by triggered-by-upstream workflows to support
+  coordinated cross-repo PRs: when an upstream PR is opened on branch X,
+  consumers with a same-named branch run against X; consumers without one
+  fall back to their manifest-declared ref (typically main / master / develop).
+
+inputs:
+  repo:
+    description: 'owner/repo to probe (typically github.repository — the consumer repo).'
+    required: true
+  try-branch:
+    description: 'Branch name to probe; usually the upstream-side branch we were called from.'
+    required: true
+  fallback-ref:
+    description: 'Ref to use if try-branch does not exist in `repo` (typically the manifest ref).'
+    required: true
+  token:
+    description: 'Token with contents:read on `repo`. Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  ref:
+    description: 'The chosen ref: try-branch if it exists in `repo`, otherwise fallback-ref.'
+    value: ${{ steps.pick.outputs.ref }}
+
+runs:
+  using: composite
+  steps:
+    - id: pick
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        REPO: ${{ inputs.repo }}
+        TRY_BRANCH: ${{ inputs.try-branch }}
+        FALLBACK_REF: ${{ inputs.fallback-ref }}
+      run: |
+        set -euo pipefail
+        if [ -z "$TRY_BRANCH" ]; then
+          echo "ref=$FALLBACK_REF" >> "$GITHUB_OUTPUT"
+          echo "No try-branch given; using fallback '$FALLBACK_REF'."
+          exit 0
+        fi
+        if gh api "repos/$REPO/branches/$TRY_BRANCH" >/dev/null 2>&1; then
+          echo "ref=$TRY_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Branch '$TRY_BRANCH' exists in $REPO; using it."
+        else
+          echo "ref=$FALLBACK_REF" >> "$GITHUB_OUTPUT"
+          echo "Branch '$TRY_BRANCH' not in $REPO; falling back to '$FALLBACK_REF'."
+        fi

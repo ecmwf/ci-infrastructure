@@ -1,0 +1,173 @@
+name: Resolve dependency tree from manifest
+description: >
+  Reads the consumer repo's .ci/manifest.toml, walks the upstream dependency
+  graph in 1-3 GraphQL calls, and emits a fully resolved per-matrix-leg dep
+  tree. Replaces per-repo use-deps and use-X composite actions: the dep graph
+  becomes data, not nested action calls.
+
+inputs:
+  manifest:
+    description: 'Path to the local manifest file (relative to repo root)'
+    required: false
+    default: '.ci/manifest.toml'
+  current-branch:
+    description: >
+      Branch currently being built. When it matches sync-branch-* or feature-sync-*, upstream
+      repos are checked for a same-named branch and the resolver uses it where
+      it exists (mirrors actions/resolve-ref behavior).
+    required: false
+    default: ''
+  matrix:
+    description: >
+      Comma-separated list of [matrix.<name>] blocks to expand from the
+      manifest. Each one is emitted as a separate matrix-<name> output that
+      a downstream job consumes via `fromJSON()`.
+    required: false
+    default: 'build'
+  upstream-manifest-path:
+    description: 'Where to look for manifests in upstream repos (default: same as local)'
+    required: false
+    default: '.ci/manifest.toml'
+  token:
+    description: >
+      GitHub token with contents:read and actions:read on every repo named in
+      the manifest graph. Use a GitHub App token (via actions/create-github-app-token)
+      for higher rate limits.
+    required: false
+    default: ''
+  client-id:
+    description: >
+      GitHub App Client ID (e.g. Iv23li.xyz...). When this and app-private-key are
+      both set, the action mints an installation token (scoped to all repos in
+      github.repository_owner that the App is installed on) and threads it to
+      resolve_deps.py as DISPATCH_TOKEN. Enables consumer-driven recovery: if a
+      producer's artifact is missing and no producer CI is in flight, dispatch
+      the producer's cross-repo-trigger.yml and wait for the rebuild instead of
+      failing fast. Leave both empty to keep the strict orphan-pin behaviour.
+    required: false
+    default: ''
+  app-private-key:
+    description: 'GitHub App private key (PEM). See client-id for usage.'
+    required: false
+    default: ''
+  s3-bucket:
+    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    required: false
+    default: ''
+  s3-endpoint:
+    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    required: false
+    default: ''
+  s3-key-prefix:
+    description: 'Key prefix for artifact objects. Empty reads them from the bucket root.'
+    required: false
+    default: ''
+  s3-ca-bundle:
+    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    required: false
+    default: ''
+
+outputs:
+  matrix-build:
+    description: 'Resolved matrix for [matrix.build]. Consume via fromJSON().'
+    value: ${{ steps.r.outputs.matrix-build }}
+  matrix-build-hpc:
+    description: 'Resolved matrix for [matrix.build-hpc] (SLURM builds).'
+    value: ${{ steps.r.outputs.matrix-build-hpc }}
+  matrix-test:
+    description: 'Resolved matrix for [matrix.test].'
+    value: ${{ steps.r.outputs.matrix-test }}
+  matrix-clang-tidy:
+    description: 'Resolved matrix for [matrix.clang-tidy].'
+    value: ${{ steps.r.outputs.matrix-clang-tidy }}
+  matrix-build-python:
+    description: 'Resolved matrix for [matrix.build-python].'
+    value: ${{ steps.r.outputs.matrix-build-python }}
+  matrix-build-python-hpc:
+    description: 'Resolved matrix for [matrix.build-python-hpc] (SLURM Python-extension builds).'
+    value: ${{ steps.r.outputs.matrix-build-python-hpc }}
+  matrix-test-hpc:
+    description: 'Resolved matrix for [matrix.test-hpc] (SLURM test-only legs).'
+    value: ${{ steps.r.outputs.matrix-test-hpc }}
+  matrix-ci:
+    description: 'Resolved matrix for [matrix.ci].'
+    value: ${{ steps.r.outputs.matrix-ci }}
+  json:
+    description: 'Full resolved tree across all requested matrix blocks (object keyed by matrix name).'
+    value: ${{ steps.r.outputs.json }}
+  app-token:
+    description: >
+      The App-minted installation token, when client-id + app-private-key were both provided.
+      Usable WITHIN THE SAME JOB by sibling steps that need cross-repo read access
+      (e.g. an inline gh api call); empty when App credentials weren't passed.
+
+      WARNING: Do NOT pass this through job outputs (outputs.<x>) to downstream jobs —
+      GitHub Actions redacts ::add-mask::'d values when they flow across jobs
+      (community/13082), so downstream `needs.<job>.outputs.<x>` arrives as empty
+      string. Each consuming job must mint its OWN token (which is what the
+      generator and hand-written workflows do).
+    value: ${{ steps.mint.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Configure S3 artifact store
+      shell: bash
+      env:
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
+        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
+      run: |
+        set -euo pipefail
+        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
+
+    - name: Mint dispatch token
+      id: mint
+      if: inputs.client-id != '' && inputs.app-private-key != ''
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ github.repository_owner }}
+
+    - name: Resolve dependency tree
+      id: r
+      shell: bash
+      env:
+        # Prefer the App-minted token when available: it's org-scoped so the
+        # resolver can read sibling private repos' refs/artifacts/runs, which
+        # the default github.token (scoped to the calling repo only) returns
+        # 404 for. Falls back to inputs.token (e.g. ORG_READ_TOKEN) then
+        # github.token for setups without App credentials.
+        GH_TOKEN: ${{ steps.mint.outputs.token || inputs.token || github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        DISPATCH_TOKEN: ${{ steps.mint.outputs.token }}
+        MANIFEST: ${{ inputs.manifest }}
+        CURRENT_BRANCH: ${{ inputs.current-branch }}
+        MATRIX: ${{ inputs.matrix }}
+        UPSTREAM_MANIFEST_PATH: ${{ inputs.upstream-manifest-path }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.resolve_deps \
+          --manifest "$MANIFEST" \
+          --current-branch "$CURRENT_BRANCH" \
+          --matrix "$MATRIX" \
+          --upstream-manifest-path "$UPSTREAM_MANIFEST_PATH"

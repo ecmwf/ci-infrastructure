@@ -1,0 +1,118 @@
+name: Set up sccache
+description: >
+  Installs sccache and configures one of three storage backends:
+
+    - s3 (default): S3-compatible bucket. The caller supplies the bucket and
+      endpoint (e.g. from repo/org variables) plus AWS credentials in the job
+      environment (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or a runner IAM
+      role), along with cache-key-suffix.
+    - gha: GitHub Actions cache. Works on hosted and self-hosted runners that
+      can reach GitHub's cache service.
+    - redis: shared Redis instance (env var SCCACHE_REDIS=<url>). Recommended
+      on self-hosted runner pools where a co-located Redis is faster and
+      survives runner restarts.
+
+  The S3 bucket and endpoint have no built-in default and must be passed in
+  (region defaults to RegionOne, SSL to on); provide them per-call, e.g. from
+  repo/org variables.
+
+  Use the outputs as CMake compiler-launcher flags:
+    -DCMAKE_C_COMPILER_LAUNCHER=sccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+  For Rust/maturin, RUSTC_WRAPPER=sccache is set automatically as an env var.
+
+  Cache entries are namespaced by the 'cache-key-suffix' input so that
+  different compiler/build-type matrix legs do not pollute each other.
+
+inputs:
+  cache-key-suffix:
+    description: >
+      String appended to the sccache cache key namespace (or Redis/S3 prefix),
+      e.g. "clang-18-Release". Use a value that uniquely identifies the
+      compiler and build configuration for this matrix leg.
+    required: false
+    default: ''
+  backend:
+    description: '"s3" (default) | "gha" | "redis"'
+    required: false
+    default: 's3'
+  redis-url:
+    description: 'Redis connection URL (used when backend=redis). Defaults to SCCACHE_REDIS env/var.'
+    required: false
+    default: ''
+  s3-bucket:
+    description: 'S3 bucket name (required when backend=s3). No default; pass it in, e.g. from a repo/org variable.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'AWS region (used when backend=s3).'
+    required: false
+    default: 'RegionOne'
+  s3-endpoint:
+    description: 'S3-compatible endpoint URL (required when backend=s3). No default; pass it in, e.g. from a repo/org variable.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections (used when backend=s3).'
+    required: false
+    default: 'true'
+
+outputs:
+  cc-launcher:
+    description: 'Value to pass to CMAKE_C_COMPILER_LAUNCHER (sccache)'
+    value: sccache
+  cxx-launcher:
+    description: 'Value to pass to CMAKE_CXX_COMPILER_LAUNCHER (sccache)'
+    value: sccache
+
+runs:
+  using: composite
+  steps:
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.10
+
+    - name: Configure sccache backend
+      shell: bash
+      env:
+        BACKEND_INPUT: ${{ inputs.backend }}
+        SUFFIX: ${{ inputs.cache-key-suffix }}
+        REDIS_URL_INPUT: ${{ inputs.redis-url }}
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+      run: |
+        backend="$BACKEND_INPUT"
+        echo "Using sccache backend: $backend"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        case "$backend" in
+          gha)
+            echo "SCCACHE_GHA_ENABLED=on" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_VERSION=sccache-${SUFFIX}" >> "$GITHUB_ENV"
+            ;;
+          redis)
+            redis_url="${REDIS_URL_INPUT:-$SCCACHE_REDIS}"
+            if [ -z "$redis_url" ]; then
+              echo "::error::backend=redis but no redis URL provided (set redis-url input or SCCACHE_REDIS env)"
+              exit 1
+            fi
+            echo "SCCACHE_REDIS=$redis_url" >> "$GITHUB_ENV"
+            echo "SCCACHE_REDIS_KEY_PREFIX=sccache-${SUFFIX}" >> "$GITHUB_ENV"
+            ;;
+          s3)
+            if [ -z "$S3_BUCKET_INPUT" ] || [ -z "$S3_ENDPOINT_INPUT" ]; then
+              echo "::error::backend=s3 requires s3-bucket and s3-endpoint (there is no default; pass them in, e.g. from repo/org variables)"
+              exit 1
+            fi
+            echo "SCCACHE_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"
+            echo "SCCACHE_S3_KEY_PREFIX=sccache-${SUFFIX}" >> "$GITHUB_ENV"
+            [ -n "$S3_REGION_INPUT" ] && echo "AWS_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"
+            [ -n "$S3_ENDPOINT_INPUT" ] && echo "SCCACHE_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"
+            [ -n "$S3_USE_SSL_INPUT" ] && echo "SCCACHE_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"
+            ;;
+          *)
+            echo "::error::Unknown backend '$backend' (expected s3, gha, or redis)"
+            exit 1
+            ;;
+        esac

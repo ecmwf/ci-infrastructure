@@ -1,0 +1,344 @@
+name: Dispatch a cross-repo run and wait
+description: >
+  Trigger another repo's cross-repo-trigger.yml via workflow_dispatch, surface
+  the dispatched run's URL prominently (so users on the dispatching PR can hop
+  to the per-leg matrix in the dispatched repo's Actions tab), then wait — for
+  either the artifact(s) the caller needs (artifact-names) OR the dispatched
+  run's conclusion (wait-for-run-conclusion), depending on why we dispatched.
+
+  Two wait modes, chosen by input:
+    - artifact-names: block until those artifacts appear in the S3 store. Used
+      by the consumer-driven recovery path, which only needs a producer's build
+      output and must not wait for the producer's trailing test/lint work.
+    - wait-for-run-conclusion: block until the whole dispatched run completes and
+      fail unless it succeeded. Used by a public upstream dispatching a private
+      consumer, so the orchestrator job gates the PR on the downstream result
+      (polling run STATUS only — never logs, so nothing private crosses back).
+
+  We wait on artifact presence, NOT on the whole run completing. A dispatched
+  cross-repo-trigger.yml run builds, publishes its artifacts, and then keeps
+  going (tests, clang-tidy, valgrind, sanitizers); a caller that only needs the
+  build output should not wait for all that trailing work. Polling the S3 store
+  (head_object) also avoids hammering the GitHub API on every poll.
+
+  Used in two directions: the upstream→downstream orchestrator
+  (trigger-downstream.yml) fires this after a successful upstream CI to
+  rebuild every transitive consumer, and the consumer-driven recovery path
+  (resolve-deps inside a consumer's run) fires the equivalent shape directly
+  from Python when a producer's artifact is missing. Both targets share the
+  same cross-repo-trigger.yml surface, just with different `from-jobs` payloads.
+
+  Why a per-repo dispatch instead of `uses: …/cross-repo-trigger.yml@<ref>`:
+  workflow_call runs the called workflow inside the caller's run, so any
+  `actions/upload-artifact` lands in the caller repo's run-scoped store
+  rather than the producer's repo-wide store. A later push to a sibling
+  consumer would then fail to resolve the artifact (orphan-pin error) even
+  though the cascade had built it. Dispatching each producer's CI in its own
+  repo keeps artifacts in the producer's own store, where resolve_deps looks.
+
+inputs:
+  consumer-repo:
+    description: 'owner/repo of the target to dispatch (the repo whose cross-repo-trigger.yml fires)'
+    required: true
+  workflow-file:
+    description: 'Workflow filename in the target repo'
+    required: false
+    default: 'cross-repo-trigger.yml'
+  ref:
+    description: 'Ref the target should check out (matches the orchestrator-side fallback)'
+    required: true
+  from-repo:
+    description: 'Forwarded as workflow_dispatch input from-repo (the dispatcher)'
+    required: true
+  from-sha:
+    description: 'Forwarded as workflow_dispatch input from-sha (the dispatcher commit)'
+    required: true
+  from-jobs:
+    description: >
+      Forwarded as workflow_dispatch input from-jobs: a JSON array of the
+      originator "<package>/<kind>" coordinates reaching this consumer (e.g.
+      '["fortmath/build","fortmath/build-hpc"]'), which the target's per-kind
+      `if:` filter matches with contains(fromJSON(...)).
+    required: true
+  branch:
+    description: 'Forwarded as workflow_dispatch input branch (used by pick-ref)'
+    required: true
+  fallback-ref:
+    description: 'Forwarded as workflow_dispatch input fallback-ref'
+    required: false
+    default: 'main'
+  token:
+    description: >
+      Token with actions:write on the consumer repo. The orchestrator mints
+      a short-lived installation token via actions/create-github-app-token
+      and passes it here; github.token won't work because it's scoped to the
+      orchestrator repo and can't dispatch into the consumer.
+    required: true
+  artifact-names:
+    description: >
+      Space-separated list of fully-computed artifact names to wait for. A
+      dispatched run produces many artifacts (one per matrix leg); the caller
+      already knows which ones it needs and computes the names with the same
+      logic as the check-artifact action. The wait succeeds once every name is
+      present in the store. Empty (the default) skips the artifact wait — used
+      by the upstream orchestrator dispatching a private consumer, which consumes
+      no artifact back and instead waits on the run's conclusion (see below).
+    required: false
+    default: ''
+  wait-for-run-conclusion:
+    description: >
+      When 'true', block until the dispatched run COMPLETES and fail this step
+      unless its conclusion is success. This is how a public upstream gates its
+      PR on a private downstream: the orchestrator job turns red/green with the
+      downstream run, exactly like a workflow_call edge does natively. It polls
+      the run's STATUS only (never its logs), so no private log content crosses
+      back. Independent of artifact-names.
+    required: false
+    default: 'false'
+  poll-interval:
+    description: 'Seconds between artifact-store polls (mapped to ARTIFACT_POLL_INTERVAL)'
+    required: false
+    default: '20'
+  wait-timeout:
+    description: 'Max seconds to wait for the artifacts before giving up (mapped to ARTIFACT_WAIT_TIMEOUT)'
+    required: false
+    default: '1800'
+  dispatch-discovery-timeout:
+    description: 'Seconds to wait for the dispatched run to appear in the API'
+    required: false
+    default: '90'
+  s3-bucket:
+    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    required: false
+    default: ''
+  s3-endpoint:
+    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    required: false
+    default: ''
+  s3-key-prefix:
+    description: 'Key prefix for artifact objects. Empty reads them from the bucket root.'
+    required: false
+    default: ''
+  s3-ca-bundle:
+    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Configure S3 artifact store
+      shell: bash
+      env:
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
+        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
+      run: |
+        set -euo pipefail
+        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
+
+    - name: Compose dispatch id
+      id: id
+      shell: bash
+      env:
+        ORCHESTRATOR_RUN_ID: ${{ github.run_id }}
+        ORCHESTRATOR_RUN_ATTEMPT: ${{ github.run_attempt }}
+        ORCHESTRATOR_JOB: ${{ github.job }}
+      run: |
+        set -euo pipefail
+        # Job id is unique within an orchestrator run; combined with run_id and
+        # attempt the dispatch-id is unique across the whole installation.
+        printf 'dispatch-id=%s-%s-%s\n' "$ORCHESTRATOR_RUN_ID" "$ORCHESTRATOR_RUN_ATTEMPT" "$ORCHESTRATOR_JOB" >> "$GITHUB_OUTPUT"
+
+    - name: Dispatch target workflow
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        REF: ${{ inputs.ref }}
+        DISPATCH_ID: ${{ steps.id.outputs.dispatch-id }}
+        FROM_REPO: ${{ inputs.from-repo }}
+        FROM_SHA: ${{ inputs.from-sha }}
+        FROM_JOBS: ${{ inputs.from-jobs }}
+        BRANCH: ${{ inputs.branch }}
+        FALLBACK_REF: ${{ inputs.fallback-ref }}
+      run: |
+        set -euo pipefail
+        gh workflow run "$WORKFLOW_FILE" \
+          --repo "$CONSUMER_REPO" \
+          --ref "$REF" \
+          -f "dispatch-id=$DISPATCH_ID" \
+          -f "from-repo=$FROM_REPO" \
+          -f "from-sha=$FROM_SHA" \
+          -f "from-jobs=$FROM_JOBS" \
+          -f "branch=$BRANCH" \
+          -f "fallback-ref=$FALLBACK_REF"
+
+    - name: Discover dispatched run id
+      id: discover
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        DISPATCH_ID: ${{ steps.id.outputs.dispatch-id }}
+        DISCOVERY_TIMEOUT: ${{ inputs.dispatch-discovery-timeout }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+      run: |
+        set -uo pipefail
+        # Note: no `-e` — the polling loops below tolerate transient API
+        # blips (e.g. GitHub's "unicorn" 5xx HTML page) by retrying instead
+        # of dying on the first failure.
+        deadline=$(( $(date +%s) + DISCOVERY_TIMEOUT ))
+        run_id=""
+        run_url=""
+        while :; do
+          # GitHub API: list recent runs and find the one whose name contains our
+          # dispatch id. The target's cross-repo-trigger.yml renders dispatch-id
+          # into its `run-name`, so this is the only correlation we need.
+          payload=$(gh api -X GET "repos/$CONSUMER_REPO/actions/runs" -f per_page=30 -f event=workflow_dispatch 2>/dev/null) || payload=""
+          if [ -n "$payload" ] && jq -e . >/dev/null 2>&1 <<<"$payload"; then
+            run_id=$(jq -r --arg tag "$DISPATCH_ID" '.workflow_runs[] | select(.name | contains($tag)) | .id' <<<"$payload" | head -n 1)
+            if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+              run_url=$(jq -r --arg id "$run_id" '.workflow_runs[] | select((.id|tostring) == $id) | .html_url' <<<"$payload" | head -n 1)
+              break
+            fi
+          else
+            echo "::warning::Transient API error from GitHub (likely 5xx); retrying."
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::Dispatched run for $DISPATCH_ID did not appear in $CONSUMER_REPO within ${DISCOVERY_TIMEOUT}s." >&2
+            exit 1
+          fi
+          sleep "$POLL_INTERVAL"
+        done
+        printf 'run-id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+        printf 'run-url=%s\n' "$run_url" >> "$GITHUB_OUTPUT"
+
+    - name: Surface dispatched run URL
+      shell: bash
+      env:
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        FROM_JOBS: ${{ inputs.from-jobs }}
+        RUN_URL: ${{ steps.discover.outputs.run-url }}
+      run: |
+        set -euo pipefail
+        # ::notice:: shows up on the dispatcher's PR job summary; the step summary
+        # makes the link impossible to miss when clicking into this job.
+        echo "::notice title=$CONSUMER_REPO dispatched run::$RUN_URL"
+        # `--` marks the end of printf options; without it bash printf reads
+        # the leading "- " of each list item as a flag and errors out.
+        {
+          printf -- '## Dispatched cross-repo run\n\n'
+          printf -- '- Target: `%s`\n' "$CONSUMER_REPO"
+          printf -- '- Triggering jobs: `%s`\n' "$FROM_JOBS"
+          printf -- '- Run: %s\n' "$RUN_URL"
+          printf -- '\nPer-matrix-leg results live in the target repo. Click through for build/test logs.\n'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Surface fallback URL when run could not be discovered
+      # Fires when Dispatch failed or Discover timed out without finding the run.
+      # Without this, the orchestrator job dies with no hint about where to
+      # look — but the dispatched run might still exist (or might not have
+      # started at all). Send users to the consumer's Actions tab manually.
+      if: failure() && steps.discover.outcome != 'success'
+      shell: bash
+      env:
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        DISPATCH_ID: ${{ steps.id.outputs.dispatch-id }}
+      run: |
+        set -euo pipefail
+        actions_url="https://github.com/${CONSUMER_REPO}/actions"
+        echo "::warning title=$CONSUMER_REPO dispatch lost::Could not correlate the dispatched run (id=$DISPATCH_ID). Check $actions_url manually."
+        {
+          printf -- '## Dispatched downstream run NOT correlated\n\n'
+          printf -- '- Consumer: `%s`\n' "$CONSUMER_REPO"
+          printf -- '- Dispatch id: `%s`\n' "$DISPATCH_ID"
+          printf -- '- Actions tab: %s\n' "$actions_url"
+          printf -- '\nLikely causes: workflow_dispatch payload rejected (input schema mismatch), '
+          printf -- 'App token not scoped to this consumer, or cross-repo-trigger.yml missing on the picked ref.\n'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Wait for dispatched artifacts
+      # Skipped when artifact-names is empty: the upstream orchestrator
+      # dispatching a private consumer only triggers it and waits on nothing.
+      if: inputs.artifact-names != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        REF: ${{ inputs.ref }}
+        ARTIFACT_NAMES: ${{ inputs.artifact-names }}
+        ARTIFACT_POLL_INTERVAL: ${{ inputs.poll-interval }}
+        ARTIFACT_WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+      run: |
+        set -euo pipefail
+        # Block until the requested artifacts appear in the S3 store, NOT until
+        # the dispatched run completes. The run keeps doing test/lint/valgrind
+        # work after publishing its build artifacts, and we don't care about any
+        # of that here. wait_for_artifacts polls the store directly (cheap) and
+        # uses the producer's run status only as a give-up signal: if the run
+        # finishes (or never started) without the artifact, it fails fast with a
+        # diagnostic instead of spinning until the timeout.
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.wait_for_artifacts \
+          --repo "$CONSUMER_REPO" \
+          --ref "$REF" \
+          --artifact-names "$ARTIFACT_NAMES"
+
+    - name: Wait for dispatched run to conclude
+      # Gate on the whole downstream run when a public upstream dispatched a
+      # private consumer. Reads the run's STATUS via the runs API only; it never
+      # fetches the run's logs, so no private log content enters this run.
+      if: inputs.wait-for-run-conclusion == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        CONSUMER_REPO: ${{ inputs.consumer-repo }}
+        RUN_ID: ${{ steps.discover.outputs.run-id }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+        WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+      run: |
+        set -uo pipefail
+        # No `-e`: tolerate transient API blips and retry until the deadline.
+        deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+        conclusion=""
+        while :; do
+          payload=$(gh api "repos/$CONSUMER_REPO/actions/runs/$RUN_ID" 2>/dev/null) || payload=""
+          if [ -n "$payload" ] && jq -e . >/dev/null 2>&1 <<<"$payload"; then
+            status=$(jq -r '.status' <<<"$payload")
+            if [ "$status" = "completed" ]; then
+              conclusion=$(jq -r '.conclusion' <<<"$payload")
+              break
+            fi
+          else
+            echo "::warning::Transient API error polling run status for $RUN_ID; retrying."
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::Dispatched run $RUN_ID in $CONSUMER_REPO did not complete within ${WAIT_TIMEOUT}s." >&2
+            exit 1
+          fi
+          sleep "$POLL_INTERVAL"
+        done
+        echo "Dispatched run $RUN_ID concluded: $conclusion"
+        if [ "$conclusion" != "success" ]; then
+          echo "::error title=$CONSUMER_REPO downstream failed::Run $RUN_ID concluded '$conclusion'. See the run URL above (logs require repo access)." >&2
+          exit 1
+        fi

@@ -1,0 +1,141 @@
+name: Ensure ci-infrastructure infrastructure is present
+description: >
+  Materialise a dedicated venv at
+  $RUNNER_TOOL_CACHE/ci-infrastructure-venv/<ref>-<src-hash> with the
+  ci-infrastructure package installed, isolated from the test interpreter's
+  site-packages. Exposes the venv's interpreter as $CI_INFRASTRUCTURE_PYTHON for
+  all subsequent steps in the job.
+
+  The path carries a hash of the action checkout's sources, not just the ref
+  name, because a ref like `main` moves: keyed on the name alone, a runner with
+  a persistent tool cache keeps serving whichever ci-infrastructure it installed
+  first and never picks up a push to main. A content key makes a source change a
+  new venv, and leaves an unchanged ref hitting the same cached one.
+
+  The bootstrap interpreter is chosen INDEPENDENTLY of any
+  actions/setup-python step the consumer may have run before us. The helper
+  venv hosts ci-infrastructure (requires-python = ">=3.9"), and we prefer a
+  stable system interpreter over the consumer's test-matrix one, so we drop
+  setup-python's bin from PATH for the probe.
+
+  Idempotent, with two short-circuits. An image that bakes ci-infrastructure
+  into an interpreter advertises it via CI_INFRASTRUCTURE_PYTHON; when that is
+  set and can import the HPC entrypoint we reuse it and skip the venv entirely
+  (a true no-op — no per-job build, no PyPI/GitHub egress). The bake must live
+  outside _work: ARC's Kubernetes mode overlays the runner's _work tree (where
+  RUNNER_TOOL_CACHE, and thus the venv, lives) with an ephemeral per-job volume
+  that shadows anything baked at that path, so a baked tool-cache venv would be
+  hidden. Absent a baked interpreter, we reuse an existing venv at the target
+  path if a prior step in the same job already built one.
+
+  Source of the install: the ci-infrastructure checkout that GitHub Actions
+  already pulled into _actions/<owner>/ci-infrastructure/<ref>/ when it loaded
+  this composite. Pip installs from that local path, so the install needs
+  no token and works for private repos.
+
+outputs:
+  python:
+    description: 'Path to the ci-infrastructure venv interpreter.'
+    value: ${{ steps.bootstrap.outputs.python }}
+
+runs:
+  using: composite
+  steps:
+    - id: bootstrap
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Fast path: an image that baked ci-infrastructure into an interpreter
+        # advertises it via CI_INFRASTRUCTURE_PYTHON. Honour it when that
+        # interpreter can import the HPC entrypoint, so a baked image is a true
+        # no-op instead of rebuilding a venv every job.
+        python="${CI_INFRASTRUCTURE_PYTHON:-}"
+        if [ -n "$python" ] && [ -x "$python" ] && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
+          echo "ensure-infrastructure-present: CI_INFRASTRUCTURE_PYTHON present, assuming that environment exists ($python)"
+        else
+          ref="${GITHUB_ACTION_REF:-main}"
+          # github.action_path is a runner-host path; under ARC's Kubernetes
+          # container mode the work dir is mounted elsewhere in the job
+          # container, so re-anchor the _actions tail onto the in-container
+          # work root (parent of RUNNER_WORKSPACE). Two levels up from
+          # actions/ensure-infrastructure-present/ is the ci-infrastructure repo
+          # root, which has pyproject.toml.
+          repo_root="$(cd "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." && pwd -P)"
+          # Hash what pip would install. Two details keep the digest stable for
+          # unchanged sources: sort by path (field 2), because `find -exec … +`
+          # batches in directory order; and prune build leftovers, because the
+          # _actions checkout persists between jobs on a self-hosted runner and
+          # a pip install may leave an .egg-info or __pycache__ behind in it.
+          src_hash="$(cd "$repo_root" && find pyproject.toml src \
+            \( -name '__pycache__' -o -name '*.egg-info' \) -prune -o \
+            -type f -exec sha256sum {} + | sort -k 2 | sha256sum | cut -c1-16)"
+          venv_root="${RUNNER_TOOL_CACHE}/ci-infrastructure-venv"
+          venv="${venv_root}/${ref}-${src_hash}"
+          python="$venv/bin/python"
+          if [ -x "$python" ] && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
+            echo "ensure-infrastructure-present: reusing existing venv at $venv (no pip install needed)"
+          else
+            if [ -x "$python" ]; then
+              echo "ensure-infrastructure-present: existing venv at $venv is incomplete (import check failed) — rebuilding from scratch."
+              rm -rf "$venv"
+            fi
+            echo "ensure-infrastructure-present: no venv at $venv — creating one now."
+            echo "  This pip-installs ci-infrastructure from the local action checkout, pulling its deps"
+            echo "  (pydantic, boto3, click, PyYAML) from PyPI and troika from GitHub over git; if this"
+            echo "  container has no outbound access to PyPI and GitHub the install will stall below."
+
+            # Strip the consumer's setup-python bin from PATH for the probe. If
+            # pythonLocation is unset (no consumer setup-python ran) we just use
+            # PATH as-is. We prefer a stable system interpreter over the
+            # matrix-leg one; ci-infrastructure only needs >=3.9.
+            bootstrap_path="$PATH"
+            if [ -n "${pythonLocation:-}" ]; then
+              exclude="${pythonLocation}/bin"
+              cleaned=""
+              IFS=:
+              for p in $bootstrap_path; do
+                [ "$p" = "$exclude" ] && continue
+                cleaned="${cleaned:+$cleaned:}$p"
+              done
+              unset IFS
+              bootstrap_path="$cleaned"
+            fi
+
+            bootstrap_py=""
+            for cand in python3.12 python3.11 python3.10 python3.9 python3; do
+              if path="$(PATH="$bootstrap_path" command -v "$cand" 2>/dev/null)"; then
+                if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)'; then
+                  bootstrap_py="$path"
+                  break
+                fi
+              fi
+            done
+
+            if [ -z "$bootstrap_py" ]; then
+              echo "::error::ensure-infrastructure-present: no Python >=3.9 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.9+ in the runner image, or in the consumer container." >&2
+              exit 1
+            fi
+
+            echo "  using bootstrap interpreter: $bootstrap_py ($("$bootstrap_py" --version 2>&1))"
+            "$bootstrap_py" -m venv "$venv"
+            start=$SECONDS
+            # Drop --quiet so pip's "Collecting …" progress is visible — a stall is
+            # then obvious from the log instead of being silent. --no-input never
+            # prompts; --timeout/--retries bound network waits so a blocked PyPI
+            # egress fails fast with a clear error rather than hanging for minutes.
+            echo "  pip install ci-infrastructure from $repo_root ..."
+            "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root"
+            echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
+          fi
+          # mtime is the venv's last-used time, not its build time, so the sweep
+          # below measures idleness. Touch on reuse as well as after a build.
+          touch "$venv"
+          # Content keys mean a new venv per ci-infrastructure change, which on a
+          # persistent self-hosted tool cache would accumulate forever. Drop the
+          # ones no job has touched in a week; anything a concurrent job is using
+          # was touched seconds ago and is never a candidate.
+          find "$venv_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+        fi
+        echo "CI_INFRASTRUCTURE_PYTHON=$python" >> "$GITHUB_ENV"
+        echo "python=$python" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,18 @@
+name: Pre-commit
+
+on:
+  workflow_call:
+
+jobs:
+  pre-commit:
+    # Lint hooks need a CPU and a Python, nothing else — ubuntu-slim is the
+    # cheap 1-CPU runner and every repo in the org calls this workflow.
+    runs-on: ubuntu-slim
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@v3.0.1

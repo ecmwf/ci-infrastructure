@@ -1,0 +1,42 @@
+# Troika site configuration for ci-infrastructure's HPC backend.
+#
+# Consumed as a Python library (ci_infrastructure.hpc.site.load_site), not via
+# the troika CLI. A manifest leg's `site` field names one of these sites.
+#
+# The build path drives the batch (slurm) sites: it needs a job id to persist for
+# reattach and a scheduler state to poll, neither of which troika's `direct`
+# sites provide. The two direct sites are for things that only need a shell on
+# the far end: `hpc-login` reaches the real login node (the playground probe's
+# login pass), and `local-direct` is the local machine, which the unit and
+# dry-run tests target — no cluster, no ssh.
+sites:
+  hpc-batch:
+    type: slurm
+    connection: ssh
+    host: hpc-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  lumi:
+    type: slurm
+    connection: ssh
+    host: lumi
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  hpc-login:
+    type: direct
+    connection: ssh
+    host: hpc-login
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  local-direct:
+    type: direct
+    connection: local

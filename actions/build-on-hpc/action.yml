@@ -1,0 +1,227 @@
+name: Build a package on HPC via SLURM
+description: >
+  The HPC counterpart of a repo's runner build composite. Runs on a login-node
+  self-hosted runner: it submits the repo's .ci/hpc/build.sh as a SLURM job
+  (through troika, driven as a Python library), waits for it, and publishes the
+  resulting install tree to the S3 artifact store under its artifact name.
+
+  Drop-in replacement for the per-repo `action` step in a generated job: it
+  consumes the dependency prefix produced by the preceding fetch-and-publish
+  (download-only) step and exposes `install-path` exactly like the runner build
+  composite, so the surrounding job wiring is unchanged.
+
+  Submit-then-poll: the job is submitted first, then the runner scp's the source
+  tarball (and any dependency prefixes from cmake-prefix-path) into the cluster
+  staging dir and drops a transfer marker; the job waits for that marker, unpacks
+  the checkout into node-local $TMPDIR and builds against the shipped deps.
+
+  Idempotent / restartable: on a re-run it skips when the artifact already
+  exists (cache hit), reattaches to a still-running job for the same artifact
+  rather than submitting a duplicate, and otherwise submits fresh. Reattach goes
+  through the scheduler: each job is named after the artifact and carries its
+  submitting run id in the SLURM comment, so a run on any runner (not just the
+  original) finds an in-flight job by name.
+
+  Requires: a `remote-work-dir` on a cluster-shared filesystem (visible to
+  compute nodes), a writable runner-local `work-dir` for tarball scratch, an ssh
+  config that lets troika reach the site, and AWS_ACCESS_KEY_ID /
+  AWS_SECRET_ACCESS_KEY for the S3 store.
+
+inputs:
+  site:
+    description: 'Troika site to submit to (a site name in troika-config.yml)'
+    required: true
+  job-script:
+    description: "Path to the repo's .ci/hpc/build.sh (its #SBATCH header + build/test body)"
+    required: true
+  artifact-name:
+    description: 'Canonical artifact name (build identity; also the job-name + cache key)'
+    required: true
+  cmake-prefix-path:
+    description: 'Semicolon/colon-separated dependency prefixes from the download-only step'
+    required: false
+    default: ''
+  source-dir:
+    description: >
+      Runner-local checkout that is tarred and shipped to the cluster before the
+      job runs (the job cds into the unpacked copy). Defaults to the runner
+      workspace; no shared filesystem is assumed.
+    required: false
+    default: ${{ github.workspace }}
+  work-dir:
+    description: >
+      Runner-local scratch directory for the shipped/fetched tarballs and the
+      fetched install tree. Empty falls back to $RUNNER_TEMP. Reattach no longer
+      needs a stable local path — it goes through the scheduler by job name — so
+      any writable dir works.
+    required: false
+    default: ''
+  remote-work-dir:
+    description: >
+      Base directory on the cluster (writable by the troika user, on a filesystem
+      visible to the compute nodes) for the staged source, job output and the
+      install tree. May name cluster variables — the recommended value is
+      "$SCRATCH/downstream-ci" — which are expanded on the cluster, not on the
+      runner. The expansion must yield an absolute path; the step fails fast
+      otherwise, since a relative or runner-local path is invisible to compute
+      nodes and is the classic "wrong work directory" failure.
+    required: true
+  marker-wait-timeout:
+    description: >
+      Seconds the SLURM job waits for the source-transfer marker before failing.
+      Bounds how long a job holds an allocation if the runner never ships.
+    required: false
+    default: '1800'
+  troika-config:
+    description: 'Path to a troika config. Empty uses the one packaged with ci-infrastructure.'
+    required: false
+    default: ''
+  troika-user:
+    description: 'Remote/scheduler user for troika. Empty lets ssh/troika decide.'
+    required: false
+    default: ''
+  publish:
+    description: >
+      Whether to publish an artifact for this leg. "true" (default) builds and
+      publishes the install tree, exactly as before. "false" is test-only mode:
+      the job runs for its pass/fail (the Finished: sentinel) but produces no
+      artifact — the cache short-circuit and install-tree fetch are skipped, and
+      the Publish step below is not run. For pure-test HPC legs (e.g. a
+      pure-Python repo that only runs pytest on a compute node).
+    required: false
+    default: 'true'
+  s3-bucket:
+    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    required: false
+    default: ''
+  s3-endpoint:
+    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    required: false
+    default: ''
+  s3-key-prefix:
+    description: 'Key prefix for artifact objects. Empty stores them at the bucket root.'
+    required: false
+    default: ''
+  s3-ca-bundle:
+    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    required: false
+    default: ''
+
+outputs:
+  install-path:
+    description: 'Absolute path of the built package install tree (for a downstream publish/print step)'
+    value: ${{ steps.submit.outputs.install-path }}
+  cache-hit:
+    description: '"true" if the artifact already existed and no job was submitted'
+    value: ${{ steps.submit.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Configure S3 artifact store
+      shell: bash
+      env:
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
+        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
+      run: |
+        set -euo pipefail
+        # Only non-empty inputs are exported; an empty input lets the org
+        # default baked into ci_infrastructure.s3_store apply.
+        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
+        echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
+
+    - name: Submit build job and wait
+      id: submit
+      shell: bash
+      env:
+        SITE: ${{ inputs.site }}
+        JOB_SCRIPT: ${{ inputs.job-script }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        CMAKE_PREFIX_PATH_INPUT: ${{ inputs.cmake-prefix-path }}
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        WORK_DIR_INPUT: ${{ inputs.work-dir }}
+        REMOTE_WORK_DIR_INPUT: ${{ inputs.remote-work-dir }}
+        MARKER_WAIT_TIMEOUT: ${{ inputs.marker-wait-timeout }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+        PUBLISH: ${{ inputs.publish }}
+      run: |
+        set -euo pipefail
+        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
+          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
+          exit 1
+        fi
+        if [ -z "$REMOTE_WORK_DIR_INPUT" ]; then
+          echo "::error::remote-work-dir is empty. Set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '\$SCRATCH/downstream-ci')." >&2
+          exit 1
+        fi
+        # Local (runner) scratch: shipped/fetched tarball staging, fetched install.
+        work_dir="${WORK_DIR_INPUT:-$RUNNER_TEMP}"
+        tar_dir="$work_dir/hpc-tars"
+        local_install_path="$work_dir/install/$ARTIFACT_NAME"
+        mkdir -p "$tar_dir"
+        # Unique per submission; names the TRANSFER_COMPLETED marker and is stamped
+        # into the job's --comment so a reattaching run can find which run shipped.
+        run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        # The cluster work dir is passed through verbatim: referencing "$VAR"
+        # does not re-expand its value, so a spec like '$SCRATCH/downstream-ci'
+        # reaches Python intact and is expanded on the cluster, where $SCRATCH
+        # actually exists. Expanding it here would silently yield an empty
+        # string and send the build somewhere the compute nodes cannot see.
+        args=(
+          --site "$SITE"
+          --job-script "$JOB_SCRIPT"
+          --artifact-name "$ARTIFACT_NAME"
+          --remote-work-dir "$REMOTE_WORK_DIR_INPUT"
+          --local-install-path "$local_install_path"
+          --source-dir "$SOURCE_DIR"
+          --run-id "$run_id"
+          --marker-wait-timeout "$MARKER_WAIT_TIMEOUT"
+          --tar-dir "$tar_dir"
+          --cmake-prefix-path "$CMAKE_PREFIX_PATH_INPUT"
+        )
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        # Test-only leg: run for the pass/fail sentinel, produce no artifact.
+        if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
+        # -u: unbuffered so the wait progress can't hide behind block buffering.
+        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
+
+    # Publish the freshly-built install tree. Reuses the same publish path (and
+    # its found-gate) as the runner build: on a cache hit `found` is true, so the
+    # step skips the tar+upload of an install tree that was never rebuilt.
+    - name: Publish
+      # Skipped in test-only mode (publish: false): the job produced no install
+      # tree and submit-wait emitted no install-path.
+      if: ${{ inputs.publish != 'false' }}
+      uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/fetch-and-publish@main
+      with:
+        mode: publish
+        install-path: ${{ steps.submit.outputs.install-path }}
+        artifact-name: ${{ inputs.artifact-name }}
+        found: ${{ steps.submit.outputs.cache-hit }}
+        s3-bucket: ${{ inputs.s3-bucket }}
+        s3-region: ${{ inputs.s3-region }}
+        s3-endpoint: ${{ inputs.s3-endpoint }}
+        s3-use-ssl: ${{ inputs.s3-use-ssl }}
+        s3-key-prefix: ${{ inputs.s3-key-prefix }}
+        s3-ca-bundle: ${{ inputs.s3-ca-bundle }}
