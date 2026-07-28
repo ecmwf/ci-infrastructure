@@ -31,7 +31,7 @@ jobs:
   cleanup:
     runs-on: [hpc]
     steps:
-      - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
 
       - name: Garbage-collect the cluster work dir
         shell: bash

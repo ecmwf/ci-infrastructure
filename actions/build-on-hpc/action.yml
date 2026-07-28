@@ -130,7 +130,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
 
     - name: Configure S3 artifact store
       shell: bash
@@ -217,7 +217,7 @@ runs:
       # Skipped in test-only mode (publish: false): the job produced no install
       # tree and submit-wait emitted no install-path.
       if: ${{ inputs.publish != 'false' }}
-      uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/fetch-and-publish@main
+      uses: ecmwf/ci-infrastructure/actions/fetch-and-publish@main
       with:
         mode: publish
         install-path: ${{ steps.submit.outputs.install-path }}

@@ -1205,7 +1205,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
             _mint_step(),
             {
                 "id": "pick",
-                "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/pick-ref@main",
+                "uses": "ecmwf/ci-infrastructure/actions/pick-ref@main",
                 "with": {
                     "repo": m.repo,
                     "try-branch": "${{ inputs.branch }}",
@@ -1228,7 +1228,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
             },
             {
                 "id": "r",
-                "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/resolve-deps@main",
+                "uses": "ecmwf/ci-infrastructure/actions/resolve-deps@main",
                 "with": {
                     "current-branch": "${{ steps.pick.outputs.ref }}",
                     "matrix": matrix_arg,
@@ -1381,7 +1381,7 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
     return {
         "name": "Build on HPC" if mk.publishes else "Run on HPC",
         "id": "build",
-        "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/build-on-hpc@main",
+        "uses": "ecmwf/ci-infrastructure/actions/build-on-hpc@main",
         "with": with_block,
     }
 
@@ -1396,7 +1396,7 @@ _CHECK_RUN_WHEN: Final = "github.event_name == 'workflow_dispatch' && inputs.fro
 # The dispatched run lives in THIS repo; under workflow_dispatch github.repository
 # is us (the private consumer), so the URL points at the private run (auth-gated).
 _CHECK_RUN_DETAILS_URL: Final = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-_REPORT_CHECK_RUN_ACTION: Final = "ecmwf-enterprise-sandbox/ci-infrastructure/actions/report-check-run@main"
+_REPORT_CHECK_RUN_ACTION: Final = "ecmwf/ci-infrastructure/actions/report-check-run@main"
 
 
 def _check_run_start_step(check_name: str) -> Step:
@@ -1511,7 +1511,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         {
             "name": "Fetch resolved deps",
             "id": "deps",
-            "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/fetch-and-publish@main",
+            "uses": "ecmwf/ci-infrastructure/actions/fetch-and-publish@main",
             "with": fetch_with,
         }
     )
@@ -1525,7 +1525,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
             steps.append(
                 {
                     "name": "Publish",
-                    "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/fetch-and-publish@main",
+                    "uses": "ecmwf/ci-infrastructure/actions/fetch-and-publish@main",
                     "with": {
                         "mode": "publish",
                         "install-path": "${{ steps.build.outputs.install-path }}",
@@ -2023,7 +2023,7 @@ def _validate_job() -> dict[str, Any]:
                 },
             },
             {
-                "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/validate-generated-workflows@main",
+                "uses": "ecmwf/ci-infrastructure/actions/validate-generated-workflows@main",
                 "with": {"token": "${{ steps.mint.outputs.token }}"},
             },
         ],
@@ -2120,7 +2120,7 @@ def _orchestrator_dispatch_job(
             _mint_step(),
             {
                 "name": f"Dispatch {cpkg} (private consumer)",
-                "uses": "ecmwf-enterprise-sandbox/ci-infrastructure/actions/dispatch-and-wait@main",
+                "uses": "ecmwf/ci-infrastructure/actions/dispatch-and-wait@main",
                 "with": dispatch_with,
             },
         ],
@@ -2504,7 +2504,7 @@ def _report(
             "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
             f"  {_regen_command(manifest_path)}\n"
             "\n"
-            "Where generate_downstream_ci.py comes from https://github.com/ecmwf-enterprise-sandbox/ci-infrastructure.\n"
+            "Where generate_downstream_ci.py comes from https://github.com/ecmwf/ci-infrastructure.\n"
             "Then commit the regenerated files alongside your manifest changes."
         )
     for action, p in changed:

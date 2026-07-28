@@ -139,7 +139,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
 
     - name: Configure S3 artifact store
       shell: bash

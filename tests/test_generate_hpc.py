@@ -66,7 +66,7 @@ def test_hpc_job_uses_build_on_hpc_action(tmp_path: Path) -> None:
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
     assert yaml is not None
     # The HPC build step calls the shared action, not a per-repo composite.
-    assert "uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/build-on-hpc@main" in yaml
+    assert "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main" in yaml
     # A leg with no per-leg job-script falls back to the kind-level default.
     assert "matrix.job-script || './.ci/hpc/build.sh'" in yaml
     assert "site: ${{ matrix.site }}" in yaml
@@ -273,7 +273,7 @@ def test_hpc_leg_accepts_list_runs_on(tmp_path: Path) -> None:
     [m] = parse_all(tmp_path)
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
     assert yaml is not None
-    assert "uses: ecmwf-enterprise-sandbox/ci-infrastructure/actions/build-on-hpc@main" in yaml
+    assert "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main" in yaml
 
 
 def test_hpc_kind_rejects_action(tmp_path: Path) -> None:
