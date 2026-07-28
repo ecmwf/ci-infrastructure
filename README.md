@@ -49,8 +49,8 @@ classification](https://github.com/ecmwf/codex/blob/main/Software%20Maturity/ind
 > This is internal CI tooling, not a supported product. Do not rely on it in
 > an operational context. Use at your own risk, and expect breaking changes.
 
-For questions, issues, or support requests, please contact ECMWF via the
-[ECMWF Service Desk](https://support.ecmwf.int/).
+<!-- For questions, issues, or support requests, please contact ECMWF via the
+[ECMWF Service Desk](https://support.ecmwf.int/). -->
 
 ## Installation
 
@@ -74,7 +74,7 @@ ci-infrastructure-s3
 ci-infrastructure-hpc
 ```
 
-## Usage
+## Example Usage
 
 Resolve the dependency graph for a package and print it as a table:
 
@@ -91,10 +91,3 @@ composite actions in [`actions/`](actions), e.g.:
   with:
     config: deps.yml
 ```
-
-## Further documentation
-
-- [`HPC.md`](HPC.md) — running downstream CI on HPC/SLURM
-- [`actions/`](actions) — one `action.yml`/`README` per composite action
-- [`CONTRIBUTORS`](CONTRIBUTORS) and [`LICENSE`](LICENSE) — contribution and
-  licensing information (Apache-2.0)
