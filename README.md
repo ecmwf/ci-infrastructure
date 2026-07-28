@@ -6,6 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # ci-infrastructure
 
+> [!IMPORTANT]
+> This software is **Emerging** and subject to ECMWF's guidelines on
+> [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
+
 Shared CI orchestration scripts and reusable GitHub Actions for building and
 testing ECMWF's downstream package graph. It provides:
 
@@ -29,15 +33,14 @@ forecast data itself.
 ## Software maturity & support
 
 This project follows the [ECMWF Software Maturity
-classification](https://github.com/ecmwf/codex/blob/main/Software%20Maturity/index.md).
+classification](https://github.com/ecmwf/codex/blob/main/Software%20Maturity/index.md)
+(see the maturity badge at the top of this README).
 
-- **Maturity level:** 🔴 **Emerging** — under active development, APIs and
-  workflow contracts may change without notice.
 - **Level of support:** 🔴 **Best effort / none** — maintained by the CI
   infrastructure team as time allows. There is no guaranteed response time or
   SLA, and it is **not officially supported for operational use**.
 
-> [!IMPORTANT]
+> [!NOTE]
 > This is internal CI tooling, not a supported product. Do not rely on it in
 > an operational context. Use at your own risk, and expect breaking changes.
 

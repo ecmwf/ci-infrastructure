@@ -7,6 +7,8 @@ name = "ci-infrastructure"
 version = "0.1.0"
 description = "Shared CI orchestration scripts and actions"
 requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     "click>=8.1",
     "pydantic>=2",
@@ -30,7 +32,7 @@ ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 test = ["pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
