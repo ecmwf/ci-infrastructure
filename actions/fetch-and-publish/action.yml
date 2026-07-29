@@ -204,9 +204,13 @@ runs:
     - name: Create artifact tar
       if: inputs.mode == 'publish' && inputs.found != 'true'
       shell: bash
+      env:
+        ARTIFACT_NAME_INPUT: ${{ inputs.artifact-name }}
+        INSTALL_PATH_INPUT: ${{ inputs.install-path }}
       run: |
-        tar -czf "$RUNNER_TEMP/${{ inputs.artifact-name }}.tar.gz" \
-          -C "${{ inputs.install-path }}" .
+        set -euo pipefail
+        tar -czf "$RUNNER_TEMP/$ARTIFACT_NAME_INPUT.tar.gz" \
+          -C "$INSTALL_PATH_INPUT" .
 
     - name: Upload artifact to S3 store
       # Mirror the `found != 'true'` gate on `Create artifact tar`: when the

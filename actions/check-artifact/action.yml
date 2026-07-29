@@ -131,14 +131,26 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
+        REPO_INPUT: ${{ inputs.repo }}
+        REF_INPUT: ${{ inputs.ref }}
+        ARTIFACT_PREFIX_INPUT: ${{ inputs.artifact-prefix }}
+        PLATFORM_INPUT: ${{ inputs.platform }}
+        COMPILER_INPUT: ${{ inputs.compiler }}
+        BUILD_TYPE_INPUT: ${{ inputs.build-type }}
+        PYTHON_VERSION_INPUT: ${{ inputs.python-version }}
+        DEPS_ARTIFACT_NAMES_INPUT: ${{ inputs.deps-artifact-names }}
+        OPTIONS_INPUT: ${{ inputs.options }}
       run: |
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.check_artifact \
-          --repo "${{ inputs.repo }}" \
-          --ref "${{ inputs.ref }}" \
-          --artifact-prefix "${{ inputs.artifact-prefix }}" \
-          --platform "${{ inputs.platform }}" \
-          --compiler "${{ inputs.compiler }}" \
-          --build-type "${{ inputs.build-type }}" \
-          ${{ inputs.python-version != '' && format('--python-version "{0}"', inputs.python-version) || '' }} \
-          ${{ inputs.deps-artifact-names != '' && format('--deps-artifact-names "{0}"', inputs.deps-artifact-names) || '' }} \
-          ${{ inputs.options != '' && format('--options "{0}"', inputs.options) || '' }}
+        set -euo pipefail
+        args=(
+          --repo "$REPO_INPUT"
+          --ref "$REF_INPUT"
+          --artifact-prefix "$ARTIFACT_PREFIX_INPUT"
+          --platform "$PLATFORM_INPUT"
+          --compiler "$COMPILER_INPUT"
+          --build-type "$BUILD_TYPE_INPUT"
+        )
+        if [ -n "$PYTHON_VERSION_INPUT" ]; then args+=(--python-version "$PYTHON_VERSION_INPUT"); fi
+        if [ -n "$DEPS_ARTIFACT_NAMES_INPUT" ]; then args+=(--deps-artifact-names "$DEPS_ARTIFACT_NAMES_INPUT"); fi
+        if [ -n "$OPTIONS_INPUT" ]; then args+=(--options "$OPTIONS_INPUT"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.check_artifact "${args[@]}"

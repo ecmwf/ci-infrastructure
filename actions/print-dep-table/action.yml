@@ -87,6 +87,8 @@ runs:
         OWN_PYTHON: ${{ inputs.own-python }}
         OWN_BUILD_TYPE: ${{ inputs.own-build-type }}
         OWN_DEPS_HASH: ${{ inputs.own-deps-hash }}
+        DEPS_JSON_INPUT: ${{ inputs.deps-json }}
+        TITLE_INPUT: ${{ inputs.title }}
       run: |
         own_arg=()
         if [ -n "$OWN_NAME" ] && [ -n "$OWN_ARTIFACT" ]; then
@@ -108,6 +110,6 @@ runs:
           own_arg=(--own "$own_json")
         fi
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.print_dep_table \
-          --deps-json '${{ inputs.deps-json }}' \
-          --title "${{ inputs.title }}" \
+          --deps-json "$DEPS_JSON_INPUT" \
+          --title "$TITLE_INPUT" \
           "${own_arg[@]}"

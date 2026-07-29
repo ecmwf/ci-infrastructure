@@ -37,7 +37,8 @@ runs:
       working-directory: ${{ inputs.self-path }}
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
+        MANIFEST_PATH_INPUT: ${{ inputs.manifest-path }}
       run: |
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci \
-          --manifest-path "${{ inputs.manifest-path }}" \
+          --manifest-path "$MANIFEST_PATH_INPUT" \
           --check

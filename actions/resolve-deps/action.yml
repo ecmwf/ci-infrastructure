@@ -150,7 +150,17 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.app-private-key }}
+        # Deliberately org-wide (no `repositories:` list): the manifest graph
+        # walked below is dynamic (any repo named in [[deps]]/producers), so a
+        # fixed repo allowlist isn't possible here. What we *can* restrict is
+        # which permissions the minted token carries, regardless of what the
+        # App itself has installed — contents:read for GraphQL blob/ref reads,
+        # actions:write for `gh workflow run` dispatch (which also covers read
+        # of run status). No other permission (issues, packages, admin,
+        # secrets, ...) is requested.
         owner: ${{ github.repository_owner }}
+        permission-contents: read
+        permission-actions: write
 
     - name: Resolve dependency tree
       id: r
