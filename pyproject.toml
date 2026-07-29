@@ -15,7 +15,7 @@ dependencies = [
     "PyYAML>=6",
     "boto3>=1.34",
     "tomli>=2.0; python_version < '3.11'",
-    "troika @ git+https://github.com/ecmwf/troika.git@843684cd5c759c55477bf62632da0318fa984327",
+    "troika @ git+https://github.com/ecmwf/troika.git",
 ]
 
 
@@ -55,18 +55,11 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 strict = true
 
-# troika ships no type information yet (a py.typed release is in progress), so
-# its imports would otherwise trip strict mode's missing-imports check.
+# # troika ships no type information yet (a py.typed release is in progress)
 [[tool.mypy.overrides]]
 module = "troika.*"
 ignore_missing_imports = true
 
-# site.py is the only module that calls troika's (currently untyped) config
-# loaders. Whether mypy flags those as untyped calls depends on which troika it
-# resolves — an editable/source checkout vs the pip-installed package without
-# py.typed — so relax that one check here rather than carry an inline ignore that
-# is "unused" in whichever environment sees troika as Any. This becomes a no-op
-# (and should be removed) once the pinned troika dependency ships py.typed.
 [[tool.mypy.overrides]]
 module = "ci_infrastructure.hpc.site"
 disallow_untyped_calls = false
