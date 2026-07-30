@@ -32,15 +32,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ci-infrastructure (this branch)
+      - name: Install ci-infrastructure (this checkout)
         run: pip install -e .
 
       # The composite actions bootstrap via ensure-infrastructure-present@main,
-      # which would install ci-infrastructure from main — without the commands
-      # this branch adds. Point CI_INFRASTRUCTURE_PYTHON at the interpreter we
-      # just installed the branch into; ensure-infrastructure-present then takes
-      # its reuse fast path and the actions run this branch's code.
-      - name: Expose the branch interpreter to the composite actions
+      # which would install the published @main. Point CI_INFRASTRUCTURE_PYTHON at
+      # the interpreter we just installed THIS checkout into so the actions take
+      # their reuse fast path and exercise this checkout's code — a change is then
+      # tested against itself, not against @main.
+      - name: Expose the checkout interpreter to the composite actions
         shell: bash
         run: echo "CI_INFRASTRUCTURE_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
@@ -105,32 +105,15 @@ jobs:
 
   hpc-roundtrip:
     # Manual only: it reaches the real cluster over troika ssh from the login-node
-    # self-hosted runner. The ubuntu-latest job above is the per-push gate.
+    # self-hosted runner, exercising the composite actions exactly as a consumer
+    # would. ensure-infrastructure-present installs the published @main, so run it
+    # from main. The ubuntu-latest job above is the per-push gate.
     if: github.event_name == 'workflow_dispatch'
     runs-on: [hpc]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
-
-      - name: Install this checkout's ci-infrastructure into a test venv
-        shell: bash
-        run: |
-          set -euo pipefail
-          # ensure-infrastructure-present bootstraps a known-good interpreter, but it
-          # installs ci-infrastructure from @main — which pre-merge lacks fetch-tree /
-          # push-tree. Build a venv from THIS checkout so the test runs the checked-out
-          # code, and point CI_INFRASTRUCTURE_PYTHON at it; the composite actions below
-          # then take their reuse fast path and run this code.
-          if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
-            echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
-            exit 1
-          fi
-          venv="$RUNNER_TEMP/transfer-e2e-venv"
-          rm -rf "$venv"
-          "$CI_INFRASTRUCTURE_PYTHON" -m venv "$venv"
-          "$venv/bin/pip" install --disable-pip-version-check -e .
-          echo "CI_INFRASTRUCTURE_PYTHON=$venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Seed a tree to push to the cluster
         shell: bash
