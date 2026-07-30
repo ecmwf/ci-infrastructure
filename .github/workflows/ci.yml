@@ -5,7 +5,10 @@
 name: CI
 
 on:
+  # push scoped to main so a branch with an open PR runs the pull_request copy
+  # only, not a redundant second push run.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
