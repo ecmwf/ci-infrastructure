@@ -731,5 +731,75 @@ def gc(
     run_gc(site._connection, remote_work_dir=resolved, older_than_days=older_than_days, dryrun=dryrun)
 
 
+@main.command("fetch-tree", help="Copy a directory a job produced off the cluster back to the runner.")
+@click.option("--site", "site_name", required=True, help="Troika site name")
+@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
+@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@click.option(
+    "--remote-dir",
+    "remote_dir",
+    required=True,
+    help="Source directory on the cluster to fetch. May name cluster variables (e.g. '$SCRATCH/ref'); "
+    "expanded on the cluster, not on the runner.",
+)
+@click.option("--local-dir", "local_dir", required=True, help="Runner-local directory to unpack the tree into")
+@click.option("--tar-dir", "tar_dir", required=True, help="Runner-local scratch dir for the transferred tarball")
+@click.option("--dryrun", is_flag=True, default=False, help="Resolve the remote path but transfer nothing")
+def fetch_tree_cmd(
+    site_name: str,
+    troika_config: str | None,
+    troika_user: str | None,
+    remote_dir: str,
+    local_dir: str,
+    tar_dir: str,
+    dryrun: bool,
+) -> None:
+    site = load_site(site_name, config_path=troika_config, user=troika_user)
+    resolved = resolve_remote_path(site._connection, remote_dir)  # the source lives on the cluster
+    if resolved != remote_dir:
+        print(f"fetch-tree: remote dir {remote_dir!r} -> {resolved}")
+    transfer.fetch_tree(site._connection, remote_dir=resolved, local_dir=local_dir, tar_dir=tar_dir, dryrun=dryrun)
+    if dryrun:
+        print(f"fetch-tree: dry run; would fetch {resolved} -> {local_dir}")
+        return
+    _write_output("local-dir", local_dir)
+    print(f"fetch-tree: fetched {resolved} -> {local_dir}")
+
+
+@main.command("push-tree", help="Copy a runner-local directory up to a directory on the cluster.")
+@click.option("--site", "site_name", required=True, help="Troika site name")
+@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
+@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@click.option("--local-dir", "local_dir", required=True, help="Source directory on the runner to push")
+@click.option(
+    "--remote-dir",
+    "remote_dir",
+    required=True,
+    help="Destination directory on the cluster. May name cluster variables (e.g. '$SCRATCH/inputs'); "
+    "expanded on the cluster, not on the runner.",
+)
+@click.option("--tar-dir", "tar_dir", required=True, help="Runner-local scratch dir for the transferred tarball")
+@click.option("--dryrun", is_flag=True, default=False, help="Resolve the remote path but transfer nothing")
+def push_tree_cmd(
+    site_name: str,
+    troika_config: str | None,
+    troika_user: str | None,
+    local_dir: str,
+    remote_dir: str,
+    tar_dir: str,
+    dryrun: bool,
+) -> None:
+    site = load_site(site_name, config_path=troika_config, user=troika_user)
+    resolved = resolve_remote_path(site._connection, remote_dir)  # the destination lives on the cluster
+    if resolved != remote_dir:
+        print(f"push-tree: remote dir {remote_dir!r} -> {resolved}")
+    transfer.push_tree(site._connection, local_dir=local_dir, remote_dir=resolved, tar_dir=tar_dir, dryrun=dryrun)
+    if dryrun:
+        print(f"push-tree: dry run; would push {local_dir} -> {resolved}")
+        return
+    _write_output("remote-dir", resolved)
+    print(f"push-tree: pushed {local_dir} -> {resolved}")
+
+
 if __name__ == "__main__":
     main()

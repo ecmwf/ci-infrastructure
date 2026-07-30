@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Push HPC tree
+description: >
+  Copy a runner-local directory up to a directory on the cluster, over troika's
+  own connection (no scheduler, no S3). Use it as a pre-step before an HPC job to
+  stage inputs onto shared scratch that the job then reads.
+
+  The destination directory must sit on a filesystem the login node can write
+  (shared scratch). It may name cluster variables such as SCRATCH; the spec is
+  expanded on the cluster, so pass it quoted so this runner does not expand it
+  first. The resolved cluster directory is exposed as the remote-dir output.
+
+inputs:
+  site:
+    description: 'Troika site name (see troika-config.yml), e.g. hpc-batch or lumi'
+    required: true
+  local-dir:
+    description: 'Source directory on the runner to push'
+    required: true
+  remote-dir:
+    description: 'Destination directory on the cluster (may name cluster variables like $SCRATCH)'
+    required: true
+  tar-dir:
+    description: 'Runner-local scratch dir for the transferred tarball. Empty falls back to $RUNNER_TEMP/hpc-tars.'
+    required: false
+    default: ''
+  troika-config:
+    description: 'Path to a troika config. Empty uses the one packaged with ci-infrastructure.'
+    required: false
+    default: ''
+  troika-user:
+    description: 'Remote/scheduler user for troika. Empty leaves troika to resolve it.'
+    required: false
+    default: ''
+
+outputs:
+  remote-dir:
+    description: 'Resolved cluster directory the tree was unpacked into'
+    value: ${{ steps.push.outputs.remote-dir }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Push the tree up to the cluster
+      id: push
+      shell: bash
+      env:
+        SITE: ${{ inputs.site }}
+        LOCAL_DIR: ${{ inputs.local-dir }}
+        REMOTE_DIR: ${{ inputs.remote-dir }}
+        TAR_DIR_INPUT: ${{ inputs.tar-dir }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+      run: |
+        set -euo pipefail
+        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
+          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
+          exit 1
+        fi
+        tar_dir="${TAR_DIR_INPUT:-$RUNNER_TEMP/hpc-tars}"
+        mkdir -p "$tar_dir"
+        # REMOTE_DIR is passed verbatim: a spec like '$SCRATCH/inputs' must be
+        # expanded on the cluster, not by this shell.
+        args=(
+          --site "$SITE"
+          --local-dir "$LOCAL_DIR"
+          --remote-dir "$REMOTE_DIR"
+          --tar-dir "$tar_dir"
+        )
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc push-tree "${args[@]}"

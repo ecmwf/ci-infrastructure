@@ -225,6 +225,139 @@ def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
     assert (tmp_path / "local-install").is_dir()
 
 
+# --------------------------------------------------------------------------- #
+# fetch_tree / push_tree (the generic HPC<->runner primitives)
+# --------------------------------------------------------------------------- #
+def test_fetch_tree_tar_getfile_unpack_order(tmp_path: Path) -> None:
+    class TarballConnection(FakeConnection):
+        # fetch_tree really untars what getfile delivered, so hand it a valid
+        # (empty) tarball rather than a no-op.
+        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().getfile(src, dst)
+            with tarfile.open(dst, "w:gz"):
+                pass
+
+    conn = TarballConnection()
+    transfer.fetch_tree(
+        conn,
+        remote_dir="/remote/ref/art",
+        local_dir=str(tmp_path / "local"),
+        tar_dir=str(tmp_path / "stage"),
+    )
+    # Remote tar first, then getfile back under the default .fetch.tgz name.
+    assert conn.executed[0][:2] == ["bash", "-c"]
+    assert "tar -czf" in conn.executed[0][2] and "/remote/ref/art" in conn.executed[0][2]
+    assert conn.fetched == [("/remote/ref/art.fetch.tgz", str(tmp_path / "stage" / "art.fetch.tgz"))]
+    assert (tmp_path / "local").is_dir()
+
+
+def test_fetch_tree_dryrun_does_nothing(tmp_path: Path) -> None:
+    conn = FakeConnection()
+    transfer.fetch_tree(
+        conn,
+        remote_dir="/remote/ref/art",
+        local_dir=str(tmp_path / "local"),
+        tar_dir=str(tmp_path / "stage"),
+        dryrun=True,
+    )
+    assert conn.executed == [] and conn.fetched == []
+    assert not (tmp_path / "local").exists()
+
+
+def test_fetch_install_still_names_install_tgz(tmp_path: Path) -> None:
+    """Regression guard: the wrapper keeps the build flow's <name>.install.tgz name."""
+
+    class TarballConnection(FakeConnection):
+        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().getfile(src, dst)
+            with tarfile.open(dst, "w:gz"):
+                pass
+
+    conn = TarballConnection()
+    transfer.fetch_install(
+        conn,
+        remote_install_dir="/remote/install/art",
+        local_install_dir=str(tmp_path / "local-install"),
+        tar_dir=str(tmp_path / "stage"),
+    )
+    assert conn.fetched == [("/remote/install/art.install.tgz", str(tmp_path / "stage" / "art.install.tgz"))]
+
+
+def test_push_tree_tar_sendfile_unpack_order(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "inputs", "in.txt", "payload")
+    conn = FakeConnection()
+    transfer.push_tree(
+        conn,
+        local_dir=str(src),
+        remote_dir="/remote/inputs/art",
+        tar_dir=str(tmp_path / "stage"),
+    )
+    # Remote dir is created, then the tarball is scp'd up under .push.tgz and untarred.
+    assert ["mkdir", "-p", "/remote/inputs/art"] in conn.executed
+    assert conn.sent == [(str(tmp_path / "stage" / "art.push.tgz"), "/remote/inputs/art.push.tgz")]
+    untars = [c[2] for c in conn.executed if c[:2] == ["bash", "-c"]]
+    assert any("tar -xzf" in u and "/remote/inputs/art" in u for u in untars)
+
+
+def test_push_tree_dryrun_does_nothing(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "inputs", "in.txt", "payload")
+    conn = FakeConnection()
+    transfer.push_tree(
+        conn,
+        local_dir=str(src),
+        remote_dir="/remote/inputs/art",
+        tar_dir=str(tmp_path / "stage"),
+        dryrun=True,
+    )
+    assert conn.executed == [] and conn.sent == []
+    assert not (tmp_path / "stage").exists()  # no local tarball either
+
+
+def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
+    """push_tree stages a tree on the 'cluster'; fetch_tree brings it back intact."""
+    src = _make_tree(tmp_path / "inputs", "hello.txt", "content-xyz")
+
+    class CopyingConnection(FakeConnection):
+        # Emulate scp by really copying the file, and run the remote commands
+        # locally so the round-trip actually moves bytes.
+        def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().sendfile(src, dst)
+            Path(dst).parent.mkdir(parents=True, exist_ok=True)
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+            super().getfile(src, dst)
+            Path(dst).write_bytes(Path(src).read_bytes())
+
+        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+            proc = super().execute(command, stdout, stderr, dryrun)
+            argv = [str(c) for c in command]
+            if argv[:2] == ["bash", "-c"]:
+                subprocess.run(argv[2], shell=True, check=True)
+            else:
+                subprocess.run(argv, check=True)  # mkdir -p
+            return proc
+
+    conn = CopyingConnection()
+    remote = tmp_path / "remote" / "inputs" / "art"
+    transfer.push_tree(
+        conn,
+        local_dir=str(src),
+        remote_dir=str(remote),
+        tar_dir=str(tmp_path / "stage"),
+    )
+    assert (remote / "hello.txt").read_text() == "content-xyz"
+
+    fetched = tmp_path / "back"
+    transfer.fetch_tree(
+        conn,
+        remote_dir=str(remote),
+        local_dir=str(fetched),
+        tar_dir=str(tmp_path / "stage2"),
+    )
+    assert (fetched / "hello.txt").read_text() == "content-xyz"
+
+
 def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     """The tarball ship stages unpacks intact, and fetch_install brings a tree back."""
     src = _make_tree(tmp_path / "checkout", "hello.txt", "content-xyz")
