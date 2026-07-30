@@ -4,6 +4,10 @@ SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts 
 SPDX-License-Identifier: Apache-2.0
 -->
 
+Immer janz discht dran und knallhart nachjefracht.
+
+Yes Weekend!
+
 # Running downstream CI on HPC (SLURM)
 
 The HPC path lets a package build and test **inside a SLURM job** on a cluster,
