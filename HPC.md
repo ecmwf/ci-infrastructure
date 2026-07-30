@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Immer janz discht dran und knallhart nachjefracht.
 
-Yes Weekend!
+Is it the weekend, already?!
 
 # Running downstream CI on HPC (SLURM)
 
