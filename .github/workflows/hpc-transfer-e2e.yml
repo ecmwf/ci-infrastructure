@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: HPC transfer e2e
+
+# Real-world usage test for the fetch-tree / push-tree primitives, in two tiers:
+#
+#   * local-direct-roundtrip (every push/PR, ubuntu-latest, no cluster) drives the
+#     commands against the local-direct troika site (connection: local), so troika
+#     runs the tar commands and getfile/sendfile on this runner — a genuine
+#     tar -> transfer -> untar round-trip with source and destination both local.
+#     Exercised through the CLI and through the composite actions.
+#   * hpc-roundtrip (manual only, self-hosted [hpc] login-node runner) does the
+#     real thing: pushes a tree to shared scratch on the cluster over troika ssh
+#     and fetches it back.
+#
+# push is scoped to main so a branch with an open PR runs the pull_request copy
+# only, not a redundant second push run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  local-direct-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ci-infrastructure (this branch)
+        run: pip install -e .
+
+      # The composite actions bootstrap via ensure-infrastructure-present@main,
+      # which would install ci-infrastructure from main — without the commands
+      # this branch adds. Point CI_INFRASTRUCTURE_PYTHON at the interpreter we
+      # just installed the branch into; ensure-infrastructure-present then takes
+      # its reuse fast path and the actions run this branch's code.
+      - name: Expose the branch interpreter to the composite actions
+        shell: bash
+        run: echo "CI_INFRASTRUCTURE_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: CLI round-trip through local-direct
+        shell: bash
+        run: |
+          set -euo pipefail
+          cfg=src/ci_infrastructure/hpc/troika-config.yml
+          src="$RUNNER_TEMP/cli/src"
+          mkdir -p "$src/nested"
+          echo runner-payload > "$src/hello.txt"
+          echo deep > "$src/nested/deep.txt"
+
+          python -m ci_infrastructure.hpc push-tree --site local-direct --troika-config "$cfg" \
+            --local-dir "$src" --remote-dir "$RUNNER_TEMP/cli/remote" --tar-dir "$RUNNER_TEMP/cli/tars"
+          python -m ci_infrastructure.hpc fetch-tree --site local-direct --troika-config "$cfg" \
+            --remote-dir "$RUNNER_TEMP/cli/remote" --local-dir "$RUNNER_TEMP/cli/back" --tar-dir "$RUNNER_TEMP/cli/tars"
+          diff -r "$src" "$RUNNER_TEMP/cli/back"
+
+          # A dry run resolves the path but must transfer nothing.
+          python -m ci_infrastructure.hpc fetch-tree --site local-direct --troika-config "$cfg" \
+            --remote-dir "$RUNNER_TEMP/cli/remote" --local-dir "$RUNNER_TEMP/cli/dry" \
+            --tar-dir "$RUNNER_TEMP/cli/tars" --dryrun
+          test ! -e "$RUNNER_TEMP/cli/dry"
+          echo "CLI round-trip OK"
+
+      - name: Seed a tree for the action round-trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/act/src/nested"
+          echo action-payload > "$RUNNER_TEMP/act/src/hello.txt"
+          echo deep > "$RUNNER_TEMP/act/src/nested/deep.txt"
+
+      - name: Push the tree up via the action
+        id: push
+        uses: ./actions/push-hpc-tree
+        with:
+          site: local-direct
+          local-dir: ${{ runner.temp }}/act/src
+          remote-dir: ${{ runner.temp }}/act/remote
+
+      - name: Fetch the tree back via the action
+        id: fetch
+        uses: ./actions/fetch-hpc-tree
+        with:
+          site: local-direct
+          remote-dir: ${{ runner.temp }}/act/remote
+          local-dir: ${{ runner.temp }}/act/back
+
+      - name: Assert the action outputs and the round-trip
+        shell: bash
+        env:
+          PUSH_REMOTE_DIR: ${{ steps.push.outputs.remote-dir }}
+          FETCH_LOCAL_DIR: ${{ steps.fetch.outputs.local-dir }}
+        run: |
+          set -euo pipefail
+          test "$PUSH_REMOTE_DIR" = "$RUNNER_TEMP/act/remote"
+          test "$FETCH_LOCAL_DIR" = "$RUNNER_TEMP/act/back"
+          diff -r "$RUNNER_TEMP/act/src" "$RUNNER_TEMP/act/back"
+          echo "Action round-trip OK"
+
+  hpc-roundtrip:
+    # Manual only: it reaches the real cluster over troika ssh from the login-node
+    # self-hosted runner. The ubuntu-latest job above is the per-push gate.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [hpc]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+      - name: Install this checkout's ci-infrastructure into a test venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ensure-infrastructure-present bootstraps a known-good interpreter, but it
+          # installs ci-infrastructure from @main — which pre-merge lacks fetch-tree /
+          # push-tree. Build a venv from THIS checkout so the test runs the checked-out
+          # code, and point CI_INFRASTRUCTURE_PYTHON at it; the composite actions below
+          # then take their reuse fast path and run this code.
+          if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
+            echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
+            exit 1
+          fi
+          venv="$RUNNER_TEMP/transfer-e2e-venv"
+          rm -rf "$venv"
+          "$CI_INFRASTRUCTURE_PYTHON" -m venv "$venv"
+          "$venv/bin/pip" install --disable-pip-version-check -e .
+          echo "CI_INFRASTRUCTURE_PYTHON=$venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Seed a tree to push to the cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/hpc-e2e/src"
+          mkdir -p "$src/nested"
+          echo "hpc-e2e $GITHUB_RUN_ID" > "$src/hello.txt"
+          echo deep > "$src/nested/deep.txt"
+
+      - name: Push the tree up to the cluster
+        id: push
+        uses: ./actions/push-hpc-tree
+        with:
+          site: hpc-batch
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          local-dir: ${{ runner.temp }}/hpc-e2e/src
+          remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-${{ github.run_id }}
+
+      - name: Fetch the tree back from the cluster
+        id: fetch
+        uses: ./actions/fetch-hpc-tree
+        with:
+          site: hpc-batch
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          remote-dir: ${{ steps.push.outputs.remote-dir }}
+          local-dir: ${{ runner.temp }}/hpc-e2e/back
+
+      - name: Assert the round-trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff -r "$RUNNER_TEMP/hpc-e2e/src" "$RUNNER_TEMP/hpc-e2e/back"
+          echo "HPC round-trip OK"
+
+      - name: Remove the cluster scratch dir
+        if: always()
+        shell: bash
+        env:
+          TROIKA_USER: ${{ secrets.HPC_CI_SSH_USER }}
+          REMOTE_DIR: ${{ steps.push.outputs.remote-dir }}
+        run: |
+          set -euo pipefail
+          case "${REMOTE_DIR:-}" in
+            /*) ;;  # only proceed for an absolute path the push step resolved
+            *) echo "nothing to clean (push did not resolve a remote dir)"; exit 0 ;;
+          esac
+          [ -n "${CI_INFRASTRUCTURE_PYTHON:-}" ] || exit 0
+          # Every python line sits at this block's indent so the YAML block scalar
+          # keeps them; after the indent is stripped they are column-0 statements
+          # (a one-line comprehension, so there is no indented loop body to break it).
+          "$CI_INFRASTRUCTURE_PYTHON" -c 'import os, subprocess
+          from ci_infrastructure.hpc.site import load_site
+          conn = load_site("hpc-batch", user=(os.environ.get("TROIKA_USER") or None))._connection
+          base = os.environ["REMOTE_DIR"]
+          [conn.execute(["rm", "-rf", p], stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate() for p in (base, base + ".push.tgz", base + ".fetch.tgz")]
+          print("cleaned", base)'

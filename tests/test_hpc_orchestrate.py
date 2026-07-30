@@ -754,5 +754,135 @@ def test_submit_wait_publish_mode_checks_cache_and_fetches(monkeypatch: pytest.M
     assert calls == {"object_exists": 1, "fetch_install": 1}
 
 
+# --------------------------------------------------------------------------- #
+# fetch-tree / push-tree (the standalone transfer subcommands)
+#
+# Driven through the CLI with load_site / resolve_remote_path / the transfer
+# primitive stubbed, so we assert the two things the command wires: the kwargs
+# forwarded to the primitive, and the $GITHUB_OUTPUT it writes.
+# --------------------------------------------------------------------------- #
+class _FakeSite:
+    def __init__(self) -> None:
+        self._connection = RecordingConnection()
+
+
+def _stub_site_and_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orch, "load_site", lambda *a, **k: _FakeSite())
+    monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, spec: spec)  # identity
+
+
+def test_fetch_tree_forwards_kwargs_and_writes_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "fetch_tree", lambda _conn, **kw: captured.update(kw))
+    out_file = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+    result = CliRunner().invoke(
+        orch.fetch_tree_cmd,
+        [
+            "--site",
+            "local-direct",
+            "--remote-dir",
+            "/scratch/ref",
+            "--local-dir",
+            str(tmp_path / "back"),
+            "--tar-dir",
+            str(tmp_path / "tars"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "remote_dir": "/scratch/ref",
+        "local_dir": str(tmp_path / "back"),
+        "tar_dir": str(tmp_path / "tars"),
+        "dryrun": False,
+    }
+    assert out_file.read_text() == f"local-dir={tmp_path / 'back'}\n"
+
+
+def test_fetch_tree_dryrun_forwards_flag_and_writes_no_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "fetch_tree", lambda _conn, **kw: captured.update(kw))
+    out_file = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+    result = CliRunner().invoke(
+        orch.fetch_tree_cmd,
+        [
+            "--site",
+            "local-direct",
+            "--remote-dir",
+            "/scratch/ref",
+            "--local-dir",
+            str(tmp_path / "back"),
+            "--tar-dir",
+            str(tmp_path / "tars"),
+            "--dryrun",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["dryrun"] is True
+    assert not out_file.exists()  # nothing written on a dry run
+
+
+def test_push_tree_forwards_kwargs_and_writes_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "push_tree", lambda _conn, **kw: captured.update(kw))
+    out_file = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+    result = CliRunner().invoke(
+        orch.push_tree_cmd,
+        [
+            "--site",
+            "local-direct",
+            "--local-dir",
+            str(tmp_path / "inputs"),
+            "--remote-dir",
+            "/scratch/inputs",
+            "--tar-dir",
+            str(tmp_path / "tars"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "local_dir": str(tmp_path / "inputs"),
+        "remote_dir": "/scratch/inputs",
+        "tar_dir": str(tmp_path / "tars"),
+        "dryrun": False,
+    }
+    # push writes the RESOLVED cluster dir (its useful output for later steps).
+    assert out_file.read_text() == "remote-dir=/scratch/inputs\n"
+
+
+def test_push_tree_dryrun_forwards_flag_and_writes_no_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "push_tree", lambda _conn, **kw: captured.update(kw))
+    out_file = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+    result = CliRunner().invoke(
+        orch.push_tree_cmd,
+        [
+            "--site",
+            "local-direct",
+            "--local-dir",
+            str(tmp_path / "inputs"),
+            "--remote-dir",
+            "/scratch/inputs",
+            "--tar-dir",
+            str(tmp_path / "tars"),
+            "--dryrun",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["dryrun"] is True
+    assert not out_file.exists()
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))

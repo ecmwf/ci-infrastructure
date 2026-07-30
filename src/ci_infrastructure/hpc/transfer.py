@@ -171,6 +171,73 @@ def _ship_prefix(conn: Connection, *, local_prefix: str, remote_dir: str, tar_pa
     )
 
 
+def fetch_tree(
+    conn: Connection,
+    *,
+    remote_dir: str,
+    local_dir: str,
+    tar_dir: str,
+    tarball_suffix: str = "fetch",
+    dryrun: bool = False,
+) -> None:
+    """Tar a directory on the cluster and unpack it into ``local_dir`` on the runner.
+
+    The generic HPC->runner half of the two bracketing transfers, driven straight
+    over troika's connection (no scheduler, so it works against ``direct`` sites
+    too). The tree moves as a single ``<name>.<tarball_suffix>.tgz`` next to the
+    source on the cluster, because troika's connection transfers one file at a
+    time; tar/untar on each side turns that into a directory copy.
+    """
+    if dryrun:
+        return
+    remote = PurePosixPath(remote_dir)
+    remote_tgz = str(remote.parent / f"{remote.name}.{tarball_suffix}.tgz")
+    local_tgz = Path(tar_dir) / f"{remote.name}.{tarball_suffix}.tgz"
+
+    _run_remote(
+        conn,
+        ["bash", "-c", f"tar -czf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)} ."],
+        what="Remote tree tar",
+    )
+    Path(tar_dir).mkdir(parents=True, exist_ok=True)
+    conn.getfile(remote_tgz, local_tgz)
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_dir)], check=True)
+
+
+def push_tree(
+    conn: Connection,
+    *,
+    local_dir: str,
+    remote_dir: str,
+    tar_dir: str,
+    tarball_suffix: str = "push",
+    dryrun: bool = False,
+) -> None:
+    """Tar ``local_dir`` on the runner and unpack it into ``remote_dir`` on the cluster.
+
+    The generic runner->HPC mirror of :func:`fetch_tree`: local tar -> ``sendfile``
+    -> remote ``mkdir -p`` + untar. Like ``fetch_tree`` it needs no scheduler, so
+    it works against ``direct`` sites too. (This is the same shape as the private
+    ``_ship_prefix``, which stays tied to the source-shipping flow.)
+    """
+    if dryrun:
+        return
+    name = PurePosixPath(remote_dir).name
+    local_tgz = Path(tar_dir) / f"{name}.{tarball_suffix}.tgz"
+    remote_tgz = f"{remote_dir.rstrip('/')}.{tarball_suffix}.tgz"
+
+    Path(tar_dir).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_dir), "."], check=True)
+    _run_remote(conn, ["mkdir", "-p", remote_dir], what=f"Remote mkdir of {remote_dir}")
+    conn.sendfile(local_tgz, remote_tgz)
+    _run_remote(
+        conn,
+        ["bash", "-c", f"tar -xzf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)}"],
+        what="Remote tree unpack",
+    )
+
+
 def fetch_install(
     conn: Connection,
     *,
@@ -179,19 +246,16 @@ def fetch_install(
     tar_dir: str,
     dryrun: bool = False,
 ) -> None:
-    """Tar the cluster's install tree and unpack it into ``local_install_dir`` on the runner."""
-    if dryrun:
-        return
-    remote = PurePosixPath(remote_install_dir)
-    remote_tgz = str(remote.parent / f"{remote.name}.install.tgz")
-    local_tgz = Path(tar_dir) / f"{remote.name}.install.tgz"
+    """Tar the cluster's install tree and unpack it into ``local_install_dir`` on the runner.
 
-    _run_remote(
+    Thin wrapper over :func:`fetch_tree` that keeps the build flow's
+    ``<name>.install.tgz`` temp-tarball name.
+    """
+    fetch_tree(
         conn,
-        ["bash", "-c", f"tar -czf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_install_dir)} ."],
-        what="Remote install tar",
+        remote_dir=remote_install_dir,
+        local_dir=local_install_dir,
+        tar_dir=tar_dir,
+        tarball_suffix="install",
+        dryrun=dryrun,
     )
-    Path(tar_dir).mkdir(parents=True, exist_ok=True)
-    conn.getfile(remote_tgz, local_tgz)
-    Path(local_install_dir).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_install_dir)], check=True)

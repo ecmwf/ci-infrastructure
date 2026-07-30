@@ -163,3 +163,60 @@ The submit-then-poll path leaves per-artifact `staging/`, `src/`, `install/` and
   on the login-node runner, sweeping per-artifact trees older than `N` days. Run
   it via `workflow_dispatch` with `dryrun: true` first to see what it would
   remove.
+
+## Moving extra directories between the runner and the cluster
+
+The build flow already brackets a job with two tree transfers over troika's
+connection. The same transfer is also available standalone, for any workflow that
+needs to move a directory in or out of the cluster outside a build — e.g. pulling
+a job's reference/artifact directory back for a later processing step, or staging
+inputs onto shared scratch before a job reads them. Both directions are a plain
+login-node copy: **no scheduler and no S3**, so they work against `direct` sites
+too.
+
+- **`fetch-tree`** — cluster → runner. Tars `--remote-dir` on the cluster, brings
+  the single tarball back and unpacks it into `--local-dir` on the runner. Writes
+  the runner-local directory as the `local-dir` output.
+- **`push-tree`** — runner → cluster. Tars `--local-dir` on the runner, ships it up
+  and unpacks it into `--remote-dir` on the cluster. Writes the resolved cluster
+  directory as the `remote-dir` output.
+
+Two rules for the remote directory:
+
+- it must live on a filesystem the login node can reach (shared scratch — the same
+  Lustre `$SCRATCH` the login-node runner and the compute nodes all see);
+- `--remote-dir` is expanded **on the cluster**, so quote a `$SCRATCH/…` spec to
+  keep the runner's shell from expanding it first (same rule as `--remote-work-dir`
+  — see *Why the work dir is expanded on the cluster, not on the runner*).
+
+As composite actions (post-step to pull a job's output back to the runner):
+
+```yaml
+- uses: ecmwf/ci-infrastructure/actions/fetch-hpc-tree@main
+  with:
+    site: hpc-batch            # same troika site the job used (or lumi)
+    troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+    remote-dir: ${{ env.OUTPUT_DIR }}/ectrans-reference-artifact
+    local-dir: ./ectrans-reference-artifact
+```
+
+```yaml
+- uses: ecmwf/ci-infrastructure/actions/push-hpc-tree@main
+  with:
+    site: hpc-batch
+    troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+    local-dir: ./inputs
+    remote-dir: ${{ env.OUTPUT_DIR }}/inputs
+```
+
+Or directly, e.g. on the login-node runner:
+
+```bash
+python -m ci_infrastructure.hpc fetch-tree --site hpc-batch \
+  --remote-dir "$OUTPUT_DIR/ectrans-reference-artifact" \
+  --local-dir ./ref --tar-dir "$RUNNER_TEMP/hpc-tars"
+```
+
+`.github/workflows/hpc-transfer-e2e.yml` exercises both commands and both actions
+on every push against the `local-direct` site (a real tar → transfer → untar
+round-trip with no cluster).
