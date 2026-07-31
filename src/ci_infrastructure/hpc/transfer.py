@@ -238,6 +238,25 @@ def push_tree(
     )
 
 
+def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> None:
+    """Remove a directory (and any leftover transfer tarballs) on the cluster.
+
+    The reclaim companion to :func:`push_tree` / :func:`fetch_tree`: a single
+    ``rm -rf`` of ``remote_dir`` plus its sibling ``<remote_dir>.push.tgz`` /
+    ``<remote_dir>.fetch.tgz`` transfer tarballs (harmless no-ops when absent). Like
+    the transfers it needs no scheduler. The caller is responsible for guarding
+    against a top-level ``remote_dir`` before calling.
+    """
+    if dryrun:
+        return
+    base = remote_dir.rstrip("/")
+    _run_remote(
+        conn,
+        ["rm", "-rf", base, f"{base}.push.tgz", f"{base}.fetch.tgz"],
+        what=f"Remote remove of {remote_dir}",
+    )
+
+
 def fetch_install(
     conn: Connection,
     *,

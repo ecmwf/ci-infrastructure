@@ -313,6 +313,18 @@ def test_push_tree_dryrun_does_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / "stage").exists()  # no local tarball either
 
 
+def test_remove_tree_rms_dir_and_transfer_tarballs(tmp_path: Path) -> None:
+    conn = FakeConnection()
+    transfer.remove_tree(conn, remote_dir="/remote/out/art")
+    assert conn.executed == [["rm", "-rf", "/remote/out/art", "/remote/out/art.push.tgz", "/remote/out/art.fetch.tgz"]]
+
+
+def test_remove_tree_dryrun_does_nothing() -> None:
+    conn = FakeConnection()
+    transfer.remove_tree(conn, remote_dir="/remote/out/art", dryrun=True)
+    assert conn.executed == []
+
+
 def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     """push_tree stages a tree on the 'cluster'; fetch_tree brings it back intact."""
     src = _make_tree(tmp_path / "inputs", "hello.txt", "content-xyz")

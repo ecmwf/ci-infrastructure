@@ -149,25 +149,12 @@ jobs:
           diff -r "$RUNNER_TEMP/hpc-e2e/src" "$RUNNER_TEMP/hpc-e2e/back"
           echo "HPC round-trip OK"
 
+      # Dogfood remove-hpc-tree exactly as a consumer would: last step, no `if:`,
+      # so it runs only when the round-trip above succeeded and leaves the tree on
+      # scratch for debugging if anything failed.
       - name: Remove the cluster scratch dir
-        if: always()
-        shell: bash
-        env:
-          TROIKA_USER: ${{ secrets.HPC_CI_SSH_USER }}
-          REMOTE_DIR: ${{ steps.push.outputs.remote-dir }}
-        run: |
-          set -euo pipefail
-          case "${REMOTE_DIR:-}" in
-            /*) ;;  # only proceed for an absolute path the push step resolved
-            *) echo "nothing to clean (push did not resolve a remote dir)"; exit 0 ;;
-          esac
-          [ -n "${CI_INFRASTRUCTURE_PYTHON:-}" ] || exit 0
-          # Every python line sits at this block's indent so the YAML block scalar
-          # keeps them; after the indent is stripped they are column-0 statements
-          # (a one-line comprehension, so there is no indented loop body to break it).
-          "$CI_INFRASTRUCTURE_PYTHON" -c 'import os, subprocess
-          from ci_infrastructure.hpc.site import load_site
-          conn = load_site("hpc-batch", user=(os.environ.get("TROIKA_USER") or None))._connection
-          base = os.environ["REMOTE_DIR"]
-          [conn.execute(["rm", "-rf", p], stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate() for p in (base, base + ".push.tgz", base + ".fetch.tgz")]
-          print("cleaned", base)'
+        uses: ./actions/remove-hpc-tree
+        with:
+          site: hpc-batch
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          remote-dir: ${{ steps.push.outputs.remote-dir }}

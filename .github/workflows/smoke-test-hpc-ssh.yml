@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Smoke test HPC ssh
+
+# One-shot smoke test: proves a job running the private internal-tools image can
+# ssh to HPC using the ssh keys, ~/.ssh/config host aliases and known_hosts baked
+# into that image, so the private image can replace the self-hosted HPC
+# login-node runners. Run it manually from the Actions tab.
+#
+# Requires:
+#   - the pull-only eccr robot secrets (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN);
+#     pulling the private image exercises the robot's private-project access.
+#   - secrets.HPC_CI_SSH_USER: the HPC login user. It must match one of the
+#     baked config's `Match originalhost hpc-* user <...>` blocks (e.g. deploy,
+#     ci01, rdci) so the corresponding baked identity is selected.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Scale set to run the ssh check from
+        default: arc-runner-normal
+        required: false
+
+jobs:
+  ssh:
+    name: ssh to HPC
+    runs-on: ${{ inputs.runner }}
+    container:
+      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    steps:
+      - name: SSH to HPC
+        shell: bash
+        env:
+          HPC_CI_SSH_USER: ${{ secrets.HPC_CI_SSH_USER }}
+        run: |
+          set -euo pipefail
+          : "${HPC_CI_SSH_USER:?set the HPC_CI_SSH_USER secret to the HPC login user}"
+          # hpc-batch is the alias baked into the image's ~/.ssh/config and
+          # known_hosts. BatchMode fails instead of prompting; the baked
+          # known_hosts is what lets host-key checking pass for hpc-batch.
+          ssh -o BatchMode=yes -o ConnectTimeout=20 \
+            "${HPC_CI_SSH_USER}@hpc-batch" \
+            'echo "connected to $(hostname) as $(whoami)"'

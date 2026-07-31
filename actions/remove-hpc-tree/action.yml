@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Remove HPC tree
+description: >
+  Remove a directory a job left on the cluster, over troika's own connection (no
+  scheduler, no S3). The reclaim companion to push-hpc-tree / fetch-hpc-tree: it
+  rm -rf's the directory and its sibling .push.tgz / .fetch.tgz transfer tarballs.
+
+  Add it as the LAST step of the job and do NOT give it "if: always()". A step
+  with no if runs only when every prior step succeeded, so on a failure this step
+  is skipped and the trees stay on scratch for debugging (the nightly GC reclaims
+  them later). Adding "if: always()" would wipe them on failure too, defeating
+  that. The remote directory is expanded on the cluster, so pass a $SCRATCH spec
+  quoted so this runner does not expand it first. It refuses to remove a
+  top-level path.
+
+inputs:
+  site:
+    description: 'Troika site name (see troika-config.yml), e.g. hpc-batch or lumi'
+    required: true
+  remote-dir:
+    description: 'Directory on the cluster to remove (may name cluster variables like $SCRATCH)'
+    required: true
+  troika-config:
+    description: 'Path to a troika config. Empty uses the one packaged with ci-infrastructure.'
+    required: false
+    default: ''
+  troika-user:
+    description: 'Remote/scheduler user for troika. Empty leaves troika to resolve it.'
+    required: false
+    default: ''
+  dryrun:
+    description: 'Resolve the remote path but remove nothing. Set to any non-empty value to enable.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Remove the tree from the cluster
+      shell: bash
+      env:
+        SITE: ${{ inputs.site }}
+        REMOTE_DIR: ${{ inputs.remote-dir }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+        DRYRUN: ${{ inputs.dryrun }}
+      run: |
+        set -euo pipefail
+        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
+          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
+          exit 1
+        fi
+        # REMOTE_DIR is passed verbatim: a spec like '$SCRATCH/out' must be
+        # expanded on the cluster, not by this shell.
+        args=(
+          --site "$SITE"
+          --remote-dir "$REMOTE_DIR"
+        )
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        if [ -n "$DRYRUN" ]; then args+=(--dryrun); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc remove-tree "${args[@]}"

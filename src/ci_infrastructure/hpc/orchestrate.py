@@ -801,5 +801,42 @@ def push_tree_cmd(
     print(f"push-tree: pushed {local_dir} -> {resolved}")
 
 
+@main.command(
+    "remove-tree",
+    help="Remove a directory a job left on the cluster (call on success to reclaim scratch).",
+)
+@click.option("--site", "site_name", required=True, help="Troika site name")
+@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
+@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@click.option(
+    "--remote-dir",
+    "remote_dir",
+    required=True,
+    help="Directory on the cluster to remove. May name cluster variables (e.g. '$SCRATCH/out'); "
+    "expanded on the cluster, not on the runner.",
+)
+@click.option("--dryrun", is_flag=True, default=False, help="Resolve the remote path but remove nothing")
+def remove_tree_cmd(
+    site_name: str,
+    troika_config: str | None,
+    troika_user: str | None,
+    remote_dir: str,
+    dryrun: bool,
+) -> None:
+    site = load_site(site_name, config_path=troika_config, user=troika_user)
+    resolved = resolve_remote_path(site._connection, remote_dir)
+    # Guard against wiping a top-level path (a bare '$SCRATCH', '/', '/tmp'): require
+    # the resolved dir to sit at least two levels below root.
+    if resolved.strip("/").count("/") < 1:
+        raise CIError(f"remove-tree: refusing to remove a top-level path: {resolved!r}")
+    if resolved != remote_dir:
+        print(f"remove-tree: remote dir {remote_dir!r} -> {resolved}")
+    transfer.remove_tree(site._connection, remote_dir=resolved, dryrun=dryrun)
+    if dryrun:
+        print(f"remove-tree: dry run; would remove {resolved}")
+        return
+    print(f"remove-tree: removed {resolved}")
+
+
 if __name__ == "__main__":
     main()

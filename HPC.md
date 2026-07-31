@@ -180,6 +180,10 @@ too.
 - **`push-tree`** — runner → cluster. Tars `--local-dir` on the runner, ships it up
   and unpacks it into `--remote-dir` on the cluster. Writes the resolved cluster
   directory as the `remote-dir` output.
+- **`remove-tree`** — reclaim. `rm -rf`s `--remote-dir` on the cluster (and its
+  sibling `.push.tgz` / `.fetch.tgz` transfer tarballs). Call it on success to
+  return scratch a job's output dir once you no longer need it; it refuses to
+  remove a top-level path.
 
 Two rules for the remote directory:
 
@@ -207,6 +211,21 @@ As composite actions (post-step to pull a job's output back to the runner):
     troika-user: ${{ secrets.HPC_CI_SSH_USER }}
     local-dir: ./inputs
     remote-dir: ${{ env.OUTPUT_DIR }}/inputs
+```
+
+To reclaim scratch on success, add `remove-hpc-tree` as the **last** step and give
+it **no** `if:`. A step with no `if:` runs only when every prior step succeeded, so
+a failed job skips it and its trees stay on scratch for debugging (the nightly GC
+sweeps them up later). Do **not** add `if: always()` — that would wipe the trees on
+failure too.
+
+```yaml
+# last step of the job; no `if:` -> runs only if everything went green
+- uses: ecmwf/ci-infrastructure/actions/remove-hpc-tree@main
+  with:
+    site: hpc-batch
+    troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+    remote-dir: ${{ env.OUTPUT_DIR }}/ectrans-reference-artifact
 ```
 
 Or directly, e.g. on the login-node runner:

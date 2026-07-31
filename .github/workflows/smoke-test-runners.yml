@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Smoke test runners
+
+# One-shot smoke test: proves a job can be scheduled on each ARC scale set
+# (arc-runner-normal / -large / -very-large) running the public base image, so
+# the downstream CI can be repointed at them with confidence. Run it manually
+# from the Actions tab. Requires the pull-only eccr robot secrets
+# (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN).
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    strategy:
+      # Report every scale set; one failing leg must not mask the others.
+      fail-fast: false
+      matrix:
+        runner: [arc-runner-normal, arc-runner-large, arc-runner-very-large]
+    name: smoke (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: eccr.ecmwf.int/public-playground-ci/ubuntu24.04-base:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    steps:
+      - name: Report runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::identity"
+          hostname
+          id
+          echo "::endgroup::"
+          echo "::group::sizing"
+          echo "nproc: $(nproc)"
+          free -h 2>/dev/null || grep -E 'Mem|Swap' /proc/meminfo || true
+          uname -a
+          echo "::endgroup::"
+
+      - name: Verify baked toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${CI_INFRASTRUCTURE_PYTHON:?the base image should set CI_INFRASTRUCTURE_PYTHON}"
+          "$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure; print("ok")'

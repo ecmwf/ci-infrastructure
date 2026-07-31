@@ -884,5 +884,43 @@ def test_push_tree_dryrun_forwards_flag_and_writes_no_output(monkeypatch: pytest
     assert not out_file.exists()
 
 
+def test_remove_tree_forwards_resolved_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "remove_tree", lambda _conn, **kw: captured.update(kw))
+
+    result = CliRunner().invoke(
+        orch.remove_tree_cmd,
+        ["--site", "hpc-batch", "--remote-dir", "/scratch/ci/out"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {"remote_dir": "/scratch/ci/out", "dryrun": False}
+
+
+def test_remove_tree_dryrun_forwards_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_site_and_resolver(monkeypatch)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(transfer, "remove_tree", lambda _conn, **kw: captured.update(kw))
+
+    result = CliRunner().invoke(
+        orch.remove_tree_cmd,
+        ["--site", "hpc-batch", "--remote-dir", "/scratch/ci/out", "--dryrun"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["dryrun"] is True
+
+
+def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard must stop a bare '$SCRATCH'/'/tmp' from wiping a whole tree."""
+    _stub_site_and_resolver(monkeypatch)
+    called = {"n": 0}
+    monkeypatch.setattr(transfer, "remove_tree", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    result = CliRunner().invoke(orch.remove_tree_cmd, ["--site", "hpc-batch", "--remote-dir", "/tmp"])
+    # CIError is a click.ClickException, so click exits non-zero at the boundary.
+    assert result.exit_code != 0
+    assert called["n"] == 0  # crucially, nothing was removed
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
