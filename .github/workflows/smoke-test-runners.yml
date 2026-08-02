@@ -23,9 +23,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: eccr.ecmwf.int/public-playground-ci/ubuntu24.04-base:latest
-      credentials:
-        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
-        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+      # credentials:
+      #   username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+      #   password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - name: Report runner facts
         shell: bash
