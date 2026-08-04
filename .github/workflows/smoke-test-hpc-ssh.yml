@@ -13,8 +13,8 @@ name: Smoke test HPC ssh
 #   - the pull-only eccr robot secrets (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN);
 #     pulling the private image exercises the robot's private-project access.
 #   - secrets.HPC_CI_SSH_USER: the HPC login user. It must match one of the
-#     baked config's `Match originalhost hpc-* user <...>` blocks (e.g. deploy,
-#     ci01, rdci) so the corresponding baked identity is selected.
+#     baked config's `Match originalhost hpc-* user <...>` blocks so the
+#     corresponding baked identity is selected.
 on:
   workflow_dispatch:
     inputs:
@@ -45,4 +45,4 @@ jobs:
           # known_hosts is what lets host-key checking pass for hpc-batch.
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "${HPC_CI_SSH_USER}@hpc-batch" \
-            'echo "connected to $(hostname) as $(whoami)"'
+            'echo "connected to HPC"'
