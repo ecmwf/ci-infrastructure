@@ -1435,8 +1435,8 @@ def test_workflow_uses_pick_ref(tmp_path: Path) -> None:
     assert "contains(fromJSON(inputs.from-jobs)," in yaml
     # App-token plumbing wired into the resolve step so resolve-deps can dispatch
     # producer rebuilds for stale upstream artifacts.
-    assert "client-id: ${{ secrets.DOWNSTREAM_CI_APP_CLIENT_ID }}" in yaml
-    assert "app-private-key: ${{ secrets.DOWNSTREAM_CI_APP_PRIVATE_KEY }}" in yaml
+    assert "client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}" in yaml
+    assert "app-private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}" in yaml
 
 
 def test_orchestrator_basic(tmp_path: Path) -> None:

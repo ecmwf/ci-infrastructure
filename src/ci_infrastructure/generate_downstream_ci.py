@@ -1181,8 +1181,8 @@ def _mint_step() -> Step:
         "id": "mint",
         "uses": "actions/create-github-app-token@v3",
         "with": {
-            "client-id": "${{ secrets.DOWNSTREAM_CI_APP_CLIENT_ID }}",
-            "private-key": "${{ secrets.DOWNSTREAM_CI_APP_PRIVATE_KEY }}",
+            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+            "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
             "owner": "${{ github.repository_owner }}",
         },
     }
@@ -1236,8 +1236,8 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                     # App credentials enable consumer-driven recovery: if any transitive
                     # dep's artifact is missing on a normal ref, resolve-deps dispatches
                     # that producer's cross-repo-trigger.yml and waits.
-                    "client-id": "${{ secrets.DOWNSTREAM_CI_APP_CLIENT_ID }}",
-                    "app-private-key": "${{ secrets.DOWNSTREAM_CI_APP_PRIVATE_KEY }}",
+                    "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+                    "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
                 },
             },
         ],
