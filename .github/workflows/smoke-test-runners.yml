@@ -9,6 +9,23 @@ name: Smoke test runners
 # the downstream CI can be repointed at them with confidence. Run it manually
 # from the Actions tab. Requires the pull-only eccr robot secrets
 # (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN).
+#
+# It also probes the object store from each scale set, because artifact
+# publish/fetch and sccache both depend on egress plus a credential that is
+# valid for that particular store. Those come from secrets, never from
+# defaults, so a wrong endpoint or a key issued against another store fails
+# here instead of halfway through a downstream build:
+#
+#   ARTIFACT_S3_ENDPOINT   object store URL, shared by artifacts and sccache
+#   AWS_ACCESS_KEY_ID      credential valid for THAT endpoint
+#   AWS_SECRET_ACCESS_KEY
+#   ARTIFACT_S3_BUCKET     artifact bucket, probed when set
+#   SCCACHE_BUCKET         sccache bucket, probed when set
+#   ARTIFACT_S3_REGION     optional, defaults to RegionOne
+#
+# At least one of the two buckets must be set. The names match the variables
+# s3_store reads, so the env block below is a straight passthrough and the same
+# names work when running scripts/probe_object_store.py by hand.
 on:
   workflow_dispatch:
 
@@ -47,3 +64,21 @@ jobs:
           set -euo pipefail
           : "${CI_INFRASTRUCTURE_PYTHON:?the base image should set CI_INFRASTRUCTURE_PYTHON}"
           "$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure; print("ok")'
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Probe object store access
+        shell: bash
+        env:
+          # The artifact store and sccache share one endpoint and one credential
+          # pair, differing only in bucket. The names match what s3_store reads,
+          # so this block is a passthrough and the same names work by hand.
+          ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
+          ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
+          ARTIFACT_S3_BUCKET: ${{ secrets.ARTIFACT_S3_BUCKET }}
+          SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
