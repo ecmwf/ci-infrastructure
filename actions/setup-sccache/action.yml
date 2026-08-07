@@ -7,18 +7,27 @@ description: >
   Installs sccache and configures one of three storage backends:
 
     - s3 (default): S3-compatible bucket. The caller supplies the bucket and
-      endpoint (e.g. from repo/org variables) plus AWS credentials in the job
-      environment (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or a runner IAM
-      role), along with cache-key-suffix.
+      endpoint plus AWS credentials in the job environment (AWS_ACCESS_KEY_ID /
+      AWS_SECRET_ACCESS_KEY, or a runner IAM role), along with cache-key-suffix.
     - gha: GitHub Actions cache. Works on hosted and self-hosted runners that
       can reach GitHub's cache service.
     - redis: shared Redis instance (env var SCCACHE_REDIS=<url>). Recommended
       on self-hosted runner pools where a co-located Redis is faster and
       survives runner restarts.
 
-  The S3 bucket and endpoint have no built-in default and must be passed in
-  (region defaults to RegionOne, SSL to on); provide them per-call, e.g. from
-  repo/org variables.
+  The S3 bucket and endpoint have no built-in default. Each is taken from its
+  input, or failing that from the job environment, so a workflow-level env
+  block configures every call site at once instead of every build action
+  threading the same two values through:
+
+    s3-bucket    <- SCCACHE_BUCKET
+    s3-endpoint  <- SCCACHE_ENDPOINT, then ARTIFACT_S3_ENDPOINT
+    s3-region    <- ARTIFACT_S3_REGION, else RegionOne
+    s3-use-ssl   <- ARTIFACT_S3_USE_SSL, else true
+
+  The artifact store and sccache share one endpoint and one credential pair and
+  differ only in bucket, which is why the endpoint falls back to the artifact
+  variable but the bucket does not.
 
   Use the outputs as CMake compiler-launcher flags:
     -DCMAKE_C_COMPILER_LAUNCHER=sccache
@@ -46,21 +55,21 @@ inputs:
     required: false
     default: ''
   s3-bucket:
-    description: 'S3 bucket name (required when backend=s3). No default; pass it in, e.g. from a repo/org variable.'
+    description: 'S3 bucket name (backend=s3). Empty falls back to SCCACHE_BUCKET in the job environment.'
     required: false
     default: ''
   s3-region:
-    description: 'AWS region (used when backend=s3).'
+    description: 'AWS region (backend=s3). Empty falls back to ARTIFACT_S3_REGION, then RegionOne.'
     required: false
-    default: 'RegionOne'
+    default: ''
   s3-endpoint:
-    description: 'S3-compatible endpoint URL (required when backend=s3). No default; pass it in, e.g. from a repo/org variable.'
+    description: 'S3-compatible endpoint URL (backend=s3). Empty falls back to SCCACHE_ENDPOINT, then ARTIFACT_S3_ENDPOINT.'
     required: false
     default: ''
   s3-use-ssl:
-    description: 'Whether to use SSL for S3 connections (used when backend=s3).'
+    description: 'Whether to use SSL for S3 connections (backend=s3). Empty falls back to ARTIFACT_S3_USE_SSL, then true.'
     required: false
-    default: 'true'
+    default: ''
 
 outputs:
   cc-launcher:
@@ -105,15 +114,25 @@ runs:
             echo "SCCACHE_REDIS_KEY_PREFIX=sccache-${SUFFIX}" >> "$GITHUB_ENV"
             ;;
           s3)
-            if [ -z "$S3_BUCKET_INPUT" ] || [ -z "$S3_ENDPOINT_INPUT" ]; then
-              echo "::error::backend=s3 requires s3-bucket and s3-endpoint (there is no default; pass them in, e.g. from repo/org variables)"
+            # Input wins; otherwise inherit from the job environment. The
+            # endpoint accepts the artifact variable too, since both stores are
+            # the same one.
+            bucket="${S3_BUCKET_INPUT:-${SCCACHE_BUCKET:-}}"
+            endpoint="${S3_ENDPOINT_INPUT:-${SCCACHE_ENDPOINT:-${ARTIFACT_S3_ENDPOINT:-}}}"
+            region="${S3_REGION_INPUT:-${ARTIFACT_S3_REGION:-RegionOne}}"
+            use_ssl="${S3_USE_SSL_INPUT:-${ARTIFACT_S3_USE_SSL:-true}}"
+            if [ -z "$bucket" ] || [ -z "$endpoint" ]; then
+              echo "::error::backend=s3 needs a bucket and an endpoint: pass s3-bucket/s3-endpoint, or set SCCACHE_BUCKET and SCCACHE_ENDPOINT (or ARTIFACT_S3_ENDPOINT) in the job environment"
               exit 1
             fi
-            echo "SCCACHE_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"
-            echo "SCCACHE_S3_KEY_PREFIX=sccache-${SUFFIX}" >> "$GITHUB_ENV"
-            [ -n "$S3_REGION_INPUT" ] && echo "AWS_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"
-            [ -n "$S3_ENDPOINT_INPUT" ] && echo "SCCACHE_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"
-            [ -n "$S3_USE_SSL_INPUT" ] && echo "SCCACHE_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"
+            echo "sccache bucket resolved (endpoint and bucket not echoed: they may be secrets)"
+            {
+              echo "SCCACHE_BUCKET=$bucket"
+              echo "SCCACHE_ENDPOINT=$endpoint"
+              echo "AWS_REGION=$region"
+              echo "SCCACHE_S3_USE_SSL=$use_ssl"
+              echo "SCCACHE_S3_KEY_PREFIX=sccache-${SUFFIX}"
+            } >> "$GITHUB_ENV"
             ;;
           *)
             echo "::error::Unknown backend '$backend' (expected s3, gha, or redis)"
