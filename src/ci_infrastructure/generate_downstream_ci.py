@@ -1055,11 +1055,14 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
             "group": f"cross-repo-trigger-{lane}-{m.package_name}-" + "${{ github.ref }}",
             "cancel-in-progress": False,
         },
-        # AWS creds (same secrets sccache uses) flow to every job so resolve's
-        # S3 existence checks and each kind's fetch/publish reach the artifact
-        # store. Workflow-level so we never miss a job as kinds are added.
+        # The object-store location and the AWS creds (same secrets sccache uses)
+        # flow to every job so resolve's S3 existence checks and each kind's
+        # fetch/publish reach the artifact store. Workflow-level so we never miss
+        # a job as kinds are added.
         "env": {
             "ARTIFACT_POLL_INTERVAL": "${{ vars.ARTIFACT_POLL_INTERVAL || '60' }}",
+            "ARTIFACT_S3_ENDPOINT": "${{ secrets.ARTIFACT_S3_ENDPOINT }}",
+            "ARTIFACT_S3_BUCKET": "${{ secrets.ARTIFACT_S3_BUCKET }}",
             "AWS_ACCESS_KEY_ID": "${{ secrets.AWS_ACCESS_KEY_ID }}",
             "AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
         },
