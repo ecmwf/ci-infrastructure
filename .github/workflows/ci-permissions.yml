@@ -12,4 +12,4 @@ jobs:
   always_succeed:
     runs-on: ubuntu-slim
     steps:
-      - run: "true"
+      - run: "sleep 1 && true"

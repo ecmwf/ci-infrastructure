@@ -187,7 +187,11 @@ _WorkflowDumper.yaml_implicit_resolvers = {
     k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
     for k, v in yaml.SafeDumper.yaml_implicit_resolvers.items()
 }
-_WorkflowDumper.add_implicit_resolver(  # type: ignore[no-untyped-call]
+# Both codes are listed on purpose. types-PyYAML used to leave this call
+# untyped (needing no-untyped-call) and now types it (making that ignore
+# unused, which strict mode reports as an error). Naming unused-ignore as well
+# means neither version of the stubs fails the build, since mypy is not pinned.
+_WorkflowDumper.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
     "tag:yaml.org,2002:bool",
     re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
     list("tTfF"),
