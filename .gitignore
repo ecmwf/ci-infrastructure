@@ -7,3 +7,5 @@ __pycache__/
 ci_infrastructure.egg-info
 build/
 .reuse
+
+uv.lock
