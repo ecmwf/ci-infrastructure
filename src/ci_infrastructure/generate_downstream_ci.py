@@ -1055,14 +1055,23 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
             "group": f"cross-repo-trigger-{lane}-{m.package_name}-" + "${{ github.ref }}",
             "cancel-in-progress": False,
         },
-        # The object-store location and the AWS creds (same secrets sccache uses)
-        # flow to every job so resolve's S3 existence checks and each kind's
-        # fetch/publish reach the artifact store. Workflow-level so we never miss
-        # a job as kinds are added.
+        # The object-store location and the AWS creds (one credential pair, used
+        # by both the artifact store and sccache) flow to every job so resolve's
+        # S3 existence checks and each kind's fetch/publish reach the artifact
+        # store. Workflow-level so we never miss a job as kinds are added.
+        #
+        # SCCACHE_BUCKET rides along because setup-sccache takes its bucket from
+        # the job environment and has no fallback for it -- deliberately, since
+        # artifacts and sccache are orthogonal uses in SEPARATE buckets and one
+        # must never silently borrow the other's. Without it here, any downstream
+        # build calling setup-sccache with backend=s3 fails outright. The
+        # endpoint needs no entry: the action falls back to the artifact one,
+        # because that half really is shared.
         "env": {
             "ARTIFACT_POLL_INTERVAL": "${{ vars.ARTIFACT_POLL_INTERVAL || '60' }}",
             "ARTIFACT_S3_ENDPOINT": "${{ secrets.ARTIFACT_S3_ENDPOINT }}",
             "ARTIFACT_S3_BUCKET": "${{ secrets.ARTIFACT_S3_BUCKET }}",
+            "SCCACHE_BUCKET": "${{ secrets.SCCACHE_BUCKET }}",
             "AWS_ACCESS_KEY_ID": "${{ secrets.AWS_ACCESS_KEY_ID }}",
             "AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
         },

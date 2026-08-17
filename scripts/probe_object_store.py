@@ -11,8 +11,8 @@ Round-trip an object through every configured bucket, so a bad endpoint or a
 credential issued against the wrong store fails in the smoke test rather than
 halfway through a downstream publish.
 
-Configuration comes from the environment under the same names s3_store reads,
-so whatever works here is what belongs in the secrets:
+Configuration comes from the environment, so whatever works here is what
+belongs in the secrets:
 
     ARTIFACT_S3_ENDPOINT   required: object store URL
     ARTIFACT_S3_BUCKET     artifact bucket, probed when set
@@ -20,6 +20,13 @@ so whatever works here is what belongs in the secrets:
     ARTIFACT_S3_REGION     default: RegionOne
     AWS_ACCESS_KEY_ID      required, read by boto3 itself
     AWS_SECRET_ACCESS_KEY
+
+All but SCCACHE_BUCKET are names s3_store itself reads; that one belongs to
+sccache, which this script only borrows in order to reach its bucket.
+
+The two buckets are separate on purpose -- artifacts and sccache are orthogonal
+uses that happen to share one store -- so the fingerprints printed below should
+differ. Two identical fingerprints mean one bucket is doing both jobs.
 
 At least one bucket must be set. Exits non-zero if any of them fails.
 

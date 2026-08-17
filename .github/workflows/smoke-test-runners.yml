@@ -23,9 +23,17 @@ name: Smoke test runners
 #   SCCACHE_BUCKET         sccache bucket, probed when set
 #   ARTIFACT_S3_REGION     optional, defaults to RegionOne
 #
-# At least one of the two buckets must be set. The names match the variables
-# s3_store reads, so the env block below is a straight passthrough and the same
-# names work when running scripts/probe_object_store.py by hand.
+# At least one of the two buckets must be set, and the two must name DIFFERENT
+# buckets: artifacts and sccache are orthogonal uses that merely share a store,
+# and the probe prints a fingerprint per bucket so a shared value is visible at
+# a glance. All but SCCACHE_BUCKET are names s3_store itself reads, so the env
+# block below is a straight passthrough and the same names work when running
+# scripts/probe_object_store.py by hand.
+#
+# The second job compiles a small C++ project through sccache and proves the
+# result came back from the bucket rather than from a local cache. Its logic
+# lives in scripts/probe_sccache.py, not in this file, so it can be run by hand
+# the same way -- which is how the object-store probe's own bug was found.
 on:
   workflow_dispatch:
 
@@ -82,3 +90,71 @@ jobs:
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
+
+  # A separate job because `container:` is per-job: the compile needs the
+  # toolchain image, while the probe above deliberately runs on the plain base
+  # image. Same scale-set matrix, so an sccache problem is attributed to the
+  # scale set it appears on.
+  sccache:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [arc-runner-normal, arc-runner-large, arc-runner-very-large]
+    name: sccache (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: eccr.ecmwf.int/public-playground-ci/ubuntu24.04-clang18-gfortran13:latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Verify baked toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${CI_INFRASTRUCTURE_PYTHON:?the toolchain image should set CI_INFRASTRUCTURE_PYTHON}"
+          "$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure; print("ok")'
+          # Named explicitly rather than discovered: this image exists to carry
+          # this compiler, and its absence is a finding about the image.
+          command -v clang++-18 >/dev/null || { echo "::error::clang++-18 missing from the toolchain image"; exit 1; }
+          command -v cmake >/dev/null || { echo "::error::cmake missing from the toolchain image"; exit 1; }
+
+      # Configures sccache the way downstream builds are told to, so this job
+      # exercises the action itself -- which until now had no caller anywhere
+      # and was therefore entirely unverified.
+      - uses: ./actions/setup-sccache
+        with:
+          cache-key-suffix: smoke-${{ matrix.runner }}
+        env:
+          SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
+          ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
+          ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
+          ARTIFACT_S3_USE_SSL: ${{ secrets.ARTIFACT_S3_USE_SSL }}
+
+      - name: Prove sccache is served by the object store
+        shell: bash
+        env:
+          # boto3's half of the probe: it lists the bucket independently of
+          # sccache, over a different TLS trust path, to confirm which bucket
+          # the objects actually landed in.
+          ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
+          ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CXX: clang++-18
+          # The daemon downgrades a failed read to a plain cache miss with only
+          # a warning, so without this log a broken bucket looks like a cold one.
+          SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-server.log
+          # info, not debug: sccache logs the bucket and endpoint at debug.
+          SCCACHE_LOG: info
+        run: |
+          set -euo pipefail
+          # --use-ambient-config: take the SCCACHE_* variables exactly as
+          # setup-sccache left them, so the action's own output is what is under
+          # test. Run without that flag to have the script derive them itself,
+          # which is what makes a local run a single command.
+          "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_sccache.py --use-ambient-config
+
+      - name: sccache daemon log
+        if: failure()
+        shell: bash
+        run: cat "${{ runner.temp }}/sccache-server.log" || true

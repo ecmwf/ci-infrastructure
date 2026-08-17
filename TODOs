@@ -31,3 +31,32 @@ HPC:
 
 
 - declare version for troika and pin to it
+
+- pin the sccache version in actions/setup-sccache: the install action resolves
+  "latest" from the GitHub API when no version is given, so the toolchain drifts
+  under us and the S3 config surface has changed between releases.
+
+
+Vault (investigated, not started):
+
+- hashicorp/vault-action with method=kubernetes fits ARC: the runner pod already
+  carries a projected service account token, so no static Vault token and no
+  dependency on reaching GitHub's OIDC endpoint from inside the cluster.
+  method=jwt + GitHub OIDC (permissions: id-token: write) is the fallback if
+  that token turns out not to be projected into the *job* container, which is
+  the first thing to check -- ARC's k8s mode runs steps in a separate pod.
+
+- cheap because everything downstream (s3_store, setup-sccache, both probes)
+  reads plain env vars, and vault-action exports masked env vars. Only the entry
+  point moves, not the consumers.
+
+- two caveats: workflow-level `env:` cannot reference step outputs, so each job
+  needs a Vault step first rather than one env block; and generate_downstream_ci
+  is the bulk of the work, since turning its single workflow-level env block
+  into a per-job Vault step changes the shape of every downstream repo's
+  generated workflow.
+
+- if Vault's certificate chains to the same root as the object store, the image
+  trust store must carry it or vault-action needs caCertificate -- same class of
+  problem as sccache's, and the root is already vendored in
+  src/ci_infrastructure/certs/.

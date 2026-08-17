@@ -22,12 +22,30 @@ description: >
 
     s3-bucket    <- SCCACHE_BUCKET
     s3-endpoint  <- SCCACHE_ENDPOINT, then ARTIFACT_S3_ENDPOINT
-    s3-region    <- ARTIFACT_S3_REGION, else RegionOne
+    s3-region    <- SCCACHE_REGION, then ARTIFACT_S3_REGION, else RegionOne
     s3-use-ssl   <- ARTIFACT_S3_USE_SSL, else true
 
   The artifact store and sccache share one endpoint and one credential pair and
   differ only in bucket, which is why the endpoint falls back to the artifact
-  variable but the bucket does not.
+  variable but the bucket does not. They are otherwise orthogonal: artifacts
+  live in their own bucket, sccache in its own, and neither should ever be
+  pointed at the other's.
+
+  Two asymmetries with the artifact store are worth knowing, because both are
+  silent when they bite:
+
+    - TLS. s3_store pins trust to the object store's root, vendored with the
+      package, because some hosts' trust stores are too old to carry it.
+      sccache has no equivalent setting: its TLS stack reads SSL_CERT_FILE,
+      but setting that REPLACES the platform store rather than adding to it,
+      so it must be pointed at a superset bundle (system CAs plus that root),
+      never at the root alone. Left unset, sccache uses the platform store --
+      fine on the runner images, a real risk on older hosts.
+    - Failure mode. A bucket sccache cannot read makes the daemon refuse to
+      start, which is loud. But a bucket it can read and not write leaves it
+      running in read-only mode, and a read that fails mid-run is reported as
+      an ordinary cache miss. Neither fails a build; both just quietly cost
+      every compile its cache. scripts/probe_sccache.py exists to catch that.
 
   Use the outputs as CMake compiler-launcher flags:
     -DCMAKE_C_COMPILER_LAUNCHER=sccache
@@ -119,16 +137,30 @@ runs:
             # the same one.
             bucket="${S3_BUCKET_INPUT:-${SCCACHE_BUCKET:-}}"
             endpoint="${S3_ENDPOINT_INPUT:-${SCCACHE_ENDPOINT:-${ARTIFACT_S3_ENDPOINT:-}}}"
-            region="${S3_REGION_INPUT:-${ARTIFACT_S3_REGION:-RegionOne}}"
+            region="${S3_REGION_INPUT:-${SCCACHE_REGION:-${ARTIFACT_S3_REGION:-RegionOne}}}"
             use_ssl="${S3_USE_SSL_INPUT:-${ARTIFACT_S3_USE_SSL:-true}}"
             if [ -z "$bucket" ] || [ -z "$endpoint" ]; then
               echo "::error::backend=s3 needs a bucket and an endpoint: pass s3-bucket/s3-endpoint, or set SCCACHE_BUCKET and SCCACHE_ENDPOINT (or ARTIFACT_S3_ENDPOINT) in the job environment"
               exit 1
             fi
             echo "sccache bucket resolved (endpoint and bucket not echoed: they may be secrets)"
+            # sccache prints the bucket verbatim in the "Cache location" line of
+            # --show-stats, and the install action's post step copies that into
+            # the job log AND the job summary -- neither of which is ours to
+            # edit. Register the masks here, before any sccache runs.
+            echo "::add-mask::$bucket"
+            echo "::add-mask::$endpoint"
             {
               echo "SCCACHE_BUCKET=$bucket"
               echo "SCCACHE_ENDPOINT=$endpoint"
+              # SCCACHE_REGION is the name sccache actually reads; AWS_REGION
+              # reaches the backend only by accident, through the AWS config
+              # load that opendal performs underneath, and that path disappears
+              # the moment SCCACHE_S3_NO_CREDENTIALS is set -- at which point
+              # the region is missing and the daemon refuses to start. Both are
+              # written because other tools in the same job (aws-cli) want the
+              # AWS spelling.
+              echo "SCCACHE_REGION=$region"
               echo "AWS_REGION=$region"
               echo "SCCACHE_S3_USE_SSL=$use_ssl"
               echo "SCCACHE_S3_KEY_PREFIX=sccache-${SUFFIX}"
