@@ -8,10 +8,15 @@
 
 - improve output of ctest, perhaps there is an available action?
 
-- enforce issue template,
-    https://raw.githubusercontent.com/ecmwf/.github/refs/heads/main/.github/PULL_REQUEST_TEMPLATE.md
-
 - use ubuntu-slim where possible
+
+- adopt the zizmor pre-commit hook [SECURITY]. a48f078 took it from 14
+  template-injection findings to 0 but nothing keeps it there; the new
+  actionlint hook is next to where it belongs. Blocked on 78 pre-existing
+  findings: 40 github-env (setup-sccache, low confidence), 14 unpinned-uses
+  (the deliberate @main self-references -- needs a release tag first, see the
+  open-source audit), 13 excessive-permissions (no workflow here declares
+  permissions:), 7 artipacked, 3 unpinned-images, 1 github-app.
 
 - after troika is typed. drop the ignore missing imports
 

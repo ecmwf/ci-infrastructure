@@ -15,3 +15,13 @@ repos:
     hooks:
       - id: ruff-check
       - id: ruff-format
+
+  # Workflow YAML is otherwise unlinted here, and this repo's whole product is
+  # workflow YAML. Custom self-hosted runner labels are declared in
+  # .github/actionlint.yaml. (zizmor belongs next to this -- it is what caught the
+  # template-injection findings a48f078 fixed -- but it reports 78 pre-existing
+  # findings today, so adopting it needs its own pass. See TODOs.)
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint

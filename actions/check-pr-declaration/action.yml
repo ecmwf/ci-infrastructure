@@ -1,0 +1,243 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Check the PR Contributor Declaration
+description: >
+  Fail unless the pull request description ENDS with the ECMWF Contributor
+  Declaration -- the CLA affirmation plus the contributor checklist that closes
+  ecmwf/.github's PR template. The block is template text, so nothing stops a
+  contributor from deleting or rewording it while filling in the description;
+  this action is what notices. Deletion and rewording are equally forbidden, so
+  a mere "contains the CLA link" test would not do.
+
+  Comparison is verbatim, on normalized lines: CRLF and lone CR become LF, a
+  leading BOM is dropped, each line is right-stripped, and trailing blank lines
+  are discarded. Nothing else. Trailing whitespace is invisible in GitHub's
+  editor, so failing on it would produce a red check nobody can fix by looking,
+  and the org template itself ends with a space-only line. Leading whitespace is
+  NOT stripped: four spaces make a code block and indenting a bullet changes
+  list nesting, so an indented bullet is a real difference. Unicode is not
+  folded either -- this is a legal declaration, so an autocorrected curly
+  apostrophe has to fail. To keep that survivable the failure message names the
+  line, the column, and both codepoints.
+
+  Nothing may follow the block. A contributor who appends "Fixes #123" or a
+  screenshot gets a failure telling them to move it above the declaration. That
+  is a deliberate trade: it is the only rule that is cheap to state and
+  impossible to game by burying the declaration mid-description.
+
+  One extra rule guards a hole in a pure ends-with test: a description that is
+  an unclosed "<!--" followed by the verbatim block satisfies "ends with" while
+  GitHub renders the whole thing as an HTML comment, leaving a green check and
+  an invisible declaration. Unbalanced comment, <details> and <summary> openers
+  above the block are therefore rejected too. Balanced ones are fine, so a
+  legitimately collapsed log dump above the declaration still passes.
+
+  Bot-authored PRs are skipped, but only when the payload reports
+  user.type == "Bot" AND the login is in `exempt-authors`, so a human account
+  named "dependabot" is still checked. This is not cosmetic: dependabot's body
+  is machine-generated with no footer customisation and is rewritten on every
+  rebase, so a maintainer's manual fix does not survive, and 212 of the ~1000
+  open PRs in the ecmwf org are dependabot's. Without the exemption a required
+  check would permanently block every one of them.
+
+  NO PYTHON ENVIRONMENT IS BUILT. Unlike its siblings, this action does not call
+  ensure-infrastructure-present: that builds a venv and pip-installs pydantic,
+  boto3, click, PyYAML and troika-from-git, which would turn a text comparison
+  on arbitrary public runners into a network dependency with a much larger
+  failure surface than the thing it is checking. The checker is a stdlib-only
+  module run with whatever `python3` the runner already has. For the same reason
+  we deliberately do NOT drop a consumer's setup-python from PATH the way
+  ensure-infrastructure-present does -- stdlib-only code is happy on any
+  interpreter, so the simplest thing is also the correct one.
+
+  The description is read from the event payload by default, which needs no
+  token, no `permissions:` block, no `gh`, no `jq` and no network -- that is
+  what makes adoption across ~163 public repos realistic, and it keeps
+  attacker-controlled text out of every shell argument. The one cost is that
+  "Re-run failed jobs" replays the original payload, so the way to clear a
+  failure is to EDIT the description (which fires `edited` and produces a fresh
+  run on the same head SHA). Set `body-source: api` to read the live body
+  instead, which then needs `pull-requests: read`.
+
+  SECURITY. The description is attacker-controlled text arriving from anonymous
+  fork authors, and it flows into the job log, an annotation and the step
+  summary. The raw body is never echoed; at most one line appears, via repr(),
+  inside a single-line annotation with newlines escaped, so an embedded
+  "::stop-commands::" is never at the start of a line and stays inert; C0/C1
+  control characters are stripped so ANSI sequences cannot hide or fake log
+  output; summary excerpts are fenced with a backtick run longer than any in the
+  content and truncated; and the `verdict` output is a fixed enum value, never
+  body-derived text. Per this repo's convention (commit a48f078) no input is
+  interpolated into the script body -- everything arrives through `env:`.
+
+  KNOWN GAPS, both needing a merge-time check this action cannot provide:
+  a repo that enables a merge queue must extend this gate first, because a
+  pull_request_target workflow never runs on `merge_group` and queue entries
+  would wait for a check that never arrives; and a description edited with
+  GITHUB_TOKEN does not re-trigger workflows, so an earlier green result stands.
+  The prefix is also unconstrained -- text above the block can contradict it --
+  so this is a boilerplate-integrity check, not consent verification.
+
+inputs:
+  pr-number:
+    description: >
+      Pull request to check. Empty takes it from the event payload, which is
+      what you want on pull_request/pull_request_target; only set it when
+      driving the action from some other event.
+    required: false
+    default: ''
+  declaration-file:
+    description: >
+      Path, relative to the consumer checkout, of a file holding the declaration
+      to require. Everything from the file's last "### Contributor Declaration"
+      heading onwards is used, so this can point straight at the repo's own
+      .github/PULL_REQUEST_TEMPLATE.md with no duplicated block to keep in sync.
+      Empty uses the canonical text vendored in ci-infrastructure, which is the
+      point of the action -- reach for this only while a repo is still
+      converging on the org template.
+    required: false
+    default: ''
+  body-source:
+    description: >
+      Where to read the description: "event" (default) parses $GITHUB_EVENT_PATH
+      and needs no token or permissions; "api" reads the live body via gh and
+      needs pull-requests:read, at the benefit of being correct across job
+      re-runs. Empty means "event".
+    required: false
+    default: ''
+  exempt-authors:
+    description: >
+      Comma-separated bot logins to skip, honoured only when the payload also
+      reports user.type == "Bot". Empty means the built-in list (dependabot,
+      renovate, pre-commit-ci, release-please, github-actions, copilot).
+    required: false
+    default: ''
+  token:
+    description: 'Token with pull-requests:read, used only when body-source is "api". Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  verdict:
+    description: >
+      One of ok, bot-exempt, empty-body, heading-missing, not-at-end,
+      hidden-block, diverged.
+    value: ${{ steps.check.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        PR_NUMBER_INPUT: ${{ inputs.pr-number }}
+        EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        DECLARATION_FILE_INPUT: ${{ inputs.declaration-file }}
+        BODY_SOURCE_INPUT: ${{ inputs.body-source }}
+        EXEMPT_AUTHORS_INPUT: ${{ inputs.exempt-authors }}
+      run: |
+        set -euo pipefail
+
+        rel="src/ci_infrastructure/check_pr_declaration.py"
+
+        # github.action_path is a runner-host path, and ARC's Kubernetes
+        # container mode mounts the work tree elsewhere inside the job
+        # container, so it can be wrong there. Probe candidates and pick the
+        # first that actually holds the checker. Keying on the file rather than
+        # re-anchoring unconditionally is what makes `uses: ./actions/...` work
+        # too: a local reference has no /_actions/ segment to re-anchor, which
+        # is why ensure-infrastructure-present cannot be used that way.
+        cands=( "${GITHUB_ACTION_PATH:-}/../.." )
+        case "${GITHUB_ACTION_PATH:-}" in
+          */_actions/*)
+            if [ -n "${RUNNER_WORKSPACE:-}" ]; then
+              cands+=( "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." )
+            fi
+            ;;
+        esac
+        root=""
+        for cand in "${cands[@]}"; do
+          if [ -f "$cand/$rel" ]; then
+            root="$(cd "$cand" && pwd -P)"
+            break
+          fi
+        done
+        if [ -z "$root" ]; then
+          echo "::error title=Contributor Declaration::cannot locate $rel next to this action (probed: ${cands[*]}). This is a ci-infrastructure bug, not a problem with your pull request." >&2
+          exit 1
+        fi
+
+        # Any Python >= 3.8 will do: the checker imports stdlib only. We do not
+        # exclude a consumer's setup-python interpreter, unlike
+        # ensure-infrastructure-present, because there is nothing to install.
+        python=""
+        for cand in python3 python; do
+          if path="$(command -v "$cand" 2>/dev/null)"; then
+            if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'; then
+              python="$path"
+              break
+            fi
+          fi
+        done
+        if [ -z "$python" ]; then
+          echo "::error title=Contributor Declaration::no python3 >= 3.8 on PATH. Add one to the runner image, or run this job on ubuntu-latest." >&2
+          exit 1
+        fi
+
+        args=()
+
+        # The event payload is the default source, and also the only source of
+        # the author information the bot allowlist needs -- so it is passed even
+        # when the body itself comes from the API.
+        if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "${GITHUB_EVENT_PATH}" ]; then
+          args+=( --event-file "$GITHUB_EVENT_PATH" )
+        fi
+
+        if [ "${BODY_SOURCE_INPUT:-}" = "api" ]; then
+          pr="${PR_NUMBER_INPUT:-${EVENT_PR_NUMBER:-}}"
+          if [ -z "$pr" ]; then
+            echo "::error title=Contributor Declaration::body-source is 'api' but no pull request number is available; pass pr-number." >&2
+            exit 1
+          fi
+          case "$pr" in
+            *[!0-9]*)
+              echo "::error title=Contributor Declaration::pr-number must be digits only, got '$pr'." >&2
+              exit 1
+              ;;
+          esac
+          body_file="$RUNNER_TEMP/pr-$pr-body.md"
+          if ! gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.body // ""' > "$body_file"; then
+            echo "::error title=Contributor Declaration::cannot read pull request #$pr; grant 'pull-requests: read' to this job or use the default body-source." >&2
+            exit 1
+          fi
+          args+=( --body-file "$body_file" )
+        elif [ -n "${BODY_SOURCE_INPUT:-}" ] && [ "${BODY_SOURCE_INPUT}" != "event" ]; then
+          echo "::error title=Contributor Declaration::body-source must be 'event' or 'api', got '${BODY_SOURCE_INPUT}'." >&2
+          exit 1
+        fi
+
+        if [ ${#args[@]} -eq 0 ]; then
+          echo "::error title=Contributor Declaration::no event payload available; this action needs a pull_request or pull_request_target event, or body-source: api." >&2
+          exit 1
+        fi
+
+        if [ -n "${DECLARATION_FILE_INPUT:-}" ]; then
+          if [ ! -f "$DECLARATION_FILE_INPUT" ]; then
+            echo "::error title=Contributor Declaration::declaration-file '$DECLARATION_FILE_INPUT' not found; did this job run actions/checkout?" >&2
+            exit 1
+          fi
+          args+=( --declaration-file "$DECLARATION_FILE_INPUT" )
+        fi
+
+        if [ -n "${EXEMPT_AUTHORS_INPUT:-}" ]; then
+          args+=( --exempt-authors "$EXEMPT_AUTHORS_INPUT" )
+        fi
+
+        # PYTHONPATH is prepended, not replaced, so our copy wins over any
+        # ci_infrastructure a consumer happens to have installed without
+        # clobbering the rest of their path.
+        PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" \
+          "$python" -m ci_infrastructure.check_pr_declaration "${args[@]}"
