@@ -8,14 +8,23 @@ name: HPC transfer e2e
 # actual cluster: pushes a tree to shared scratch over troika ssh and fetches it
 # back, driving the composite actions exactly as a consumer would.
 #
-# Manual only, because it needs cluster credentials and a login-node route. The
-# per-push coverage of these primitives is pytest's:
-# tests/test_hpc_transfer.py::test_push_then_fetch_roundtrip_preserves_tree does
-# the same tar -> transfer -> untar round-trip with a connection that really
-# copies bytes, and tests/test_hpc_orchestrate.py covers the CLI surface. A
-# local-direct-roundtrip job used to run here on every push to cover the same
-# ground through real troika; it was removed as redundant with those.
+# Runs on every push and pull request, like the rest of the suite, so a change to
+# the transfer path is caught before it is dispatched by hand. push is scoped to
+# main so a branch with an open PR runs the pull_request copy only, not a
+# redundant second run.
+#
+# It needs cluster credentials, so it cannot run for a pull request from a fork --
+# secrets are withheld there and the private image pull would fail before
+# anything useful happened. The job skips itself in that case rather than failing.
+#
+# Per-run trees go under <work dir>/transfer-e2e/, one of run_gc's GC_SUBDIRS: the
+# cleanup step at the end has no `if:`, so it deliberately leaves the tree behind
+# when the round-trip fails, and the nightly sweep is what stops those
+# accumulating now that this runs per push rather than on demand.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -30,7 +39,9 @@ jobs:
     # reuse the image's copy — which is pinned to whatever commit the image was
     # built at, not what is being tested here. (It used to do that silently; it
     # now refuses, so this job would fail rather than mislead.)
-    if: github.event_name == 'workflow_dispatch'
+    # Same-repo events only: a fork PR gets no secrets, so the container pull and
+    # the troika user would both be empty.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: arc-pet-vsphere-prod
     container:
       image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
@@ -78,7 +89,7 @@ jobs:
           site: hpc-batch
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           local-dir: ${{ runner.temp }}/hpc-e2e/src
-          remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-${{ github.run_id }}
+          remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e/${{ github.run_id }}
 
       - name: Fetch the tree back from the cluster
         id: fetch
