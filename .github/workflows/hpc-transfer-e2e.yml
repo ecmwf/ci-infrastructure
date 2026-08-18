@@ -13,9 +13,15 @@ name: HPC transfer e2e
 # main so a branch with an open PR runs the pull_request copy only, not a
 # redundant second run.
 #
-# It needs cluster credentials, so it cannot run for a pull request from a fork --
-# secrets are withheld there and the private image pull would fail before
-# anything useful happened. The job skips itself in that case rather than failing.
+# It needs cluster credentials, so it cannot run for a pull request from a fork:
+# secrets are withheld there. That is reported as an explicit failure rather than
+# a skip, because a skipped job counts as PASSING for branch protection -- a fork
+# PR would otherwise appear to have this coverage without ever running it.
+#
+# The check lives in its own container-less job. hpc-roundtrip resolves its
+# `container:` (including the registry credentials) at job setup, before any step
+# runs, so on a fork PR it would die on an opaque registry-auth error and no step
+# of ours would get the chance to explain why.
 #
 # Per-run trees go under <work dir>/transfer-e2e/, one of run_gc's GC_SUBDIRS: the
 # cleanup step at the end has no `if:`, so it deliberately leaves the tree behind
@@ -28,7 +34,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Always runs, and is a green no-op except on a fork pull request. Keeping it
+  # container-less and on the cheap runner is the whole point: it can report the
+  # real reason before anything tries to pull a private image.
+  fork-guard:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Refuse a fork pull request
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        shell: bash
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          echo "::error title=HPC transfer e2e cannot run from a fork::This pull request comes from $HEAD_REPO, and GitHub withholds secrets from fork pull requests — so the cluster login user and the private image credentials this job needs are both empty. Failing rather than skipping, because a skipped job counts as passing. To get this coverage: a maintainer should push the branch into ecmwf/ci-infrastructure and open the pull request from there, or run this workflow manually via workflow_dispatch once the change is on main." >&2
+          exit 1
+
   hpc-roundtrip:
+    needs: fork-guard
     # Manual only: it reaches the real cluster over troika ssh from the login-node
     # self-hosted runner, exercising the composite actions exactly as a consumer
     # would. The ubuntu-latest job above is the per-push gate.
@@ -39,9 +62,6 @@ jobs:
     # reuse the image's copy — which is pinned to whatever commit the image was
     # built at, not what is being tested here. (It used to do that silently; it
     # now refuses, so this job would fail rather than mislead.)
-    # Same-repo events only: a fork PR gets no secrets, so the container pull and
-    # the troika user would both be empty.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: arc-pet-vsphere-prod
     container:
       image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
