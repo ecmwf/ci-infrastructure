@@ -87,20 +87,32 @@ jobs:
           role: github-ecmwf-ci-infrastructure
           url: https://secrets.ecmwf.int
           secrets: |
-            groups/data/foundational_software_services_team/github/ecmwf/ci-infrastructure/actions/test test_key | test_key;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket ARTIFACT_S3_ENDPOINT | ARTIFACT_S3_ENDPOINT;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket ARTIFACT_S3_REGION | ARTIFACT_S3_REGION;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket ARTIFACT_S3_BUCKET | ARTIFACT_S3_BUCKET;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket SCCACHE_BUCKET | SCCACHE_BUCKET;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket AWS_ACCESS_KEY_ID | AWS_ACCESS_KEY_ID;
+            kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket AWS_SECRET_ACCESS_KEY | AWS_SECRET_ACCESS_KEY;
+
 
       - name: Probe object store access
         shell: bash
-        env:
+        # env:
           # The artifact store and sccache share one endpoint and one credential
           # pair, differing only in bucket. The names match what s3_store reads,
           # so this block is a passthrough and the same names work by hand.
-          ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
-          ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
-          ARTIFACT_S3_BUCKET: ${{ secrets.ARTIFACT_S3_BUCKET }}
-          SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
+          # ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
+          # ARTIFACT_S3_BUCKET: ${{ secrets.ARTIFACT_S3_BUCKET }}
+          # SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
+          # AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # ARTIFACT_S3_ENDPOINT: ${{ vault_ARTIFACT_S3_ENDPOINT }}
+          # ARTIFACT_S3_REGION: ${{ vault_ARTIFACT_S3_REGION }}
+          # ARTIFACT_S3_BUCKET: ${{ vault_ARTIFACT_S3_BUCKET }}
+          # SCCACHE_BUCKET: ${{ vault_SCCACHE_BUCKET }}
+          # AWS_ACCESS_KEY_ID: ${{ vault_AWS_ACCESS_KEY_ID }}
+          # AWS_SECRET_ACCESS_KEY: ${{ vault_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
