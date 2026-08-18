@@ -34,34 +34,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Always runs, and is a green no-op except on a fork pull request. Keeping it
-  # container-less and on the cheap runner is the whole point: it can report the
-  # real reason before anything tries to pull a private image.
-  fork-guard:
-    runs-on: ubuntu-slim
-    steps:
-      - name: Refuse a fork pull request
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        shell: bash
-        env:
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          set -euo pipefail
-          echo "::error title=HPC transfer e2e cannot run from a fork::This pull request comes from $HEAD_REPO, and GitHub withholds secrets from fork pull requests — so the cluster login user and the private image credentials this job needs are both empty. Failing rather than skipping, because a skipped job counts as passing. To get this coverage: a maintainer should push the branch into ecmwf/ci-infrastructure and open the pull request from there, or run this workflow manually via workflow_dispatch once the change is on main." >&2
-          exit 1
-
   hpc-roundtrip:
-    needs: fork-guard
-    # Manual only: it reaches the real cluster over troika ssh from the login-node
-    # self-hosted runner, exercising the composite actions exactly as a consumer
-    # would. The ubuntu-latest job above is the per-push gate.
-    #
-    # force-reinstall below is what makes this an honest end-to-end test of THIS
-    # branch. The container image bakes ci-infrastructure and advertises
-    # CI_INFRASTRUCTURE_PYTHON, so without it ensure-infrastructure-present would
-    # reuse the image's copy — which is pinned to whatever commit the image was
-    # built at, not what is being tested here. (It used to do that silently; it
-    # now refuses, so this job would fail rather than mislead.)
     runs-on: arc-pet-vsphere-prod
     container:
       image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
