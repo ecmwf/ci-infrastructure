@@ -61,7 +61,7 @@ jobs:
       # error at / that says nothing about the cause. push-tree refuses such a path
       # too, but naming the variable here is the clearer failure. Same guard as
       # hpc-nightly-cleanup.yml.
-      - name: Require the remote work dir
+      - name: Require the remote work dir environment variable being set
         shell: bash
         env:
           REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
