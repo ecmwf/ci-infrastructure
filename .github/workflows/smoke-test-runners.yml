@@ -116,7 +116,6 @@ jobs:
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
-          echo "${test_key}"
 
   # A separate job because `container:` is per-job: the compile needs the
   # toolchain image, while the probe above deliberately runs on the plain base
