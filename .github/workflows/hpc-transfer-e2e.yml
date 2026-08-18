@@ -4,105 +4,21 @@
 
 name: HPC transfer e2e
 
-# Real-world usage test for the fetch-tree / push-tree primitives, in two tiers:
+# Real-world usage test for the fetch-tree / push-tree primitives against the
+# actual cluster: pushes a tree to shared scratch over troika ssh and fetches it
+# back, driving the composite actions exactly as a consumer would.
 #
-#   * local-direct-roundtrip (every push/PR, ubuntu-latest, no cluster) drives the
-#     commands against the local-direct troika site (connection: local), so troika
-#     runs the tar commands and getfile/sendfile on this runner — a genuine
-#     tar -> transfer -> untar round-trip with source and destination both local.
-#     Exercised through the CLI and through the composite actions.
-#   * hpc-roundtrip (manual only, self-hosted [hpc] login-node runner) does the
-#     real thing: pushes a tree to shared scratch on the cluster over troika ssh
-#     and fetches it back.
-#
-# push is scoped to main so a branch with an open PR runs the pull_request copy
-# only, not a redundant second push run.
+# Manual only, because it needs cluster credentials and a login-node route. The
+# per-push coverage of these primitives is pytest's:
+# tests/test_hpc_transfer.py::test_push_then_fetch_roundtrip_preserves_tree does
+# the same tar -> transfer -> untar round-trip with a connection that really
+# copies bytes, and tests/test_hpc_orchestrate.py covers the CLI surface. A
+# local-direct-roundtrip job used to run here on every push to cover the same
+# ground through real troika; it was removed as redundant with those.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
-  local-direct-roundtrip:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12"
-
-      - name: Install ci-infrastructure (this checkout)
-        run: pip install -e .
-
-      # The composite actions bootstrap via ensure-infrastructure-present@main,
-      # which would install the published @main. Point CI_INFRASTRUCTURE_PYTHON at
-      # the interpreter we just installed THIS checkout into so the actions take
-      # their reuse fast path and exercise this checkout's code — a change is then
-      # tested against itself, not against @main.
-      - name: Expose the checkout interpreter to the composite actions
-        shell: bash
-        run: echo "CI_INFRASTRUCTURE_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
-
-      - name: CLI round-trip through local-direct
-        shell: bash
-        run: |
-          set -euo pipefail
-          cfg=src/ci_infrastructure/hpc/troika-config.yml
-          src="$RUNNER_TEMP/cli/src"
-          mkdir -p "$src/nested"
-          echo runner-payload > "$src/hello.txt"
-          echo deep > "$src/nested/deep.txt"
-
-          python -m ci_infrastructure.hpc push-tree --site local-direct --troika-config "$cfg" \
-            --local-dir "$src" --remote-dir "$RUNNER_TEMP/cli/remote" --tar-dir "$RUNNER_TEMP/cli/tars"
-          python -m ci_infrastructure.hpc fetch-tree --site local-direct --troika-config "$cfg" \
-            --remote-dir "$RUNNER_TEMP/cli/remote" --local-dir "$RUNNER_TEMP/cli/back" --tar-dir "$RUNNER_TEMP/cli/tars"
-          diff -r "$src" "$RUNNER_TEMP/cli/back"
-
-          # A dry run resolves the path but must transfer nothing.
-          python -m ci_infrastructure.hpc fetch-tree --site local-direct --troika-config "$cfg" \
-            --remote-dir "$RUNNER_TEMP/cli/remote" --local-dir "$RUNNER_TEMP/cli/dry" \
-            --tar-dir "$RUNNER_TEMP/cli/tars" --dryrun
-          test ! -e "$RUNNER_TEMP/cli/dry"
-          echo "CLI round-trip OK"
-
-      - name: Seed a tree for the action round-trip
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/act/src/nested"
-          echo action-payload > "$RUNNER_TEMP/act/src/hello.txt"
-          echo deep > "$RUNNER_TEMP/act/src/nested/deep.txt"
-
-      - name: Push the tree up via the action
-        id: push
-        uses: ./actions/push-hpc-tree
-        with:
-          site: local-direct
-          local-dir: ${{ runner.temp }}/act/src
-          remote-dir: ${{ runner.temp }}/act/remote
-
-      - name: Fetch the tree back via the action
-        id: fetch
-        uses: ./actions/fetch-hpc-tree
-        with:
-          site: local-direct
-          remote-dir: ${{ runner.temp }}/act/remote
-          local-dir: ${{ runner.temp }}/act/back
-
-      - name: Assert the action outputs and the round-trip
-        shell: bash
-        env:
-          PUSH_REMOTE_DIR: ${{ steps.push.outputs.remote-dir }}
-          FETCH_LOCAL_DIR: ${{ steps.fetch.outputs.local-dir }}
-        run: |
-          set -euo pipefail
-          test "$PUSH_REMOTE_DIR" = "$RUNNER_TEMP/act/remote"
-          test "$FETCH_LOCAL_DIR" = "$RUNNER_TEMP/act/back"
-          diff -r "$RUNNER_TEMP/act/src" "$RUNNER_TEMP/act/back"
-          echo "Action round-trip OK"
-
   hpc-roundtrip:
     # Manual only: it reaches the real cluster over troika ssh from the login-node
     # self-hosted runner, exercising the composite actions exactly as a consumer

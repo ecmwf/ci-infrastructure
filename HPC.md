@@ -237,5 +237,6 @@ python -m ci_infrastructure.hpc fetch-tree --site hpc-batch \
 ```
 
 `.github/workflows/hpc-transfer-e2e.yml` exercises both commands and both actions
-on every push against the `local-direct` site (a real tar → transfer → untar
-round-trip with no cluster).
+against the real cluster, on manual dispatch. Per-push coverage is pytest's:
+`test_push_then_fetch_roundtrip_preserves_tree` does the same tar → transfer →
+untar round-trip through a connection that really copies bytes.
