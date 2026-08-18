@@ -7,7 +7,7 @@ name: Contributor Declaration
 # Callers own the triggers -- a reusable workflow cannot declare its own. Copy
 # the snippet from this repo's README verbatim; in particular the caller MUST
 # listen for `edited`, because a description can be emptied with no push at all,
-# and `synchronize`, because required checks are per-SHA.
+# and `synchronize`, because required status checks are per-SHA.
 on:
   workflow_call:
     inputs:
@@ -20,37 +20,16 @@ on:
         type: string
         required: false
         default: ubuntu-latest
-      declaration-file:
-        description: >
-          Path in the consumer repo of a file holding the declaration to
-          require; empty uses the text vendored in ci-infrastructure. Setting
-          this adds an actions/checkout step.
-        type: string
-        required: false
-        default: ''
-      pr-number:
-        # A string, not a number: a number input has no value that means "unset".
-        description: 'Pull request to check; empty takes it from the event payload.'
-        type: string
-        required: false
-        default: ''
-      body-source:
-        description: '"event" (default, needs no permissions) or "api" (needs pull-requests:read).'
-        type: string
-        required: false
-        default: ''
       exempt-authors:
         description: 'Comma-separated bot logins to skip; empty means the built-in list.'
         type: string
         required: false
         default: ''
 
-# Enough for the optional checkout and nothing more. The default body source
-# reads the event payload, so no token scope is needed to judge the description;
-# body-source: api additionally needs the caller to grant pull-requests: read,
-# since a called workflow can only narrow what its caller already has.
-permissions:
-  contents: read
+# Nothing is needed: the description comes from the event payload, and the
+# consumer repo is never checked out. Declared explicitly rather than omitted so
+# the job cannot inherit a broad caller token.
+permissions: {}
 
 jobs:
   # FROZEN NAME. Every ECMWF repo pins this workflow at @main, so this job id is
@@ -60,21 +39,9 @@ jobs:
   contributor-declaration:
     runs-on: ${{ inputs.runs-on }}
     steps:
-      # Only to reach a repo-local declaration-file. The action itself lives
-      # under _actions and needs no checkout of the consumer. Under
-      # pull_request_target this checks out the BASE branch, so no pull request
-      # code is ever fetched, and persist-credentials keeps the token out of it.
-      - if: inputs.declaration-file != ''
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-
       # @main, not ./actions/... : inside a reusable workflow a relative `uses`
       # resolves against the CALLER's workspace, so the local form would look for
       # this action in the consumer repo.
       - uses: ecmwf/ci-infrastructure/actions/check-pr-declaration@main
         with:
-          pr-number: ${{ inputs.pr-number }}
-          declaration-file: ${{ inputs.declaration-file }}
-          body-source: ${{ inputs.body-source }}
           exempt-authors: ${{ inputs.exempt-authors }}

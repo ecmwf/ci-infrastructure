@@ -111,19 +111,19 @@ on:
     # checks are per-SHA, so a push without a run leaves the check pending.
     types: [opened, edited, reopened, synchronize]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   contributor-declaration:
     uses: ecmwf/ci-infrastructure/.github/workflows/check-pr-declaration.yml@main
 ```
 
-No secrets, no tokens, and no configuration: the description is read from the
-event payload. A repo whose template has not yet converged on the org block can
-point the check at its own copy with
-`with: {declaration-file: .github/PULL_REQUEST_TEMPLATE.md}`, and dependabot-style
-bot PRs are skipped by default. See
+That is the whole integration: no secrets, no tokens, not even a permission —
+the description is read from the event payload. The required text is vendored in
+ci-infrastructure and cannot be overridden per repo, so converge the repo's
+template on the org block *before* adding this workflow, or contributors who
+faithfully used the old template get a red check. Dependabot-style bot PRs are
+skipped by default. See
 [`actions/check-pr-declaration`](actions/check-pr-declaration/action.yml) for the
 matching rules, the known gaps, and the full input list.
 

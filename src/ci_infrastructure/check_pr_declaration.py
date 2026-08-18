@@ -183,7 +183,7 @@ def normalize(text: str) -> list[str]:
 
     The steps, in this order, are each forced by real data:
 
-    1. Strip a leading U+FEFF -- a Windows-authored ``--declaration-file`` would
+    1. Strip a leading U+FEFF -- a body pasted from a Windows editor would
        otherwise fail invisibly on line 1.
     2. CRLF and lone CR to LF. The org template is CRLF, GitHub's web form
        submits CRLF, and real PR bodies are a mix (of four anemoi-core PRs
@@ -222,19 +222,15 @@ def normalize(text: str) -> list[str]:
     return lines
 
 
-def expected_lines(source: str | None = None) -> list[str]:
-    """Normalized declaration lines, from ``source`` or the vendored constant.
+def expected_lines() -> list[str]:
+    """The declaration as normalized lines.
 
-    When ``source`` contains the heading, everything from its *last* occurrence
-    onwards is used. That lets a consumer point ``declaration-file`` straight at
-    their own ``.github/PULL_REQUEST_TEMPLATE.md`` with no duplicated block to
-    keep in sync; for the vendored constant the slice is a no-op.
+    There is deliberately no way to substitute a different text: one declaration
+    org-wide is the whole point, and a repo whose template differs is a repo
+    whose template needs fixing. ``check_body`` still takes an ``expected``
+    argument, but only so tests can exercise the comparison directly.
     """
-    lines = normalize(CANONICAL_DECLARATION if source is None else source)
-    start = find_block_start(lines)
-    if start is not None:
-        lines = lines[start:]
-    return lines
+    return normalize(CANONICAL_DECLARATION)
 
 
 # --------------------------------------------------------------------------- #
@@ -611,11 +607,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "and the only source of author information for the bot allowlist.",
     )
     parser.add_argument(
-        "--declaration-file",
-        help="File holding the declaration to require. Everything from the last heading occurrence is used, "
-        "so a whole PR template can be passed. Defaults to the vendored canonical text.",
-    )
-    parser.add_argument(
         "--exempt-authors",
         default="",
         help="Comma-separated bot logins to skip (only when the payload reports user.type == 'Bot'). "
@@ -679,8 +670,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _append("GITHUB_OUTPUT", f"verdict={Verdict.DIVERGED.value}")
         return 1
 
-    declaration_source = _read_text(Path(args.declaration_file)) if args.declaration_file else None
-    declaration = expected_lines(declaration_source)
+    declaration = expected_lines()
     result = check_body(body, declaration)
 
     # The annotation goes out before anything else, so it cannot be suppressed by

@@ -33,7 +33,6 @@ from ci_infrastructure.check_pr_declaration import (
     body_from_event,
     check_body,
     describe_char_diff,
-    expected_lines,
     is_exempt,
     main,
     normalize,
@@ -366,26 +365,6 @@ def test_last_heading_wins() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Declaration source override
-# --------------------------------------------------------------------------- #
-
-
-def test_declaration_file_override() -> None:
-    custom = "### Contributor Declaration\n\nI agree to everything.\n"
-    assert check_body("prose\n\n" + custom, expected_lines(custom)).verdict is Verdict.OK
-    assert check_body(body(), expected_lines(custom)).verdict is Verdict.DIVERGED
-
-
-def test_declaration_source_is_sliced_from_the_heading() -> None:
-    """A whole PR template can be passed; only the block is required."""
-    assert expected_lines(ORG_TEMPLATE) == DECLARATION_LINES
-
-
-def test_declaration_source_without_heading_is_used_whole() -> None:
-    assert expected_lines("just this line\n") == ["just this line"]
-
-
-# --------------------------------------------------------------------------- #
 # Event payload and the bot allowlist
 # --------------------------------------------------------------------------- #
 
@@ -585,23 +564,6 @@ def test_main_honours_no_summary(
     assert summary == ""
 
 
-def test_main_honours_a_declaration_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    declaration = tmp_path / "template.md"
-    declaration.write_text("### Contributor Declaration\n\nI agree.\n", encoding="utf-8")
-    body_file = tmp_path / "body.md"
-    body_file.write_text("prose\n\n### Contributor Declaration\n\nI agree.\n", encoding="utf-8")
-    code, _, _, output = run_main(
-        tmp_path,
-        ["--body-file", str(body_file), "--declaration-file", str(declaration)],
-        monkeypatch,
-        capsys,
-    )
-    assert code == 0
-    assert output.splitlines() == ["verdict=ok"]
-
-
 def test_cli_contract_via_subprocess(tmp_path: Path) -> None:
     """Pins the exact command line the composite action emits.
 
@@ -648,6 +610,11 @@ def test_reusable_workflow_job_id_is_frozen() -> None:
     assert "workflow_call" in triggers
 
 
-def test_reusable_workflow_permissions_are_minimal() -> None:
+def test_reusable_workflow_needs_no_permissions() -> None:
+    """The description comes from the payload and nothing is checked out.
+
+    An empty mapping is declared explicitly rather than omitted, so the job
+    cannot inherit a broad token from its caller.
+    """
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "check-pr-declaration.yml").read_text())
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {}

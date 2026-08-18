@@ -67,10 +67,9 @@ keeps its old body.
    that all authors agree to the [Contributor License Agreement.](...)") which
    the canonical block rejects: anemoi, anemoi-core, anemoi-datasets,
    anemoi-utils, anemoi-inference, anemoi-registry, ellem. Either replace the
-   file with the org block or delete it so the org template applies. A repo
-   mid-migration can point the check at its own copy with
-   `declaration-file: .github/PULL_REQUEST_TEMPLATE.md`, but that is a bridge,
-   not a destination -- the point is one text org-wide.
+   file with the org block or delete it so the org template applies. There is no
+   per-repo override input by design: the point is one text org-wide, so this
+   step is the work, not something to route around.
 
 4. add the caller workflow per repo, after its template is fixed.
 
@@ -92,7 +91,11 @@ description. Neither is closable at pull_request_target time:
   arrives, time out (60 min default) and be dequeued -- every PR in that repo
   unmergeable. Extend the gate BEFORE any repo turns a queue on: parse the PR
   number out of refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha> and read the
-  body with `body-source: api`, since there is no pull_request payload there.
+  body with `gh api repos/{repo}/pulls/{n} --jq '.body // ""'`, since there is no
+  pull_request payload there. That is the one place an API read is unavoidable;
+  the action deliberately has no such path today (it would have cost a token
+  input, a pull-requests:read grant, and a second body source to audit, to fix
+  only the case where someone clicks "re-run" instead of editing the body).
 
 - a description edited with GITHUB_TOKEN does not start a new workflow run, so
   an automation calling `gh pr edit --body ''` leaves the earlier green result

@@ -17,6 +17,8 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
 
+# The action needs no token; the checkout below is only so that
+# `uses: ./actions/...` resolves against this checkout.
 permissions:
   contents: read
 
@@ -31,13 +33,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./actions/check-pr-declaration
-
-      # The escape hatch, pointed at this repo's own template. It must agree with
-      # the vendored constant, so this leg passing is a second, network-free
-      # check that the two have not drifted apart.
-      - uses: ./actions/check-pr-declaration
-        with:
-          declaration-file: .github/PULL_REQUEST_TEMPLATE.md
 
   # The reusable workflow wrapper, again from this checkout. Note this leg calls
   # ecmwf/ci-infrastructure/actions/check-pr-declaration@main internally, so it
