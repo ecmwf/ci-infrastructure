@@ -38,8 +38,8 @@ not pass --deps-artifact-names; their artifact names stay in the original
 format without the deps-hash segment.
 
 The --compiler value should include the version so that builds for different
-compiler versions are stored and retrieved independently
-(e.g. gfortran-14, clang-18, gcc-13).
+compiler versions are stored and retrieved independently (e.g. gfortran-14,
+clang-18, gcc-13).
 
 The <platform> segment is the required --platform value, used verbatim (the
 explicit binary-compatibility class) — same as resolve_deps. The runner/image
