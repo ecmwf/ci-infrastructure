@@ -579,18 +579,25 @@ class _GcConnection:
 
 
 def test_run_gc_sweeps_every_tree_a_build_creates() -> None:
-    """GC must cover exactly what RemotePaths lays down — no more, no less.
+    """GC must cover everything RemotePaths lays down, plus only declared extras.
 
-    Derived from RemotePaths rather than hard-coded, so a new remote tree cannot
-    be added without the sweep noticing it.
+    The build side is derived from RemotePaths rather than hard-coded, so a new
+    remote tree cannot be added without the sweep noticing it. Extras are allowed
+    but must be named here, so nothing joins the sweep silently either.
     """
     conn = _GcConnection()
     run_gc(conn, remote_work_dir="/scratch/ci", older_than_days=7)
     joined = "\n".join(conn.commands)
 
     paths = RemotePaths.derive("/scratch/ci", "art")
+    build_dirs = {str(PurePosixPath(p).parent) for p in paths}
     swept = {f"/scratch/ci/{sub}" for sub in GC_SUBDIRS}
-    assert swept == {str(PurePosixPath(p).parent) for p in paths}
+
+    assert build_dirs <= swept, f"unswept build trees: {sorted(build_dirs - swept)}"
+    assert swept - build_dirs == {"/scratch/ci/transfer-e2e"}, (
+        "a subdir swept but not written by a build needs a reason here; transfer-e2e holds "
+        "hpc-transfer-e2e.yml's per-run trees, which are left behind on failure on purpose"
+    )
     for base in swept:
         assert base in joined
     assert "-mtime +7" in joined

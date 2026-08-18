@@ -297,7 +297,12 @@ def cancel_job(
 #: The subtrees `RemotePaths` puts under the remote work dir. Each holds one
 #: entry per artifact (or a .out file for hpc-jobs), so an age-based sweep at
 #: maxdepth 1 reclaims whole builds without touching the roots.
-GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs")
+#: Subdirectories of the remote work dir that run_gc sweeps by age. "transfer-e2e"
+#: is not written by the build path: hpc-transfer-e2e.yml puts its per-run tree
+#: there so a failed round-trip, which deliberately leaves the tree behind for
+#: debugging, is still reclaimed eventually. Anything written directly under the
+#: work dir instead of one of these is never swept.
+GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
