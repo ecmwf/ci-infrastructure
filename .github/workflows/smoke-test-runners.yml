@@ -39,6 +39,10 @@ on:
 
 jobs:
   smoke:
+    permissions:
+        contents: read
+        id-token: write
+
     strategy:
       # Report every scale set; one failing leg must not mask the others.
       fail-fast: false
@@ -75,6 +79,16 @@ jobs:
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
+      - name: Retrieve secret from Vault
+        uses: hashicorp/vault-action@v3.4.0
+        with:
+          method: jwt    # authentication endpoint configured by computing dept.
+          path: jwt_github
+          role: github-ecmwf-ci-infrastructure
+          url: https://secrets.ecmwf.int
+          secrets: |
+            groups/data/foundational_software_services_team/github/ecmwf/ci-infrastructure/actions/test test_key | test_key;
+
       - name: Probe object store access
         shell: bash
         env:
@@ -90,6 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
+          echo "${test_key}"
 
   # A separate job because `container:` is per-job: the compile needs the
   # toolchain image, while the probe above deliberately runs on the plain base
