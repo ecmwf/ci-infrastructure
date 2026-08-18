@@ -27,15 +27,20 @@
   check-pr-declaration.yml, which defaults to ubuntu-latest for exactly this
   reason.
 
-- backport the candidate probe from actions/check-pr-declaration into
-  ensure-infrastructure-present. That action applies
-  ${GITHUB_ACTION_PATH#*/_actions/} unconditionally, so for `uses: ./actions/x`
-  (no /_actions/ segment) the substitution is a no-op and it cd's into a
-  nonsense path. hpc-transfer-e2e.yml masks this by pre-setting
-  CI_INFRASTRUCTURE_PYTHON to force the fast path; with the probe it could drop
-  that workaround. Probing for the file we actually need, rather than
-  re-anchoring blindly, covers hosted runners, ARC k8s, and local ./actions/
-  with one loop.
+- ensure-infrastructure-present's freshness check compares *.py only, so drift
+  confined to hpc/troika-config.yml or the bundled certs/*.pem is not detected.
+  Hashing everything is not an option: an installed tree legitimately differs
+  from src/ (the certs .license sidecar is outside the package-data glob, and
+  py.typed is not declared at all), so a full hash would false-positive on an
+  in-sync image. Declaring both data files in [tool.setuptools.package-data] and
+  widening the hash to match would close it.
+
+- local-direct-roundtrip in hpc-transfer-e2e.yml still pre-sets
+  CI_INFRASTRUCTURE_PYTHON by hand to make the composite actions use its
+  editable install. That predates the force-reinstall input and could now be a
+  plain `with: force-reinstall: true`, except the job also drives the CLI
+  directly through that same interpreter — worth a look when someone next
+  touches it.
 
 
 PR Contributor Declaration (checker landed, rollout pending):

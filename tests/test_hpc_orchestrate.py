@@ -924,3 +924,42 @@ def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------- #
+# The click group's own surface
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_group_registers_every_command() -> None:
+    """`python -m ci_infrastructure.hpc <cmd>` must resolve for all six commands.
+
+    Every other CLI test in this file invokes a command *function* directly
+    (`CliRunner().invoke(orch.push_tree_cmd, …)`), which never touches the group.
+    A command renamed or not registered on the group is therefore invisible to
+    this suite -- and that is exactly how a stale image reporting
+    "No such command 'push-tree'" got as far as it did. The composite actions call
+    these names verbatim (see actions/{push,fetch,remove}-hpc-tree and
+    build-on-hpc), so this set is a contract, not an implementation detail.
+    """
+    assert set(orch.main.commands) == {
+        "submit-wait",
+        "cancel",
+        "gc",
+        "fetch-tree",
+        "push-tree",
+        "remove-tree",
+    }
+
+
+def test_cli_group_commands_are_invocable_through_the_group() -> None:
+    """Registration alone is not enough: each name must dispatch from the group.
+
+    `--help` through the group exercises the same lookup a runner does, without
+    needing a site, a cluster or any troika config.
+    """
+    runner = CliRunner()
+    for name in sorted(orch.main.commands):
+        result = runner.invoke(orch.main, [name, "--help"])
+        assert result.exit_code == 0, f"{name}: {result.output}"
+        assert "No such command" not in result.output

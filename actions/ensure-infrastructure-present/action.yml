@@ -24,18 +24,58 @@ description: >
 
   Idempotent, with two short-circuits. An image that bakes ci-infrastructure
   into an interpreter advertises it via CI_INFRASTRUCTURE_PYTHON; when that is
-  set and can import the HPC entrypoint we reuse it and skip the venv entirely
-  (a true no-op — no per-job build, no PyPI/GitHub egress). The bake must live
-  outside _work: ARC's Kubernetes mode overlays the runner's _work tree (where
-  RUNNER_TOOL_CACHE, and thus the venv, lives) with an ephemeral per-job volume
-  that shadows anything baked at that path, so a baked tool-cache venv would be
-  hidden. Absent a baked interpreter, we reuse an existing venv at the target
-  path if a prior step in the same job already built one.
+  set, can import the HPC entrypoint, AND matches the sources we would otherwise
+  install, we reuse it and skip the venv entirely (a true no-op — no per-job
+  build, no PyPI/GitHub egress). The bake must live outside _work: ARC's
+  Kubernetes mode overlays the runner's _work tree (where RUNNER_TOOL_CACHE, and
+  thus the venv, lives) with an ephemeral per-job volume that shadows anything
+  baked at that path, so a baked tool-cache venv would be hidden. Absent a baked
+  interpreter, we reuse an existing venv at the target path if a prior step in
+  the same job already built one.
 
-  Source of the install: the ci-infrastructure checkout that GitHub Actions
-  already pulled into _actions/<owner>/ci-infrastructure/<ref>/ when it loaded
-  this composite. Pip installs from that local path, so the install needs
-  no token and works for private repos.
+  THE MATCH IS CHECKED, AND A MISMATCH IS FATAL. This used to be an import check
+  alone, which tests importability and not version: a baked install from an older
+  commit imports perfectly well, so the fast path was taken and the job silently
+  ran stale code. That is how a 26-commit-old ci-infrastructure reached the HPC
+  round-trip job, which failed with "No such command 'push-tree'" for a command
+  that had existed for weeks. We now compare a digest of the baked package's *.py
+  files against the checkout's and fail loudly when they differ, naming both
+  digests and (when the image records it in CI_INFRASTRUCTURE_BAKED_REF) the
+  commit the image was built from.
+
+  Only *.py files are hashed, deliberately. An installed tree is not
+  byte-identical to src/ci_infrastructure: the certs/*.pem.license sidecar is not
+  matched by the package-data glob, and py.typed is not declared as package data
+  at all, so whether it survives an install depends on the setuptools version.
+  Hashing everything would report a mismatch on an image that is perfectly in
+  sync. *.py is what determines behaviour and CLI surface, which is the failure
+  mode that matters; drift confined to troika-config.yml or the bundled certs is
+  not detected.
+
+  Source of the install: normally the ci-infrastructure checkout that GitHub
+  Actions pulled into _actions/<owner>/ci-infrastructure/<ref>/ when it loaded
+  this composite. Pip installs from that local path, so the install needs no
+  token and works for private repos. When the job's own workspace IS a
+  ci-infrastructure checkout, that wins instead — so this repo's own workflows
+  test the branch under test rather than whatever @main currently holds.
+
+  The checkout is located by probing candidate paths for the file we actually
+  need, rather than by re-anchoring github.action_path unconditionally: the old
+  form assumed an /_actions/ segment and produced a nonsense path for
+  `uses: ./actions/...`, which is why hpc-transfer-e2e.yml had to pre-set
+  CI_INFRASTRUCTURE_PYTHON to route around it.
+
+inputs:
+  force-reinstall:
+    description: >
+      When 'true', ignore any baked interpreter and any cached venv and install
+      ci-infrastructure fresh from the checkout. Empty or 'false' keeps the
+      default: reuse a matching baked interpreter, else a content-keyed venv.
+      Set this in ci-infrastructure's own end-to-end jobs, which must exercise
+      the branch rather than whatever an image happens to carry — it makes those
+      jobs independent of the image pin entirely.
+    required: false
+    default: ''
 
 outputs:
   python:
@@ -47,25 +87,100 @@ runs:
   steps:
     - id: bootstrap
       shell: bash
+      env:
+        FORCE_REINSTALL_INPUT: ${{ inputs.force-reinstall }}
       run: |
         set -euo pipefail
 
-        # Fast path: an image that baked ci-infrastructure into an interpreter
-        # advertises it via CI_INFRASTRUCTURE_PYTHON. Honour it when that
-        # interpreter can import the HPC entrypoint, so a baked image is a true
-        # no-op instead of rebuilding a venv every job.
-        python="${CI_INFRASTRUCTURE_PYTHON:-}"
-        if [ -n "$python" ] && [ -x "$python" ] && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
-          echo "ensure-infrastructure-present: CI_INFRASTRUCTURE_PYTHON present, assuming that environment exists ($python)"
+        rel="src/ci_infrastructure/__init__.py"
+
+        # Digest of a package's *.py files, keyed on paths relative to the package
+        # dir so an installed tree and a source tree are comparable. LC_ALL=C
+        # fixes the ordering; __pycache__ is pruned because a pip install leaves
+        # one behind in the _actions checkout on a persistent self-hosted runner.
+        pkg_py_hash() {
+          local dir="$1" list
+          [ -d "$dir" ] || return 1
+          list="$(cd "$dir" && find . -name '__pycache__' -prune -o -type f -name '*.py' -print \
+                  | LC_ALL=C sort)"
+          [ -n "$list" ] || return 1
+          ( cd "$dir" && printf '%s\n' "$list" | xargs sha256sum | sha256sum | cut -c1-16 )
+        }
+
+        # Locate the ci-infrastructure sources to install/compare against. The
+        # job's own workspace wins when it is a ci-infrastructure checkout, so
+        # this repo's own workflows exercise the branch under test; otherwise the
+        # _actions checkout of whatever ref the consumer pinned.
+        #
+        # Probing for the file we need, instead of re-anchoring github.action_path
+        # unconditionally, is what makes `uses: ./actions/...` work: a local
+        # reference has no /_actions/ segment for the substitution to strip.
+        cands=()
+        if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/$rel" ] \
+           && grep -qE '^name[[:space:]]*=[[:space:]]*"ci-infrastructure"' "$GITHUB_WORKSPACE/pyproject.toml" 2>/dev/null; then
+          cands+=( "$GITHUB_WORKSPACE" )
+        fi
+        cands+=( "${GITHUB_ACTION_PATH:-}/../.." )
+        case "${GITHUB_ACTION_PATH:-}" in
+          */_actions/*)
+            if [ -n "${RUNNER_WORKSPACE:-}" ]; then
+              # ARC's Kubernetes container mode mounts the work tree elsewhere in
+              # the job container, so github.action_path can be a host path that
+              # does not resolve here. Re-anchor the _actions tail on the
+              # in-container work root (parent of RUNNER_WORKSPACE).
+              cands+=( "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." )
+            fi
+            ;;
+        esac
+        repo_root=""
+        for cand in "${cands[@]}"; do
+          if [ -f "$cand/$rel" ] && [ -f "$cand/pyproject.toml" ]; then
+            repo_root="$(cd "$cand" && pwd -P)"
+            break
+          fi
+        done
+        if [ -z "$repo_root" ]; then
+          echo "::error::ensure-infrastructure-present: cannot locate a ci-infrastructure checkout (probed: ${cands[*]})." >&2
+          exit 1
+        fi
+        if [ "$repo_root" = "${GITHUB_WORKSPACE:-}" ]; then
+          echo "ensure-infrastructure-present: sources = the job workspace ($repo_root)"
         else
+          echo "ensure-infrastructure-present: sources = the action checkout ($repo_root)"
+        fi
+
+        force_reinstall=false
+        [ "${FORCE_REINSTALL_INPUT:-}" = "true" ] && force_reinstall=true
+        if $force_reinstall && [ "$repo_root" != "${GITHUB_WORKSPACE:-}" ]; then
+          echo "::warning::ensure-infrastructure-present: force-reinstall is set, but the workspace is not a ci-infrastructure checkout — installing from the action checkout ($repo_root), which is the ref this action was pinned at, not a branch under test."
+        fi
+
+        checkout_hash="$(pkg_py_hash "$repo_root/src/ci_infrastructure")" \
+          || { echo "::error::ensure-infrastructure-present: no *.py under $repo_root/src/ci_infrastructure" >&2; exit 1; }
+
+        # Fast path: an image that baked ci-infrastructure into an interpreter
+        # advertises it via CI_INFRASTRUCTURE_PYTHON. Honour it only when that
+        # interpreter can import the HPC entrypoint AND carries the same sources
+        # we would install — an import check alone passes on a stale bake and
+        # silently runs old code. force-reinstall skips this path entirely.
+        python="${CI_INFRASTRUCTURE_PYTHON:-}"
+        baked_ok=false
+        if ! $force_reinstall && [ -n "$python" ] && [ -x "$python" ] \
+           && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
+          baked_dir="$("$python" -c 'import ci_infrastructure, os; print(os.path.dirname(os.path.abspath(ci_infrastructure.__file__)))' 2>/dev/null || true)"
+          baked_hash="$(pkg_py_hash "$baked_dir" || true)"
+          if [ -n "$baked_hash" ] && [ "$baked_hash" = "$checkout_hash" ]; then
+            baked_ok=true
+            echo "ensure-infrastructure-present: reusing the baked interpreter $python (*.py digest $baked_hash matches the checkout)"
+          else
+            baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
+            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The image is behind: rebuild it by dispatching ecmwf/ci-container-images' docker-images.yml with ci-infrastructure-ref set, or set force-reinstall: true on this step to install from the checkout instead." >&2
+            exit 1
+          fi
+        fi
+
+        if ! $baked_ok; then
           ref="${GITHUB_ACTION_REF:-main}"
-          # github.action_path is a runner-host path; under ARC's Kubernetes
-          # container mode the work dir is mounted elsewhere in the job
-          # container, so re-anchor the _actions tail onto the in-container
-          # work root (parent of RUNNER_WORKSPACE). Two levels up from
-          # actions/ensure-infrastructure-present/ is the ci-infrastructure repo
-          # root, which has pyproject.toml.
-          repo_root="$(cd "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." && pwd -P)"
           # Hash what pip would install. Two details keep the digest stable for
           # unchanged sources: sort by path (field 2), because `find -exec … +`
           # batches in directory order; and prune build leftovers, because the
@@ -77,6 +192,10 @@ runs:
           venv_root="${RUNNER_TOOL_CACHE}/ci-infrastructure-venv"
           venv="${venv_root}/${ref}-${src_hash}"
           python="$venv/bin/python"
+          if $force_reinstall && [ -d "$venv" ]; then
+            echo "ensure-infrastructure-present: force-reinstall — discarding the cached venv at $venv"
+            rm -rf "$venv"
+          fi
           if [ -x "$python" ] && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
             echo "ensure-infrastructure-present: reusing existing venv at $venv (no pip install needed)"
           else
@@ -85,7 +204,7 @@ runs:
               rm -rf "$venv"
             fi
             echo "ensure-infrastructure-present: no venv at $venv — creating one now."
-            echo "  This pip-installs ci-infrastructure from the local action checkout, pulling its deps"
+            echo "  This pip-installs ci-infrastructure from $repo_root, pulling its deps"
             echo "  (pydantic, boto3, click, PyYAML) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
