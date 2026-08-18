@@ -963,3 +963,54 @@ def test_cli_group_commands_are_invocable_through_the_group() -> None:
         result = runner.invoke(orch.main, [name, "--help"])
         assert result.exit_code == 0, f"{name}: {result.output}"
         assert "No such command" not in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Top-level remote paths (an unset work-dir variable)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("remote_dir", ["/transfer-e2e-32144742771", "/scratch", "/", "//"])
+def test_push_tree_refuses_a_top_level_remote_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, remote_dir: str
+) -> None:
+    """An unset vars.HPC_CI_REMOTE_WORK_DIR renders '/transfer-e2e-<run id>'.
+
+    Left alone, the cluster answers with `mkdir: cannot create directory
+    '/transfer-e2e-...': Read-only file system`, which says nothing about the
+    actual cause. Fail on the runner instead, naming the variable.
+    """
+    _stub_site_and_resolver(monkeypatch)
+    called: list[object] = []
+    monkeypatch.setattr(transfer, "push_tree", lambda *a, **k: called.append(k))
+
+    result = CliRunner().invoke(
+        orch.push_tree_cmd,
+        ["--site", "hpc-batch", "--local-dir", str(tmp_path), "--remote-dir", remote_dir, "--tar-dir", str(tmp_path)],
+    )
+    assert result.exit_code != 0
+    assert "HPC_CI_REMOTE_WORK_DIR" in str(result.output) + str(result.exception)
+    assert called == [], "nothing may be transferred once the path is refused"
+
+
+def test_push_tree_accepts_a_nested_remote_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """One level below root is the boundary; the normal case must still pass."""
+    _stub_site_and_resolver(monkeypatch)
+    called: list[object] = []
+    monkeypatch.setattr(transfer, "push_tree", lambda *a, **k: called.append(k))
+
+    result = CliRunner().invoke(
+        orch.push_tree_cmd,
+        [
+            "--site",
+            "hpc-batch",
+            "--local-dir",
+            str(tmp_path),
+            "--remote-dir",
+            "/scratch/transfer-e2e-1",
+            "--tar-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(called) == 1

@@ -128,6 +128,24 @@ jobs:
         with:
           force-reinstall: true
 
+      # Fail before touching the cluster if the work-dir variable is unset:
+      # interpolating an empty vars.HPC_CI_REMOTE_WORK_DIR below yields
+      # "/transfer-e2e-<run id>", and the cluster then reports a read-only-filesystem
+      # error at / that says nothing about the cause. push-tree refuses such a path
+      # too, but naming the variable here is the clearer failure. Same guard as
+      # hpc-nightly-cleanup.yml.
+      - name: Require the remote work dir
+        shell: bash
+        env:
+          REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REMOTE_WORK_DIR" ]; then
+            echo "::error::HPC_CI_REMOTE_WORK_DIR is empty. Set it as a repo/org Actions variable (e.g. '\$SCRATCH/downstream-ci') — see HPC.md." >&2
+            exit 1
+          fi
+          echo "remote work dir: $REMOTE_WORK_DIR"
+
       - name: Seed a tree to push to the cluster
         shell: bash
         run: |

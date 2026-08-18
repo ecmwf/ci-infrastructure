@@ -731,6 +731,32 @@ def gc(
     run_gc(site._connection, remote_work_dir=resolved, older_than_days=older_than_days, dryrun=dryrun)
 
 
+def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
+    """Refuse a resolved cluster path that sits directly under root.
+
+    Two failure modes share this guard. For remove-tree it stops a bare
+    ``$SCRATCH`` or ``/`` from being wiped. For push-tree and fetch-tree it
+    catches the misconfiguration that produces such a path in the first place: an
+    unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
+    ``${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-<id>`` renders
+    ``/transfer-e2e-<id>``, and the cluster then reports the confusing
+    ``mkdir: cannot create directory '/transfer-e2e-...': Read-only file system``.
+    Naming the variable here turns that into a one-line diagnosis.
+
+    fetch-tree is deliberately NOT guarded: it only reads, and a shallow source
+    such as ``/data`` is defensible on some clusters. In the round-trip flow its
+    path comes from push-tree's output anyway, so it is already covered.
+    """
+    if resolved.strip("/").count("/") >= 1:
+        return
+    detail = f"{resolved!r}" if resolved == remote_dir else f"{resolved!r} (from {remote_dir!r})"
+    raise CIError(
+        f"{command}: refusing a top-level cluster path: {detail}. A path directly under / is almost "
+        "always an unset work-dir variable — set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '$SCRATCH/downstream-ci') "
+        "so the path lands under it."
+    )
+
+
 @main.command("fetch-tree", help="Copy a directory a job produced off the cluster back to the runner.")
 @click.option("--site", "site_name", required=True, help="Troika site name")
 @click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
@@ -791,6 +817,7 @@ def push_tree_cmd(
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     resolved = resolve_remote_path(site._connection, remote_dir)  # the destination lives on the cluster
+    _require_nested_remote_path("push-tree", remote_dir, resolved)
     if resolved != remote_dir:
         print(f"push-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.push_tree(site._connection, local_dir=local_dir, remote_dir=resolved, tar_dir=tar_dir, dryrun=dryrun)
@@ -825,10 +852,7 @@ def remove_tree_cmd(
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     resolved = resolve_remote_path(site._connection, remote_dir)
-    # Guard against wiping a top-level path (a bare '$SCRATCH', '/', '/tmp'): require
-    # the resolved dir to sit at least two levels below root.
-    if resolved.strip("/").count("/") < 1:
-        raise CIError(f"remove-tree: refusing to remove a top-level path: {resolved!r}")
+    _require_nested_remote_path("remove-tree", remote_dir, resolved)
     if resolved != remote_dir:
         print(f"remove-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.remove_tree(site._connection, remote_dir=resolved, dryrun=dryrun)

@@ -116,8 +116,35 @@ HPC:
   workflows, and run an end-to-end job on the cluster (needs cluster access);
   validate reattach-after-cancel and cache-hit-after-success on the real site.
 
-- set the org-level HPC_CI_WORK_DIR variable + TROIKA_USER secret and confirm
-  the login-node runner's $RUNNER_TEMP + work-dir are on the shared filesystem.
+- vars.HPC_CI_REMOTE_WORK_DIR = '$SCRATCH/downstream-ci' is the ONE setting the
+  HPC path needs, and it is being set now. Single-quote it: the spec is expanded
+  on the cluster, in a login shell, not on the runner. It has no fallback by
+  design (build-on-hpc:177 and hpc-transfer-e2e.yml both hard-fail on it), since
+  a runner-local default would be invisible to compute nodes -- the classic
+  wrong-work-directory bug HPC.md warns about. An unset value is what produced
+  "mkdir: cannot create directory '/transfer-e2e-<run id>': Read-only file
+  system"; push-tree now refuses such a path instead.
+
+  Nothing else needs setting, contrary to what this entry used to claim:
+    * vars.HPC_CI_WORK_DIR is optional. build-on-hpc:182 does
+      work_dir="${WORK_DIR_INPUT:-$RUNNER_TEMP}", and nothing local has to
+      survive a re-run because reattach goes through the scheduler by job name.
+      Only worth setting if the runner volume runs out of disk.
+    * the troika user secret is HPC_CI_SSH_USER, not TROIKA_USER. TROIKA_USER is
+      only the env-var name inside the composite actions.
+
+- fix HPC.md:103, which documents `secrets.TROIKA_USER` as the troika user. No
+  code reads that name: the generator (generate_downstream_ci.py:1393), all three
+  HPC workflows and HPC.md's own examples further down (203/212/228) use
+  secrets.HPC_CI_SSH_USER, and tests/test_generate_hpc.py:170 asserts
+  "TROIKA_USER" never appears in generated YAML. The doc line is a trap.
+
+- drop the "confirm the login-node runner's $RUNNER_TEMP + work-dir are on the
+  shared filesystem" worry, or re-scope it: it was written when hpc-roundtrip ran
+  on the [hpc] login-node runner. It now runs in a container on
+  arc-pet-vsphere-prod and reaches the cluster over troika ssh, so nothing local
+  needs to be on the shared filesystem. Re-check if a job ever moves back onto a
+  login-node runner.
 
 
 - declare version for troika and pin to it
