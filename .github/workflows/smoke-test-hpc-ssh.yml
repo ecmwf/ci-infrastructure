@@ -20,7 +20,6 @@ on:
     inputs:
       runner:
         description: Scale set to run the ssh check from
-        # default: arc-runner-normal
         default: arc-pet-vsphere-prod
         required: false
 

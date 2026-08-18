@@ -109,7 +109,12 @@ jobs:
     # would. ensure-infrastructure-present installs the published @main, so run it
     # from main. The ubuntu-latest job above is the per-push gate.
     if: github.event_name == 'workflow_dispatch'
-    runs-on: [hpc]
+    runs-on: arc-pet-vsphere-prod
+    container:
+      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
