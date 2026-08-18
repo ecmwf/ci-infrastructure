@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Contributor Declaration drift
+
+# The canonical text is vendored in this repo rather than fetched at pull request
+# time: fetching would mean anyone who can push to ecmwf/.github silently changes
+# the merge rule for every ECMWF repo, and would make every open pull request go
+# red the moment that file was edited. The cost of vendoring is drift, which is
+# what this job watches for.
+on:
+  schedule:
+    # Weekly, off-the-hour to dodge the cron pileup, like hpc-nightly-cleanup.yml.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      # gh api with the raw Accept header, not curl on raw.githubusercontent.com:
+      # unauthenticated raw fetches return 429 often enough to make a scheduled
+      # job flap. Also avoids the fragile `--jq .content | base64 -d` pipeline.
+      - name: Fetch the org pull request template
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/ecmwf/.github/contents/.github/PULL_REQUEST_TEMPLATE.md \
+            -H 'Accept: application/vnd.github.raw' > "$RUNNER_TEMP/org-template.md"
+
+      # No dedicated comparison code is needed: the org template IS a valid pull
+      # request body, so running the checker over it diagnoses every drift shape
+      # with the machinery that is already tested. A reworded bullet reports
+      # `diverged` with a line number; an added bullet or a new section appended
+      # after the declaration reports `not-at-end`, which is exactly the drift
+      # that would invalidate the ends-with rule for the whole org; a renamed
+      # heading reports `heading-missing`. Comparison is on normalized forms, so
+      # the vendored LF copy does not trip over the org file's CRLF.
+      - name: Compare the vendored declaration against the org template
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python3 -m ci_infrastructure.check_pr_declaration \
+            --body-file "$RUNNER_TEMP/org-template.md"

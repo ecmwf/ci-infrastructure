@@ -27,6 +27,10 @@ ci-infrastructure-check = "ci_infrastructure.check_artifact:main"
 ci-infrastructure-print-dep-table = "ci_infrastructure.print_dep_table:main"
 ci-infrastructure-s3 = "ci_infrastructure.s3_store:main"
 ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
+# For local debugging only. actions/check-pr-declaration deliberately does NOT
+# use this entry point: it runs the module with `-m` and a PYTHONPATH, installing
+# nothing, because the checker is stdlib-only by design.
+ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:main"
 
 [project.optional-dependencies]
 test = ["pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
@@ -51,6 +55,12 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLA bullet is 149 characters and has to stay verbatim in the source for
+# auditability; composing it from a shorter URL constant would make a legal
+# declaration assembled rather than literal.
+"src/ci_infrastructure/check_pr_declaration.py" = ["E501"]
 
 [tool.mypy]
 strict = true

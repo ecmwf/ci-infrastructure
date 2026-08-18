@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Contributor Declaration (dogfood)
+
+# pull_request, NOT pull_request_target, on purpose: this workflow exercises the
+# action as it exists in the pull request, so a change to the checker is judged by
+# its own version rather than by main's. Consumer repos use
+# pull_request_target instead (see the README snippet) precisely so that a pull
+# request cannot stub out the gate that judges it -- that tamper-resistance is
+# worth more there than testing-your-own-version is, and the reverse holds here.
+#
+# Same shape as hpc-transfer-e2e.yml, which also drives ./actions/... rather than
+# @main so the checkout under test is the code that runs.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  # The composite action straight from this checkout. Also the only coverage of
+  # the local `uses: ./actions/...` path, where GITHUB_ACTION_PATH carries no
+  # /_actions/ segment to re-anchor.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: ./actions/check-pr-declaration
+
+      # The escape hatch, pointed at this repo's own template. It must agree with
+      # the vendored constant, so this leg passing is a second, network-free
+      # check that the two have not drifted apart.
+      - uses: ./actions/check-pr-declaration
+        with:
+          declaration-file: .github/PULL_REQUEST_TEMPLATE.md
+
+  # The reusable workflow wrapper, again from this checkout. Note this leg calls
+  # ecmwf/ci-infrastructure/actions/check-pr-declaration@main internally, so it
+  # verifies the wiring rather than the pull request's own action code.
+  reusable-workflow:
+    uses: ./.github/workflows/check-pr-declaration.yml
+    with:
+      runs-on: ubuntu-latest

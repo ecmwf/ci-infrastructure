@@ -8,12 +8,97 @@
 
 - improve output of ctest, perhaps there is an available action?
 
-- enforce issue template,
-    https://raw.githubusercontent.com/ecmwf/.github/refs/heads/main/.github/PULL_REQUEST_TEMPLATE.md
-
 - use ubuntu-slim where possible
 
+- adopt the zizmor pre-commit hook [SECURITY]. a48f078 took it from 14
+  template-injection findings to 0 but nothing keeps it there; the new
+  actionlint hook is next to where it belongs. Blocked on 78 pre-existing
+  findings: 40 github-env (setup-sccache, low confidence), 14 unpinned-uses
+  (the deliberate @main self-references -- needs a release tag first, see the
+  open-source audit), 13 excessive-permissions (no workflow here declares
+  permissions:), 7 artipacked, 3 unpinned-images, 1 github-app.
+
 - after troika is typed. drop the ignore missing imports
+
+- add a `runs-on` input to .github/workflows/pre-commit.yml. It hardcodes
+  ubuntu-slim, an ARC label, so any consumer outside this org's runner groups
+  queues forever with no runner. It works today only because its one known
+  caller (ecmwf/stack-dependencies) has ARC access. Copy the input from
+  check-pr-declaration.yml, which defaults to ubuntu-latest for exactly this
+  reason.
+
+- backport the candidate probe from actions/check-pr-declaration into
+  ensure-infrastructure-present. That action applies
+  ${GITHUB_ACTION_PATH#*/_actions/} unconditionally, so for `uses: ./actions/x`
+  (no /_actions/ segment) the substitution is a no-op and it cd's into a
+  nonsense path. hpc-transfer-e2e.yml masks this by pre-setting
+  CI_INFRASTRUCTURE_PYTHON to force the fast path; with the probe it could drop
+  that workaround. Probing for the file we actually need, rather than
+  re-anchoring blindly, covers hosted runners, ARC k8s, and local ./actions/
+  with one loop.
+
+
+PR Contributor Declaration (checker landed, rollout pending):
+
+The action, the reusable workflow and this repo's own template are in. What
+remains is turning it on across the org, in this order -- reversing steps 3 and
+4 fails contributors who faithfully used their own repo's template, because a
+template change only affects NEW pull requests while every already-open one
+keeps its old body.
+
+1. add the standard consumer caller to this repo:
+   .github/workflows/contributor-declaration.yml, exactly the README snippet.
+   It must reference
+   ecmwf/ci-infrastructure/.github/workflows/check-pr-declaration.yml@main, so
+   it cannot be committed until the workflow is on main -- hence a follow-up
+   rather than part of the original commit. pr-declaration-dogfood.yml is not a
+   substitute: it runs on `pull_request` so that a PR is judged by its own
+   version of the checker, which is the right trade for developing the action
+   and the wrong one for enforcement.
+
+2. measure the blast radius before requiring anything anywhere. Run the checker
+   over every open pull request in the org
+   (`gh api search/issues -f q='org:ecmwf is:pr is:open'`, ~1036 of them) and
+   publish the would-fail list. 212 are dependabot's and exempt by default; the
+   rest is the number to understand. There is deliberately no warn-only mode, so
+   this scratch run is the only way to see the impact before it is real.
+
+3. converge the drifting templates. These ship a one-line variant ("...I affirm
+   that all authors agree to the [Contributor License Agreement.](...)") which
+   the canonical block rejects: anemoi, anemoi-core, anemoi-datasets,
+   anemoi-utils, anemoi-inference, anemoi-registry, ellem. Either replace the
+   file with the org block or delete it so the org template applies. A repo
+   mid-migration can point the check at its own copy with
+   `declaration-file: .github/PULL_REQUEST_TEMPLATE.md`, but that is a bridge,
+   not a destination -- the point is one text org-wide.
+
+4. add the caller workflow per repo, after its template is fixed.
+
+5. only then require the context, and prefer an org-level repository ruleset
+   ("Require workflows to pass before merging") pointing at a SHA-pinned
+   ecmwf/ci-infrastructure/.github/workflows/check-pr-declaration.yml over
+   hand-adding a required context string per repo. One config instead of N,
+   GitHub owns the triggering (so a caller that forgets `edited` cannot silently
+   disable the gate), and the pinned workflow is not editable by the pull
+   request under test. While in there, consider a ruleset path restriction on
+   .github/workflows/** so PRs cannot touch workflow files without a bypass
+   actor.
+
+Two gaps that need a merge-time check, both documented in the action's
+description. Neither is closable at pull_request_target time:
+
+- merge queues. A pull_request_target workflow never runs on `merge_group`, so a
+  repo that enables a merge queue would have entries wait for a check that never
+  arrives, time out (60 min default) and be dequeued -- every PR in that repo
+  unmergeable. Extend the gate BEFORE any repo turns a queue on: parse the PR
+  number out of refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha> and read the
+  body with `body-source: api`, since there is no pull_request payload there.
+
+- a description edited with GITHUB_TOKEN does not start a new workflow run, so
+  an automation calling `gh pr edit --body ''` leaves the earlier green result
+  standing. Wants either the merge_group leg above or a post-merge audit on
+  `push: main` that re-reads the merged PR's body and opens an issue on
+  mismatch.
 
 
 HPC:
