@@ -16,8 +16,8 @@ object store that also backs sccache), keyed *purely by its artifact name*:
 The artifact name already encodes the full identity of a build
 (``<prefix>-<sha>[-<deps-hash8>]-<platform>-<compiler>[-py<ver>]-<build-type>[-opts.<option>]``)
 and is independent of which repository or workflow run produced it. The trailing
-``opts.`` segment is present only for builds that declare a non-empty options
-list (feature flags orthogonal to build-type); plain builds omit it. Keying the
+``opts.`` segment is present only for builds that name a build-option config
+(a feature configuration orthogonal to build-type); plain builds omit it. Keying the
 object store by that name — rather than by the producer repo's GitHub Actions
 artifact store — is what lets any consumer resolve a dependency regardless of
 which run built it. That decoupling is the whole reason this module exists.

@@ -294,14 +294,13 @@ def cancel_job(
 # --------------------------------------------------------------------------- #
 # Cleanup (nightly GC of the cluster work dir)
 # --------------------------------------------------------------------------- #
-#: The subtrees `RemotePaths` puts under the remote work dir. Each holds one
-#: entry per artifact (or a .out file for hpc-jobs), so an age-based sweep at
-#: maxdepth 1 reclaims whole builds without touching the roots.
-#: Subdirectories of the remote work dir that run_gc sweeps by age. "transfer-e2e"
-#: is not written by the build path: hpc-transfer-e2e.yml puts its per-run tree
-#: there so a failed round-trip, which deliberately leaves the tree behind for
-#: debugging, is still reclaimed eventually. Anything written directly under the
-#: work dir instead of one of these is never swept.
+#: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
+#: one entry per artifact (or a .out file for hpc-jobs), so a maxdepth-1 sweep
+#: reclaims whole builds without touching the roots. "transfer-e2e" is not
+#: written by the build path: hpc-transfer-e2e.yml puts its per-run tree there so
+#: a failed round-trip, which deliberately leaves the tree behind for debugging,
+#: is still reclaimed eventually. Anything written directly under the work dir
+#: instead of one of these is never swept.
 GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "transfer-e2e")
 
 
@@ -753,10 +752,10 @@ def gc(
 def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
     """Refuse a resolved cluster path that sits directly under root.
 
-    Two failure modes share this guard. For remove-tree it stops a bare
-    ``$SCRATCH`` or ``/`` from being wiped. For push-tree and fetch-tree it
-    catches the misconfiguration that produces such a path in the first place: an
-    unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
+    Two failure modes share this guard, on remove-tree and push-tree. For
+    remove-tree it stops a bare ``$SCRATCH`` or ``/`` from being wiped. For
+    push-tree it catches the misconfiguration that produces such a path in the
+    first place: an unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
     ``${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-<id>`` renders
     ``/transfer-e2e-<id>``, and the cluster then reports the confusing
     ``mkdir: cannot create directory '/transfer-e2e-...': Read-only file system``.

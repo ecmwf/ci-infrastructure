@@ -187,10 +187,10 @@ _WorkflowDumper.yaml_implicit_resolvers = {
     k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
     for k, v in yaml.SafeDumper.yaml_implicit_resolvers.items()
 }
-# Both codes are listed on purpose. types-PyYAML used to leave this call
-# untyped (needing no-untyped-call) and now types it (making that ignore
-# unused, which strict mode reports as an error). Naming unused-ignore as well
-# means neither version of the stubs fails the build, since mypy is not pinned.
+# Both codes on purpose: whether this call is typed depends on the types-PyYAML
+# version, and mypy is not pinned. no-untyped-call covers the older stubs;
+# unused-ignore keeps strict mode from failing on the newer ones, where the first
+# code is redundant.
 _WorkflowDumper.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
     "tag:yaml.org,2002:bool",
     re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
@@ -732,7 +732,7 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
     _check_subset_invariant(manifests, by_repo)
     _check_trigger_cycles(manifests, by_repo)
     _check_needs(manifests, by_pkg, by_repo)
-    _check_reuse_matrix_targets(manifests)
+    _check_kinds_have_legs(manifests)
     _check_leg_identity_uniqueness(manifests)
 
 
@@ -747,14 +747,13 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
     """No two legs of the same publishing kind may share an artifact identity.
 
     The artifact name is built from `platform` + the compiler fields +
-    `build-type` + `python-version` — every leg field EXCEPT the scheduling
-    fields (`runs-on`, `container`). So two publishing legs that are identical
-    once those are dropped resolve to the same artifact name; if they're built
-    in different environments (e.g. a host runner vs a container, or two images)
-    they publish different bytes under one name and a by-name fetch picks one
+    `build-type` + `python-version` — every leg field EXCEPT the scheduling ones
+    (see _SCHEDULING_FIELDS). So two publishing legs that are identical once
+    those are dropped resolve to the same artifact name; built in different
+    environments (a host runner vs a container, or two images) they publish
+    different bytes under one name and a by-name fetch picks one
     non-deterministically. Non-publishing kinds (test) are exempt — they upload
-    nothing. (This guards the bug where a host smoke leg shared
-    platform=ubuntu-24.04 with a container leg.)
+    nothing.
     """
     for m in manifests:
         for kind, mk in m.matrices.items():
@@ -900,9 +899,12 @@ def _check_cross_repo_job_cycles(
     )
 
 
-def _check_reuse_matrix_targets(manifests: Sequence[Manifest]) -> None:
-    # Already validated structurally during parse, but check that any reuse target
-    # has at least one include leg (otherwise the consumer will produce an empty matrix).
+def _check_kinds_have_legs(manifests: Sequence[Manifest]) -> None:
+    """A kind that participates in cross-repo wiring needs at least one leg.
+
+    Zero legs — whether declared directly or inherited via reuse-matrix — renders
+    a matrix the consuming workflow rejects with `fromJSON: empty input`.
+    """
     for m in manifests:
         for kind, mk in m.matrices.items():
             if not mk.legs and (mk.triggers or mk.reuse_matrix is not None):
@@ -964,14 +966,10 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
     """Emit a repo's .github/workflows/cross-repo-trigger{-hpc}.yml as a string,
     or None if no kind in the repo's matrix opts into cross-repo dispatch on `lane`.
 
-    The emitted workflow is a workflow_dispatch entry point fired from two
-    directions: the upstream's trigger-downstream.yml orchestrator (after
-    a successful upstream CI, with `from-jobs=["pkg/kind", ...]`) and resolve_deps
-    from inside a consumer's run (when a producer's artifact is stale,
-    with `rebuild-request=true`). A kind appears in this workflow iff its
-    `triggers` list is non-empty; the filter rendered is the OR of the
-    clauses for each opted-in trigger. Leaf producers (no upstream-change
-    refs, only rebuild-request) get a generated workflow too.
+    A kind appears here iff its `triggers` list is non-empty, and the `if:` filter
+    rendered is the OR of the clauses for each opted-in trigger. Leaf producers
+    (rebuild-request only, no upstream-change) get a generated workflow too. See
+    the module docstring for the two entry points and who fires each.
     """
     # One file per lane: only kinds whose execution matches this lane appear here.
     # The lanes are provably self-contained (every hpc kind depends only on upstream
@@ -1005,14 +1003,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
         # caller and ignores a called workflow's run-name, so the empty
         # dispatch-id there does no harm.
         "run-name": ("Cross-repo trigger (${{ inputs.from-repo }}@${{ inputs.from-sha }}) [${{ inputs.dispatch-id }}]"),
-        # Two entry points share the same typed inputs:
-        #   - workflow_call: the upstream's trigger-downstream.yml orchestrator
-        #     invokes us as a reusable workflow, so GitHub waits for completion
-        #     natively (no API polling) and our jobs show on the upstream PR.
-        #   - workflow_dispatch: resolve_deps' consumer-driven recovery still
-        #     fires us via `gh workflow run` when an upstream artifact is missing.
-        # dispatch-id is dispatch-only (run-name correlation); workflow_call
-        # never sets it, so it is optional/defaulted.
+        # Both entry points take the same typed inputs (see the module docstring).
         "on": {
             # workflow_call needs no dispatch-id: GitHub waits for the called
             # run natively, so there is no run to correlate by name.

@@ -140,12 +140,11 @@ _OPTION_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 def _as_option(raw: Any, context: str) -> str:
     """Coerce + validate a build-option value (from a matrix leg or [[deps]]).
 
-    Options are a scalar named configuration: a single string naming the whole
-    feature config (e.g. 'stochastic-moments', or a curated combo like
-    'moments-fast'), or empty/absent (-> '') for a plain build. A list is rejected
-    with a migration hint — the composable-set form was replaced by scalar named
-    configs so each maps 1:1 onto a CMake preset. Rejects any name outside
-    [A-Za-z0-9_-] so it can't corrupt the artifact-name segment.
+    An option is a scalar named configuration: one string naming the whole feature
+    config (e.g. 'stochastic-moments', or a curated combo like 'moments-fast'), or
+    empty/absent (-> '') for a plain build. One name maps 1:1 onto a CMake preset,
+    which is why a list is refused rather than composed. Any name outside
+    [A-Za-z0-9_-] is rejected: it would corrupt the artifact-name segment.
     """
     if raw is None or raw == "":
         return ""
@@ -887,19 +886,13 @@ def resolve_leg(
     own_compiler = _join_compilers(own.compiler_inputs, matrix_entry, context=f"[package] '{own.name}'")
     own_build_type = str(matrix_entry.get("build-type", "Release"))
     own_platform = compute_platform_slug(str(matrix_entry.get("platform", "")))
-    # Whether the OWN artifact is python-version-axed is determined by the
-    # leg itself, not by the [package].needs-python flag. The flag remains
-    # the right source of truth for [[deps]] entries (where pip-install
-    # behaviour follows the dep's declared needs-python), but for the OWN
-    # package's identity any leg that declares python-version is by
-    # definition producing a per-Python-version artifact.
-    #
-    # The bug this guards against: ecflow's [package] has needs-python =
-    # false (because the primary [matrix.build] doesn't care about Python),
-    # but its secondary [matrix.build-python] legs DO have python-version.
-    # The earlier `if own.needs_python else None` gate dropped the suffix,
-    # which made all 3 py-version legs of the same compiler collide on the
-    # artifact name and one upload-artifact "win" while the others 404'd.
+    # Any leg that declares python-version is by definition producing a
+    # per-Python-version artifact, so the leg decides — not [package].needs-python,
+    # which may be false for a repo whose primary kind ignores Python while a
+    # secondary kind builds one artifact per version. Reading the flag instead
+    # would collide every version of a kind onto one name.
+    # (needs-python remains the right source of truth for [[deps]] entries, where
+    # it drives pip-install behaviour rather than identity.)
     own_python_raw = str(matrix_entry.get("python-version", "")).strip()
     own_python: str | None = own_python_raw or None
 

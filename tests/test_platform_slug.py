@@ -7,7 +7,7 @@
 The platform key lets several ABI-compatible images (and a same-distro host
 runner) share one artifact: a producer built under one image is reused by a
 consumer building under a different image, instead of being rebuilt just
-because the image tag differs. These tests pin that behaviour:
+because the image tag differs. These tests pin that:
 
   - compute_platform_slug: the declared platform is used verbatim, is required,
     and may not begin with an 8-hex segment (which would be read as deps-hash8).
