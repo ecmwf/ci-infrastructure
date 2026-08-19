@@ -81,7 +81,6 @@ parallel.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -92,7 +91,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, NewType, cast
+from typing import Any, Final, Literal, NewType
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -104,14 +103,15 @@ import click
 from . import s3_store
 from ._errors import CIError
 from ._github_api import (
-    IN_PROGRESS_STATUSES,
-    canonical_option_segment,
     compute_deps_hash8,
     compute_platform_slug,
-    gh_api_rest,
+    fetch_manifests_layer,
+    probe_workflow_runs,
     select_token,
+    write_outputs,
 )
-from ._github_api import fetch_manifests_layer as _fetch_manifests_layer_str
+from ._github_api import make_artifact_name as _make_artifact_name
+from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 
 # Discriminating fields that identify a buildable leg — the inputs to the
 # artifact name. `platform` is the binary-compatibility class; `runs-on` and
@@ -439,36 +439,9 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     )
 
 
-def fetch_manifests_layer(
-    repos_refs: Sequence[tuple[Repo, Ref]],
-    sync_branch: Ref | None,
-    token: str | None,
-    manifest_path: str,
-) -> dict[tuple[Repo, Ref], tuple[str | None, bool]]:
-    """Typed wrapper around _github_api.fetch_manifests_layer.
-
-    The shared helper takes plain `str` so the generator (which has no
-    Repo/Ref NewType vocabulary) can also use it. resolve_deps wraps the
-    return value back into its NewType-keyed dict.
-    """
-    raw = _fetch_manifests_layer_str(repos_refs, sync_branch, token, manifest_path)
-    return cast("dict[tuple[Repo, Ref], tuple[str | None, bool]]", raw)
-
-
 def resolve_ref_to_sha(repo: Repo, ref: Ref, token: str | None) -> Sha:
-    """Resolve a branch / lightweight or annotated tag / short or full SHA to a 40-char commit SHA.
-
-    Uses the commits/{ref} REST endpoint, which auto-disambiguates and dereferences
-    annotated tags to the underlying commit (the tags/{ref} endpoint we used previously
-    returned the tag-object SHA for annotated tags, which doesn't match how artifacts
-    are keyed). Mirrored in check_artifact.resolve_ref.
-    """
-    if _SHA_RE.fullmatch(ref):
-        return Sha(ref)
-    data = gh_api_rest(f"repos/{repo}/commits/{ref}", token)
-    if isinstance(data, dict) and isinstance(data.get("sha"), str):
-        return as_sha(cast(str, data["sha"]))
-    raise ResolveError(f"Could not resolve ref '{ref}' in {repo}")
+    """`_github_api.resolve_ref_to_sha` in this module's NewType vocabulary."""
+    return Sha(_resolve_ref_to_sha(repo, ref, token))
 
 
 def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> Sha:
@@ -490,21 +463,12 @@ def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> S
 def has_in_flight_run(repo: Repo, sha: Sha, token: str | None) -> bool:
     """True if at least one workflow run for this commit SHA is queued / in progress.
 
-    Used to distinguish orphan pins (no upstream CI ever ran for this commit, or
-    every run completed without producing the artifact we need) from coordinated
-    pushes (upstream CI is racing this resolve job and will produce the artifact
-    soon — fetch_deps polls in that case).
+    Distinguishes orphan pins (no upstream CI ever ran for this commit, or every
+    run completed without producing the artifact we need) from coordinated pushes
+    (upstream CI is racing this resolve and will produce the artifact soon —
+    fetch_deps polls in that case).
     """
-    data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=20", token)
-    if not isinstance(data, dict):
-        return False
-    runs = data.get("workflow_runs")
-    if not isinstance(runs, list):
-        return False
-    for run in runs:
-        if isinstance(run, dict) and run.get("status") in IN_PROGRESS_STATUSES:
-            return True
-    return False
+    return probe_workflow_runs(repo, sha, token).in_flight
 
 
 def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, Any]) -> bool:
@@ -649,30 +613,10 @@ def make_artifact_name(
     python_version: str | None,
     option: str = "",
 ) -> ArtifactName:
-    """Mirrors the naming logic in check_artifact.py exactly so cache keys still hit.
-
-    None for deps_hash8 / compiler / python_version means "this segment doesn't
-    apply" (no deps, no compilers declared, not a Python build) — those segments
-    are dropped from the name, matching the pre-Optional `if deps_hash8:` etc.
-    behaviour exactly.
-
-    `option` is the orthogonal build-option axis (a scalar config name); its segment
-    is appended only when non-empty (empty -> name unchanged from the pre-options
-    format). See canonical_option_segment.
-    """
-    parts = [prefix, sha]
-    if deps_hash8:
-        parts.append(deps_hash8)
-    parts.append(platform_slug)
-    if compiler:
-        parts.append(compiler)
-    if python_version:
-        parts.append(f"py{python_version}")
-    parts.append(build_type)
-    opt_seg = canonical_option_segment(option)
-    if opt_seg:
-        parts.append(opt_seg)
-    return ArtifactName("-".join(parts))
+    """`_github_api.make_artifact_name` in this module's NewType vocabulary."""
+    return ArtifactName(
+        _make_artifact_name(prefix, sha, deps_hash8, platform_slug, compiler, build_type, python_version, option)
+    )
 
 
 def _install_base() -> Path:
@@ -1026,7 +970,10 @@ def bfs_load_manifests(
         results = fetch_manifests_layer(layer, sync_branch, token, manifest_path)
 
         next_queue: list[tuple[Repo, Ref]] = []
-        for (repo, ref), (text, sync_present) in results.items():
+        for (raw_repo, raw_ref), (text, sync_present) in results.items():
+            # The shared fetcher speaks plain str (the generator has no NewType
+            # vocabulary); re-narrow once, here, rather than everywhere below.
+            repo, ref = Repo(raw_repo), Ref(raw_ref)
             if sync_branch:
                 sync_exists.setdefault(repo, sync_present)
                 # If sync-branch exists upstream, the EFFECTIVE ref to fetch is the sync branch,
@@ -1059,22 +1006,6 @@ def bfs_load_manifests(
         queue = next_queue
 
     return manifest_cache, sync_exists
-
-
-def write_outputs(outputs: Mapping[str, str]) -> None:
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            for key, value in outputs.items():
-                # Multi-line values need heredoc-style delimited output.
-                if "\n" in value:
-                    delim = f"EOF_{hashlib.sha1(value.encode()).hexdigest()[:8]}"
-                    f.write(f"{key}<<{delim}\n{value}\n{delim}\n")
-                else:
-                    f.write(f"{key}={value}\n")
-    else:
-        for key, value in outputs.items():
-            print(f"{key}={value}")
 
 
 @click.command(help="Resolve dep tree for all matrix legs in a manifest.")

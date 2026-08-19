@@ -23,8 +23,8 @@ All real work is delegated to the tested primitives:
     uses the producer's workflow-run status only as a give-up signal, honors the
     ``ARTIFACT_WAIT_TIMEOUT`` / ``ARTIFACT_POLL_INTERVAL`` env knobs, and emits
     structured diagnostics when it gives up.
-  * ``check_artifact.resolve_ref`` — resolves the ref to the 40-char SHA used for
-    the run-status give-up probe.
+  * ``_github_api.resolve_ref_to_sha`` — resolves the ref to the 40-char SHA used
+    for the run-status give-up probe.
 
 Usage:
     wait_for_artifacts.py --repo owner/repo --ref <branch|tag|sha> \\
@@ -39,8 +39,7 @@ from __future__ import annotations
 import click
 
 from ._errors import CIError
-from ._github_api import select_token
-from .check_artifact import resolve_ref
+from ._github_api import resolve_ref_to_sha, select_token
 from .fetch_deps import poll_for_artifact
 
 
@@ -59,7 +58,7 @@ def main(repo: str, ref: str, artifact_names: str) -> None:
         raise CIError("wait_for_artifacts: --artifact-names was empty.")
 
     token = select_token()
-    sha = resolve_ref(repo, ref, token)
+    sha = resolve_ref_to_sha(repo, ref, token)
 
     print(f"wait_for_artifacts: waiting on {len(names)} artifact(s) from {repo}@{sha[:8]}: {', '.join(names)}")
 

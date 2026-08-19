@@ -57,7 +57,6 @@ Batch (slurm) sites only — see ``site.ensure_batch_site``.
 
 from __future__ import annotations
 
-import os
 import random
 import re
 import shlex
@@ -74,6 +73,7 @@ import click
 
 from .. import s3_store
 from .._errors import CIError
+from .._github_api import write_outputs
 from . import jobscript, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
@@ -401,14 +401,6 @@ def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def _write_output(key: str, value: str) -> None:
-    """Append a ``key=value`` line to $GITHUB_OUTPUT (no-op off CI)."""
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as handle:
-            handle.write(f"{key}={value}\n")
-
-
 def _echo_remote_output(conn: Any, output: str) -> None:
     """Print the job's captured cluster output to the runner console.
 
@@ -537,8 +529,7 @@ def submit_wait(
     # is nothing to cache against — it must run on every (re-)run.
     if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
         print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
-        _write_output("install-path", local_install_path)
-        _write_output("cache-hit", "true")
+        write_outputs({"install-path": local_install_path, "cache-hit": "true"})
         return
 
     repo_script = Path(job_script)
@@ -666,8 +657,7 @@ def submit_wait(
             local_install_dir=local_install_path,
             tar_dir=tar_dir,
         )
-        _write_output("install-path", local_install_path)
-        _write_output("cache-hit", "false")
+        write_outputs({"install-path": local_install_path, "cache-hit": "false"})
         return
 
     detail = {
@@ -793,7 +783,7 @@ def fetch_tree_cmd(
     if dryrun:
         print(f"fetch-tree: dry run; would fetch {resolved} -> {local_dir}")
         return
-    _write_output("local-dir", local_dir)
+    write_outputs({"local-dir": local_dir})
     print(f"fetch-tree: fetched {resolved} -> {local_dir}")
 
 
@@ -829,7 +819,7 @@ def push_tree_cmd(
     if dryrun:
         print(f"push-tree: dry run; would push {local_dir} -> {resolved}")
         return
-    _write_output("remote-dir", resolved)
+    write_outputs({"remote-dir": resolved})
     print(f"push-tree: pushed {local_dir} -> {resolved}")
 
 

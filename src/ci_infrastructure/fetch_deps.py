@@ -63,13 +63,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Final, Literal, NamedTuple, TypedDict
+from typing import Final, Literal, TypedDict
 
 import click
 
 from . import s3_store
 from ._errors import CIError
-from ._github_api import IN_PROGRESS_STATUSES, gh_api_rest, select_token
+from ._github_api import IN_PROGRESS_STATUSES, probe_workflow_runs, select_token, write_outputs
 
 _DEFAULT_POLL_INTERVAL: Final = 60
 _DEFAULT_WAIT_TIMEOUT: Final = 1800
@@ -113,41 +113,6 @@ class Dep(TypedDict):
     source: str
     install_path: Path
     needs_python: bool
-
-
-class UpstreamRun(NamedTuple):
-    """Outcome of probing an upstream SHA's workflow runs.
-
-    state   - 'running' (≥1 run queued/in-progress), 'completed' (all done),
-              or 'none' (no runs for this SHA).
-    detail  - concrete GitHub status of the first in-progress run, e.g.
-              'queued' or 'in_progress'; None unless state == 'running'.
-    url     - that run's html_url; None unless state == 'running'.
-    """
-
-    state: Literal["running", "completed", "none"]
-    detail: str | None = None
-    url: str | None = None
-
-
-def upstream_run_status(repo: str, sha: str, token: str | None) -> UpstreamRun:
-    """Probe the upstream SHA's workflow runs; see UpstreamRun for the result."""
-    data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
-    if not isinstance(data, dict):
-        return UpstreamRun("none")
-    runs = data.get("workflow_runs")
-    if not isinstance(runs, list) or not runs:
-        return UpstreamRun("none")
-    for run in runs:
-        if isinstance(run, dict) and run.get("status") in IN_PROGRESS_STATUSES:
-            status = run.get("status")
-            html_url = run.get("html_url")
-            return UpstreamRun(
-                "running",
-                status if isinstance(status, str) else None,
-                html_url if isinstance(html_url, str) else None,
-            )
-    return UpstreamRun("completed")
 
 
 def _diagnose_missing_artifact(
@@ -213,7 +178,7 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
                 print(f"  ✓ {name} is now available after waiting {_fmt_duration(time.monotonic() - start)} for {repo}")
             return True
 
-        run = upstream_run_status(repo, sha, token)
+        run = probe_workflow_runs(repo, sha, token)
         state = run.state
         if state == "running":
             remaining = deadline - time.monotonic()
@@ -373,15 +338,6 @@ def fetch_one(
     return source
 
 
-def _write_updated_deps_json(raw: list[object]) -> None:
-    """Emit the (possibly source-updated) deps array as the action's
-    `updated-deps-json` output. A no-op off CI where GITHUB_OUTPUT is unset."""
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            f.write(f"updated-deps-json={json.dumps(raw)}\n")
-
-
 @click.command(help="Fetch each resolved dep into its install path.")
 @click.option("--deps-json", "deps_json", required=True, help="JSON array of resolved deps")
 @click.option(
@@ -419,7 +375,7 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
     # list is empty) finishes instantly without probing PATH at all.
     if not raw:
         print("fetch_deps: no deps to fetch for this leg; nothing to do.")
-        _write_updated_deps_json(raw)
+        write_outputs({"updated-deps-json": json.dumps(raw)})
         return
 
     # Preflight: fetch_deps shells out to `gh` (upstream run-state probe) and
@@ -526,7 +482,7 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
     if failures:
         raise CIError(f"{len(failures)} dep(s) could not be fetched.")
 
-    _write_updated_deps_json(raw)
+    write_outputs({"updated-deps-json": json.dumps(raw)})
 
 
 if __name__ == "__main__":
