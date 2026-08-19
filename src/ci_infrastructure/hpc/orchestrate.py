@@ -459,15 +459,45 @@ def _stop_stream(proc: Any) -> None:
     sys.stdout.flush()
 
 
+def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """The three troika-site options every subcommand takes.
+
+    Applied as a decorator so a new subcommand cannot drift from the flag names
+    the composite actions in actions/ pass verbatim.
+    """
+    for option in reversed(
+        [
+            click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)"),
+            click.option(
+                "--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)"
+            ),
+            click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika"),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
+def _resolve_reported(command: str, conn: Any, remote_dir: str) -> str:
+    """Expand a cluster path spec and say so when it changed.
+
+    Every path-taking subcommand does this: the spec may name cluster variables
+    ('$SCRATCH/...') that only the cluster can expand, and echoing the result is
+    what makes a wrong work dir diagnosable from the runner log alone.
+    """
+    resolved = resolve_remote_path(conn, remote_dir)
+    if resolved != remote_dir:
+        print(f"{command}: remote dir {remote_dir!r} -> {resolved}")
+    return resolved
+
+
 @click.group(help="Submit / wait / cancel a SLURM build job via troika.")
 def main() -> None:
     pass
 
 
 @main.command("submit-wait", help="Submit (or reattach to) a build job and wait for it to finish.")
-@click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build.sh")
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact name (identity, job-name + cache key)")
 @click.option(
@@ -545,9 +575,7 @@ def submit_wait(
     # Expand the work dir on the cluster before anything derives a path from it:
     # the runner has to scp into these, so they must be literal by the time troika
     # (which quotes its argv) sees them.
-    resolved_work_dir = resolve_remote_path(site._connection, remote_work_dir)
-    if resolved_work_dir != remote_work_dir:
-        print(f"submit-wait: remote work dir {remote_work_dir!r} -> {resolved_work_dir}")
+    resolved_work_dir = _resolve_reported("submit-wait", site._connection, remote_work_dir)
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
 
     ships_source = bool(source_dir and run_id)
@@ -669,9 +697,7 @@ def submit_wait(
 
 
 @main.command("cancel", help="Cancel the active job for an artifact (used on workflow cancellation).")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact whose job should be cancelled")
 @click.option("--output", "output", required=True, help="Absolute job output path on the cluster")
 def cancel(
@@ -702,9 +728,7 @@ def cancel(
 
 
 @main.command("gc", help="Remove per-artifact trees under the cluster work dir older than N days.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-work-dir",
     "remote_work_dir",
@@ -753,9 +777,7 @@ def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) ->
 
 
 @main.command("fetch-tree", help="Copy a directory a job produced off the cluster back to the runner.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-dir",
     "remote_dir",
@@ -776,9 +798,7 @@ def fetch_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)  # the source lives on the cluster
-    if resolved != remote_dir:
-        print(f"fetch-tree: remote dir {remote_dir!r} -> {resolved}")
+    resolved = _resolve_reported("fetch-tree", site._connection, remote_dir)  # the source lives on the cluster
     transfer.fetch_tree(site._connection, remote_dir=resolved, local_dir=local_dir, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:
         print(f"fetch-tree: dry run; would fetch {resolved} -> {local_dir}")
@@ -788,9 +808,7 @@ def fetch_tree_cmd(
 
 
 @main.command("push-tree", help="Copy a runner-local directory up to a directory on the cluster.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--local-dir", "local_dir", required=True, help="Source directory on the runner to push")
 @click.option(
     "--remote-dir",
@@ -811,10 +829,8 @@ def push_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)  # the destination lives on the cluster
+    resolved = _resolve_reported("push-tree", site._connection, remote_dir)  # the destination lives on the cluster
     _require_nested_remote_path("push-tree", remote_dir, resolved)
-    if resolved != remote_dir:
-        print(f"push-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.push_tree(site._connection, local_dir=local_dir, remote_dir=resolved, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:
         print(f"push-tree: dry run; would push {local_dir} -> {resolved}")
@@ -827,9 +843,7 @@ def push_tree_cmd(
     "remove-tree",
     help="Remove a directory a job left on the cluster (call on success to reclaim scratch).",
 )
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-dir",
     "remote_dir",
@@ -846,10 +860,8 @@ def remove_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)
+    resolved = _resolve_reported("remove-tree", site._connection, remote_dir)
     _require_nested_remote_path("remove-tree", remote_dir, resolved)
-    if resolved != remote_dir:
-        print(f"remove-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.remove_tree(site._connection, remote_dir=resolved, dryrun=dryrun)
     if dryrun:
         print(f"remove-tree: dry run; would remove {resolved}")
