@@ -312,3 +312,122 @@ def test_options_do_not_propagate_and_ripple_via_deps_hash(monkeypatch: pytest.M
     # ...yet differs between the two legs because the deps-hash rolls up the
     # (different) consumed cxxmath name.
     assert plain_own.artifact_name != moments_own.artifact_name
+
+
+def test_parse_deps_when_predicate() -> None:
+    """`when` accepts a scalar or a list, and defaults to None (applies to every leg)."""
+    base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
+
+    assert _parse_deps({"deps": [base]})[0].when is None
+
+    listed = _parse_deps({"deps": [{**base, "when": {"options": ["extended", "full"]}}]})[0]
+    assert listed.when == {"options": frozenset({"extended", "full"})}
+
+    # A bare scalar is sugar for a one-element list.
+    scalar = _parse_deps({"deps": [{**base, "when": {"build-type": "Debug"}}]})[0]
+    assert scalar.when == {"build-type": frozenset({"Debug"})}
+
+    # Multiple keys must ALL match; values compare as strings.
+    multi = _parse_deps({"deps": [{**base, "when": {"platform": "ubuntu-24.04", "python-version": 3.12}}]})[0]
+    assert multi.when == {"platform": frozenset({"ubuntu-24.04"}), "python-version": frozenset({"3.12"})}
+
+
+@pytest.mark.parametrize("bad", [{}, [], "options", {"options": []}, {"options": [["nested"]]}])
+def test_parse_deps_when_rejects_bad_shape(bad: Any) -> None:
+    """A malformed predicate fails loudly: silently ignoring it would put the dep
+    back into every leg's artifact identity, surfacing only as surprise rebuilds."""
+    base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
+    with pytest.raises(ValueError, match="when"):
+        _parse_deps({"deps": [{**base, "when": bad}]})
+
+
+def test_applies_to_requires_every_key_and_ignores_missing_fields() -> None:
+    spec = DepSpec(
+        repo=Repo("o/x"),
+        package=PackageName("x"),
+        ref=Ref("main"),
+        compiler_inputs=["cxx-compiler"],
+        build_type_input="build-type",
+        platform_input="platform",
+        needs_python=False,
+        python_version_input="python-version",
+        when={"options": frozenset({"extended"}), "build-type": frozenset({"Release"})},
+    )
+    assert spec.applies_to({"options": "extended", "build-type": "Release"})
+    assert not spec.applies_to({"options": "extended", "build-type": "Debug"})
+    # A leg that simply omits the field must NOT match — this is what keeps a
+    # predicate off the plain legs, which carry no such key at all.
+    assert not spec.applies_to({"build-type": "Release"})
+
+
+def test_when_scopes_dep_out_of_identity_of_nonmatching_legs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scoped-out dep is absent from cmake-prefix-path AND from deps-hash8.
+
+    The second half is the point of the feature: adding a dep that only one option
+    config needs must not change the artifact name — and so must not force a
+    rebuild — of the legs that never link against it.
+    """
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+
+    own = PackageSpec(
+        name="consumer",
+        prefix=PackageName("consumer"),
+        repo=Repo("o/consumer"),
+        compiler_inputs=["cxx-compiler"],
+    )
+    always = DepSpec(
+        repo=Repo("o/base"),
+        package=PackageName("base"),
+        ref=Ref("main"),
+        compiler_inputs=[],
+        build_type_input="build-type",
+        platform_input="platform",
+        needs_python=False,
+        python_version_input="python-version",
+    )
+    scoped = replace(
+        always,
+        repo=Repo("o/extra"),
+        package=PackageName("extra"),
+        compiler_inputs=["cxx-compiler"],
+        when={"options": frozenset({"extended"})},
+    )
+    leg: dict[str, str] = {
+        "cxx-compiler": "clang++-18",
+        "build-type": "Release",
+        "platform": "ubuntu-24.04",
+    }
+
+    def run(own_deps: list[DepSpec], matrix_entry: dict[str, str]) -> tuple[list[ResolvedDep], ResolvedOwn]:
+        return resolve_leg(
+            own=own,
+            own_deps=own_deps,
+            own_sha=Sha("d" * 40),
+            matrix_entry=matrix_entry,
+            manifest_cache={},
+            sync_branch=None,
+            sync_exists_by_repo={},
+            sha_cache={},
+            artifact_cache={},
+            run_state_cache={},
+            token=None,
+            can_dispatch=False,
+            dispatch_plans={},
+        )
+
+    plain_deps, plain_own = run([always, scoped], leg)
+    ext_deps, ext_own = run([always, scoped], {**leg, "options": "extended"})
+
+    # The scoped dep reaches only the matching leg.
+    assert [d.name for d in plain_deps] == ["base"]
+    assert sorted(d.name for d in ext_deps) == ["base", "extra"]
+
+    # ...and only that leg's identity moves.
+    assert plain_own.deps_hash != ext_own.deps_hash
+
+    # The decisive check: the plain leg's OWN name is byte-identical to what it
+    # would be if the scoped dep had never been declared at all.
+    _, without_scoped = run([always], leg)
+    assert plain_own.artifact_name == without_scoped.artifact_name
+    assert plain_own.deps_hash == without_scoped.deps_hash

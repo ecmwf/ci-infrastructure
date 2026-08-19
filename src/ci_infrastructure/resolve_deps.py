@@ -36,6 +36,20 @@ Manifest schema (.ci/manifest.toml in each consumer repo):
     build-type-input  = "build-type"        # default
     platform-input    = "platform"          # default
     needs-python      = false               # default
+    when = { options = ["extended"] }       # optional: restrict this dep to the legs
+                                            # whose fields match. Keys are matrix-leg
+                                            # field names, values a scalar or list of
+                                            # accepted values; a leg must match every
+                                            # key. Omitted -> applies to all legs.
+                                            # A scoped-out dep is absent from the leg's
+                                            # cmake-prefix-path AND its deps-hash8, so
+                                            # an upstream only enters the artifact
+                                            # identity of legs that build against it.
+                                            # Prefer predicates on fields that propagate
+                                            # (build-type/platform/compiler); `options`
+                                            # does not propagate, so a `when` on it in a
+                                            # repo that has its own consumers can make
+                                            # the two sides disagree on deps-hash8.
 
     [[matrix.build.include]]
     cxx-compiler        = "clang++-18"     # binary; passed straight to CMake
@@ -198,6 +212,23 @@ class DepSpec:
     # (per-leg selection). Both empty -> consume the plain (no-option) build.
     option: str = ""
     options_input: str | None = None
+    # Optional leg predicate: {matrix-field: {accepted values}}. None means the dep
+    # applies to every leg (the default, and the behaviour before this existed).
+    # A dep that does not apply to a leg is absent from that leg's cmake-prefix-path
+    # AND from its deps-hash8, so an upstream only enters the artifact identity of
+    # the legs that actually build against it.
+    when: Mapping[str, frozenset[str]] | None = None
+
+    def applies_to(self, leg: Mapping[str, Any]) -> bool:
+        """True when every field named in `when` has one of its accepted values on this leg.
+
+        A missing field never matches: `when = { options = ["extended"] }` must not
+        select the plain legs, which carry no `options` key at all. Values are compared
+        as strings so 3 and "3" agree, matching how the rest of the resolver reads legs.
+        """
+        if self.when is None:
+            return True
+        return all(str(leg.get(field, "")) in accepted for field, accepted in self.when.items())
 
 
 @dataclass(frozen=True)
@@ -346,6 +377,31 @@ def _parse_package(data: Mapping[str, Any], default_repo: str | None) -> Package
     )
 
 
+def _parse_when(raw: Any, *, context: str) -> Mapping[str, frozenset[str]] | None:
+    """Parse a [[deps]] `when` predicate: a table of matrix-field -> accepted value(s).
+
+    Fail loud on anything else, in keeping with the rest of the manifest parsing: a
+    silently-ignored predicate would put an upstream back into every leg's artifact
+    identity, and the only symptom would be surprise rebuilds much later.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            f"{context}: 'when' must be a non-empty table of matrix-field to accepted "
+            f'value(s), e.g. when = {{ options = ["extended"] }}; got {raw!r}'
+        )
+    parsed: dict[str, frozenset[str]] = {}
+    for field_name, accepted in raw.items():
+        values = accepted if isinstance(accepted, (list, tuple)) else [accepted]
+        if not values:
+            raise ValueError(f"{context}: 'when.{field_name}' must list at least one accepted value")
+        if any(isinstance(v, (dict, list, tuple)) for v in values):
+            raise ValueError(f"{context}: 'when.{field_name}' values must be scalars, got {accepted!r}")
+        parsed[str(field_name)] = frozenset(str(v) for v in values)
+    return parsed
+
+
 def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
     deps: list[DepSpec] = []
     for raw in data.get("deps", []):
@@ -375,6 +431,7 @@ def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
                 python_version_input=str(raw.get("python-version-input", "python-version")),
                 option=option_literal,
                 options_input=str(options_input) if options_input is not None else None,
+                when=_parse_when(raw.get("when"), context=f"[[deps]] entry for package '{raw['package']}'"),
             )
         )
     return deps
@@ -778,10 +835,19 @@ def resolve_leg(
         # Recurse into the dep's own deps first so deps-hash includes their artifact names.
         # Pass parent_ctx unchanged: the dep's own deps look up THEIR compiler-input field
         # against the same matrix entry, so propagation works without rewriting keys.
+        # `when` is applied here too, against parent_ctx, for the same reason the rest of
+        # this recursion uses parent_ctx: we must reproduce the deps-hash8 the upstream's
+        # OWN CI computed, and it filtered its deps the same way. Skipping the filter here
+        # would include deps the producer excluded and derive an artifact name that was
+        # never published. Predicates on fields that propagate (build-type, platform,
+        # compiler) agree on both sides; one on a non-propagating field such as `options`
+        # can disagree, and surfaces as a loud orphan-pin error rather than a bad build.
         sub_deps: list[ResolvedDep] = []
         sub_manifest = manifest_cache.get((spec.repo, ref))
         if sub_manifest is not None:
             for sub_spec in sub_manifest.deps:
+                if not sub_spec.applies_to(parent_ctx):
+                    continue
                 sub_deps.append(visit(sub_spec, parent_ctx))
 
         # Resolve SHA (via REST — one call per unique (repo, ref)).
@@ -871,14 +937,19 @@ def resolve_leg(
         order.append(spec.package)
         return resolved
 
-    # Visit each direct dep of the local manifest.
-    for spec in own_deps:
+    # Visit each direct dep of the local manifest that applies to THIS leg. A dep
+    # scoped out by its `when` predicate is skipped entirely, so it lands neither in
+    # cmake-prefix-path nor — via direct_dep_artifact_names below — in this leg's
+    # deps-hash8. That is the whole point: an upstream a leg never links against must
+    # not churn that leg's artifact identity every time the upstream moves.
+    applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry)]
+    for spec in applicable_deps:
         visit(spec, matrix_entry)
 
     deps_resolved = [visited[name] for name in order]
 
     # Compute own artifact name using direct deps' artifact names for the hash.
-    direct_dep_artifact_names = [visited[s.package].artifact_name for s in own_deps]
+    direct_dep_artifact_names = [visited[s.package].artifact_name for s in applicable_deps]
     own_compiler = _join_compilers(own.compiler_inputs, matrix_entry, context=f"[package] '{own.name}'")
     own_build_type = str(matrix_entry.get("build-type", "Release"))
     own_platform = compute_platform_slug(str(matrix_entry.get("platform", "")))
@@ -1107,8 +1178,12 @@ def _run(
                 "own-deps-hash": own.deps_hash or "",
                 "own-tar-name": f"{own.artifact_name}.tar.gz",
                 "deps": [d.to_json() for d in deps_resolved],
+                # Only deps that apply to this leg were resolved; a scoped-out one has no
+                # entry in deps_resolved and the unguarded next() would raise StopIteration.
                 "direct-artifact-names": " ".join(
-                    next(d.artifact_name for d in deps_resolved if d.name == s.package) for s in local_manifest.deps
+                    next(d.artifact_name for d in deps_resolved if d.name == s.package)
+                    for s in local_manifest.deps
+                    if s.applies_to(entry)
                 ),
             }
             merged = {**entry, "_resolved": resolved_block}
