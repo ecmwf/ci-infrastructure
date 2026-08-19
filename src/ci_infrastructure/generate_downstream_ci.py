@@ -2223,23 +2223,6 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> bool:
     return True
 
 
-def _remove_legacy_workflow(wf_dir: Path, check: bool) -> Path | None:
-    """Drop the pre-rename `triggered-by-upstream.yml`, returning it under --check.
-
-    The manifest is the source of truth, so a leftover workflow naming kinds that
-    may no longer exist is a foot-gun. Returned (rather than silently unlinked)
-    only under --check, so CI fails on a pre-rename repo instead of passing with
-    the stale file still present.
-    """
-    legacy = wf_dir / "triggered-by-upstream.yml"
-    if not legacy.exists():
-        return None
-    if check:
-        return legacy
-    legacy.unlink()
-    return None
-
-
 @click.command(help=__doc__)
 @click.option(
     "--manifest-path",
@@ -2322,10 +2305,6 @@ def _render_one_repo(
                     changed.append(("delete", path))
                 else:
                     changed.append(("update" if existed else "create", path))
-
-    legacy = _remove_legacy_workflow(wf_dir, check)
-    if legacy is not None:
-        changed.append(("delete", legacy))
 
     return changed
 

@@ -32,7 +32,6 @@ from ci_infrastructure.generate_downstream_ci import (
     SLIM_RUNNER,
     SchemaError,
     _cross_package_deps,
-    _remove_legacy_workflow,
     _write_or_check_path,
     compute_transitive_consumers,
     parse_manifest_text,
@@ -860,8 +859,8 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
 
 
 def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
-    """A -> B -> C: rendered triggered-by-upstream.yml for C must accept BOTH a/build and b/build
-    in its `if:` filter, in either dispatch or call mode."""
+    """A -> B -> C: C's rendered cross-repo-trigger.yml must accept BOTH a/build and
+    b/build in its `if:` filter, in either dispatch or call mode."""
     write_repo(
         tmp_path,
         "a",
@@ -1310,7 +1309,6 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "downstream/runner" in yaml
     # Static org-level dispatch secret is gone.
     assert "ORG_DISPATCH_TOKEN" not in yaml
-    assert "triggered-by-upstream.yml@" not in yaml
     # `upstream-*` dispatch inputs renamed to `from-*`; old names must be gone.
     assert "upstream-job:" not in yaml
     assert "upstream-repo:" not in yaml
@@ -2189,26 +2187,3 @@ def test_write_or_check_path_modes(tmp_path: Path) -> None:
     assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
     assert _write_or_check_path(out, None, check=False) is False
-
-
-def test_legacy_workflow_is_deleted_but_reported_under_check(tmp_path: Path) -> None:
-    """A pre-rename triggered-by-upstream.yml must not survive a regen, or the
-    repo keeps a second dispatcher nobody regenerates.
-
-    Under --check nothing may be written, so the stale file is *reported* instead
-    — otherwise CI would pass on a repo that has not been migrated.
-    """
-    wf_dir = tmp_path / ".github/workflows"
-    wf_dir.mkdir(parents=True)
-    legacy = wf_dir / "triggered-by-upstream.yml"
-    legacy.write_text("# stale pre-rename file\n")
-
-    assert _remove_legacy_workflow(wf_dir, check=True) == legacy
-    assert legacy.exists(), "--check must not modify the working tree"
-
-    assert _remove_legacy_workflow(wf_dir, check=False) is None
-    assert not legacy.exists()
-
-    # Nothing to do once it is gone, in either mode.
-    assert _remove_legacy_workflow(wf_dir, check=True) is None
-    assert _remove_legacy_workflow(wf_dir, check=False) is None

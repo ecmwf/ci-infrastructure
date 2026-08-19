@@ -4,7 +4,7 @@
 
 name: Validate generated downstream-CI workflows
 description: >
-  Re-renders this repo's .github/workflows/{triggered-by-upstream,trigger-downstream}.yml
+  Re-renders this repo's .github/workflows/{cross-repo-trigger,trigger-downstream}{,-hpc}.yml
   from .ci/manifest.toml plus sibling manifests fetched via the GitHub API, and fails
   the step if the locally checked-in files have drifted. Pulls only manifest blobs over
   GraphQL (no clones), so the cost is one batched query per BFS layer regardless of repo
