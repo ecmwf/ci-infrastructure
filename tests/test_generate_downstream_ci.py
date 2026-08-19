@@ -30,7 +30,9 @@ from ci_infrastructure.generate_downstream_ci import (
     Manifest,
     SchemaError,
     _cross_package_deps,
+    _remove_legacy_workflow,
     _warn_if_local_drifts_from_remote,
+    _write_or_check_path,
     compute_transitive_consumers,
     discover_manifests,
     parse_manifest,
@@ -40,7 +42,6 @@ from ci_infrastructure.generate_downstream_ci import (
     resolve_consumer_refs,
     transitive_cross_repo_needs,
     validate_graph,
-    write_or_check,
 )
 
 
@@ -2408,40 +2409,47 @@ def test_orchestrator_caps_reusable_workflows(tmp_path: Path) -> None:
         render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
 
 
-def test_write_or_check_modes(tmp_path: Path) -> None:
-    repo = tmp_path / "x"
-    (repo / ".github/workflows").mkdir(parents=True)
-    # First write
-    assert write_or_check(repo, "hello\n", check=False) is True
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
+def test_write_or_check_path_modes(tmp_path: Path) -> None:
+    out = tmp_path / ".github/workflows/cross-repo-trigger.yml"
+    # First write creates the parent directory too.
+    assert _write_or_check_path(out, "hello\n", check=False) is True
+    assert out.read_text() == "hello\n"
     # Idempotent
-    assert write_or_check(repo, "hello\n", check=False) is False
+    assert _write_or_check_path(out, "hello\n", check=False) is False
     # Drift detected by --check
-    assert write_or_check(repo, "different\n", check=True) is True
+    assert _write_or_check_path(out, "different\n", check=True) is True
     # Check didn't actually write
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
+    assert out.read_text() == "hello\n"
     # content=None deletes an existing workflow: the manifest is the source
     # of truth, so a kind that no longer opts into cross-repo dispatch must
     # not leave a dangling workflow behind.
-    assert write_or_check(repo, None, check=False) is True
-    assert not (repo / ".github/workflows/cross-repo-trigger.yml").exists()
+    assert _write_or_check_path(out, None, check=False) is True
+    assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
-    assert write_or_check(repo, None, check=False) is False
+    assert _write_or_check_path(out, None, check=False) is False
 
 
-def test_write_or_check_removes_legacy_file(tmp_path: Path) -> None:
-    """A pre-rename triggered-by-upstream.yml must be deleted when the renamed
-    cross-repo-trigger.yml is written, so a post-rename regen leaves no
-    duplicate dispatcher in the repo.
+def test_legacy_workflow_is_deleted_but_reported_under_check(tmp_path: Path) -> None:
+    """A pre-rename triggered-by-upstream.yml must not survive a regen, or the
+    repo keeps a second dispatcher nobody regenerates.
+
+    Under --check nothing may be written, so the stale file is *reported* instead
+    — otherwise CI would pass on a repo that has not been migrated.
     """
-    repo = tmp_path / "x"
-    (repo / ".github/workflows").mkdir(parents=True)
-    legacy = repo / ".github/workflows/triggered-by-upstream.yml"
+    wf_dir = tmp_path / ".github/workflows"
+    wf_dir.mkdir(parents=True)
+    legacy = wf_dir / "triggered-by-upstream.yml"
     legacy.write_text("# stale pre-rename file\n")
-    # write_or_check must remove the legacy file as a side effect.
-    write_or_check(repo, "hello\n", check=False)
-    assert not legacy.exists(), "legacy triggered-by-upstream.yml should have been removed"
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
+
+    assert _remove_legacy_workflow(wf_dir, check=True) == legacy
+    assert legacy.exists(), "--check must not modify the working tree"
+
+    assert _remove_legacy_workflow(wf_dir, check=False) is None
+    assert not legacy.exists()
+
+    # Nothing to do once it is gone, in either mode.
+    assert _remove_legacy_workflow(wf_dir, check=True) is None
+    assert _remove_legacy_workflow(wf_dir, check=False) is None
 
 
 def _drift_fixture(tmp_path: Path) -> tuple[Manifest, Path]:
