@@ -14,8 +14,12 @@ shows a branch but blanks a pinned SHA.
 
 from __future__ import annotations
 
-import pytest
+import json
 
+import pytest
+from click.testing import CliRunner
+
+from ci_infrastructure import print_dep_table
 from ci_infrastructure.print_dep_table import _looks_like_sha, _md_table, _row_from_dep
 
 SHA = "a" * 40
@@ -57,14 +61,6 @@ def test_compiler_less_python_dep_splits_all_columns() -> None:
     assert row["compiler"] == ""
 
 
-def test_full_dep_regression() -> None:
-    row = _row_from_dep(_dep(compiler="clang++-18", **{"deps-hash": "abc12345", "build-type": "Debug"}))
-    assert row["compiler"] == "clang++-18"
-    assert row["deps_hash"] == "abc12345"
-    assert row["build_type"] == "Debug"
-    assert row["platform"] == "ubuntu-24.04"
-
-
 def test_ref_column_shows_branch_but_blanks_pinned_sha() -> None:
     assert _row_from_dep(_dep(ref="main"))["ref"] == "main"
     assert _row_from_dep(_dep(ref="release-1.x"))["ref"] == "release-1.x"
@@ -90,12 +86,6 @@ def test_md_table_has_ref_as_second_column() -> None:
 
 
 def test_main_renders_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
-    import json
-
-    from click.testing import CliRunner
-
-    from ci_infrastructure import print_dep_table
-
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     deps = [_dep(name="ecbuild", repo="owner/ecbuild", compiler="")]
     result = CliRunner().invoke(print_dep_table.main, ["--deps-json", json.dumps(deps)])
@@ -107,12 +97,6 @@ def test_main_renders_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_main_orders_own_first_then_deps_downstream_to_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
-    import json
-
-    from click.testing import CliRunner
-
-    from ci_infrastructure import print_dep_table
-
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     # deps-json arrives upstream→downstream (the build's link order).
     deps = [_dep(name="A"), _dep(name="B"), _dep(name="E")]

@@ -14,5 +14,3 @@ API directly — there is no shell-out to the troika CLI. The SLURM job script
 itself is necessarily bash (it runs on a compute node); everything around it is
 Python.
 """
-
-from __future__ import annotations

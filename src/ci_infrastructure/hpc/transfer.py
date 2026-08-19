@@ -148,27 +148,16 @@ def ship_source(
     # compute node's CMAKE_PREFIX_PATH resolves to trees it can actually read.
     if remote_deps_dir is not None:
         for index, prefix in enumerate(local_prefixes):
-            _ship_prefix(
+            push_tree(
                 conn,
-                local_prefix=prefix,
+                local_dir=prefix,
                 remote_dir=f"{remote_deps_dir.rstrip('/')}/{index}",
-                tar_path=Path(tar_dir) / f"{run_id}.dep{index}.tgz",
+                tar_dir=tar_dir,
+                tarball_suffix="",
+                local_tar_name=f"{run_id}.dep{index}.tgz",
             )
     # Marker last: the job must never see it before every input is fully staged.
     _run_remote(conn, ["touch", _marker_path(staging_dir, run_id)], what="Transfer-complete marker")
-
-
-def _ship_prefix(conn: Connection, *, local_prefix: str, remote_dir: str, tar_path: Path) -> None:
-    """Tar a runner-local dependency prefix, scp it over and unpack it into ``remote_dir``."""
-    subprocess.run(["tar", "-czf", str(tar_path), "-C", str(local_prefix), "."], check=True)
-    remote_tgz = f"{remote_dir}.tgz"
-    _run_remote(conn, ["mkdir", "-p", remote_dir], what=f"Remote dep dir creation ({remote_dir})")
-    conn.sendfile(tar_path, remote_tgz)
-    _run_remote(
-        conn,
-        ["bash", "-c", f"tar -xzf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)}"],
-        what=f"Remote dep unpack into {remote_dir}",
-    )
 
 
 def fetch_tree(
@@ -212,20 +201,28 @@ def push_tree(
     remote_dir: str,
     tar_dir: str,
     tarball_suffix: str = "push",
+    local_tar_name: str | None = None,
     dryrun: bool = False,
 ) -> None:
     """Tar ``local_dir`` on the runner and unpack it into ``remote_dir`` on the cluster.
 
     The generic runner->HPC mirror of :func:`fetch_tree`: local tar -> ``sendfile``
     -> remote ``mkdir -p`` + untar. Like ``fetch_tree`` it needs no scheduler, so
-    it works against ``direct`` sites too. (This is the same shape as the private
-    ``_ship_prefix``, which stays tied to the source-shipping flow.)
+    it works against ``direct`` sites too.
+
+    ``local_tar_name`` overrides the runner-side scratch tarball's name and an
+    empty ``tarball_suffix`` gives a bare ``<dir>.tgz`` on the cluster. The
+    source-shipping flow uses both: its per-dep tarballs are named after the run
+    (``<run_id>.dep<i>.tgz``) so concurrent runs sharing ``tar_dir`` cannot
+    overwrite each other's, and their cluster-side name has no suffix.
     """
     if dryrun:
         return
     name = PurePosixPath(remote_dir).name
-    local_tgz = Path(tar_dir) / f"{name}.{tarball_suffix}.tgz"
-    remote_tgz = f"{remote_dir.rstrip('/')}.{tarball_suffix}.tgz"
+    # An empty suffix means a bare `<dir>.tgz` — no doubled separator.
+    ext = f".{tarball_suffix}.tgz" if tarball_suffix else ".tgz"
+    local_tgz = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
+    remote_tgz = f"{remote_dir.rstrip('/')}{ext}"
 
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_dir), "."], check=True)

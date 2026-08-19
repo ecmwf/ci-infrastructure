@@ -57,7 +57,6 @@ Batch (slurm) sites only — see ``site.ensure_batch_site``.
 
 from __future__ import annotations
 
-import os
 import random
 import re
 import shlex
@@ -74,6 +73,7 @@ import click
 
 from .. import s3_store
 from .._errors import CIError
+from .._github_api import write_outputs
 from . import jobscript, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
@@ -294,14 +294,13 @@ def cancel_job(
 # --------------------------------------------------------------------------- #
 # Cleanup (nightly GC of the cluster work dir)
 # --------------------------------------------------------------------------- #
-#: The subtrees `RemotePaths` puts under the remote work dir. Each holds one
-#: entry per artifact (or a .out file for hpc-jobs), so an age-based sweep at
-#: maxdepth 1 reclaims whole builds without touching the roots.
-#: Subdirectories of the remote work dir that run_gc sweeps by age. "transfer-e2e"
-#: is not written by the build path: hpc-transfer-e2e.yml puts its per-run tree
-#: there so a failed round-trip, which deliberately leaves the tree behind for
-#: debugging, is still reclaimed eventually. Anything written directly under the
-#: work dir instead of one of these is never swept.
+#: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
+#: one entry per artifact (or a .out file for hpc-jobs), so a maxdepth-1 sweep
+#: reclaims whole builds without touching the roots. "transfer-e2e" is not
+#: written by the build path: hpc-transfer-e2e.yml puts its per-run tree there so
+#: a failed round-trip, which deliberately leaves the tree behind for debugging,
+#: is still reclaimed eventually. Anything written directly under the work dir
+#: instead of one of these is never swept.
 GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "transfer-e2e")
 
 
@@ -401,14 +400,6 @@ def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def _write_output(key: str, value: str) -> None:
-    """Append a ``key=value`` line to $GITHUB_OUTPUT (no-op off CI)."""
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as handle:
-            handle.write(f"{key}={value}\n")
-
-
 def _echo_remote_output(conn: Any, output: str) -> None:
     """Print the job's captured cluster output to the runner console.
 
@@ -467,15 +458,45 @@ def _stop_stream(proc: Any) -> None:
     sys.stdout.flush()
 
 
+def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """The three troika-site options every subcommand takes.
+
+    Applied as a decorator so a new subcommand cannot drift from the flag names
+    the composite actions in actions/ pass verbatim.
+    """
+    for option in reversed(
+        [
+            click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)"),
+            click.option(
+                "--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)"
+            ),
+            click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika"),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
+def _resolve_reported(command: str, conn: Any, remote_dir: str) -> str:
+    """Expand a cluster path spec and say so when it changed.
+
+    Every path-taking subcommand does this: the spec may name cluster variables
+    ('$SCRATCH/...') that only the cluster can expand, and echoing the result is
+    what makes a wrong work dir diagnosable from the runner log alone.
+    """
+    resolved = resolve_remote_path(conn, remote_dir)
+    if resolved != remote_dir:
+        print(f"{command}: remote dir {remote_dir!r} -> {resolved}")
+    return resolved
+
+
 @click.group(help="Submit / wait / cancel a SLURM build job via troika.")
 def main() -> None:
     pass
 
 
 @main.command("submit-wait", help="Submit (or reattach to) a build job and wait for it to finish.")
-@click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build.sh")
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact name (identity, job-name + cache key)")
 @click.option(
@@ -537,8 +558,7 @@ def submit_wait(
     # is nothing to cache against — it must run on every (re-)run.
     if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
         print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
-        _write_output("install-path", local_install_path)
-        _write_output("cache-hit", "true")
+        write_outputs({"install-path": local_install_path, "cache-hit": "true"})
         return
 
     repo_script = Path(job_script)
@@ -554,9 +574,7 @@ def submit_wait(
     # Expand the work dir on the cluster before anything derives a path from it:
     # the runner has to scp into these, so they must be literal by the time troika
     # (which quotes its argv) sees them.
-    resolved_work_dir = resolve_remote_path(site._connection, remote_work_dir)
-    if resolved_work_dir != remote_work_dir:
-        print(f"submit-wait: remote work dir {remote_work_dir!r} -> {resolved_work_dir}")
+    resolved_work_dir = _resolve_reported("submit-wait", site._connection, remote_work_dir)
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
 
     ships_source = bool(source_dir and run_id)
@@ -666,8 +684,7 @@ def submit_wait(
             local_install_dir=local_install_path,
             tar_dir=tar_dir,
         )
-        _write_output("install-path", local_install_path)
-        _write_output("cache-hit", "false")
+        write_outputs({"install-path": local_install_path, "cache-hit": "false"})
         return
 
     detail = {
@@ -679,9 +696,7 @@ def submit_wait(
 
 
 @main.command("cancel", help="Cancel the active job for an artifact (used on workflow cancellation).")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact whose job should be cancelled")
 @click.option("--output", "output", required=True, help="Absolute job output path on the cluster")
 def cancel(
@@ -712,9 +727,7 @@ def cancel(
 
 
 @main.command("gc", help="Remove per-artifact trees under the cluster work dir older than N days.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-work-dir",
     "remote_work_dir",
@@ -739,10 +752,10 @@ def gc(
 def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
     """Refuse a resolved cluster path that sits directly under root.
 
-    Two failure modes share this guard. For remove-tree it stops a bare
-    ``$SCRATCH`` or ``/`` from being wiped. For push-tree and fetch-tree it
-    catches the misconfiguration that produces such a path in the first place: an
-    unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
+    Two failure modes share this guard, on remove-tree and push-tree. For
+    remove-tree it stops a bare ``$SCRATCH`` or ``/`` from being wiped. For
+    push-tree it catches the misconfiguration that produces such a path in the
+    first place: an unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
     ``${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-<id>`` renders
     ``/transfer-e2e-<id>``, and the cluster then reports the confusing
     ``mkdir: cannot create directory '/transfer-e2e-...': Read-only file system``.
@@ -763,9 +776,7 @@ def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) ->
 
 
 @main.command("fetch-tree", help="Copy a directory a job produced off the cluster back to the runner.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-dir",
     "remote_dir",
@@ -786,21 +797,17 @@ def fetch_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)  # the source lives on the cluster
-    if resolved != remote_dir:
-        print(f"fetch-tree: remote dir {remote_dir!r} -> {resolved}")
+    resolved = _resolve_reported("fetch-tree", site._connection, remote_dir)  # the source lives on the cluster
     transfer.fetch_tree(site._connection, remote_dir=resolved, local_dir=local_dir, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:
         print(f"fetch-tree: dry run; would fetch {resolved} -> {local_dir}")
         return
-    _write_output("local-dir", local_dir)
+    write_outputs({"local-dir": local_dir})
     print(f"fetch-tree: fetched {resolved} -> {local_dir}")
 
 
 @main.command("push-tree", help="Copy a runner-local directory up to a directory on the cluster.")
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option("--local-dir", "local_dir", required=True, help="Source directory on the runner to push")
 @click.option(
     "--remote-dir",
@@ -821,15 +828,13 @@ def push_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)  # the destination lives on the cluster
+    resolved = _resolve_reported("push-tree", site._connection, remote_dir)  # the destination lives on the cluster
     _require_nested_remote_path("push-tree", remote_dir, resolved)
-    if resolved != remote_dir:
-        print(f"push-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.push_tree(site._connection, local_dir=local_dir, remote_dir=resolved, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:
         print(f"push-tree: dry run; would push {local_dir} -> {resolved}")
         return
-    _write_output("remote-dir", resolved)
+    write_outputs({"remote-dir": resolved})
     print(f"push-tree: pushed {local_dir} -> {resolved}")
 
 
@@ -837,9 +842,7 @@ def push_tree_cmd(
     "remove-tree",
     help="Remove a directory a job left on the cluster (call on success to reclaim scratch).",
 )
-@click.option("--site", "site_name", required=True, help="Troika site name")
-@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
-@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@_site_options
 @click.option(
     "--remote-dir",
     "remote_dir",
@@ -856,10 +859,8 @@ def remove_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = resolve_remote_path(site._connection, remote_dir)
+    resolved = _resolve_reported("remove-tree", site._connection, remote_dir)
     _require_nested_remote_path("remove-tree", remote_dir, resolved)
-    if resolved != remote_dir:
-        print(f"remove-tree: remote dir {remote_dir!r} -> {resolved}")
     transfer.remove_tree(site._connection, remote_dir=resolved, dryrun=dryrun)
     if dryrun:
         print(f"remove-tree: dry run; would remove {resolved}")

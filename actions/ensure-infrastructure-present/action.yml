@@ -18,7 +18,7 @@ description: >
 
   The bootstrap interpreter is chosen INDEPENDENTLY of any
   actions/setup-python step the consumer may have run before us. The helper
-  venv hosts ci-infrastructure (requires-python = ">=3.9"), and we prefer a
+  venv hosts ci-infrastructure, and we prefer a
   stable system interpreter over the consumer's test-matrix one, so we drop
   setup-python's bin from PATH for the probe.
 
@@ -33,13 +33,11 @@ description: >
   interpreter, we reuse an existing venv at the target path if a prior step in
   the same job already built one.
 
-  THE MATCH IS CHECKED, AND A MISMATCH IS FATAL. This used to be an import check
-  alone, which tests importability and not version: a baked install from an older
-  commit imports perfectly well, so the fast path was taken and the job silently
-  ran stale code. That is how a 26-commit-old ci-infrastructure reached the HPC
-  round-trip job, which failed with "No such command 'push-tree'" for a command
-  that had existed for weeks. We now compare a digest of the baked package's *.py
-  files against the checkout's and fail loudly when they differ, naming both
+  THE MATCH IS CHECKED, AND A MISMATCH IS FATAL. Importability is not version: a
+  baked install from an older commit imports perfectly well, so an import check
+  would take the fast path and the job would silently run stale code — surfacing
+  much later as a missing CLI command. We compare a digest of the baked package's
+  *.py files against the checkout's and fail loudly when they differ, naming both
   digests and (when the image records it in CI_INFRASTRUCTURE_BAKED_REF) the
   commit the image was built from.
 
@@ -60,10 +58,8 @@ description: >
   test the branch under test rather than whatever @main currently holds.
 
   The checkout is located by probing candidate paths for the file we actually
-  need, rather than by re-anchoring github.action_path unconditionally: the old
-  form assumed an /_actions/ segment and produced a nonsense path for
-  `uses: ./actions/...`, which is why hpc-transfer-e2e.yml had to pre-set
-  CI_INFRASTRUCTURE_PYTHON to route around it.
+  need, rather than by re-anchoring github.action_path: that assumes an
+  /_actions/ segment, which a local `uses: ./actions/...` reference does not have.
 
 inputs:
   force-reinstall:
@@ -211,7 +207,8 @@ runs:
             # Strip the consumer's setup-python bin from PATH for the probe. If
             # pythonLocation is unset (no consumer setup-python ran) we just use
             # PATH as-is. We prefer a stable system interpreter over the
-            # matrix-leg one; ci-infrastructure only needs >=3.9.
+            # matrix-leg one. The version gate below must match
+            # ci-infrastructure's requires-python, or the pip install fails.
             bootstrap_path="$PATH"
             if [ -n "${pythonLocation:-}" ]; then
               exclude="${pythonLocation}/bin"
@@ -226,9 +223,9 @@ runs:
             fi
 
             bootstrap_py=""
-            for cand in python3.12 python3.11 python3.10 python3.9 python3; do
+            for cand in python3.13 python3.12 python3.11 python3; do
               if path="$(PATH="$bootstrap_path" command -v "$cand" 2>/dev/null)"; then
-                if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)'; then
+                if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)'; then
                   bootstrap_py="$path"
                   break
                 fi
@@ -236,7 +233,7 @@ runs:
             done
 
             if [ -z "$bootstrap_py" ]; then
-              echo "::error::ensure-infrastructure-present: no Python >=3.9 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.9+ in the runner image, or in the consumer container." >&2
+              echo "::error::ensure-infrastructure-present: no Python >=3.11 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.11+ in the runner image, or in the consumer container." >&2
               exit 1
             fi
 

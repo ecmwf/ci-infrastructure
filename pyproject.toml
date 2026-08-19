@@ -6,7 +6,7 @@
 name = "ci-infrastructure"
 version = "0.1.0"
 description = "Shared CI orchestration scripts and actions"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
@@ -14,7 +14,6 @@ dependencies = [
     "pydantic>=2",
     "PyYAML>=6",
     "boto3>=1.34",
-    "tomli>=2.0; python_version < '3.11'",
     "troika @ git+https://github.com/ecmwf/troika.git",
 ]
 
@@ -51,16 +50,22 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# The CLA bullet is 149 characters and has to stay verbatim in the source for
-# auditability; composing it from a shorter URL constant would make a legal
+# check_pr_declaration.py has a LOWER Python floor than the rest of the package.
+# Everything else runs in the venv ensure-infrastructure-present builds, so
+# requires-python applies; this module is run as `python3 -m ...` with a
+# PYTHONPATH and nothing installed, on whatever interpreter the consumer's runner
+# happens to ship. So no 3.11-only idiom may appear here:
+#   UP042 - would make Verdict a StrEnum (3.11+).
+# E501: the CLA bullet is 149 characters and has to stay verbatim in the source
+# for auditability; composing it from a shorter URL constant would make a legal
 # declaration assembled rather than literal.
-"src/ci_infrastructure/check_pr_declaration.py" = ["E501"]
+"src/ci_infrastructure/check_pr_declaration.py" = ["E501", "UP042"]
 
 [tool.mypy]
 strict = true

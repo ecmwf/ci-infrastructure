@@ -10,11 +10,10 @@
 # The build path drives the batch (slurm) sites: it needs a job id to persist for
 # reattach and a scheduler state to poll, neither of which troika's `direct`
 # sites provide. The two direct sites are for things that only need a shell on
-# the far end: `hpc-login` reaches the real login node (the playground probe's
-# login pass), and `local-direct` is the local machine — no cluster, no ssh —
-# which samples/hpc/playground/probe_scratch.py uses for its `--where login`
-# pass. The unit tests do NOT need it: they monkeypatch load_site, so the site
-# name they pass is only a string.
+# the far end: `hpc-login` reaches the real login node, and `local-direct` is the
+# local machine — no cluster, no ssh — for trying a transfer out by hand. The
+# unit tests do NOT need either: they monkeypatch load_site, so the site name
+# they pass is only a string.
 sites:
   hpc-batch:
     type: slurm

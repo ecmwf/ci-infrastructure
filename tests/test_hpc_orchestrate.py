@@ -39,7 +39,7 @@ from ci_infrastructure.hpc.orchestrate import (
 from ci_infrastructure.hpc.site import resolve_remote_path
 
 
-class RecordingProc:
+class FakeProc:
     """A finished process: what troika's connection.execute() hands back."""
 
     def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
@@ -63,12 +63,12 @@ class RecordingConnection:
         self._squeue_stdout = squeue_stdout
         self._squeue_returncode = squeue_returncode
 
-    def execute(self, command: Sequence[str], **_: object) -> RecordingProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         argv = list(command)
         self.executed.append(argv)
         if argv and argv[0] == "squeue":
-            return RecordingProc(stdout=self._squeue_stdout, returncode=self._squeue_returncode)
-        return RecordingProc()
+            return FakeProc(stdout=self._squeue_stdout, returncode=self._squeue_returncode)
+        return FakeProc()
 
 
 class FakeSlurmSite:
@@ -559,23 +559,14 @@ def test_render_without_shebang_still_starts_with_one() -> None:
 # --------------------------------------------------------------------------- #
 # gc (nightly cleanup)
 # --------------------------------------------------------------------------- #
-class _GcProc:
-    def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
-        self._stdout = stdout
-        self.returncode = returncode
-
-    def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, b""
-
-
 class _GcConnection:
     def __init__(self, returncode: int = 0) -> None:
         self.commands: list[str] = []
         self._returncode = returncode
 
-    def execute(self, command: Sequence[str], **_: object) -> _GcProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         self.commands.append(command[2])  # the bash -c payload
-        return _GcProc(returncode=self._returncode)
+        return FakeProc(returncode=self._returncode)
 
 
 def test_run_gc_sweeps_every_tree_a_build_creates() -> None:
@@ -616,16 +607,6 @@ def test_run_gc_dryrun_lists_without_deleting() -> None:
 # --------------------------------------------------------------------------- #
 # Echoing the job's own output into the CI log
 # --------------------------------------------------------------------------- #
-class _CatProc:
-    returncode = 0
-
-    def __init__(self, out: bytes) -> None:
-        self._out = out
-
-    def communicate(self) -> tuple[bytes, bytes]:
-        return self._out, b""
-
-
 class _CatConnection:
     """A connection whose `cat` returns a canned job log."""
 
@@ -633,9 +614,9 @@ class _CatConnection:
         self._out = out
         self.executed: list[list[str]] = []
 
-    def execute(self, command: Sequence[str], **_: object) -> _CatProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         self.executed.append(list(command))
-        return _CatProc(self._out)
+        return FakeProc(self._out)
 
 
 def test_echo_remote_output_prints_the_captured_job_log(capsys: pytest.CaptureFixture[str]) -> None:
@@ -762,11 +743,13 @@ def test_submit_wait_publish_mode_checks_cache_and_fetches(monkeypatch: pytest.M
 
 
 # --------------------------------------------------------------------------- #
-# fetch-tree / push-tree (the standalone transfer subcommands)
+# fetch-tree / push-tree / remove-tree (the standalone transfer subcommands)
 #
-# Driven through the CLI with load_site / resolve_remote_path / the transfer
-# primitive stubbed, so we assert the two things the command wires: the kwargs
-# forwarded to the primitive, and the $GITHUB_OUTPUT it writes.
+# The commands themselves are thin: click parses the flags, the site and the path
+# resolver are stubbed, and the transfer primitive is tested directly in
+# test_hpc_transfer.py. What is worth pinning is the part nothing else covers —
+# which $GITHUB_OUTPUT key each command publishes for later steps to read, and
+# that a dry run publishes none.
 # --------------------------------------------------------------------------- #
 class _FakeSite:
     def __init__(self) -> None:
@@ -778,143 +761,55 @@ def _stub_site_and_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, spec: spec)  # identity
 
 
-def test_fetch_tree_forwards_kwargs_and_writes_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("dryrun", [False, True])
+@pytest.mark.parametrize(
+    ("command", "primitive", "argv", "expected_output"),
+    [
+        (
+            "fetch_tree_cmd",
+            "fetch_tree",
+            ["--remote-dir", "/scratch/ref", "--local-dir", "/tmp/back", "--tar-dir", "/tmp/tars"],
+            "local-dir=/tmp/back\n",
+        ),
+        (
+            "push_tree_cmd",
+            "push_tree",
+            ["--local-dir", "/tmp/inputs", "--remote-dir", "/scratch/inputs", "--tar-dir", "/tmp/tars"],
+            # push publishes the RESOLVED cluster dir: that is what a later step
+            # (a build, or remove-hpc-tree) has to be pointed at.
+            "remote-dir=/scratch/inputs\n",
+        ),
+        ("remove_tree_cmd", "remove_tree", ["--remote-dir", "/scratch/ci/out"], ""),
+    ],
+)
+def test_transfer_command_output_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+    primitive: str,
+    argv: list[str],
+    expected_output: str,
+    dryrun: bool,
+) -> None:
     _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "fetch_tree", lambda _conn, **kw: captured.update(kw))
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(transfer, primitive, lambda _conn, **kw: calls.append(kw))
     out_file = tmp_path / "gh_output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
 
     result = CliRunner().invoke(
-        orch.fetch_tree_cmd,
-        [
-            "--site",
-            "local-direct",
-            "--remote-dir",
-            "/scratch/ref",
-            "--local-dir",
-            str(tmp_path / "back"),
-            "--tar-dir",
-            str(tmp_path / "tars"),
-        ],
+        getattr(orch, command), ["--site", "hpc-batch", *argv, *(["--dryrun"] if dryrun else [])]
     )
+
     assert result.exit_code == 0, result.output
-    assert captured == {
-        "remote_dir": "/scratch/ref",
-        "local_dir": str(tmp_path / "back"),
-        "tar_dir": str(tmp_path / "tars"),
-        "dryrun": False,
-    }
-    assert out_file.read_text() == f"local-dir={tmp_path / 'back'}\n"
-
-
-def test_fetch_tree_dryrun_forwards_flag_and_writes_no_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "fetch_tree", lambda _conn, **kw: captured.update(kw))
-    out_file = tmp_path / "gh_output"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
-
-    result = CliRunner().invoke(
-        orch.fetch_tree_cmd,
-        [
-            "--site",
-            "local-direct",
-            "--remote-dir",
-            "/scratch/ref",
-            "--local-dir",
-            str(tmp_path / "back"),
-            "--tar-dir",
-            str(tmp_path / "tars"),
-            "--dryrun",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured["dryrun"] is True
-    assert not out_file.exists()  # nothing written on a dry run
-
-
-def test_push_tree_forwards_kwargs_and_writes_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "push_tree", lambda _conn, **kw: captured.update(kw))
-    out_file = tmp_path / "gh_output"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
-
-    result = CliRunner().invoke(
-        orch.push_tree_cmd,
-        [
-            "--site",
-            "local-direct",
-            "--local-dir",
-            str(tmp_path / "inputs"),
-            "--remote-dir",
-            "/scratch/inputs",
-            "--tar-dir",
-            str(tmp_path / "tars"),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured == {
-        "local_dir": str(tmp_path / "inputs"),
-        "remote_dir": "/scratch/inputs",
-        "tar_dir": str(tmp_path / "tars"),
-        "dryrun": False,
-    }
-    # push writes the RESOLVED cluster dir (its useful output for later steps).
-    assert out_file.read_text() == "remote-dir=/scratch/inputs\n"
-
-
-def test_push_tree_dryrun_forwards_flag_and_writes_no_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "push_tree", lambda _conn, **kw: captured.update(kw))
-    out_file = tmp_path / "gh_output"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
-
-    result = CliRunner().invoke(
-        orch.push_tree_cmd,
-        [
-            "--site",
-            "local-direct",
-            "--local-dir",
-            str(tmp_path / "inputs"),
-            "--remote-dir",
-            "/scratch/inputs",
-            "--tar-dir",
-            str(tmp_path / "tars"),
-            "--dryrun",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured["dryrun"] is True
-    assert not out_file.exists()
-
-
-def test_remove_tree_forwards_resolved_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "remove_tree", lambda _conn, **kw: captured.update(kw))
-
-    result = CliRunner().invoke(
-        orch.remove_tree_cmd,
-        ["--site", "hpc-batch", "--remote-dir", "/scratch/ci/out"],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured == {"remote_dir": "/scratch/ci/out", "dryrun": False}
-
-
-def test_remove_tree_dryrun_forwards_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _stub_site_and_resolver(monkeypatch)
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(transfer, "remove_tree", lambda _conn, **kw: captured.update(kw))
-
-    result = CliRunner().invoke(
-        orch.remove_tree_cmd,
-        ["--site", "hpc-batch", "--remote-dir", "/scratch/ci/out", "--dryrun"],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured["dryrun"] is True
+    assert len(calls) == 1
+    assert calls[0]["dryrun"] is dryrun
+    if dryrun:
+        # A dry run must publish nothing: a later step keyed off these outputs
+        # would otherwise act on a transfer that never happened.
+        assert not out_file.exists()
+    else:
+        assert (out_file.read_text() if out_file.exists() else "") == expected_output
 
 
 def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -929,44 +824,28 @@ def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert called["n"] == 0  # crucially, nothing was removed
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-
 # --------------------------------------------------------------------------- #
 # The click group's own surface
 # --------------------------------------------------------------------------- #
 
 
-def test_cli_group_registers_every_command() -> None:
+def test_every_cli_command_dispatches_through_the_group() -> None:
     """`python -m ci_infrastructure.hpc <cmd>` must resolve for all six commands.
 
-    Every other CLI test in this file invokes a command *function* directly
-    (`CliRunner().invoke(orch.push_tree_cmd, …)`), which never touches the group.
-    A command renamed or not registered on the group is therefore invisible to
-    this suite -- and that is exactly how a stale image reporting
-    "No such command 'push-tree'" got as far as it did. The composite actions call
-    these names verbatim (see actions/{push,fetch,remove}-hpc-tree and
-    build-on-hpc), so this set is a contract, not an implementation detail.
+    Every other CLI test here invokes a command *function* directly, which never
+    touches the group — so a command renamed or not registered would be invisible
+    to this suite. That is how a stale image reporting "No such command
+    'push-tree'" got as far as it did. The composite actions call these names
+    verbatim (see actions/{push,fetch,remove}-hpc-tree and build-on-hpc), so the
+    set is a contract, not an implementation detail.
     """
-    assert set(orch.main.commands) == {
-        "submit-wait",
-        "cancel",
-        "gc",
-        "fetch-tree",
-        "push-tree",
-        "remove-tree",
-    }
+    expected = {"submit-wait", "cancel", "gc", "fetch-tree", "push-tree", "remove-tree"}
+    assert set(orch.main.commands) == expected
 
-
-def test_cli_group_commands_are_invocable_through_the_group() -> None:
-    """Registration alone is not enough: each name must dispatch from the group.
-
-    `--help` through the group exercises the same lookup a runner does, without
-    needing a site, a cluster or any troika config.
-    """
+    # Registration is not enough: each name must actually dispatch. `--help`
+    # exercises the same lookup a runner does, with no site or cluster.
     runner = CliRunner()
-    for name in sorted(orch.main.commands):
+    for name in sorted(expected):
         result = runner.invoke(orch.main, [name, "--help"])
         assert result.exit_code == 0, f"{name}: {result.output}"
         assert "No such command" not in result.output

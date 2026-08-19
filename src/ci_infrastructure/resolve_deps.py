@@ -81,7 +81,6 @@ parallel.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -89,29 +88,28 @@ import secrets
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, NewType, cast
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from typing import Any, Final, Literal, NewType
 
 import click
 
 from . import s3_store
 from ._errors import CIError
 from ._github_api import (
-    IN_PROGRESS_STATUSES,
-    canonical_option_segment,
+    ManifestSchemaError,
     compute_deps_hash8,
     compute_platform_slug,
-    gh_api_rest,
+    fetch_manifests_layer,
+    probe_workflow_runs,
+    resolve_reuse_matrix,
     select_token,
+    write_outputs,
 )
-from ._github_api import fetch_manifests_layer as _fetch_manifests_layer_str
+from ._github_api import make_artifact_name as _make_artifact_name
+from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 
 # Discriminating fields that identify a buildable leg — the inputs to the
 # artifact name. `platform` is the binary-compatibility class; `runs-on` and
@@ -138,12 +136,11 @@ _OPTION_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 def _as_option(raw: Any, context: str) -> str:
     """Coerce + validate a build-option value (from a matrix leg or [[deps]]).
 
-    Options are a scalar named configuration: a single string naming the whole
-    feature config (e.g. 'stochastic-moments', or a curated combo like
-    'moments-fast'), or empty/absent (-> '') for a plain build. A list is rejected
-    with a migration hint — the composable-set form was replaced by scalar named
-    configs so each maps 1:1 onto a CMake preset. Rejects any name outside
-    [A-Za-z0-9_-] so it can't corrupt the artifact-name segment.
+    An option is a scalar named configuration: one string naming the whole feature
+    config (e.g. 'stochastic-moments', or a curated combo like 'moments-fast'), or
+    empty/absent (-> '') for a plain build. One name maps 1:1 onto a CMake preset,
+    which is why a list is refused rather than composed. Any name outside
+    [A-Za-z0-9_-] is rejected: it would corrupt the artifact-name segment.
     """
     if raw is None or raw == "":
         return ""
@@ -211,7 +208,6 @@ class PackageSpec:
     prefix: PackageName
     repo: Repo
     compiler_inputs: Sequence[str]  # required: matrix fields whose values identify the OWN artifact
-    needs_python: bool
 
 
 @dataclass
@@ -347,7 +343,6 @@ def _parse_package(data: Mapping[str, Any], default_repo: str | None) -> Package
         prefix=PackageName(str(pkg_data["prefix"])),
         repo=as_repo(str(repo)),
         compiler_inputs=pkg_compiler_inputs,
-        needs_python=bool(pkg_data.get("needs-python", False)),
     )
 
 
@@ -386,11 +381,10 @@ def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
 
 
 def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
-    # Two-pass matrix resolution: first collect raw blocks, then apply reuse-matrix.
-    # Mirrors generate_downstream_ci.py: a kind with `reuse-matrix = "X"` and no
-    # explicit include inherits X's include legs. Without this expansion, kinds
-    # like `[matrix.test] reuse-matrix = "build"` would emit an empty matrix and
-    # the consuming workflow would fail with `fromJSON: empty input`.
+    # Two passes: collect the raw blocks, then expand reuse-matrix against them.
+    # The expansion is shared with the generator (resolve_reuse_matrix) because a
+    # kind whose legs differed between the two would look up artifact names
+    # nothing ever published.
     raw_matrix: dict[str, dict[str, Any]] = {}
     for job_name, job_block in data.get("matrix", {}).items():
         if not isinstance(job_block, dict):
@@ -400,24 +394,11 @@ def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any
     matrix: dict[str, list[dict[str, Any]]] = {}
     artifact_prefix_by_kind: dict[str, str] = {}
     for job_name, job_block in raw_matrix.items():
-        include = job_block.get("include")
-        reuse = job_block.get("reuse-matrix")
-        if reuse is not None and include:
-            raise ValueError(f"[matrix.{job_name}] sets both 'reuse-matrix' and 'include'; pick one")
-        if reuse is not None:
-            target = raw_matrix.get(str(reuse))
-            if target is None:
-                raise ValueError(f"[matrix.{job_name}].reuse-matrix = {reuse!r} but [matrix.{reuse}] does not exist")
-            if target.get("reuse-matrix") is not None:
-                raise ValueError(
-                    f"[matrix.{job_name}].reuse-matrix points at another reuse-matrix; chained reuse is not supported"
-                )
-            include = target.get("include", [])
-        else:
-            include = include or []
-        if not isinstance(include, list):
-            raise ValueError(f"[matrix.{job_name}.include] must be an array of tables")
-        matrix[str(job_name)] = [dict(entry) for entry in include]
+        try:
+            legs = resolve_reuse_matrix(job_name, job_block.get("include"), job_block.get("reuse-matrix"), raw_matrix)
+        except ManifestSchemaError as e:
+            raise ValueError(str(e)) from e
+        matrix[str(job_name)] = list(legs)
         prefix_override = job_block.get("artifact-prefix")
         if prefix_override is not None:
             if not isinstance(prefix_override, str) or not prefix_override.strip():
@@ -441,36 +422,9 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     )
 
 
-def fetch_manifests_layer(
-    repos_refs: Sequence[tuple[Repo, Ref]],
-    sync_branch: Ref | None,
-    token: str | None,
-    manifest_path: str,
-) -> dict[tuple[Repo, Ref], tuple[str | None, bool]]:
-    """Typed wrapper around _github_api.fetch_manifests_layer.
-
-    The shared helper takes plain `str` so the generator (which has no
-    Repo/Ref NewType vocabulary) can also use it. resolve_deps wraps the
-    return value back into its NewType-keyed dict.
-    """
-    raw = _fetch_manifests_layer_str(repos_refs, sync_branch, token, manifest_path)
-    return cast("dict[tuple[Repo, Ref], tuple[str | None, bool]]", raw)
-
-
 def resolve_ref_to_sha(repo: Repo, ref: Ref, token: str | None) -> Sha:
-    """Resolve a branch / lightweight or annotated tag / short or full SHA to a 40-char commit SHA.
-
-    Uses the commits/{ref} REST endpoint, which auto-disambiguates and dereferences
-    annotated tags to the underlying commit (the tags/{ref} endpoint we used previously
-    returned the tag-object SHA for annotated tags, which doesn't match how artifacts
-    are keyed). Mirrored in check_artifact.resolve_ref.
-    """
-    if _SHA_RE.fullmatch(ref):
-        return Sha(ref)
-    data = gh_api_rest(f"repos/{repo}/commits/{ref}", token)
-    if isinstance(data, dict) and isinstance(data.get("sha"), str):
-        return as_sha(cast(str, data["sha"]))
-    raise ResolveError(f"Could not resolve ref '{ref}' in {repo}")
+    """`_github_api.resolve_ref_to_sha` in this module's NewType vocabulary."""
+    return Sha(_resolve_ref_to_sha(repo, ref, token))
 
 
 def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> Sha:
@@ -492,21 +446,12 @@ def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> S
 def has_in_flight_run(repo: Repo, sha: Sha, token: str | None) -> bool:
     """True if at least one workflow run for this commit SHA is queued / in progress.
 
-    Used to distinguish orphan pins (no upstream CI ever ran for this commit, or
-    every run completed without producing the artifact we need) from coordinated
-    pushes (upstream CI is racing this resolve job and will produce the artifact
-    soon — fetch_deps polls in that case).
+    Distinguishes orphan pins (no upstream CI ever ran for this commit, or every
+    run completed without producing the artifact we need) from coordinated pushes
+    (upstream CI is racing this resolve and will produce the artifact soon —
+    fetch_deps polls in that case).
     """
-    data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=20", token)
-    if not isinstance(data, dict):
-        return False
-    runs = data.get("workflow_runs")
-    if not isinstance(runs, list):
-        return False
-    for run in runs:
-        if isinstance(run, dict) and run.get("status") in IN_PROGRESS_STATUSES:
-            return True
-    return False
+    return probe_workflow_runs(repo, sha, token).in_flight
 
 
 def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, Any]) -> bool:
@@ -535,7 +480,7 @@ def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, A
     # (where a producer leg that omits a field simply doesn't discriminate on
     # it), an omitted `options` means the concrete empty config, so it must equal
     # the requested config — a plain leg cannot satisfy a moments request.
-    consumer_keys = (_MATRIX_DISCRIMINATORS - {"options"}) & matrix_entry.keys()
+    consumer_keys = _MATRIX_DISCRIMINATORS & matrix_entry.keys()
     req_option = _as_option(matrix_entry.get("options"), context="requested option")
 
     def _leg_matches(leg: Mapping[str, Any]) -> bool:
@@ -651,30 +596,10 @@ def make_artifact_name(
     python_version: str | None,
     option: str = "",
 ) -> ArtifactName:
-    """Mirrors the naming logic in check_artifact.py exactly so cache keys still hit.
-
-    None for deps_hash8 / compiler / python_version means "this segment doesn't
-    apply" (no deps, no compilers declared, not a Python build) — those segments
-    are dropped from the name, matching the pre-Optional `if deps_hash8:` etc.
-    behaviour exactly.
-
-    `option` is the orthogonal build-option axis (a scalar config name); its segment
-    is appended only when non-empty (empty -> name unchanged from the pre-options
-    format). See canonical_option_segment.
-    """
-    parts = [prefix, sha]
-    if deps_hash8:
-        parts.append(deps_hash8)
-    parts.append(platform_slug)
-    if compiler:
-        parts.append(compiler)
-    if python_version:
-        parts.append(f"py{python_version}")
-    parts.append(build_type)
-    opt_seg = canonical_option_segment(option)
-    if opt_seg:
-        parts.append(opt_seg)
-    return ArtifactName("-".join(parts))
+    """`_github_api.make_artifact_name` in this module's NewType vocabulary."""
+    return ArtifactName(
+        _make_artifact_name(prefix, sha, deps_hash8, platform_slug, compiler, build_type, python_version, option)
+    )
 
 
 def _install_base() -> Path:
@@ -957,19 +882,13 @@ def resolve_leg(
     own_compiler = _join_compilers(own.compiler_inputs, matrix_entry, context=f"[package] '{own.name}'")
     own_build_type = str(matrix_entry.get("build-type", "Release"))
     own_platform = compute_platform_slug(str(matrix_entry.get("platform", "")))
-    # Whether the OWN artifact is python-version-axed is determined by the
-    # leg itself, not by the [package].needs-python flag. The flag remains
-    # the right source of truth for [[deps]] entries (where pip-install
-    # behaviour follows the dep's declared needs-python), but for the OWN
-    # package's identity any leg that declares python-version is by
-    # definition producing a per-Python-version artifact.
-    #
-    # The bug this guards against: ecflow's [package] has needs-python =
-    # false (because the primary [matrix.build] doesn't care about Python),
-    # but its secondary [matrix.build-python] legs DO have python-version.
-    # The earlier `if own.needs_python else None` gate dropped the suffix,
-    # which made all 3 py-version legs of the same compiler collide on the
-    # artifact name and one upload-artifact "win" while the others 404'd.
+    # Any leg that declares python-version is by definition producing a
+    # per-Python-version artifact, so the leg decides — not [package].needs-python,
+    # which may be false for a repo whose primary kind ignores Python while a
+    # secondary kind builds one artifact per version. Reading the flag instead
+    # would collide every version of a kind onto one name.
+    # (needs-python remains the right source of truth for [[deps]] entries, where
+    # it drives pip-install behaviour rather than identity.)
     own_python_raw = str(matrix_entry.get("python-version", "")).strip()
     own_python: str | None = own_python_raw or None
 
@@ -1028,7 +947,10 @@ def bfs_load_manifests(
         results = fetch_manifests_layer(layer, sync_branch, token, manifest_path)
 
         next_queue: list[tuple[Repo, Ref]] = []
-        for (repo, ref), (text, sync_present) in results.items():
+        for (raw_repo, raw_ref), (text, sync_present) in results.items():
+            # The shared fetcher speaks plain str (the generator has no NewType
+            # vocabulary); re-narrow once, here, rather than everywhere below.
+            repo, ref = Repo(raw_repo), Ref(raw_ref)
             if sync_branch:
                 sync_exists.setdefault(repo, sync_present)
                 # If sync-branch exists upstream, the EFFECTIVE ref to fetch is the sync branch,
@@ -1046,7 +968,6 @@ def bfs_load_manifests(
                         prefix=PackageName(""),
                         repo=repo,
                         compiler_inputs=(),
-                        needs_python=False,
                     ),
                     deps=[],
                 )
@@ -1062,22 +983,6 @@ def bfs_load_manifests(
         queue = next_queue
 
     return manifest_cache, sync_exists
-
-
-def write_outputs(outputs: Mapping[str, str]) -> None:
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            for key, value in outputs.items():
-                # Multi-line values need heredoc-style delimited output.
-                if "\n" in value:
-                    delim = f"EOF_{hashlib.sha1(value.encode()).hexdigest()[:8]}"
-                    f.write(f"{key}<<{delim}\n{value}\n{delim}\n")
-                else:
-                    f.write(f"{key}={value}\n")
-    else:
-        for key, value in outputs.items():
-            print(f"{key}={value}")
 
 
 @click.command(help="Resolve dep tree for all matrix legs in a manifest.")

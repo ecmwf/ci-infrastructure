@@ -12,38 +12,19 @@ and the needs-graph must be identical to the runner path.
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import parse_all, write_repo
 
 from ci_infrastructure.generate_downstream_ci import (
     EXECUTION_HPC,
-    Manifest,
     SchemaError,
-    discover_manifests,
-    parse_manifest,
     render_workflow,
+    validate_graph,
 )
 
-
-def write_repo(root: Path, repo_name: str, manifest_body: str) -> Path:
-    manifest = root / repo_name / ".ci" / "manifest.toml"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(textwrap.dedent(manifest_body))
-    return manifest
-
-
-def parse_all(root: Path) -> list[Manifest]:
-    return [parse_manifest(p) for p in discover_manifests(root)]
-
-
 _HPC_MANIFEST = """
-    [package]
-    name = "a"
-    repo = "org/a"
-    compiler-inputs = []
-
     [matrix.build]
     execution = "hpc"
     triggers = ["rebuild-request"]
@@ -60,11 +41,22 @@ _HPC_MANIFEST = """
     """
 
 
-def test_hpc_job_uses_build_on_hpc_action(tmp_path: Path) -> None:
+@pytest.fixture
+def hpc_yaml(tmp_path: Path) -> str:
+    """cross-repo-trigger-hpc.yml for a single one-leg HPC repo.
+
+    Five assertions below are about different parts of the same rendered file,
+    so it is rendered once rather than rebuilt per test.
+    """
     write_repo(tmp_path, "a", _HPC_MANIFEST)
     [m] = parse_all(tmp_path)
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
-    assert yaml is not None
+    assert yaml is not None, "the hpc lane must render when the only kind is hpc"
+    return yaml
+
+
+def test_hpc_job_uses_build_on_hpc_action(hpc_yaml: str) -> None:
+    yaml = hpc_yaml
     # The HPC build step calls the shared action, not a per-repo composite.
     assert "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main" in yaml
     # A leg with no per-leg job-script falls back to the kind-level default.
@@ -85,11 +77,6 @@ def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> N
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["rebuild-request"]
@@ -130,11 +117,6 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test-hpc]
         execution = "hpc"
         triggers = ["upstream-change"]
@@ -159,22 +141,16 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
     assert "name: Run on HPC" in yaml
 
 
-def test_hpc_step_uses_hpc_ci_ssh_user_secret(tmp_path: Path) -> None:
+def test_hpc_step_uses_hpc_ci_ssh_user_secret(hpc_yaml: str) -> None:
     """troika-user must come from the HPC_CI_SSH_USER secret the sandbox defines,
     matching every hand-written repo ci.yml (not an undefined TROIKA_USER)."""
-    write_repo(tmp_path, "a", _HPC_MANIFEST)
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
-    assert yaml is not None
+    yaml = hpc_yaml
     assert "troika-user: ${{ secrets.HPC_CI_SSH_USER }}" in yaml
     assert "TROIKA_USER" not in yaml
 
 
-def test_hpc_fetch_step_stages_python_wheels_without_installing(tmp_path: Path) -> None:
-    write_repo(tmp_path, "a", _HPC_MANIFEST)
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
-    assert yaml is not None
+def test_hpc_fetch_step_stages_python_wheels_without_installing(hpc_yaml: str) -> None:
+    yaml = hpc_yaml
     # No setup-python runs on an HPC leg, so there is no consumer interpreter to
     # install needs-python wheels into; fetch-and-publish must be told to stage
     # them instead of failing the preflight that demands --consumer-python.
@@ -182,39 +158,28 @@ def test_hpc_fetch_step_stages_python_wheels_without_installing(tmp_path: Path) 
     assert "actions/setup-python" not in yaml
 
 
-def test_hpc_job_runs_on_login_runner_without_container(tmp_path: Path) -> None:
-    write_repo(tmp_path, "a", _HPC_MANIFEST)
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
-    assert yaml is not None
+def test_hpc_job_runs_on_login_runner_without_container(hpc_yaml: str) -> None:
+    yaml = hpc_yaml
     assert "runs-on: ${{ matrix['runs-on'] }}" in yaml
     # HPC jobs run in host mode on the login node — no container block.
     assert "container:" not in yaml
 
 
-def test_hpc_job_has_no_separate_publish_step(tmp_path: Path) -> None:
+def test_hpc_job_has_no_separate_publish_step(hpc_yaml: str) -> None:
     """build-on-hpc publishes internally (gated on cache-hit), so the generator
     must not also emit the runner-path publish step."""
-    write_repo(tmp_path, "a", _HPC_MANIFEST)
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
-    assert yaml is not None
+    yaml = hpc_yaml
     assert "mode: publish" not in yaml
 
 
-def test_hpc_and_runner_legs_share_artifact_identity(tmp_path: Path) -> None:
-    """A runner leg and an HPC leg that differ only in scheduling (runs-on/site)
-    but share platform/compiler/build-type collide — proving `site` is treated
-    as scheduling, not identity."""
+def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
+    """Two legs that differ only in `site` share one artifact identity, proving
+    `site` is scheduling and not part of the name — so they would publish two
+    different builds under a single name."""
     write_repo(
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         execution = "hpc"
         triggers = ["rebuild-request"]
@@ -238,8 +203,6 @@ def test_hpc_and_runner_legs_share_artifact_identity(tmp_path: Path) -> None:
     )
     [m] = parse_all(tmp_path)
     with pytest.raises(SchemaError, match="differ only in"):
-        from ci_infrastructure.generate_downstream_ci import validate_graph
-
         validate_graph([m])
 
 
@@ -251,11 +214,6 @@ def test_hpc_leg_accepts_list_runs_on(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["rebuild-request"]
@@ -281,11 +239,6 @@ def test_hpc_kind_rejects_action(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         execution = "hpc"
         triggers = ["rebuild-request"]
@@ -308,11 +261,6 @@ def test_hpc_kind_requires_job_script_when_triggered(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         execution = "hpc"
         triggers = ["rebuild-request"]
@@ -333,11 +281,6 @@ def test_runner_kind_rejects_job_script(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "./.github/actions/build-a"
@@ -358,11 +301,6 @@ def test_unknown_execution_value_rejected(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         execution = "cloud"
         triggers = ["rebuild-request"]
@@ -377,7 +315,3 @@ def test_unknown_execution_value_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(SchemaError):
         parse_all(tmp_path)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(pytest.main([__file__, "-v"]))

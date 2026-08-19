@@ -6,7 +6,7 @@ name: Pick downstream ref
 description: >
   Probe the consumer repo for a branch matching the upstream's ref and emit
   the chosen ref. Returns `try-branch` when it exists in `repo`, otherwise
-  `fallback-ref`. Used by triggered-by-upstream workflows to support
+  `fallback-ref`. Used by cross-repo-trigger workflows to support
   coordinated cross-repo PRs: when an upstream PR is opened on branch X,
   consumers with a same-named branch run against X; consumers without one
   fall back to their manifest-declared ref (typically main / master / develop).

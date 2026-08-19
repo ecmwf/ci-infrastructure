@@ -4,12 +4,14 @@
 
 """Tests for ci_infrastructure.generate_downstream_ci.
 
-Covers:
-  - Each consistency-check failure mode (cycle, subset violation, dangling
-    needs, reachability, schema sanity).
-  - Idempotence on the real six-repo playground (golden snapshot).
+Covers each consistency-check failure mode (trigger cycle, subset violation,
+dangling local and cross-repo needs, reachability, colliding artifact identity,
+the orchestrator job/reusable-workflow caps) and the shape of both generated
+workflows per lane — including which edges dispatch rather than `uses:` a
+consumer, since that is what keeps a private repo's logs out of a public run.
 
-Run with:  pytest  (after `pip install -e ".[test]"` from the ci-infrastructure/ root).
+Fixtures are built with `write_repo` / `parse_all` from conftest.py, which
+supply the [package] block a test is not about.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import parse_all, write_repo
 
 from ci_infrastructure.generate_downstream_ci import (
     EXECUTION_HPC,
@@ -27,33 +30,17 @@ from ci_infrastructure.generate_downstream_ci import (
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     SLIM_RUNNER,
-    Manifest,
     SchemaError,
     _cross_package_deps,
-    _warn_if_local_drifts_from_remote,
+    _write_or_check_path,
     compute_transitive_consumers,
-    discover_manifests,
-    parse_manifest,
     parse_manifest_text,
     render_orchestrator_workflow,
     render_workflow,
     resolve_consumer_refs,
     transitive_cross_repo_needs,
     validate_graph,
-    write_or_check,
 )
-
-
-def write_repo(root: Path, repo_name: str, manifest_body: str) -> Path:
-    """Materialise a fake repo with .ci/manifest.toml under root and return its path."""
-    manifest = root / repo_name / ".ci" / "manifest.toml"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(textwrap.dedent(manifest_body))
-    return manifest
-
-
-def parse_all(root: Path) -> list[Manifest]:
-    return [parse_manifest(p) for p in discover_manifests(root)]
 
 
 def test_unknown_matrix_key_rejected(tmp_path: Path) -> None:
@@ -61,11 +48,6 @@ def test_unknown_matrix_key_rejected(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -86,11 +68,6 @@ def test_action_required_when_kind_triggered(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         # no action — should fail
@@ -109,11 +86,6 @@ def test_action_path_must_be_local_composite(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "../etc/passwd"
@@ -135,11 +107,6 @@ def test_forwarded_input_typo_rejected(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "./.github/actions/build-a"
@@ -163,12 +130,6 @@ def test_artifact_prefix_must_be_non_empty(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         artifact-prefix = ""
         triggers = ["rebuild-request"]
@@ -183,10 +144,13 @@ def test_artifact_prefix_must_be_non_empty(tmp_path: Path) -> None:
         parse_all(tmp_path)
 
 
-def test_artifact_prefix_round_trips_through_kind(tmp_path: Path) -> None:
-    """When a kind declares `artifact-prefix`, the parsed MatrixKind records it
-    verbatim so the resolver can use it instead of [package].prefix. The
-    default-None behaviour (kinds without the field) is also verified."""
+def test_artifact_prefix_is_an_accepted_kind_key(tmp_path: Path) -> None:
+    """A kind may declare `artifact-prefix` (to publish a secondary artifact
+    under its own name) without the generator rejecting it as an unknown key.
+
+    The generator only validates the key's shape; resolve_deps reads the value
+    from the manifest itself and applies it to the artifact name.
+    """
     write_repo(
         tmp_path,
         "a",
@@ -216,8 +180,7 @@ def test_artifact_prefix_round_trips_through_kind(tmp_path: Path) -> None:
         """,
     )
     [m] = parse_all(tmp_path)
-    assert m.matrices["build"].artifact_prefix is None
-    assert m.matrices["build-secondary"].artifact_prefix == "a-secondary"
+    assert set(m.matrices) == {"build", "build-secondary"}
 
 
 def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> None:
@@ -230,12 +193,6 @@ def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> Non
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         triggers = ["upstream-change"]
         action = "./.github/actions/test-a"
@@ -344,12 +301,6 @@ def test_job_name_python_version_not_duplicated_when_sole_distinguisher(tmp_path
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         triggers = ["rebuild-request"]
         action = "./.github/actions/test-a"
@@ -382,11 +333,6 @@ def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> Non
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "./.github/actions/build-thisrepo"
@@ -420,11 +366,6 @@ def test_trigger_downstream_rejects_unknown_keys(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         extra = "nope"
@@ -440,11 +381,6 @@ def test_trigger_downstream_requires_ref(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         """,
@@ -458,11 +394,6 @@ def test_trigger_downstream_uses_explicit_ref(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "develop"
@@ -478,11 +409,6 @@ def test_duplicate_trigger_downstream(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -501,11 +427,6 @@ def test_reuse_matrix_target_missing(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         reuse-matrix = "build"
         triggers = ["upstream-change", "rebuild-request"]
@@ -576,11 +497,6 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> Path:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -642,11 +558,6 @@ def test_trigger_cycle(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -667,11 +578,6 @@ def test_trigger_cycle(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -697,11 +603,6 @@ def test_dangling_local_need(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -816,11 +717,6 @@ def test_dangling_cross_repo_need_unknown_package(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -840,11 +736,6 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -859,11 +750,6 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -886,11 +772,6 @@ def test_reachability_violation(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -903,11 +784,6 @@ def test_reachability_violation(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -930,10 +806,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -949,10 +821,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -971,10 +839,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -995,16 +859,12 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
 
 
 def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
-    """A -> B -> C: rendered triggered-by-upstream.yml for C must accept BOTH a/build and b/build
-    in its `if:` filter, in either dispatch or call mode."""
+    """A -> B -> C: C's rendered cross-repo-trigger.yml must accept BOTH a/build and
+    b/build in its `if:` filter, in either dispatch or call mode."""
     write_repo(
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1020,10 +880,6 @@ def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1042,10 +898,6 @@ def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1075,10 +927,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1094,10 +942,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1116,10 +960,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1151,10 +991,6 @@ def test_diamond_closure(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/c"
         ref = "main"
@@ -1196,10 +1032,6 @@ def test_diamond_closure(tmp_path: Path) -> None:
         tmp_path,
         "e",
         """
-        [package]
-        name = "e"
-        repo = "org/e"
-        compiler-inputs = []
         [[deps]]
         repo = "org/c"
         package = "c"
@@ -1230,10 +1062,6 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1252,10 +1080,6 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1283,10 +1107,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1302,10 +1122,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1324,10 +1140,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1497,7 +1309,6 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "downstream/runner" in yaml
     # Static org-level dispatch secret is gone.
     assert "ORG_DISPATCH_TOKEN" not in yaml
-    assert "triggered-by-upstream.yml@" not in yaml
     # `upstream-*` dispatch inputs renamed to `from-*`; old names must be gone.
     assert "upstream-job:" not in yaml
     assert "upstream-repo:" not in yaml
@@ -1688,10 +1499,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1710,10 +1517,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1732,10 +1535,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1754,10 +1553,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "d",
         """
-        [package]
-        name = "d"
-        repo = "org/d"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1790,10 +1585,6 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1815,10 +1606,6 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1855,10 +1642,6 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1874,10 +1657,6 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1919,10 +1698,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1944,10 +1719,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1972,10 +1743,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -2232,10 +1999,6 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change"]
         action = "./.github/actions/build"
@@ -2406,171 +2169,21 @@ def test_orchestrator_caps_reusable_workflows(tmp_path: Path) -> None:
         render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
 
 
-def test_write_or_check_modes(tmp_path: Path) -> None:
-    repo = tmp_path / "x"
-    (repo / ".github/workflows").mkdir(parents=True)
-    # First write
-    assert write_or_check(repo, "hello\n", check=False) is True
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
+def test_write_or_check_path_modes(tmp_path: Path) -> None:
+    out = tmp_path / ".github/workflows/cross-repo-trigger.yml"
+    # First write creates the parent directory too.
+    assert _write_or_check_path(out, "hello\n", check=False) is True
+    assert out.read_text() == "hello\n"
     # Idempotent
-    assert write_or_check(repo, "hello\n", check=False) is False
+    assert _write_or_check_path(out, "hello\n", check=False) is False
     # Drift detected by --check
-    assert write_or_check(repo, "different\n", check=True) is True
+    assert _write_or_check_path(out, "different\n", check=True) is True
     # Check didn't actually write
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
+    assert out.read_text() == "hello\n"
     # content=None deletes an existing workflow: the manifest is the source
     # of truth, so a kind that no longer opts into cross-repo dispatch must
     # not leave a dangling workflow behind.
-    assert write_or_check(repo, None, check=False) is True
-    assert not (repo / ".github/workflows/cross-repo-trigger.yml").exists()
+    assert _write_or_check_path(out, None, check=False) is True
+    assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
-    assert write_or_check(repo, None, check=False) is False
-
-
-def test_write_or_check_removes_legacy_file(tmp_path: Path) -> None:
-    """A pre-rename triggered-by-upstream.yml must be deleted when the renamed
-    cross-repo-trigger.yml is written, so a post-rename regen leaves no
-    duplicate dispatcher in the repo.
-    """
-    repo = tmp_path / "x"
-    (repo / ".github/workflows").mkdir(parents=True)
-    legacy = repo / ".github/workflows/triggered-by-upstream.yml"
-    legacy.write_text("# stale pre-rename file\n")
-    # write_or_check must remove the legacy file as a side effect.
-    write_or_check(repo, "hello\n", check=False)
-    assert not legacy.exists(), "legacy triggered-by-upstream.yml should have been removed"
-    assert (repo / ".github/workflows/cross-repo-trigger.yml").read_text() == "hello\n"
-
-
-def _drift_fixture(tmp_path: Path) -> tuple[Manifest, Path]:
-    """Build a minimal local repo + parsed Manifest for drift-warning tests.
-
-    Returns (manifest, manifest_path). The manifest's [package].repo is the
-    coordinate the helper looks up against GitHub; the path's grand-parent
-    is the repo root the helper passes to `git`.
-    """
-    manifest_path = write_repo(
-        tmp_path,
-        "a",
-        """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
-        [[matrix.build.include]]
-        runs-on = "ubuntu-latest"
-        """,
-    )
-    return parse_manifest(manifest_path), manifest_path
-
-
-def test_drift_warning_when_local_head_ahead(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A local commit SHA that differs from the remote default-branch SHA
-    surfaces a `::warning::` line on stderr, in the un-pushed-commits shape."""
-    local, manifest_path = _drift_fixture(tmp_path)
-
-    def fake_git(args, cwd):  # type: ignore[no-untyped-def]
-        if args[0] == "rev-parse":
-            return 0, "deadbeefcafefeed1234567890abcdef00000000"
-        if args[0] == "status":
-            return 0, ""  # clean tree
-        raise AssertionError(f"unexpected git args: {args}")
-
-    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci._git", fake_git)
-    monkeypatch.setattr(
-        "ci_infrastructure.generate_downstream_ci.fetch_repo_head",
-        lambda repo, token: ("main", "00000000abcdef0987654321cafefeeddeadbeef"),
-    )
-
-    _warn_if_local_drifts_from_remote(local, manifest_path, token=None)
-
-    err = capsys.readouterr().err
-    assert "::warning::local HEAD deadbee differs from org/a@main 0000000" in err
-    assert "Push to align" in err
-
-
-def test_drift_warning_when_manifest_dirty(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A dirty working tree fires the dirty-tree warning even when local HEAD
-    and remote default-branch SHA match — the working tree itself is what
-    will feed validation."""
-    local, manifest_path = _drift_fixture(tmp_path)
-    sha = "1111111122222222333333334444444455555555"
-
-    def fake_git(args, cwd):  # type: ignore[no-untyped-def]
-        if args[0] == "rev-parse":
-            return 0, sha
-        if args[0] == "status":
-            return 0, " M .github/workflows/cross-repo-trigger.yml"  # dirty (non-manifest path)
-        raise AssertionError(f"unexpected git args: {args}")
-
-    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci._git", fake_git)
-    monkeypatch.setattr(
-        "ci_infrastructure.generate_downstream_ci.fetch_repo_head",
-        lambda repo, token: ("main", sha),
-    )
-
-    _warn_if_local_drifts_from_remote(local, manifest_path, token=None)
-
-    err = capsys.readouterr().err
-    assert "uncommitted local changes" in err
-    assert "org/a@main" in err
-
-
-def test_drift_silent_when_aligned(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Clean tree + matching SHA emits no output. The helper must not
-    chatter during the common case."""
-    local, manifest_path = _drift_fixture(tmp_path)
-    sha = "abcdef0123456789abcdef0123456789abcdef01"
-
-    def fake_git(args, cwd):  # type: ignore[no-untyped-def]
-        if args[0] == "rev-parse":
-            return 0, sha
-        if args[0] == "status":
-            return 0, ""
-        raise AssertionError(f"unexpected git args: {args}")
-
-    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci._git", fake_git)
-    monkeypatch.setattr(
-        "ci_infrastructure.generate_downstream_ci.fetch_repo_head",
-        lambda repo, token: ("main", sha),
-    )
-
-    _warn_if_local_drifts_from_remote(local, manifest_path, token=None)
-
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert captured.out == ""
-
-
-def test_drift_soft_warning_on_git_failure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If git can't determine local state (not a git checkout, git missing,
-    etc.) the helper emits one soft warning and returns; it never crashes
-    or raises."""
-    local, manifest_path = _drift_fixture(tmp_path)
-
-    monkeypatch.setattr(
-        "ci_infrastructure.generate_downstream_ci._git",
-        lambda args, cwd: (128, ""),  # fatal: not a git repository
-    )
-
-    # fetch_repo_head should not even be called if git fails first; make it
-    # explode if invoked so a regression jumps out.
-    def boom(repo, token):  # type: ignore[no-untyped-def]
-        raise AssertionError("fetch_repo_head should not be called when git fails first")
-
-    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci.fetch_repo_head", boom)
-
-    _warn_if_local_drifts_from_remote(local, manifest_path, token=None)
-
-    err = capsys.readouterr().err
-    assert "::warning::could not verify local-vs-remote drift" in err
-    assert "git rev-parse HEAD failed" in err
+    assert _write_or_check_path(out, None, check=False) is False

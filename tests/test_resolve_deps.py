@@ -182,7 +182,6 @@ def _producer(*legs: dict[str, Any]) -> Manifest:
             prefix=PackageName("cxxmath"),
             repo=Repo("o/cxx"),
             compiler_inputs=["cxx-compiler"],
-            needs_python=False,
         ),
         deps=[],
         matrix={"build": list(legs)},
@@ -265,7 +264,6 @@ def test_options_do_not_propagate_and_ripple_via_deps_hash(monkeypatch: pytest.M
         prefix=PackageName("cxxmath-python"),
         repo=Repo("o/cxxpy"),
         compiler_inputs=["cxx-compiler"],
-        needs_python=True,
     )
     dep = DepSpec(
         repo=Repo("o/cxx"),

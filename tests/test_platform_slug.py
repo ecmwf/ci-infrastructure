@@ -7,14 +7,14 @@
 The platform key lets several ABI-compatible images (and a same-distro host
 runner) share one artifact: a producer built under one image is reused by a
 consumer building under a different image, instead of being rebuilt just
-because the image tag differs. These tests pin that behaviour:
+because the image tag differs. These tests pin that:
 
-  - compute_platform_slug: explicit platform supersedes runs-on/container,
-    legacy container/runs-on fallback still works, and the guards hold.
-  - producer_can_build: an explicit platform makes runs-on/container stop
-    discriminating, so two images on the same platform match.
-  - end-to-end: the same fortmath artifact name is computed whether fortran
-    builds it (gfortran13 image) or cxx resolves it as a dep (clang18 image).
+  - compute_platform_slug: the declared platform is used verbatim, is required,
+    and may not begin with an 8-hex segment (which would be read as deps-hash8).
+  - producer_can_build: runs-on/container do not discriminate, so two
+    ABI-compatible images declaring the same platform match.
+  - make_artifact_name: the image tag is not an input, so producer and consumer
+    agree on the name whichever image each builds under.
 """
 
 from __future__ import annotations
@@ -90,26 +90,22 @@ def test_producer_can_build_across_images_on_same_platform() -> None:
     assert not producer_can_build(fortmath, other_platform)
 
 
-def test_same_artifact_name_across_build_and_consume() -> None:
-    """The crux: fortran building fortmath and cxx resolving the fortmath dep
-    must compute the identical artifact name despite different images."""
-    sha = Sha("a" * 40)
-    deps_hash8 = "1234abcd"  # ecbuild dep hash; identical on both sides
+def test_artifact_name_is_independent_of_the_building_image() -> None:
+    """fortran building fortmath and cxx resolving the fortmath dep compute the
+    same name, because `platform` — not the image tag — is what enters it.
 
-    # Both sides declare platform="ubuntu-24.04" (fortran builds under the
-    # gfortran13 image, cxx resolves the dep under the clang18 image) so the
-    # slug — and therefore the whole artifact name — is identical.
-    def name() -> str:
-        return make_artifact_name(
+    The two sides run under different container images (gfortran13 vs clang18);
+    since neither is an input to the name, one call is the whole story.
+    """
+    assert (
+        make_artifact_name(
             prefix=PackageName("fortmath"),
-            sha=sha,
-            deps_hash8=deps_hash8,
+            sha=Sha("a" * 40),
+            deps_hash8="1234abcd",
             platform_slug=compute_platform_slug("ubuntu-24.04"),
             compiler="gfortran-13",
             build_type="Release",
             python_version=None,
         )
-
-    producer_name = name()  # fortran's own leg, gfortran13 image
-    consumer_name = name()  # cxx resolving the fortmath dep, clang18 image
-    assert producer_name == consumer_name == "fortmath-" + ("a" * 40) + "-1234abcd-ubuntu-24.04-gfortran-13-Release"
+        == "fortmath-" + ("a" * 40) + "-1234abcd-ubuntu-24.04-gfortran-13-Release"
+    )

@@ -12,13 +12,19 @@ relies on. This module is the checker behind
 ``actions/check-pr-declaration``: it fails when the description does not END with
 that block, verbatim.
 
-STDLIB ONLY, ON PURPOSE. The action runs this with whatever ``python3`` the
-consumer's runner happens to have, with no venv and no ``pip install`` -- see the
-action's description for why ``ensure-infrastructure-present`` is deliberately not
-used. Do not import ``click``, ``pydantic``, or even this package's own
-``._errors`` (which imports click). ``tests/test_check_pr_declaration.py`` asserts
-this with an AST walk, because in CI the package IS installed and a stray import
-would only explode on a consumer's runner.
+STDLIB ONLY, AND AN OLDER PYTHON THAN THE REST OF THE PACKAGE, ON PURPOSE. The
+action runs this with whatever ``python3`` the consumer's runner happens to have,
+with no venv and no ``pip install`` -- see the action's description for why
+``ensure-infrastructure-present`` is deliberately not used. So two rules apply
+here and nowhere else in the package:
+
+* Do not import ``click``, ``pydantic``, or even this package's own ``._errors``
+  (which imports click). ``tests/test_check_pr_declaration.py`` asserts this with
+  an AST walk, because in CI the package IS installed and a stray import would
+  only explode on a consumer's runner.
+* Do not use syntax or stdlib newer than the oldest runner we might land on.
+  ``requires-python`` does not cover this module, since nothing installs it;
+  ``pyproject.toml`` disables the ruff rules that would push 3.11-only idioms in.
 
 The pass/fail decision is one expression -- tail equality of the normalized line
 lists -- so no heuristic can make a bad body pass. Everything else in here

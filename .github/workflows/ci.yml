@@ -12,25 +12,25 @@ on:
   pull_request:
 
 jobs:
+  # The same lint job every repo in the org calls; no need for a second copy here.
   pre-commit:
-    runs-on: ubuntu-slim
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12"
-      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+    uses: ./.github/workflows/pre-commit.yml
 
   mypy_and_tests:
     needs: pre-commit
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range, so requires-python is a tested claim
+        # rather than an assertion. Bump the floor here and in pyproject together.
+        python-version: ["3.11", "3.12"]
+    name: mypy + pytest (py${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install -e ".[test]"
       - name: Mypy

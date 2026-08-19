@@ -48,32 +48,27 @@ hyphen-separated segment must not be exactly 8 hex chars (would collide with
 the deps-hash8 segment).
 """
 
-import os
-import re
-from typing import Final, Literal, TypeAlias, TypedDict, cast
+from typing import Literal, TypeAlias, TypedDict
 
 import click
 
 from . import s3_store
 from ._errors import CIError
 from ._github_api import (
-    IN_PROGRESS_STATUSES,
-    canonical_option_segment,
     compute_deps_hash8,
     compute_platform_slug,
-    gh_api_rest,
+    make_artifact_name,
+    probe_workflow_runs,
+    resolve_ref_to_sha,
     select_token,
+    write_outputs,
 )
 
 RunStatus: TypeAlias = Literal["running", "completed", "none"]
 RunConclusion: TypeAlias = Literal["success", "failure"]
 
-_FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "action_required", "startup_failure"})
-
-
-# Functional TypedDict syntax supports hyphenated keys; two-class inheritance
-# gives us a required base and an optional extension without needing NotRequired
-# (which requires Python ≥ 3.11).
+# Functional TypedDict syntax, because the keys are hyphenated — they are the
+# literal $GITHUB_OUTPUT names, so they cannot be identifiers.
 #
 # `run-status` / `run-conclusion` are stored as Optional internally and only
 # get materialised to the empty string at the $GITHUB_OUTPUT boundary in
@@ -90,67 +85,6 @@ Outputs = TypedDict(
         "run-conclusion": RunConclusion | None,
     },
 )
-
-
-def resolve_ref(repo: str, ref: str, token: str | None) -> str:
-    """Resolve a branch / lightweight or annotated tag / short or full SHA to a 40-char commit SHA.
-
-    Uses the commits/{ref} REST endpoint, which auto-disambiguates and dereferences
-    annotated tags to the underlying commit (the tags/{ref} endpoint we used previously
-    returned the tag-object SHA for annotated tags, which doesn't match how artifacts
-    are keyed). Mirrored in resolve_deps.resolve_ref_to_sha.
-    """
-    if re.fullmatch(r"[0-9a-f]{40}", ref):
-        return ref
-    data = gh_api_rest(f"repos/{repo}/commits/{ref}", token)
-    if isinstance(data, dict) and isinstance(data.get("sha"), str):
-        return cast(str, data["sha"])
-    raise CIError(f"Could not resolve ref '{ref}' in {repo}")
-
-
-def find_workflow_run_status(repo: str, sha: str, token: str | None) -> tuple[RunStatus, RunConclusion | None]:
-    """
-    Check whether any workflow run exists for the given commit SHA.
-
-    Returns (run_status, run_conclusion):
-      ("running",   None)        — at least one run is queued or in_progress
-      ("completed", "failure")   — all runs done; at least one failed/cancelled
-      ("completed", "success")   — all runs done and all succeeded
-      ("none",      None)        — no runs found for this SHA
-    """
-    data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
-    if not isinstance(data, dict):
-        return ("none", None)
-    runs = data.get("workflow_runs", [])
-    if not isinstance(runs, list) or len(runs) == 0:
-        return ("none", None)
-
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        if run.get("status") in IN_PROGRESS_STATUSES:
-            return ("running", None)
-
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        if run.get("conclusion") in _FAILURE_CONCLUSIONS:
-            return ("completed", "failure")
-
-    return ("completed", "success")
-
-
-def write_outputs(outputs: Outputs) -> None:
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a") as f:
-            for key, value in outputs.items():
-                # GitHub Actions outputs are stringly-typed: collapse None to empty
-                # string only here, at the wire boundary.
-                f.write(f"{key}={'' if value is None else value}\n")
-    else:
-        for key, value in outputs.items():
-            print(f"{key}={value}")
 
 
 @click.command(help="Resolve a ref and check the GitHub artifact store.")
@@ -240,25 +174,17 @@ def main(
         raise CIError(str(e)) from e
 
     token = select_token()
-    sha = resolve_ref(repo, ref, token)
-    deps_hash8 = compute_deps_hash8(deps_artifact_names.split())
-
-    if python_version:
-        if deps_hash8:
-            artifact_name = (
-                f"{artifact_prefix}-{sha}-{deps_hash8}-{platform_slug}-{compiler}-py{python_version}-{build_type}"
-            )
-        else:
-            artifact_name = f"{artifact_prefix}-{sha}-{platform_slug}-{compiler}-py{python_version}-{build_type}"
-    else:
-        if deps_hash8:
-            artifact_name = f"{artifact_prefix}-{sha}-{deps_hash8}-{platform_slug}-{compiler}-{build_type}"
-        else:
-            artifact_name = f"{artifact_prefix}-{sha}-{platform_slug}-{compiler}-{build_type}"
-    # Orthogonal options axis: append the shared segment (empty -> no change).
-    opt_seg = canonical_option_segment(options.strip())
-    if opt_seg:
-        artifact_name = f"{artifact_name}-{opt_seg}"
+    sha = resolve_ref_to_sha(repo, ref, token)
+    artifact_name = make_artifact_name(
+        prefix=artifact_prefix,
+        sha=sha,
+        deps_hash8=compute_deps_hash8(deps_artifact_names.split()),
+        platform_slug=platform_slug,
+        compiler=compiler,
+        build_type=build_type,
+        python_version=python_version or None,
+        option=options.strip(),
+    )
     tar_name = f"{artifact_name}.tar.gz"
     found = s3_store.object_exists(artifact_name)
     run_status: RunStatus | None
@@ -266,7 +192,8 @@ def main(
     if found:
         run_status, run_conclusion = None, None
     else:
-        run_status, run_conclusion = find_workflow_run_status(repo, sha, token)
+        runs = probe_workflow_runs(repo, sha, token)
+        run_status, run_conclusion = runs.state, runs.conclusion
 
     outputs: Outputs = {
         "sha": sha,

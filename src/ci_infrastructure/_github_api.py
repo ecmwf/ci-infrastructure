@@ -9,10 +9,11 @@ Two clusters live here:
   * GitHub-API helpers — every script shells out to the `gh` CLI rather than
     maintaining HTTP sessions; runners always ship `gh` and it picks up
     `GH_TOKEN` from the environment.
-  * Artifact-naming primitives (`compute_platform_slug`, `compute_deps_hash8`)
-    shared by `resolve_deps` (which mints names) and `check_artifact` (which
-    re-derives them to look up artifacts). Keeping both in one place avoids
-    the "Mirrored from X" drift the two used to acknowledge in comments.
+  * Artifact naming — `make_artifact_name` and the primitives it composes
+    (`compute_platform_slug`, `compute_deps_hash8`, `canonical_option_segment`).
+    `resolve_deps` mints names and `check_artifact` re-derives them to look
+    artifacts up; a byte of disagreement makes every cache lookup miss, so
+    there is exactly one definition and both import it.
 
 Type-wise the module stays in plain `str`: callers with stricter NewTypes
 (`Repo`, `Ref`, `Sha`, `ArtifactName` in `resolve_deps`) pass them through
@@ -27,8 +28,10 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
-from typing import Any, Final, TypeAlias, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
+
+from ._errors import CIError
 
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
@@ -41,6 +44,7 @@ _ALIAS_SAFE_RE: Final = re.compile(r"[^A-Za-z0-9_]")
 IN_PROGRESS_STATUSES: Final = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 
 _HEX_CHARS: Final = frozenset("0123456789abcdef")
+_SHA_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _alias(s: str) -> str:
@@ -101,43 +105,6 @@ def select_token() -> str | None:
         if val:
             return val
     return None
-
-
-def fetch_repo_head(repo: str, token: str | None) -> tuple[str, str] | None:
-    """Return (default_branch_name, head_commit_sha) for `repo`, or None if
-    the lookup fails (missing repo, network blip, auth). The caller uses this
-    to detect drift between the local working tree and what GitHub serves at
-    the default branch tip — silent return-None on failure lets the caller
-    emit a soft "couldn't verify" warning rather than crashing.
-    """
-    owner, name = repo.split("/", 1)
-    query = (
-        "query {\n"
-        f'  repository(owner: "{owner}", name: "{name}") {{\n'
-        "    defaultBranchRef { name target { ... on Commit { oid } } }\n"
-        "  }\n"
-        "}"
-    )
-    data = gh_api_graphql(query, token)
-    if not isinstance(data, dict):
-        return None
-    payload = data.get("data")
-    if not isinstance(payload, dict):
-        return None
-    repo_node = payload.get("repository")
-    if not isinstance(repo_node, dict):
-        return None
-    ref_node = repo_node.get("defaultBranchRef")
-    if not isinstance(ref_node, dict):
-        return None
-    name_val = ref_node.get("name")
-    target = ref_node.get("target")
-    if not isinstance(name_val, str) or not isinstance(target, dict):
-        return None
-    oid = target.get("oid")
-    if not isinstance(oid, str):
-        return None
-    return name_val, oid
 
 
 def fetch_manifests_layer(
@@ -272,3 +239,177 @@ def compute_platform_slug(platform: str) -> str:
             "collide with the deps-hash8 segment in artifact names."
         )
     return slug
+
+
+def resolve_ref_to_sha(repo: str, ref: str, token: str | None) -> str:
+    """Resolve a branch / lightweight or annotated tag / short or full SHA to a 40-char commit SHA.
+
+    Uses the commits/{ref} REST endpoint, which auto-disambiguates and dereferences
+    annotated tags to the underlying commit — the tags/{ref} endpoint returns the
+    tag-object SHA for an annotated tag, which is not what artifacts are keyed on.
+    """
+    if _SHA_RE.fullmatch(ref):
+        return ref
+    data = gh_api_rest(f"repos/{repo}/commits/{ref}", token)
+    if isinstance(data, dict) and isinstance(data.get("sha"), str):
+        sha = cast(str, data["sha"])
+        if not _SHA_RE.fullmatch(sha):
+            raise CIError(f"GitHub returned a malformed commit SHA for {repo}@{ref}: {sha!r}")
+        return sha
+    raise CIError(f"Could not resolve ref {ref!r} in {repo}")
+
+
+def make_artifact_name(
+    prefix: str,
+    sha: str,
+    deps_hash8: str | None,
+    platform_slug: str,
+    compiler: str | None,
+    build_type: str,
+    python_version: str | None,
+    option: str = "",
+) -> str:
+    """The single definition of an artifact's name.
+
+        <prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-opts.<name>]
+
+    Shared by resolve_deps (which mints names) and check_artifact (which re-derives
+    them to look one up); the two must agree byte-for-byte or every cache lookup
+    misses. None for deps_hash8 / compiler / python_version means "this segment
+    does not apply" (no deps, no compilers declared, not a Python build) and the
+    segment is dropped. An empty `option` appends nothing.
+    """
+    parts = [prefix, sha]
+    if deps_hash8:
+        parts.append(deps_hash8)
+    parts.append(platform_slug)
+    if compiler:
+        parts.append(compiler)
+    if python_version:
+        parts.append(f"py{python_version}")
+    parts.append(build_type)
+    opt_seg = canonical_option_segment(option)
+    if opt_seg:
+        parts.append(opt_seg)
+    return "-".join(parts)
+
+
+#: Run conclusions that mean "this run did not succeed". `cancelled` counts:
+#: a cancelled producer never published, so a consumer must not keep waiting.
+_FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "action_required", "startup_failure"})
+
+
+class WorkflowRuns(NamedTuple):
+    """What the workflow runs for one commit SHA say about it.
+
+    state       'running' (>=1 run queued/in-progress), 'completed' (all done),
+                or 'none' (no runs for this SHA).
+    detail      concrete GitHub status of the first in-progress run, e.g.
+                'queued' or 'in_progress'; None unless state == 'running'.
+    url         that run's html_url; None unless state == 'running'.
+    conclusion  'failure' if any completed run failed/was cancelled, else
+                'success'; None unless state == 'completed'.
+
+    One probe serves three questions: whether to keep waiting (fetch_deps),
+    whether a missing artifact is explained by a failed build (check_artifact),
+    and whether a producer is already building (resolve_deps).
+    """
+
+    state: Literal["running", "completed", "none"]
+    detail: str | None = None
+    url: str | None = None
+    conclusion: Literal["success", "failure"] | None = None
+
+    @property
+    def in_flight(self) -> bool:
+        return self.state == "running"
+
+
+def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
+    """Probe the workflow runs GitHub has for `sha`; see WorkflowRuns.
+
+    An in-progress run wins over a failed one: while anything is still going the
+    outcome is not decided yet.
+    """
+    data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
+    if not isinstance(data, dict):
+        return WorkflowRuns("none")
+    runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict)]
+    if not runs:
+        return WorkflowRuns("none")
+    for run in runs:
+        if run.get("status") in IN_PROGRESS_STATUSES:
+            status, html_url = run.get("status"), run.get("html_url")
+            return WorkflowRuns(
+                "running",
+                status if isinstance(status, str) else None,
+                html_url if isinstance(html_url, str) else None,
+            )
+    if any(run.get("conclusion") in _FAILURE_CONCLUSIONS for run in runs):
+        return WorkflowRuns("completed", conclusion="failure")
+    return WorkflowRuns("completed", conclusion="success")
+
+
+def write_outputs(outputs: Mapping[str, object]) -> None:
+    """Append `key=value` lines to $GITHUB_OUTPUT, or print them when unset.
+
+    Actions outputs are stringly-typed, so None collapses to the empty string
+    here — at the wire boundary — rather than being carried as a "" sentinel
+    through the callers' own types. A value containing a newline needs GitHub's
+    delimited form; the delimiter is content-derived so it cannot appear inside
+    the value it terminates.
+    """
+    lines: list[str] = []
+    for key, raw in outputs.items():
+        value = "" if raw is None else str(raw)
+        if "\n" in value:
+            delim = f"EOF_{hashlib.sha1(value.encode()).hexdigest()[:8]}"
+            lines.append(f"{key}<<{delim}\n{value}\n{delim}")
+        else:
+            lines.append(f"{key}={value}")
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a") as fh:
+            fh.write("".join(f"{line}\n" for line in lines))
+    else:
+        for line in lines:
+            print(line)
+
+
+class ManifestSchemaError(Exception):
+    """A manifest violates the shared matrix schema."""
+
+
+def resolve_reuse_matrix(
+    kind: str, include: Sequence[Any] | None, reuse: object, blocks: Mapping[str, Mapping[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """The include legs `[matrix.<kind>]` ends up with after `reuse-matrix`.
+
+    `reuse-matrix = "X"` means "share X's legs" — a test kind almost always wants
+    the exact matrix its build kind published for, and repeating the legs is how
+    they drift apart. Both the generator and the resolver expand this, and they
+    must agree: a consumer whose test legs differed from its build legs would
+    look up artifact names nothing ever published.
+
+    Chained reuse is refused rather than followed, so the legs of a kind are
+    always one hop from a literal `include`.
+    """
+    if reuse is not None and include:
+        raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")
+    if reuse is None:
+        legs = include or ()
+    else:
+        target = blocks.get(str(reuse))
+        if target is None:
+            raise ManifestSchemaError(
+                f"[matrix.{kind}].reuse-matrix = {str(reuse)!r} but [matrix.{reuse}] does not exist"
+            )
+        if target.get("reuse-matrix") is not None:
+            raise ManifestSchemaError(
+                f"[matrix.{kind}].reuse-matrix = {str(reuse)!r} is itself a reuse-matrix; "
+                f"chained reuse is not supported"
+            )
+        legs = target.get("include") or ()
+    if not isinstance(legs, (list, tuple)):
+        raise ManifestSchemaError(f"[matrix.{kind}.include] must be an array of tables")
+    return tuple(dict(leg) for leg in legs)

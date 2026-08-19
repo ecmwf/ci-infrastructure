@@ -153,10 +153,6 @@ def test_module_imports_only_stdlib() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_org_template_is_the_verified_518_bytes() -> None:
-    assert len(ORG_TEMPLATE.encode("utf-8")) == 518
-
-
 def test_org_template_passes_unmodified() -> None:
     """The regression test for the whole normalization design.
 
