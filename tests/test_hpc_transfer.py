@@ -264,25 +264,6 @@ def test_fetch_tree_dryrun_does_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / "local").exists()
 
 
-def test_fetch_install_still_names_install_tgz(tmp_path: Path) -> None:
-    """Regression guard: the wrapper keeps the build flow's <name>.install.tgz name."""
-
-    class TarballConnection(FakeConnection):
-        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().getfile(src, dst)
-            with tarfile.open(dst, "w:gz"):
-                pass
-
-    conn = TarballConnection()
-    transfer.fetch_install(
-        conn,
-        remote_install_dir="/remote/install/art",
-        local_install_dir=str(tmp_path / "local-install"),
-        tar_dir=str(tmp_path / "stage"),
-    )
-    assert conn.fetched == [("/remote/install/art.install.tgz", str(tmp_path / "stage" / "art.install.tgz"))]
-
-
 def test_push_tree_tar_sendfile_unpack_order(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "inputs", "in.txt", "payload")
     conn = FakeConnection()

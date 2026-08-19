@@ -120,7 +120,6 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import subprocess
 import sys
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -138,13 +137,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ._errors import CIError
-from ._github_api import (
-    ManifestSchemaError,
-    fetch_manifests_layer,
-    fetch_repo_head,
-    resolve_reuse_matrix,
-    select_token,
-)
+from ._github_api import ManifestSchemaError, fetch_manifests_layer, resolve_reuse_matrix, select_token
 
 GENERATED_HEADER: Final = (
     "# GENERATED FILE - DO NOT EDIT.\n"
@@ -2192,94 +2185,6 @@ def discover_manifests(root: Path) -> list[Path]:
 _FETCH_DEPTH_CAP: Final = 8  # Same depth budget resolve_deps uses for upstream BFS.
 
 
-def _git(args: Sequence[str], cwd: Path) -> tuple[int, str]:
-    """Run a `git` subcommand and return (rc, stdout_stripped). stderr is
-    discarded — the caller only consults rc + stdout, and surfacing git's
-    own diagnostics on top of our warning text just adds noise.
-    """
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (OSError, FileNotFoundError) as e:
-        return 1, str(e)
-    return result.returncode, result.stdout.strip()
-
-
-def _warn_if_local_drifts_from_remote(local: Manifest, local_path: Path, token: str | None) -> None:
-    """Warn the user when their local working tree doesn't match what
-    GitHub serves at `local.repo`'s default branch tip.
-
-    Validation downstream walks a hybrid graph: the current repo from disk +
-    all siblings from GitHub @HEAD. If the user has un-pushed local commits
-    (or a dirty .ci/manifest.toml), cross-repo errors look like sibling-side
-    bugs but are really "your local view is stale". This surfaces the gap
-    before the BFS runs.
-
-    Three outcomes:
-      - manifest dirty in working tree -> dirty-tree warning
-      - clean tree, local HEAD != remote default-branch SHA -> sha-mismatch
-      - aligned -> silent
-
-    Any probe failure (git missing, not a git checkout, GraphQL down, no
-    auth) emits a single soft warning and returns. Never raises; never
-    changes the script's exit code.
-    """
-    repo_dir = local_path.resolve().parent.parent  # .ci/manifest.toml -> repo root
-
-    rc_head, local_head = _git(["rev-parse", "HEAD"], cwd=repo_dir)
-    if rc_head != 0 or not local_head:
-        print(
-            f"::warning::could not verify local-vs-remote drift "
-            f"(git rev-parse HEAD failed in {repo_dir}); cross-repo validation may run on a hybrid view.",
-            file=sys.stderr,
-        )
-        return
-
-    rc_status, status_out = _git(["status", "--porcelain"], cwd=repo_dir)
-    if rc_status != 0:
-        print(
-            f"::warning::could not verify local-vs-remote drift "
-            f"(git status failed in {repo_dir}); cross-repo validation may run on a hybrid view.",
-            file=sys.stderr,
-        )
-        return
-
-    remote = fetch_repo_head(local.repo, token)
-    if remote is None:
-        print(
-            f"::warning::could not verify local-vs-remote drift "
-            f"(GitHub lookup for {local.repo} returned no default-branch SHA); "
-            f"cross-repo validation may run on a hybrid view.",
-            file=sys.stderr,
-        )
-        return
-
-    default_branch, remote_head = remote
-
-    if status_out:
-        print(
-            f"::warning::repository has uncommitted local changes; "
-            f"cross-repo validation will use the working-tree version "
-            f"(siblings are validated against {local.repo}@{default_branch}). "
-            f"Commit and push to align.",
-            file=sys.stderr,
-        )
-        return
-
-    if local_head != remote_head:
-        print(
-            f"::warning::local HEAD {local_head[:7]} differs from "
-            f"{local.repo}@{default_branch} {remote_head[:7]}; "
-            f"un-pushed commits aren't visible to sibling validators. Push to align.",
-            file=sys.stderr,
-        )
-
-
 def _fetch_sibling_manifests(local: Manifest, token: str | None, manifest_path: str) -> list[Manifest]:
     """BFS the dep+trigger graph outward from `local`, fetching each sibling's
     manifest TOML text via GraphQL and parsing it. Missing manifests (None text)
@@ -2389,8 +2294,6 @@ def _run(manifest_path: str, check: bool) -> None:
     # falls back to GITHUB_TOKEN / keychain auth, and a real auth failure
     # surfaces from `gh api graphql` directly rather than being second-guessed.
     token = select_token()
-
-    _warn_if_local_drifts_from_remote(local, local_manifest_path, token)
 
     manifests = _fetch_sibling_manifests(local, token, manifest_path)
 

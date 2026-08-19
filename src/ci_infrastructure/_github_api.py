@@ -107,43 +107,6 @@ def select_token() -> str | None:
     return None
 
 
-def fetch_repo_head(repo: str, token: str | None) -> tuple[str, str] | None:
-    """Return (default_branch_name, head_commit_sha) for `repo`, or None if
-    the lookup fails (missing repo, network blip, auth). The caller uses this
-    to detect drift between the local working tree and what GitHub serves at
-    the default branch tip — silent return-None on failure lets the caller
-    emit a soft "couldn't verify" warning rather than crashing.
-    """
-    owner, name = repo.split("/", 1)
-    query = (
-        "query {\n"
-        f'  repository(owner: "{owner}", name: "{name}") {{\n'
-        "    defaultBranchRef { name target { ... on Commit { oid } } }\n"
-        "  }\n"
-        "}"
-    )
-    data = gh_api_graphql(query, token)
-    if not isinstance(data, dict):
-        return None
-    payload = data.get("data")
-    if not isinstance(payload, dict):
-        return None
-    repo_node = payload.get("repository")
-    if not isinstance(repo_node, dict):
-        return None
-    ref_node = repo_node.get("defaultBranchRef")
-    if not isinstance(ref_node, dict):
-        return None
-    name_val = ref_node.get("name")
-    target = ref_node.get("target")
-    if not isinstance(name_val, str) or not isinstance(target, dict):
-        return None
-    oid = target.get("oid")
-    if not isinstance(oid, str):
-        return None
-    return name_val, oid
-
-
 def fetch_manifests_layer(
     repos_refs: Sequence[tuple[str, str]],
     sync_branch: str | None,

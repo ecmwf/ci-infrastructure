@@ -128,8 +128,7 @@ unpack/build target is node-local; the marker, the tarball and the job output
 must be on the shared filesystem or the two sides cannot meet. `$TMPDIR` is sized
 by `#SBATCH --gres=ssdtmp:N` — without it, the directory the job unpacks into may
 be far smaller than the build needs. atos selects on **QoS** (`--qos=nf`), not
-`--partition`. `samples/hpc/playground/` confirms all of this against the real
-cluster.
+`--partition`.
 
 ## Restart / idempotency
 
