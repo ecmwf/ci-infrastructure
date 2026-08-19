@@ -207,7 +207,8 @@ runs:
             # Strip the consumer's setup-python bin from PATH for the probe. If
             # pythonLocation is unset (no consumer setup-python ran) we just use
             # PATH as-is. We prefer a stable system interpreter over the
-            # matrix-leg one; ci-infrastructure only needs >=3.9.
+            # matrix-leg one. The version gate below must match
+            # ci-infrastructure's requires-python, or the pip install fails.
             bootstrap_path="$PATH"
             if [ -n "${pythonLocation:-}" ]; then
               exclude="${pythonLocation}/bin"
@@ -222,9 +223,9 @@ runs:
             fi
 
             bootstrap_py=""
-            for cand in python3.12 python3.11 python3.10 python3.9 python3; do
+            for cand in python3.13 python3.12 python3.11 python3; do
               if path="$(PATH="$bootstrap_path" command -v "$cand" 2>/dev/null)"; then
-                if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)'; then
+                if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)'; then
                   bootstrap_py="$path"
                   break
                 fi
@@ -232,7 +233,7 @@ runs:
             done
 
             if [ -z "$bootstrap_py" ]; then
-              echo "::error::ensure-infrastructure-present: no Python >=3.9 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.9+ in the runner image, or in the consumer container." >&2
+              echo "::error::ensure-infrastructure-present: no Python >=3.11 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.11+ in the runner image, or in the consumer container." >&2
               exit 1
             fi
 
