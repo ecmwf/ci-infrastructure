@@ -135,7 +135,7 @@ HPC:
 - drop the "confirm the login-node runner's $RUNNER_TEMP + work-dir are on the
   shared filesystem" worry, or re-scope it: it was written when hpc-roundtrip ran
   on the [hpc] login-node runner. It now runs in a container on
-  arc-pet-vsphere-prod and reaches the cluster over troika ssh, so nothing local
+  arc-hpc-pet-vsphere-prod and reaches the cluster over troika ssh, so nothing local
   needs to be on the shared filesystem. Re-check if a job ever moves back onto a
   login-node runner.
 

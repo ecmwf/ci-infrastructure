@@ -4,44 +4,6 @@
 
 name: Probe setup-python on self-hosted runners
 
-# DIAGNOSTIC PROBE, not a test. It answers one question we cannot answer by
-# reading anything: on the CONTAINER-LESS self-hosted runners, whose hosts carry
-# only python3.9, can we get a >=3.11 interpreter at all -- and by which route?
-#
-# The container-based ARC legs (smoke-test-runners.yml) are unaffected: their
-# images bake a modern interpreter and advertise it via CI_INFRASTRUCTURE_PYTHON,
-# so ensure-infrastructure-present short-circuits and never probes the host. The
-# two runners below have no container, so the host Python is all there is, and
-# ensure-infrastructure-present's `>=3.11` gate fails there today.
-#
-# Three candidate routes are probed independently, each non-fatal, so ONE
-# dispatch reports on all of them instead of stopping at the first that fails:
-#
-#   1. actions/setup-python -- downloads a prebuilt CPython from the
-#      actions/python-versions releases. Needs egress to github.com plus a
-#      writable RUNNER_TOOL_CACHE, and the prebuilt binary is linked against a
-#      given glibc/OpenSSL, which is the usual reason it dies on an older
-#      login-node image. So we do not stop at `python --version`: we import the
-#      extension modules that are missing when the host libs are too old.
-#   2. uv -- installs a python-build-standalone interpreter, which is
-#      self-contained and tolerates a much older host than (1) does.
-#   3. neither -- just report what the host already has, which is the baseline
-#      the "install 3.11 in the image" option would replace.
-#
-# The venv+pip step at the end matters as much as the version print. Two of the
-# routes can hand us a `python --version` that says 3.11 and still be useless:
-# ensure-infrastructure-present does not merely run the interpreter, it builds a
-# venv from it and pip-installs this package (pydantic, boto3, click, PyYAML from
-# PyPI; troika over git). On a login node with no PyPI egress that is where the
-# whole approach ends, and it is worth learning that here rather than after
-# rewriting the action.
-#
-# NOTE, whatever this reports: setup-python alone is NOT sufficient. The
-# bootstrap probe in actions/ensure-infrastructure-present deliberately STRIPS
-# ${pythonLocation}/bin from PATH before looking for an interpreter, to keep a
-# consumer's test-matrix Python out of the helper venv. So a working
-# setup-python on these runners would still be invisible to it. Read the
-# `pythonLocation` line in this probe's output with that in mind.
 on:
   workflow_dispatch:
     inputs:
@@ -50,191 +12,61 @@ on:
         required: false
         default: '3.11'
       probe-uv:
-        description: Also probe the uv route ('true'/'false')
+        description: Also probe uv ('true'/'false')
         required: false
         default: 'true'
       probe-pip-install:
-        description: Also build a venv and pip-install this checkout ('true'/'false')
+        description: Also venv + pip install this checkout ('true'/'false')
         required: false
         default: 'true'
 
 jobs:
   probe:
-    # Both container-less self-hosted runners. fail-fast: false because the two
-    # hosts are different machines with different images -- one being broken says
-    # nothing about the other, and masking that is the whole point of a probe.
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [arc-pet-vsphere-prod, hpc]
-    name: probe (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    # Deliberately no `container:` -- the host interpreter is what is under test.
-    #
-    # A manual probe must not sit in the queue indefinitely when a runner is
-    # offline; 30 minutes is far more than the work needs.
+    name: probe (hpc)
+    runs-on: [hpc]
     timeout-minutes: 30
     steps:
-      - name: Host baseline, before anything is installed
+      - name: Host baseline
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::identity and os"
           hostname
-          id
-          uname -a
           cat /etc/os-release 2>/dev/null || true
-          echo "::endgroup::"
-
-          echo "::group::glibc and arch"
-          # The binding constraint on route 1: the actions/python-versions
-          # tarballs are built against a specific glibc, so a host older than
-          # that runs the interpreter but fails to load its extension modules.
-          ldd --version 2>&1 | head -1 || echo "ldd unavailable"
-          getconf GNU_LIBC_VERSION 2>/dev/null || true
-          echo "arch: $(uname -m)"
-          echo "::endgroup::"
-
-          echo "::group::pythons already on the host"
-          # Every interpreter reachable by name, not just python3, because the
-          # question is whether ANY >=3.11 is already here.
-          for cand in python3 python3.9 python3.10 python3.11 python3.12 python3.13 python3.14; do
+          ldd --version 2>&1 | head -1 || true
+          for cand in python3 python3.9 python3.10 python3.11 python3.12 python3.13; do
             if p="$(command -v "$cand" 2>/dev/null)"; then
               echo "$cand -> $p : $("$p" --version 2>&1)"
             else
               echo "$cand -> (absent)"
             fi
           done
-          echo "::endgroup::"
-
-          echo "::group::module system"
-          # An HPC login node usually ships newer Pythons behind Lmod/envmodules
-          # rather than on PATH. If so, that is the cheapest route of all and
-          # neither setup-python nor uv is needed.
-          if command -v module >/dev/null 2>&1 || [ -n "${MODULESHOME:-}" ]; then
-            echo "MODULESHOME=${MODULESHOME:-<unset>}"
-            # `module` is a shell function from a profile script, so source it
-            # first; this is best-effort diagnostics and must never fail the step.
-            # shellcheck disable=SC1091
-            { [ -n "${MODULESHOME:-}" ] && [ -f "$MODULESHOME/init/bash" ] && . "$MODULESHOME/init/bash"; } || true
-            module avail 2>&1 | grep -i -E 'python|conda' | head -20 || echo "(no python module lines)"
-          else
-            echo "no module system on PATH"
-          fi
-          echo "::endgroup::"
-
-          echo "::group::runner paths"
+          echo "CI_INFRASTRUCTURE_PYTHON=${CI_INFRASTRUCTURE_PYTHON:-<unset>}"
           echo "RUNNER_TOOL_CACHE=${RUNNER_TOOL_CACHE:-<unset>}"
-          echo "AGENT_TOOLSDIRECTORY=${AGENT_TOOLSDIRECTORY:-<unset>}"
-          echo "RUNNER_TEMP=${RUNNER_TEMP:-<unset>}"
-          # setup-python unpacks into RUNNER_TOOL_CACHE; unset or read-only is
-          # the second common reason route 1 fails on a self-hosted runner.
-          if [ -n "${RUNNER_TOOL_CACHE:-}" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE" 2>/dev/null || echo "cannot mkdir RUNNER_TOOL_CACHE"
-            if [ -w "$RUNNER_TOOL_CACHE" ]; then echo "RUNNER_TOOL_CACHE is writable"; else echo "RUNNER_TOOL_CACHE is NOT writable"; fi
-            df -h "$RUNNER_TOOL_CACHE" 2>/dev/null || true
-          fi
-          echo "::endgroup::"
 
-      - name: Egress reachability
-        shell: bash
-        # Both routes download an interpreter, and route 3's pip install needs
-        # PyPI. Naming which host is unreachable turns an opaque hang in
-        # setup-python into a one-line finding.
-        run: |
-          set -euo pipefail
-          for url in \
-            https://github.com \
-            https://objects.githubusercontent.com \
-            https://pypi.org/simple/ \
-            https://files.pythonhosted.org \
-            https://astral.sh
-          do
-            # --max-time bounds a blackholed egress; a proxy-less node otherwise
-            # sits in connect() for minutes per URL.
-            if code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>&1)"; then
-              echo "ok   $url -> HTTP $code"
-            else
-              echo "FAIL $url -> $code"
-            fi
-          done
-          echo "proxy env: http_proxy=${http_proxy:-<unset>} https_proxy=${https_proxy:-<unset>} no_proxy=${no_proxy:-<unset>}"
-
-      # ROUTE 1. continue-on-error, because a failure here is the answer we came
-      # for, not a reason to abandon the remaining routes.
-      - name: 'Route 1: actions/setup-python'
-        id: setup_python
+      - id: setup_python
         continue-on-error: true
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ inputs.python-version }}
-          # Nothing to cache from and no requirements file resolved yet; caching
-          # would add its own failure mode to a probe that is isolating one.
-          update-environment: true
 
-      - name: 'Route 1: verdict'
+      - name: setup-python verdict
         shell: bash
         env:
           SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
-          SETUP_VERSION: ${{ steps.setup_python.outputs.python-version }}
           SETUP_PATH: ${{ steps.setup_python.outputs.python-path }}
-          WANT_VERSION: ${{ inputs.python-version }}
         run: |
           set -euo pipefail
-          echo "setup-python step outcome: $SETUP_OUTCOME"
-          echo "setup-python reported version: ${SETUP_VERSION:-<none>}"
-          echo "setup-python reported path:    ${SETUP_PATH:-<none>}"
+          echo "outcome: $SETUP_OUTCOME"
+          echo "path: ${SETUP_PATH:-<none>}"
           echo "pythonLocation=${pythonLocation:-<unset>}"
-
           if [ "$SETUP_OUTCOME" != "success" ]; then
-            echo "::warning title=setup-python failed on ${RUNNER_NAME:-this runner}::Route 1 is out. See the step above for the download/unpack error, and the baseline groups for glibc and RUNNER_TOOL_CACHE."
-            echo "route1=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::setup-python failed"
             exit 0
           fi
-
-          echo "--- what the interpreter says it is ---"
-          command -v python || true
-          command -v python3 || true
           python --version
-          python3 --version
-          python -c 'import sys; print(sys.executable); print(sys.version)'
+          python -c 'import sys, ssl, sqlite3, ctypes, lzma, venv, tomllib; print(sys.executable, ssl.OPENSSL_VERSION)'
 
-          echo "--- does it actually WORK ---"
-          # A prebuilt CPython on too-old a host starts fine and then fails to
-          # import the extension modules linked against the system libs. ssl is
-          # the one that matters: without it pip cannot reach PyPI, so the
-          # interpreter is useless to ensure-infrastructure-present even though
-          # `python --version` printed the right number.
-          python - <<'PY'
-          import sys
-          failed = []
-          for mod in ("ssl", "sqlite3", "ctypes", "lzma", "bz2", "zlib", "hashlib", "venv", "tomllib"):
-              try:
-                  __import__(mod)
-              except Exception as exc:
-                  failed.append(f"{mod}: {type(exc).__name__}: {exc}")
-          import ssl
-          print("OPENSSL_VERSION:", ssl.OPENSSL_VERSION)
-          print("sys.version_info:", tuple(sys.version_info))
-          if failed:
-              print("BROKEN MODULES:")
-              for line in failed:
-                  print("  " + line)
-              sys.exit(1)
-          print("all probed stdlib modules import cleanly")
-          PY
-
-          # Version equality is the point of the exercise; a silent fallback to
-          # the host 3.9 would otherwise read as a pass.
-          got="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-          if [ "$got" != "$WANT_VERSION" ]; then
-            echo "::warning::asked for $WANT_VERSION but the 'python' on PATH is $got — setup-python did not take over PATH"
-          else
-            echo "::notice title=setup-python works on ${RUNNER_NAME:-this runner}::python $got, stdlib intact"
-          fi
-
-      # ROUTE 2.
-      - name: 'Route 2: uv'
+      - name: uv
         if: inputs.probe-uv == 'true'
         continue-on-error: true
         shell: bash
@@ -242,43 +74,22 @@ jobs:
           WANT_VERSION: ${{ inputs.python-version }}
         run: |
           set -euo pipefail
-          # Installed under RUNNER_TEMP, not the tool cache and not the home dir:
-          # this is a probe and must leave the host as it found it.
           export UV_INSTALL_DIR="$RUNNER_TEMP/uv-probe/bin"
           export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uv-probe/pythons"
           export UV_CACHE_DIR="$RUNNER_TEMP/uv-probe/cache"
           mkdir -p "$UV_INSTALL_DIR" "$UV_PYTHON_INSTALL_DIR" "$UV_CACHE_DIR"
-
-          echo "::group::install uv"
-          if command -v uv >/dev/null 2>&1; then
-            echo "uv already on PATH: $(command -v uv) ($(uv --version))"
-          else
-            curl -fsSL --max-time 120 https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh
-          fi
+          curl -fsSL --max-time 120 https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh
           export PATH="$UV_INSTALL_DIR:$PATH"
           uv --version
-          echo "::endgroup::"
-
-          echo "::group::uv python install $WANT_VERSION"
-          # python-build-standalone builds are far more portable than the
-          # actions/python-versions ones, which is the reason this route exists.
           uv python install "$WANT_VERSION"
-          uv python list --only-installed
-          echo "::endgroup::"
-
           py="$(uv python find "$WANT_VERSION")"
-          echo "uv interpreter: $py"
           "$py" --version
-          "$py" -c 'import ssl, sqlite3, ctypes, lzma, tomllib; print("stdlib ok;", ssl.OPENSSL_VERSION)'
-          echo "::notice title=uv works on ${RUNNER_NAME:-this runner}::uv provided python $WANT_VERSION"
+          "$py" -c 'import ssl, tomllib; print(ssl.OPENSSL_VERSION)'
 
-      # ROUTE 3. The step that decides whether any of this is usable, because
-      # ensure-infrastructure-present's real work is venv + pip install, not
-      # `python --version`.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: inputs.probe-pip-install == 'true'
 
-      - name: 'Can the winning interpreter build the helper venv?'
+      - name: venv + pip install
         if: inputs.probe-pip-install == 'true'
         continue-on-error: true
         shell: bash
@@ -287,53 +98,20 @@ jobs:
           WANT_VERSION: ${{ inputs.python-version }}
         run: |
           set -euo pipefail
-          # Prefer whatever route 1 left on PATH, then the uv interpreter, then
-          # the host -- the same "first usable >=3.11" order the real action
-          # would need. Reported explicitly so the log says which one was used.
           py=""
           if [ "$SETUP_OUTCOME" = "success" ] && command -v python >/dev/null 2>&1 \
              && python -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
             py="$(command -v python)"
-            echo "using the setup-python interpreter: $py"
           elif [ -x "$RUNNER_TEMP/uv-probe/bin/uv" ] \
                && py="$("$RUNNER_TEMP/uv-probe/bin/uv" python find "$WANT_VERSION" 2>/dev/null)"; then
-            echo "using the uv interpreter: $py"
+            :
           else
-            echo "::warning::neither route produced a >=3.11 interpreter — nothing to build a venv from"
+            echo "::warning::no >=3.11 interpreter to build a venv from"
             exit 0
           fi
-
-          echo "::group::venv + pip install ."
+          echo "using $py"
           venv="$RUNNER_TEMP/probe-venv"
           rm -rf "$venv"
           "$py" -m venv "$venv"
-          # The same flags ensure-infrastructure-present uses, so a network
-          # policy that blocks it fails the same way here rather than hanging.
           "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check .
-          echo "::endgroup::"
-
           "$venv/bin/python" -c 'import ci_infrastructure.hpc.orchestrate; print("ci_infrastructure imports")'
-          "$venv/bin/python" -m ci_infrastructure.hpc --help >/dev/null
-          echo "::notice title=Helper venv builds on ${RUNNER_NAME:-this runner}::pip install of the checkout succeeded"
-
-      - name: Summary
-        if: always()
-        shell: bash
-        env:
-          SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
-          RUNNER_LABEL: ${{ matrix.runner }}
-          WANT_VERSION: ${{ inputs.python-version }}
-        run: |
-          set -euo pipefail
-          {
-            echo "### Python probe: \`$RUNNER_LABEL\`"
-            echo
-            echo "| what | result |"
-            echo "| --- | --- |"
-            echo "| host \`python3\` | $(python3 --version 2>&1 || echo absent) |"
-            echo "| asked for | $WANT_VERSION |"
-            echo "| setup-python step | $SETUP_OUTCOME |"
-            echo "| glibc | $(ldd --version 2>&1 | head -1 || echo unknown) |"
-            echo
-            echo "Full detail in the step logs above."
-          } >> "$GITHUB_STEP_SUMMARY"
