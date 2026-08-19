@@ -2173,15 +2173,6 @@ def _check_orchestrator_caps(
         )
 
 
-def discover_manifests(root: Path) -> list[Path]:
-    """Find every .ci/manifest.toml under sibling directories of `root`.
-
-    `root` is expected to be the playground-downstream-CI directory (or any
-    directory whose immediate children are repos).
-    """
-    return sorted(p for p in root.glob("*/.ci/manifest.toml") if p.is_file())
-
-
 _FETCH_DEPTH_CAP: Final = 8  # Same depth budget resolve_deps uses for upstream BFS.
 
 

@@ -4,12 +4,14 @@
 
 """Tests for ci_infrastructure.generate_downstream_ci.
 
-Covers:
-  - Each consistency-check failure mode (cycle, subset violation, dangling
-    needs, reachability, schema sanity).
-  - Idempotence on the real six-repo playground (golden snapshot).
+Covers each consistency-check failure mode (trigger cycle, subset violation,
+dangling local and cross-repo needs, reachability, colliding artifact identity,
+the orchestrator job/reusable-workflow caps) and the shape of both generated
+workflows per lane — including which edges dispatch rather than `uses:` a
+consumer, since that is what keeps a private repo's logs out of a public run.
 
-Run with:  pytest  (after `pip install -e ".[test]"` from the ci-infrastructure/ root).
+Fixtures are built with `write_repo` / `parse_all` from conftest.py, which
+supply the [package] block a test is not about.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import parse_all, write_repo
 
 from ci_infrastructure.generate_downstream_ci import (
     EXECUTION_HPC,
@@ -27,14 +30,11 @@ from ci_infrastructure.generate_downstream_ci import (
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     SLIM_RUNNER,
-    Manifest,
     SchemaError,
     _cross_package_deps,
     _remove_legacy_workflow,
     _write_or_check_path,
     compute_transitive_consumers,
-    discover_manifests,
-    parse_manifest,
     parse_manifest_text,
     render_orchestrator_workflow,
     render_workflow,
@@ -44,28 +44,11 @@ from ci_infrastructure.generate_downstream_ci import (
 )
 
 
-def write_repo(root: Path, repo_name: str, manifest_body: str) -> Path:
-    """Materialise a fake repo with .ci/manifest.toml under root and return its path."""
-    manifest = root / repo_name / ".ci" / "manifest.toml"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(textwrap.dedent(manifest_body))
-    return manifest
-
-
-def parse_all(root: Path) -> list[Manifest]:
-    return [parse_manifest(p) for p in discover_manifests(root)]
-
-
 def test_unknown_matrix_key_rejected(tmp_path: Path) -> None:
     write_repo(
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -86,11 +69,6 @@ def test_action_required_when_kind_triggered(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         # no action — should fail
@@ -109,11 +87,6 @@ def test_action_path_must_be_local_composite(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "../etc/passwd"
@@ -135,11 +108,6 @@ def test_forwarded_input_typo_rejected(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "./.github/actions/build-a"
@@ -163,12 +131,6 @@ def test_artifact_prefix_must_be_non_empty(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         artifact-prefix = ""
         triggers = ["rebuild-request"]
@@ -232,12 +194,6 @@ def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> Non
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         triggers = ["upstream-change"]
         action = "./.github/actions/test-a"
@@ -346,12 +302,6 @@ def test_job_name_python_version_not_duplicated_when_sole_distinguisher(tmp_path
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         triggers = ["rebuild-request"]
         action = "./.github/actions/test-a"
@@ -384,11 +334,6 @@ def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> Non
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["rebuild-request"]
         action = "./.github/actions/build-thisrepo"
@@ -422,11 +367,6 @@ def test_trigger_downstream_rejects_unknown_keys(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         extra = "nope"
@@ -442,11 +382,6 @@ def test_trigger_downstream_requires_ref(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         """,
@@ -460,11 +395,6 @@ def test_trigger_downstream_uses_explicit_ref(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "develop"
@@ -480,11 +410,6 @@ def test_duplicate_trigger_downstream(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -503,11 +428,6 @@ def test_reuse_matrix_target_missing(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.test]
         reuse-matrix = "build"
         triggers = ["upstream-change", "rebuild-request"]
@@ -578,11 +498,6 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> Path:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -644,11 +559,6 @@ def test_trigger_cycle(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -669,11 +579,6 @@ def test_trigger_cycle(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -699,11 +604,6 @@ def test_dangling_local_need(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -818,11 +718,6 @@ def test_dangling_cross_repo_need_unknown_package(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -842,11 +737,6 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -861,11 +751,6 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -888,11 +773,6 @@ def test_reachability_violation(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
-
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -905,11 +785,6 @@ def test_reachability_violation(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
-
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -932,10 +807,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -951,10 +822,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -973,10 +840,6 @@ def test_transitive_cross_repo_needs_recurses(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1003,10 +866,6 @@ def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1022,10 +881,6 @@ def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1044,10 +899,6 @@ def test_kind_filter_accepts_transitive_originator(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1077,10 +928,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1096,10 +943,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1118,10 +961,6 @@ def test_chain_closure(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1153,10 +992,6 @@ def test_diamond_closure(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/c"
         ref = "main"
@@ -1198,10 +1033,6 @@ def test_diamond_closure(tmp_path: Path) -> None:
         tmp_path,
         "e",
         """
-        [package]
-        name = "e"
-        repo = "org/e"
-        compiler-inputs = []
         [[deps]]
         repo = "org/c"
         package = "c"
@@ -1232,10 +1063,6 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1254,10 +1081,6 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1285,10 +1108,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1304,10 +1123,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1326,10 +1141,6 @@ def _make_chain_abc(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1690,10 +1501,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1712,10 +1519,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1734,10 +1537,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1756,10 +1555,6 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         tmp_path,
         "d",
         """
-        [package]
-        name = "d"
-        repo = "org/d"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -1792,10 +1587,6 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1817,10 +1608,6 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1857,10 +1644,6 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1876,10 +1659,6 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1921,10 +1700,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "a",
         """
-        [package]
-        name = "a"
-        repo = "org/a"
-        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1946,10 +1721,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "b",
         """
-        [package]
-        name = "b"
-        repo = "org/b"
-        compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
@@ -1974,10 +1745,6 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [[deps]]
         repo = "org/b"
         package = "b"
@@ -2234,10 +2001,6 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         tmp_path,
         "c",
         """
-        [package]
-        name = "c"
-        repo = "org/c"
-        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change"]
         action = "./.github/actions/build"

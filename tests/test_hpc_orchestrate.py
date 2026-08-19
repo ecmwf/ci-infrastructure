@@ -39,7 +39,7 @@ from ci_infrastructure.hpc.orchestrate import (
 from ci_infrastructure.hpc.site import resolve_remote_path
 
 
-class RecordingProc:
+class FakeProc:
     """A finished process: what troika's connection.execute() hands back."""
 
     def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
@@ -63,12 +63,12 @@ class RecordingConnection:
         self._squeue_stdout = squeue_stdout
         self._squeue_returncode = squeue_returncode
 
-    def execute(self, command: Sequence[str], **_: object) -> RecordingProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         argv = list(command)
         self.executed.append(argv)
         if argv and argv[0] == "squeue":
-            return RecordingProc(stdout=self._squeue_stdout, returncode=self._squeue_returncode)
-        return RecordingProc()
+            return FakeProc(stdout=self._squeue_stdout, returncode=self._squeue_returncode)
+        return FakeProc()
 
 
 class FakeSlurmSite:
@@ -559,23 +559,14 @@ def test_render_without_shebang_still_starts_with_one() -> None:
 # --------------------------------------------------------------------------- #
 # gc (nightly cleanup)
 # --------------------------------------------------------------------------- #
-class _GcProc:
-    def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
-        self._stdout = stdout
-        self.returncode = returncode
-
-    def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, b""
-
-
 class _GcConnection:
     def __init__(self, returncode: int = 0) -> None:
         self.commands: list[str] = []
         self._returncode = returncode
 
-    def execute(self, command: Sequence[str], **_: object) -> _GcProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         self.commands.append(command[2])  # the bash -c payload
-        return _GcProc(returncode=self._returncode)
+        return FakeProc(returncode=self._returncode)
 
 
 def test_run_gc_sweeps_every_tree_a_build_creates() -> None:
@@ -616,16 +607,6 @@ def test_run_gc_dryrun_lists_without_deleting() -> None:
 # --------------------------------------------------------------------------- #
 # Echoing the job's own output into the CI log
 # --------------------------------------------------------------------------- #
-class _CatProc:
-    returncode = 0
-
-    def __init__(self, out: bytes) -> None:
-        self._out = out
-
-    def communicate(self) -> tuple[bytes, bytes]:
-        return self._out, b""
-
-
 class _CatConnection:
     """A connection whose `cat` returns a canned job log."""
 
@@ -633,9 +614,9 @@ class _CatConnection:
         self._out = out
         self.executed: list[list[str]] = []
 
-    def execute(self, command: Sequence[str], **_: object) -> _CatProc:
+    def execute(self, command: Sequence[str], **_: object) -> FakeProc:
         self.executed.append(list(command))
-        return _CatProc(self._out)
+        return FakeProc(self._out)
 
 
 def test_echo_remote_output_prints_the_captured_job_log(capsys: pytest.CaptureFixture[str]) -> None:

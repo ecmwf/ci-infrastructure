@@ -52,6 +52,46 @@ class FakeConnection:
         self.fetched.append((str(src), str(dst)))
 
 
+class TarballConnection(FakeConnection):
+    """A connection whose ``getfile`` delivers a real (empty) tarball.
+
+    fetch_tree/fetch_install really untar what arrived, so a no-op getfile would
+    fail the extract rather than exercise it.
+    """
+
+    def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        super().getfile(src, dst)
+        with tarfile.open(dst, "w:gz"):
+            pass
+
+
+class CopyingConnection(FakeConnection):
+    """A connection that really moves bytes and really runs the remote commands.
+
+    ``sendfile``/``getfile`` copy the file and ``execute`` runs the argv locally,
+    so a transfer can be followed end to end (tar -> ship -> untar) instead of
+    only asserting the command sequence.
+    """
+
+    def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        super().sendfile(src, dst)
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(Path(src).read_bytes())
+
+    def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        super().getfile(src, dst)
+        Path(dst).write_bytes(Path(src).read_bytes())
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        proc = super().execute(command, stdout, stderr, dryrun)
+        argv = [str(c) for c in command]
+        if argv[:2] == ["bash", "-c"]:
+            subprocess.run(argv[2], shell=True, check=True)
+        else:
+            subprocess.run(argv, check=True)  # rm -rf / mkdir -p / touch
+        return proc
+
+
 def _make_tree(root: Path, name: str, body: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / name).write_text(body)
@@ -203,14 +243,6 @@ def test_marker_exists_false_on_nonzero_exit() -> None:
 # fetch_install
 # --------------------------------------------------------------------------- #
 def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
-    class TarballConnection(FakeConnection):
-        # fetch_install really untars what getfile delivered, so hand it a valid
-        # (empty) tarball rather than a no-op.
-        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().getfile(src, dst)
-            with tarfile.open(dst, "w:gz"):
-                pass
-
     conn = TarballConnection()
     transfer.fetch_install(
         conn,
@@ -229,14 +261,6 @@ def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
 # fetch_tree / push_tree (the generic HPC<->runner primitives)
 # --------------------------------------------------------------------------- #
 def test_fetch_tree_tar_getfile_unpack_order(tmp_path: Path) -> None:
-    class TarballConnection(FakeConnection):
-        # fetch_tree really untars what getfile delivered, so hand it a valid
-        # (empty) tarball rather than a no-op.
-        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().getfile(src, dst)
-            with tarfile.open(dst, "w:gz"):
-                pass
-
     conn = TarballConnection()
     transfer.fetch_tree(
         conn,
@@ -310,27 +334,6 @@ def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     """push_tree stages a tree on the 'cluster'; fetch_tree brings it back intact."""
     src = _make_tree(tmp_path / "inputs", "hello.txt", "content-xyz")
 
-    class CopyingConnection(FakeConnection):
-        # Emulate scp by really copying the file, and run the remote commands
-        # locally so the round-trip actually moves bytes.
-        def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().sendfile(src, dst)
-            Path(dst).parent.mkdir(parents=True, exist_ok=True)
-            Path(dst).write_bytes(Path(src).read_bytes())
-
-        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().getfile(src, dst)
-            Path(dst).write_bytes(Path(src).read_bytes())
-
-        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
-            proc = super().execute(command, stdout, stderr, dryrun)
-            argv = [str(c) for c in command]
-            if argv[:2] == ["bash", "-c"]:
-                subprocess.run(argv[2], shell=True, check=True)
-            else:
-                subprocess.run(argv, check=True)  # mkdir -p
-            return proc
-
     conn = CopyingConnection()
     remote = tmp_path / "remote" / "inputs" / "art"
     transfer.push_tree(
@@ -354,27 +357,6 @@ def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
 def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     """The tarball ship stages unpacks intact, and fetch_install brings a tree back."""
     src = _make_tree(tmp_path / "checkout", "hello.txt", "content-xyz")
-
-    class CopyingConnection(FakeConnection):
-        # Emulate scp by really copying the file, and run the remote commands
-        # locally so the round-trip actually moves bytes.
-        def sendfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().sendfile(src, dst)
-            Path(dst).parent.mkdir(parents=True, exist_ok=True)
-            Path(dst).write_bytes(Path(src).read_bytes())
-
-        def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
-            super().getfile(src, dst)
-            Path(dst).write_bytes(Path(src).read_bytes())
-
-        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
-            proc = super().execute(command, stdout, stderr, dryrun)
-            argv = [str(c) for c in command]
-            if argv[:2] == ["bash", "-c"]:
-                subprocess.run(argv[2], shell=True, check=True)
-            else:
-                subprocess.run(argv, check=True)  # rm -rf / mkdir -p / touch
-            return proc
 
     conn = CopyingConnection()
     staging = tmp_path / "remote" / "staging" / "art"
