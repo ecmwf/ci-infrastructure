@@ -67,9 +67,8 @@ from ._github_api import (
 RunStatus: TypeAlias = Literal["running", "completed", "none"]
 RunConclusion: TypeAlias = Literal["success", "failure"]
 
-# Functional TypedDict syntax supports hyphenated keys; two-class inheritance
-# gives us a required base and an optional extension without needing NotRequired
-# (which requires Python ≥ 3.11).
+# Functional TypedDict syntax, because the keys are hyphenated — they are the
+# literal $GITHUB_OUTPUT names, so they cannot be identifiers.
 #
 # `run-status` / `run-conclusion` are stored as Optional internally and only
 # get materialised to the empty string at the $GITHUB_OUTPUT boundary in

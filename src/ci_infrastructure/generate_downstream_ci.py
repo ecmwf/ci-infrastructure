@@ -120,17 +120,12 @@ from __future__ import annotations
 import json
 import re
 import shlex
-import sys
+import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, TypeAlias, TypeVar
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 import click
 import yaml
