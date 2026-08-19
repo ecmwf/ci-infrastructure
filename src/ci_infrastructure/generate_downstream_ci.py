@@ -123,7 +123,7 @@ import shlex
 import subprocess
 import sys
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, TypeAlias
@@ -306,13 +306,6 @@ class MatrixKind:
     # threads `own-artifact-name` into the action's `with:` block so it can
     # download the artifact it's testing.
     publishes: bool
-    # Optional override for the artifact-name prefix this kind publishes.
-    # Defaults to [package].prefix (handled in the resolver). Set when a kind
-    # in the same repo publishes a SECONDARY artifact under a different name
-    # — e.g. ecflow's `build-python` publishes `ecflowmath-python-*` while
-    # `build` publishes `ecflowmath-*`. Without this override, both kinds
-    # would publish under the package's primary prefix and collide.
-    artifact_prefix: str | None
 
 
 @dataclass(frozen=True)
@@ -718,7 +711,6 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
             forwarded_inputs=tuple(body.forwarded_inputs),
             forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
-            artifact_prefix=body.artifact_prefix,
         )
     return resolved
 
@@ -739,25 +731,24 @@ def _split_need(raw: str) -> tuple[str | None, str]:
     return None, raw
 
 
+def _index_unique(manifests: Sequence[Manifest], key: Callable[[Manifest], str], label: str) -> dict[str, Manifest]:
+    """Index manifests by `key`, failing loudly on a collision.
+
+    A duplicate would otherwise silently overwrite its twin in the lookup every
+    check below reads, so the collision is reported naming both manifest paths.
+    """
+    out: dict[str, Manifest] = {}
+    for m in manifests:
+        if key(m) in out:
+            raise SchemaError(f"duplicate {label} {key(m)!r}: {out[key(m)].path} and {m.path}")
+        out[key(m)] = m
+    return out
+
+
 def validate_graph(manifests: Sequence[Manifest]) -> None:
     """Run every cross-repo invariant. Raises SchemaError on the first violation."""
-    by_repo = {m.repo: m for m in manifests}
-    by_pkg = {m.package_name: m for m in manifests}
-
-    if len(by_repo) != len(manifests):
-        # Two manifests for the same owner/repo would silently overwrite each other downstream.
-        seen: dict[str, Path] = {}
-        for m in manifests:
-            if m.repo in seen:
-                raise SchemaError(f"duplicate manifest for repo {m.repo}: {seen[m.repo]} and {m.path}")
-            seen[m.repo] = m.path
-
-    if len(by_pkg) != len(manifests):
-        seen2: dict[str, Path] = {}
-        for m in manifests:
-            if m.package_name in seen2:
-                raise SchemaError(f"duplicate package name {m.package_name!r}: {seen2[m.package_name]} and {m.path}")
-            seen2[m.package_name] = m.path
+    by_repo = _index_unique(manifests, lambda m: m.repo, "manifest for repo")
+    by_pkg = _index_unique(manifests, lambda m: m.package_name, "package name")
 
     _check_subset_invariant(manifests, by_repo)
     _check_trigger_cycles(manifests, by_repo)
@@ -790,7 +781,7 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
         for kind, mk in m.matrices.items():
             if not mk.publishes:
                 continue
-            seen: dict[frozenset[tuple[str, str]], dict[str, Any]] = {}
+            seen: set[frozenset[tuple[str, str]]] = set()
             for leg in mk.legs:
                 identity = frozenset((k, str(v)) for k, v in leg.items() if k not in _SCHEDULING_FIELDS)
                 if identity in seen:
@@ -802,7 +793,7 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
                         f"Give them distinct platform/compiler/build-type/python-version (e.g. a "
                         f"separate platform like 'gh-ubuntu-24.04' for the host leg), or drop one."
                     )
-                seen[identity] = leg
+                seen.add(identity)
 
 
 def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str, Manifest]) -> None:

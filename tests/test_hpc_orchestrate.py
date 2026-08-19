@@ -929,10 +929,6 @@ def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert called["n"] == 0  # crucially, nothing was removed
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(pytest.main([__file__, "-v"]))
-
-
 # --------------------------------------------------------------------------- #
 # The click group's own surface
 # --------------------------------------------------------------------------- #

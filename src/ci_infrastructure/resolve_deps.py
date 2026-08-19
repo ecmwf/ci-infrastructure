@@ -211,7 +211,6 @@ class PackageSpec:
     prefix: PackageName
     repo: Repo
     compiler_inputs: Sequence[str]  # required: matrix fields whose values identify the OWN artifact
-    needs_python: bool
 
 
 @dataclass
@@ -347,7 +346,6 @@ def _parse_package(data: Mapping[str, Any], default_repo: str | None) -> Package
         prefix=PackageName(str(pkg_data["prefix"])),
         repo=as_repo(str(repo)),
         compiler_inputs=pkg_compiler_inputs,
-        needs_python=bool(pkg_data.get("needs-python", False)),
     )
 
 
@@ -535,7 +533,7 @@ def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, A
     # (where a producer leg that omits a field simply doesn't discriminate on
     # it), an omitted `options` means the concrete empty config, so it must equal
     # the requested config — a plain leg cannot satisfy a moments request.
-    consumer_keys = (_MATRIX_DISCRIMINATORS - {"options"}) & matrix_entry.keys()
+    consumer_keys = _MATRIX_DISCRIMINATORS & matrix_entry.keys()
     req_option = _as_option(matrix_entry.get("options"), context="requested option")
 
     def _leg_matches(leg: Mapping[str, Any]) -> bool:
@@ -1046,7 +1044,6 @@ def bfs_load_manifests(
                         prefix=PackageName(""),
                         repo=repo,
                         compiler_inputs=(),
-                        needs_python=False,
                     ),
                     deps=[],
                 )

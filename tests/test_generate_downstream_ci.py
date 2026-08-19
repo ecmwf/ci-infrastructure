@@ -183,10 +183,13 @@ def test_artifact_prefix_must_be_non_empty(tmp_path: Path) -> None:
         parse_all(tmp_path)
 
 
-def test_artifact_prefix_round_trips_through_kind(tmp_path: Path) -> None:
-    """When a kind declares `artifact-prefix`, the parsed MatrixKind records it
-    verbatim so the resolver can use it instead of [package].prefix. The
-    default-None behaviour (kinds without the field) is also verified."""
+def test_artifact_prefix_is_an_accepted_kind_key(tmp_path: Path) -> None:
+    """A kind may declare `artifact-prefix` (to publish a secondary artifact
+    under its own name) without the generator rejecting it as an unknown key.
+
+    The generator only validates the key's shape; resolve_deps reads the value
+    from the manifest itself and applies it to the artifact name.
+    """
     write_repo(
         tmp_path,
         "a",
@@ -216,8 +219,7 @@ def test_artifact_prefix_round_trips_through_kind(tmp_path: Path) -> None:
         """,
     )
     [m] = parse_all(tmp_path)
-    assert m.matrices["build"].artifact_prefix is None
-    assert m.matrices["build-secondary"].artifact_prefix == "a-secondary"
+    assert set(m.matrices) == {"build", "build-secondary"}
 
 
 def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> None:
