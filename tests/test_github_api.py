@@ -14,12 +14,21 @@ canned REST responses.
 
 from __future__ import annotations
 
+import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ci_infrastructure import _github_api
-from ci_infrastructure._github_api import make_artifact_name, probe_workflow_runs
+from ci_infrastructure._github_api import (
+    ManifestSchemaError,
+    make_artifact_name,
+    probe_workflow_runs,
+    resolve_reuse_matrix,
+)
+from ci_infrastructure.generate_downstream_ci import parse_manifest as generator_parse
+from ci_infrastructure.resolve_deps import parse_manifest as resolver_parse
 
 RUNNING = {"status": "in_progress", "html_url": "https://gh/run/1"}
 QUEUED = {"status": "queued", "html_url": "https://gh/run/2"}
@@ -124,3 +133,88 @@ def test_absent_segments_are_dropped_not_blanked(
     """Every optional segment vanishes rather than leaving an empty one — a
     doubled hyphen would be a different (and permanently unresolvable) key."""
     assert make_artifact_name("pkg", SHA, deps_hash8, "ubuntu-24.04", compiler, "Release", python_version) == expected
+
+
+# --------------------------------------------------------------------------- #
+# resolve_reuse_matrix — the generator and the resolver must agree on legs
+# --------------------------------------------------------------------------- #
+_BLOCKS: dict[str, dict[str, Any]] = {
+    "build": {"include": [{"cxx-compiler": "clang++-18"}]},
+    "test": {"reuse-matrix": "build"},
+    "chained": {"reuse-matrix": "test"},
+}
+
+
+def test_reuse_matrix_inherits_the_target_legs() -> None:
+    assert resolve_reuse_matrix("test", None, "build", _BLOCKS) == ({"cxx-compiler": "clang++-18"},)
+
+
+def test_explicit_include_is_used_verbatim() -> None:
+    assert resolve_reuse_matrix("build", [{"a": "1"}], None, _BLOCKS) == ({"a": "1"},)
+
+
+def test_a_kind_with_neither_has_no_legs() -> None:
+    assert resolve_reuse_matrix("bare", None, None, _BLOCKS) == ()
+
+
+def test_legs_are_copied_not_aliased() -> None:
+    """The caller stores these per kind; a shared dict would let an edit to one
+    kind's leg silently change another's."""
+    legs = resolve_reuse_matrix("test", None, "build", _BLOCKS)
+    legs[0]["cxx-compiler"] = "mutated"
+    assert _BLOCKS["build"]["include"][0] == {"cxx-compiler": "clang++-18"}
+
+
+@pytest.mark.parametrize(
+    ("kind", "include", "reuse", "expected"),
+    [
+        ("test", [{"a": "1"}], "build", "both"),
+        ("t", None, "nope", "does not exist"),
+        ("chained", None, "test", "chained reuse is not supported"),
+        ("bad", "not-a-list", None, "must be an array of tables"),
+    ],
+)
+def test_reuse_matrix_rejections(kind: str, include: Any, reuse: Any, expected: str) -> None:
+    with pytest.raises(ManifestSchemaError, match=expected):
+        resolve_reuse_matrix(kind, include, reuse, _BLOCKS)
+
+
+def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) -> None:
+    """The invariant behind sharing this: a kind whose legs differed between the
+    two parsers would have the resolver look up artifact names for legs the
+    generator never emitted a job for (or the reverse), and every lookup misses.
+    """
+    body = textwrap.dedent("""
+        [package]
+        name = "a"
+        prefix = "a"
+        repo = "org/a"
+        compiler-inputs = ["cxx-compiler"]
+
+        [matrix.build]
+        triggers = ["rebuild-request"]
+        action = "./.github/actions/build-a"
+
+        [matrix.test]
+        reuse-matrix = "build"
+        triggers = ["upstream-change"]
+        action = "./.github/actions/test-a"
+        publishes = false
+
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        cxx-compiler = "clang++-18"
+        build-type = "Release"
+        platform = "ubuntu-24.04"
+    """)
+    manifest_path = tmp_path / "r" / ".ci" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(body)
+
+    generated = generator_parse(manifest_path)
+    resolved = resolver_parse(body)
+
+    for kind in ("build", "test"):
+        assert [dict(leg) for leg in generated.matrices[kind].legs] == resolved.matrix[kind]
+    # …and reuse really did inherit rather than yield nothing.
+    assert resolved.matrix["test"] == resolved.matrix["build"] != []

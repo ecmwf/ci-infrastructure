@@ -138,7 +138,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ._errors import CIError
-from ._github_api import fetch_manifests_layer, fetch_repo_head, select_token
+from ._github_api import (
+    ManifestSchemaError,
+    fetch_manifests_layer,
+    fetch_repo_head,
+    resolve_reuse_matrix,
+    select_token,
+)
 
 GENERATED_HEADER: Final = (
     "# GENERATED FILE - DO NOT EDIT.\n"
@@ -626,28 +632,16 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
     point at a kind that exists, isn't itself a reuse-matrix, and isn't combined
     with an explicit `include`.
     """
+    # A dict view of each block, so the reuse-matrix expansion shared with
+    # resolve_deps can read pydantic-validated bodies and raw TOML alike.
+    blocks = {k: {"reuse-matrix": b.reuse_matrix, "include": b.include} for k, b in raw_matrix.items()}
+
     resolved: dict[str, MatrixKind] = {}
     for kind, body in raw_matrix.items():
-        if body.reuse_matrix is not None and body.include:
-            raise SchemaError(
-                f"{path}: [matrix.{kind}] sets both 'reuse-matrix' and [[matrix.{kind}.include]]; pick one"
-            )
-
-        if body.reuse_matrix is not None:
-            target = raw_matrix.get(body.reuse_matrix)
-            if target is None:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}].reuse-matrix = {body.reuse_matrix!r} "
-                    f"but [matrix.{body.reuse_matrix}] does not exist"
-                )
-            if target.reuse_matrix is not None:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}].reuse-matrix = {body.reuse_matrix!r} is itself a reuse-matrix; "
-                    f"chained reuse is not supported"
-                )
-            legs = tuple(target.include)
-        else:
-            legs = tuple(body.include)
+        try:
+            legs = resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks)
+        except ManifestSchemaError as e:
+            raise SchemaError(f"{path}: {e}") from e
 
         # `execution` picks the build path and dictates which of action /
         # job-script is required. HPC kinds call the shared build-on-hpc action,

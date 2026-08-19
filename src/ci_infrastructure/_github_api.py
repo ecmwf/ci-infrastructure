@@ -411,3 +411,42 @@ def write_outputs(outputs: Mapping[str, object]) -> None:
     else:
         for line in lines:
             print(line)
+
+
+class ManifestSchemaError(Exception):
+    """A manifest violates the shared matrix schema."""
+
+
+def resolve_reuse_matrix(
+    kind: str, include: Sequence[Any] | None, reuse: object, blocks: Mapping[str, Mapping[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """The include legs `[matrix.<kind>]` ends up with after `reuse-matrix`.
+
+    `reuse-matrix = "X"` means "share X's legs" — a test kind almost always wants
+    the exact matrix its build kind published for, and repeating the legs is how
+    they drift apart. Both the generator and the resolver expand this, and they
+    must agree: a consumer whose test legs differed from its build legs would
+    look up artifact names nothing ever published.
+
+    Chained reuse is refused rather than followed, so the legs of a kind are
+    always one hop from a literal `include`.
+    """
+    if reuse is not None and include:
+        raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")
+    if reuse is None:
+        legs = include or ()
+    else:
+        target = blocks.get(str(reuse))
+        if target is None:
+            raise ManifestSchemaError(
+                f"[matrix.{kind}].reuse-matrix = {str(reuse)!r} but [matrix.{reuse}] does not exist"
+            )
+        if target.get("reuse-matrix") is not None:
+            raise ManifestSchemaError(
+                f"[matrix.{kind}].reuse-matrix = {str(reuse)!r} is itself a reuse-matrix; "
+                f"chained reuse is not supported"
+            )
+        legs = target.get("include") or ()
+    if not isinstance(legs, (list, tuple)):
+        raise ManifestSchemaError(f"[matrix.{kind}.include] must be an array of tables")
+    return tuple(dict(leg) for leg in legs)

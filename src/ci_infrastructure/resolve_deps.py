@@ -103,10 +103,12 @@ import click
 from . import s3_store
 from ._errors import CIError
 from ._github_api import (
+    ManifestSchemaError,
     compute_deps_hash8,
     compute_platform_slug,
     fetch_manifests_layer,
     probe_workflow_runs,
+    resolve_reuse_matrix,
     select_token,
     write_outputs,
 )
@@ -384,11 +386,10 @@ def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
 
 
 def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
-    # Two-pass matrix resolution: first collect raw blocks, then apply reuse-matrix.
-    # Mirrors generate_downstream_ci.py: a kind with `reuse-matrix = "X"` and no
-    # explicit include inherits X's include legs. Without this expansion, kinds
-    # like `[matrix.test] reuse-matrix = "build"` would emit an empty matrix and
-    # the consuming workflow would fail with `fromJSON: empty input`.
+    # Two passes: collect the raw blocks, then expand reuse-matrix against them.
+    # The expansion is shared with the generator (resolve_reuse_matrix) because a
+    # kind whose legs differed between the two would look up artifact names
+    # nothing ever published.
     raw_matrix: dict[str, dict[str, Any]] = {}
     for job_name, job_block in data.get("matrix", {}).items():
         if not isinstance(job_block, dict):
@@ -398,24 +399,11 @@ def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any
     matrix: dict[str, list[dict[str, Any]]] = {}
     artifact_prefix_by_kind: dict[str, str] = {}
     for job_name, job_block in raw_matrix.items():
-        include = job_block.get("include")
-        reuse = job_block.get("reuse-matrix")
-        if reuse is not None and include:
-            raise ValueError(f"[matrix.{job_name}] sets both 'reuse-matrix' and 'include'; pick one")
-        if reuse is not None:
-            target = raw_matrix.get(str(reuse))
-            if target is None:
-                raise ValueError(f"[matrix.{job_name}].reuse-matrix = {reuse!r} but [matrix.{reuse}] does not exist")
-            if target.get("reuse-matrix") is not None:
-                raise ValueError(
-                    f"[matrix.{job_name}].reuse-matrix points at another reuse-matrix; chained reuse is not supported"
-                )
-            include = target.get("include", [])
-        else:
-            include = include or []
-        if not isinstance(include, list):
-            raise ValueError(f"[matrix.{job_name}.include] must be an array of tables")
-        matrix[str(job_name)] = [dict(entry) for entry in include]
+        try:
+            legs = resolve_reuse_matrix(job_name, job_block.get("include"), job_block.get("reuse-matrix"), raw_matrix)
+        except ManifestSchemaError as e:
+            raise ValueError(str(e)) from e
+        matrix[str(job_name)] = list(legs)
         prefix_override = job_block.get("artifact-prefix")
         if prefix_override is not None:
             if not isinstance(prefix_override, str) or not prefix_override.strip():
