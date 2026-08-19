@@ -20,13 +20,6 @@
 
 - after troika is typed. drop the ignore missing imports
 
-- add a `runs-on` input to .github/workflows/pre-commit.yml. It hardcodes
-  ubuntu-slim, an ARC label, so any consumer outside this org's runner groups
-  queues forever with no runner. It works today only because its one known
-  caller (ecmwf/stack-dependencies) has ARC access. Copy the input from
-  check-pr-declaration.yml, which defaults to ubuntu-latest for exactly this
-  reason.
-
 - ensure-infrastructure-present's freshness check compares *.py only, so drift
   confined to hpc/troika-config.yml or the bundled certs/*.pem is not detected.
   Hashing everything is not an option: an installed tree legitimately differs
