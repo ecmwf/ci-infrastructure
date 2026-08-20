@@ -10,6 +10,30 @@
 
 - use ubuntu-slim where possible
 
+- document that fan-out changes cannot be tested on a branch. `on: workflow_run`
+  always executes the DEFAULT BRANCH's copy of trigger-downstream.yml, so a
+  branch that adds or removes a [[trigger-downstream]], reorders `needs`, edits
+  `triggers`, or repins a consumer `ref` gets none of it: the old graph runs and
+  the change first takes effect at merge. The `validate` job is only a partial
+  net -- it checks out the tested head SHA and runs --check, so it catches "you
+  edited the manifest and forgot to regenerate", but it cannot exercise a fan-out
+  the running orchestrator does not contain. The failure mode is a green
+  downstream/<lane> status computed from the previous job list, which reads as
+  proof and is not.
+
+  Accepted for now: the cost scales with how often the dependency GRAPH changes,
+  not with how many repos are in it, and the graph is expected to change rarely
+  even as the repo count grows. Revisit if that stops being true.
+
+  The fix, when it is worth it, is a dynamic orchestrator: replace the generated
+  per-consumer `uses:` jobs with one job that reads the manifest at
+  workflow_run.head_sha and fans out through dispatch-and-wait, which unlike
+  `uses:` accepts a runtime ref. Both paths already exist -- dispatch-and-wait
+  drives every public->private edge today -- so this is a change of default, not
+  new machinery. It costs the native reusable-workflow nesting on public->public
+  edges: consumer jobs would render in the consumer's Actions tab rather than
+  inline in the caller's run, and gating would go back to polling run status.
+
 - adopt the zizmor pre-commit hook [SECURITY]. a48f078 took it from 14
   template-injection findings to 0 but nothing keeps it there; the new
   actionlint hook is next to where it belongs. Blocked on 78 pre-existing
