@@ -103,7 +103,7 @@ Invariants enforced (fail-loud, exit 1):
 Usage:
 
     cd <consumer-repo>
-    python3 path/to/generate_downstream_ci.py [--check]
+    ci-infrastructure-generate [--check]
 
 The script always operates on the cwd's manifest and fetches every sibling
 manifest named in [[deps]] / [[trigger-downstream]] over the GitHub GraphQL
@@ -2314,7 +2314,7 @@ def _regen_command(manifest_path: str) -> str:
     instead of checking it. We rebuild from parsed args (not sys.argv) so
     the suggestion is canonicalised regardless of how the user invoked it.
     """
-    parts: list[str] = ["python3", "generate_downstream_ci.py"]
+    parts: list[str] = ["ci-infrastructure-generate"]
     if manifest_path != ".ci/manifest.toml":
         parts += ["--manifest-path", manifest_path]
     return shlex.join(parts)
@@ -2340,7 +2340,9 @@ def _report(
             "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
             f"  {_regen_command(manifest_path)}\n"
             "\n"
-            "Where generate_downstream_ci.py comes from https://github.com/ecmwf/ci-infrastructure.\n"
+            "ci-infrastructure-generate is installed by `pip install ci-infrastructure`\n"
+            "(https://github.com/ecmwf/ci-infrastructure); inside a job the composite\n"
+            'actions expose it as "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci.\n'
             "Then commit the regenerated files alongside your manifest changes."
         )
     for action, p in changed:
