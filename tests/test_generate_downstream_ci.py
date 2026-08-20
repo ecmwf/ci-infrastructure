@@ -32,6 +32,8 @@ from ci_infrastructure.generate_downstream_ci import (
     SLIM_RUNNER,
     SchemaError,
     _cross_package_deps,
+    _fetch_sibling_manifests,
+    _local_sibling_layer,
     _write_or_check_path,
     compute_transitive_consumers,
     parse_manifest_text,
@@ -2187,3 +2189,72 @@ def test_write_or_check_path_modes(tmp_path: Path) -> None:
     assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
     assert _write_or_check_path(out, None, check=False) is False
+
+
+def test_local_sibling_layer_reads_clones_and_skips_missing(tmp_path: Path) -> None:
+    """--sibling-root resolves owner/repo to <root>/<repo-name>/<manifest-path>.
+
+    A sibling that is not checked out yields None, the same signal a missing remote
+    manifest gives, so the BFS skips it rather than failing. That is what makes the
+    flag safe to point at a partially-populated directory.
+    """
+    (tmp_path / "upstream" / ".ci").mkdir(parents=True)
+    (tmp_path / "upstream" / ".ci" / "manifest.toml").write_text('[package]\nname = "up"\n')
+
+    got = _local_sibling_layer(
+        [("ecmwf/upstream", "develop"), ("ecmwf/absent", "develop")],
+        tmp_path,
+        ".ci/manifest.toml",
+    )
+
+    assert got[("ecmwf/upstream", "develop")] == ('[package]\nname = "up"\n', False)
+    assert got[("ecmwf/absent", "develop")] == (None, False)
+
+
+def test_local_sibling_layer_ignores_the_ref(tmp_path: Path) -> None:
+    """The ref is deliberately ignored: the flag exists to read each clone's WORKING
+    TREE, which is the state a coordinated cross-repo change lives in before it is
+    pushed anywhere."""
+    (tmp_path / "up" / ".ci").mkdir(parents=True)
+    (tmp_path / "up" / ".ci" / "manifest.toml").write_text("x = 1\n")
+
+    for ref in ("develop", "some-feature-branch", "HEAD"):
+        got = _local_sibling_layer([("ecmwf/up", ref)], tmp_path, ".ci/manifest.toml")
+        assert got[("ecmwf/up", ref)] == ("x = 1\n", False)
+
+
+def _trigger_manifest(name: str, repo: str, targets: list[str]) -> str:
+    blocks = "".join(f'\n[[trigger-downstream]]\nrepo = "{t}"\nref = "main"\n' for t in targets)
+    return (
+        f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\n'
+        "compiler-inputs = []\n\n"
+        '[[matrix.build.include]]\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n\n'
+        '[matrix.build]\ntriggers = ["rebuild-request"]\n'
+        'action = "./.github/actions/build-x"\nneeds = []\n' + blocks
+    )
+
+
+def test_warns_when_a_trigger_target_manifest_is_unreadable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An unresolved [[trigger-downstream]] target is the one silent failure here: it
+    contributes no orchestrator job, so the fan-out shrinks and both --check and a
+    plain run agree the smaller output is correct. Warn, naming the target and the
+    --sibling-root escape hatch."""
+    local = parse_manifest_text(_trigger_manifest("up", "ecmwf/up", ["ecmwf/absent"]), tmp_path / ".ci/manifest.toml")
+
+    _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
+
+    err = capsys.readouterr().err
+    assert "::warning::" in err
+    assert "ecmwf/absent" in err
+    assert "--sibling-root" in err
+
+
+def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The correct case must stay silent, or the warning becomes noise people filter out."""
+    (tmp_path / "down" / ".ci").mkdir(parents=True)
+    (tmp_path / "down" / ".ci" / "manifest.toml").write_text(_trigger_manifest("down", "ecmwf/down", []))
+    local = parse_manifest_text(_trigger_manifest("up", "ecmwf/up", ["ecmwf/down"]), tmp_path / ".ci/manifest.toml")
+
+    _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
+
+    assert "::warning::" not in capsys.readouterr().err
