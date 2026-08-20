@@ -97,3 +97,82 @@ jobs:
           site: hpc-batch
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           remote-dir: ${{ steps.push.outputs.remote-dir }}
+
+  hpc-submit:
+    name: submit a SLURM job
+    # The transfer round-trip above proves ssh, $SCRATCH expansion and a writable
+    # work dir. This proves the half the build path actually depends on and
+    # nothing else covered: troika submits to the scheduler, the compute node
+    # waits for the transfer marker, unpacks the shipped source, runs the recipe,
+    # and the runner reads the sentinel back out of the job output.
+    #
+    # --no-publish keeps it a pure test: no S3 artifact is written, and the cache
+    # short-circuit is skipped so it really runs every time. Artifact name is
+    # unique per run+attempt, so a re-run never reattaches to a finished job; the
+    # per-artifact trees it leaves under the work dir are what the nightly GC
+    # sweeps.
+    runs-on: arc-hpc-pet-vsphere-prod
+    container:
+      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+        with:
+          force-reinstall: true
+
+      - uses: ./actions/require-environment-variable
+        with:
+          name: HPC_CI_REMOTE_WORK_DIR
+        env:
+          HPC_CI_REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+
+      - name: Seed a source tree and a trivial recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/hpc-submit/src"
+          mkdir -p "$src/.ci/hpc"
+          echo "$GITHUB_RUN_ID" > "$src/shipped.txt"
+          # Resources are the smallest atos will schedule promptly: it selects on
+          # QoS rather than partition. No sentinel echo — ci-infrastructure
+          # appends that, and a recipe printing it itself would defeat the check.
+          cat > "$src/.ci/hpc/smoke.sh" <<'RECIPE'
+          #!/bin/bash
+          #SBATCH --qos=nf
+          #SBATCH --time=00:05:00
+          #SBATCH --nodes=1
+          #SBATCH --ntasks=1
+
+          echo "ci-smoke: on $(hostname)"
+          # The wrapper cds into the unpacked checkout, so the shipped file must
+          # be here; asserting it makes a silent no-op transfer a failure.
+          test -f shipped.txt
+          test -n "$CI_INSTALL_PREFIX"
+          mkdir -p "$CI_INSTALL_PREFIX"
+          echo ok > "$CI_INSTALL_PREFIX/smoke.txt"
+          RECIPE
+
+      - name: Submit to SLURM and wait for the sentinel
+        shell: bash
+        env:
+          HPC_CI_REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+          HPC_CI_SSH_USER: ${{ secrets.HPC_CI_SSH_USER }}
+        run: |
+          set -euo pipefail
+          # Passed through verbatim: the spec is expanded on the cluster, so this
+          # shell must not expand it first.
+          "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait \
+            --site hpc-batch \
+            --troika-user "$HPC_CI_SSH_USER" \
+            --job-script "$RUNNER_TEMP/hpc-submit/src/.ci/hpc/smoke.sh" \
+            --artifact-name "ci-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --remote-work-dir "$HPC_CI_REMOTE_WORK_DIR" \
+            --local-install-path "$RUNNER_TEMP/hpc-submit/install" \
+            --source-dir "$RUNNER_TEMP/hpc-submit/src" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --tar-dir "$RUNNER_TEMP/hpc-submit/tars" \
+            --no-publish
