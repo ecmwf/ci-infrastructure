@@ -65,7 +65,7 @@ inputs:
       Base directory on the cluster (writable by the troika user, on a filesystem
       visible to the compute nodes) for the staged source, job output and the
       install tree. May name cluster variables — the recommended value is
-      "$SCRATCH/downstream-ci" — which are expanded on the cluster, not on the
+      "$SCRATCH/github-ci" — which are expanded on the cluster, not on the
       runner. The expansion must yield an absolute path; the step fails fast
       otherwise, since a relative or runner-local path is invisible to compute
       nodes and is the classic "wrong work directory" failure.
@@ -175,7 +175,7 @@ runs:
           exit 1
         fi
         if [ -z "$REMOTE_WORK_DIR_INPUT" ]; then
-          echo "::error::remote-work-dir is empty. Set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '\$SCRATCH/downstream-ci')." >&2
+          echo "::error::remote-work-dir is empty. Set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '\$SCRATCH/github-ci')." >&2
           exit 1
         fi
         # Local (runner) scratch: shipped/fetched tarball staging, fetched install.
@@ -187,7 +187,7 @@ runs:
         # into the job's --comment so a reattaching run can find which run shipped.
         run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         # The cluster work dir is passed through verbatim: referencing "$VAR"
-        # does not re-expand its value, so a spec like '$SCRATCH/downstream-ci'
+        # does not re-expand its value, so a spec like '$SCRATCH/github-ci'
         # reaches Python intact and is expanded on the cluster, where $SCRATCH
         # actually exists. Expanding it here would silently yield an empty
         # string and send the build somewhere the compute nodes cannot see.

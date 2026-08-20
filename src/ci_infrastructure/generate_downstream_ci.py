@@ -75,6 +75,14 @@ Schema additions consumed (sibling to the existing [[deps]] / [[matrix.X.include
     reuse-matrix = "build"       # share the include legs of another kind
     needs = ["build"]            # local: bare kind name
 
+    [matrix.build-hpc]
+    container-credentials = true # optional; the job's `container:` gets a
+                                 # credentials block reading the org registry
+                                 # robot secrets. Opt-in, because handing empty
+                                 # credentials to a public image would break the
+                                 # anonymous pulls the runner lane relies on.
+                                 # Kind-level: one container: is rendered per job.
+
     # ci.yml-only kinds (no triggers) need no [matrix.<kind>] table at all —
     # just [[matrix.<kind>.include]] legs. triggers defaults to empty;
     # needs/reuse-matrix on a non-triggered kind are never consulted.
@@ -312,6 +320,12 @@ class MatrixKind:
     # threads `own-artifact-name` into the action's `with:` block so it can
     # download the artifact it's testing.
     publishes: bool
+    # Whether the job's `container:` needs registry credentials. Opt-in: the
+    # public images the runner lane pulls anonymously must not be handed empty
+    # credentials, so this stays false unless a repo says its image is private.
+    # Kind-level rather than per-leg because one `container:` block is rendered
+    # per job, and a job covers every leg of the kind.
+    container_credentials: bool
 
 
 @dataclass(frozen=True)
@@ -355,6 +369,7 @@ _RESERVED_MATRIX_KEYS: Final = frozenset(
         "forwarded-deps-outputs",
         "publishes",
         "artifact-prefix",
+        "container-credentials",
     }
 )
 # Valid entries for `forwarded-deps-outputs` — must correspond to real outputs
@@ -422,6 +437,7 @@ class _MatrixKindRaw(BaseModel):
     forwarded_deps_outputs: tuple[str, ...] = Field(default=(), alias="forwarded-deps-outputs")
     publishes: bool = True
     artifact_prefix: str | None = Field(default=None, alias="artifact-prefix")
+    container_credentials: bool = Field(default=False, alias="container-credentials")
 
     @model_validator(mode="before")
     @classmethod
@@ -691,6 +707,7 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
             forwarded_inputs=tuple(body.forwarded_inputs),
             forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
+            container_credentials=body.container_credentials,
         )
     return resolved
 
@@ -1517,10 +1534,18 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         "name": job_name,
         "runs-on": "${{ matrix['runs-on'] }}",
     }
-    # HPC jobs run on the login-node self-hosted runner in host mode; only the
-    # runner path threads a container image.
-    if not is_hpc:
-        job["container"] = {"image": "${{ matrix.container || '' }}"}
+    # Both lanes thread the container a leg declares; a leg that declares none
+    # renders image: '' and GA falls back to host mode. HPC legs need this as much
+    # as runner ones: the ssh identity that reaches the cluster (keys, the site
+    # alias in ~/.ssh/config, known_hosts) lives inside the image, and the ARC
+    # scale sets that run these jobs keep nothing on the host.
+    container: dict[str, Any] = {"image": "${{ matrix.container || '' }}"}
+    if mk.container_credentials:
+        container["credentials"] = {
+            "username": "${{ secrets.ECCR_PULL_ROBOT_NAME }}",
+            "password": "${{ secrets.ECCR_PULL_ROBOT_TOKEN }}",
+        }
+    job["container"] = container
     job["strategy"] = {
         "fail-fast": False,
         "matrix": f"${{{{ fromJSON(needs.resolve.outputs.matrix-{kind}) }}}}",

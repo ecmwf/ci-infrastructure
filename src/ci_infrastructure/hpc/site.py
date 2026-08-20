@@ -10,7 +10,7 @@ of the untyped troika objects. The same protocol is what the unit tests'
 fake site implements, so the orchestrator can be exercised without a cluster.
 
 Also home to :func:`resolve_remote_path`, which turns a work-dir spec that names
-cluster variables (``$SCRATCH/downstream-ci``) into the literal path the runner
+cluster variables (``$SCRATCH/github-ci``) into the literal path the runner
 needs in order to scp into it.
 """
 
@@ -94,7 +94,7 @@ _SAFE_SPEC = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
 def resolve_remote_path(conn: Any, spec: str) -> str:
     """Expand a work-dir ``spec`` on the cluster and return the literal path.
 
-    A spec like ``$SCRATCH/downstream-ci`` cannot be used as-is: troika
+    A spec like ``$SCRATCH/github-ci`` cannot be used as-is: troika
     ``shlex.quote``s every argv element, so cluster variables passed to
     ``mkdir``/``scp`` would arrive literally and we would create a directory
     actually named ``$SCRATCH``. Expanding it here, once, gives the runner a real
@@ -109,7 +109,7 @@ def resolve_remote_path(conn: Any, spec: str) -> str:
     if not _SAFE_SPEC.match(spec):
         raise CIError(
             f"Remote work dir {spec!r} contains characters that are not allowed. Use only letters, "
-            "digits and _ / . - $ { } (e.g. '$SCRATCH/downstream-ci' or '/ec/res4/scratch/me/ci')."
+            "digits and _ / . - $ { } (e.g. '$SCRATCH/github-ci' or '/ec/res4/scratch/me/ci')."
         )
     proc = conn.execute(
         ["bash", "-lc", f'printf %s "{spec}"'],

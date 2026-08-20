@@ -158,11 +158,43 @@ def test_hpc_fetch_step_stages_python_wheels_without_installing(hpc_yaml: str) -
     assert "actions/setup-python" not in yaml
 
 
-def test_hpc_job_runs_on_login_runner_without_container(hpc_yaml: str) -> None:
+def test_hpc_job_threads_the_leg_container(hpc_yaml: str) -> None:
+    """HPC jobs get the same container plumbing as runner jobs.
+
+    The ssh identity that reaches the cluster — keys, the site alias in
+    ~/.ssh/config, known_hosts — lives inside the image, and the ARC scale sets
+    these jobs run on keep nothing on the host, so an HPC job rendered without a
+    container has no way to submit anything. A leg that declares no container
+    still renders image: '' and GA falls back to host mode.
+    """
     yaml = hpc_yaml
     assert "runs-on: ${{ matrix['runs-on'] }}" in yaml
-    # HPC jobs run in host mode on the login node — no container block.
-    assert "container:" not in yaml
+    assert "container:" in yaml
+    assert "image: ${{ matrix.container || '' }}" in yaml
+
+
+def test_container_credentials_are_opt_in(tmp_path: Path) -> None:
+    """Credentials appear only when the kind asks for them.
+
+    Emitting them unconditionally would hand empty secrets to the public images
+    the runner lane pulls anonymously today.
+    """
+    write_repo(tmp_path, "a", _HPC_MANIFEST)
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_HPC)
+    assert yaml is not None
+    assert "credentials:" not in yaml
+
+    write_repo(
+        tmp_path, "b", _HPC_MANIFEST.replace('execution = "hpc"', 'execution = "hpc"\ncontainer-credentials = true')
+    )
+    manifests = {mm.package_name: mm for mm in parse_all(tmp_path)}
+    b = manifests["b"]
+    yaml_b = render_workflow(b, {"b": b}, lane=EXECUTION_HPC)
+    assert yaml_b is not None
+    assert "credentials:" in yaml_b
+    assert "username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}" in yaml_b
+    assert "password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}" in yaml_b
 
 
 def test_hpc_job_has_no_separate_publish_step(hpc_yaml: str) -> None:
