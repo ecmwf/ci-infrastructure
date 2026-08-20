@@ -28,14 +28,6 @@
   in-sync image. Declaring both data files in [tool.setuptools.package-data] and
   widening the hash to match would close it.
 
-- local-direct-roundtrip in hpc-transfer-e2e.yml still pre-sets
-  CI_INFRASTRUCTURE_PYTHON by hand to make the composite actions use its
-  editable install. That predates the force-reinstall input and could now be a
-  plain `with: force-reinstall: true`, except the job also drives the CLI
-  directly through that same interpreter — worth a look when someone next
-  touches it.
-
-
 PR Contributor Declaration (checker landed, rollout pending):
 
 The action, the reusable workflow and this repo's own template are in. What
@@ -112,7 +104,7 @@ HPC:
 - vars.HPC_CI_REMOTE_WORK_DIR = '$SCRATCH/downstream-ci' is the ONE setting the
   HPC path needs, and it is being set now. Single-quote it: the spec is expanded
   on the cluster, in a login shell, not on the runner. It has no fallback by
-  design (build-on-hpc:177 and hpc-transfer-e2e.yml both hard-fail on it), since
+  design (build-on-hpc:177 and smoke-test-hpc.yml both hard-fail on it), since
   a runner-local default would be invisible to compute nodes -- the classic
   wrong-work-directory bug HPC.md warns about. An unset value is what produced
   "mkdir: cannot create directory '/transfer-e2e-<run id>': Read-only file
@@ -132,12 +124,20 @@ HPC:
   secrets.HPC_CI_SSH_USER, and tests/test_generate_hpc.py:170 asserts
   "TROIKA_USER" never appears in generated YAML. The doc line is a trap.
 
-- drop the "confirm the login-node runner's $RUNNER_TEMP + work-dir are on the
-  shared filesystem" worry, or re-scope it: it was written when hpc-roundtrip ran
-  on the [hpc] login-node runner. It now runs in a container on
-  arc-hpc-pet-vsphere-prod and reaches the cluster over troika ssh, so nothing local
-  needs to be on the shared filesystem. Re-check if a job ever moves back onto a
-  login-node runner.
+- "login-node runner" is wrong wherever it appears, and HPC.md:190 is a factual
+  error rather than a mis-naming: it says the job script must live on "the same
+  Lustre $SCRATCH the login-node runner and the compute nodes all see". No runner
+  is on the cluster -- [hpc] is a self-hosted VM that only reaches HPC over troika
+  ssh -- so the runner sees no Lustre, and the script gets there by being pushed.
+  Fix that line first, then HPC.md:62, the inline comment a consumer copies into
+  their own manifest. This also voids the old "are $RUNNER_TEMP + work-dir on the
+  shared filesystem" worry outright rather than deferring it: no runner shares a
+  filesystem with the cluster, so everything local necessarily goes over ssh.
+  Cosmetic elsewhere: HPC.md:18/25/162/230 (and :173, which may mean the transfer
+  primitives, not the runner), actionlint.yaml:6, hpc-nightly-cleanup.yml:10,
+  generate_downstream_ci.py:284/1514, hpc/__init__.py:8, hpc/orchestrate.py:11.
+  Correct as-is, meaning the CLUSTER's login node: HPC.md:189, s3_store.py:49,
+  the harica cert header, troika-config.yml:13, hpc/orchestrate.py:435.
 
 
 - declare version for troika and pin to it

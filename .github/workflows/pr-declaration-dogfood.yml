@@ -11,7 +11,7 @@ name: Contributor Declaration (dogfood)
 # request cannot stub out the gate that judges it -- that tamper-resistance is
 # worth more there than testing-your-own-version is, and the reverse holds here.
 #
-# Same shape as hpc-transfer-e2e.yml, which also drives ./actions/... rather than
+# Same shape as smoke-test-hpc.yml, which also drives ./actions/... rather than
 # @main so the checkout under test is the code that runs.
 on:
   pull_request:

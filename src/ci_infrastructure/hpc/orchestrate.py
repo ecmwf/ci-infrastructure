@@ -297,7 +297,7 @@ def cancel_job(
 #: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
 #: one entry per artifact (or a .out file for hpc-jobs), so a maxdepth-1 sweep
 #: reclaims whole builds without touching the roots. "transfer-e2e" is not
-#: written by the build path: hpc-transfer-e2e.yml puts its per-run tree there so
+#: written by the build path: smoke-test-hpc.yml puts its per-run tree there so
 #: a failed round-trip, which deliberately leaves the tree behind for debugging,
 #: is still reclaimed eventually. Anything written directly under the work dir
 #: instead of one of these is never swept.

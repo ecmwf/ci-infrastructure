@@ -587,7 +587,7 @@ def test_run_gc_sweeps_every_tree_a_build_creates() -> None:
     assert build_dirs <= swept, f"unswept build trees: {sorted(build_dirs - swept)}"
     assert swept - build_dirs == {"/scratch/ci/transfer-e2e"}, (
         "a subdir swept but not written by a build needs a reason here; transfer-e2e holds "
-        "hpc-transfer-e2e.yml's per-run trees, which are left behind on failure on purpose"
+        "smoke-test-hpc.yml's per-run trees, which are left behind on failure on purpose"
     )
     for base in swept:
         assert base in joined
