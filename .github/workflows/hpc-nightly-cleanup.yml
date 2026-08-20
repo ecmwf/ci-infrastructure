@@ -50,7 +50,7 @@ jobs:
             echo "::error::HPC_CI_REMOTE_WORK_DIR is empty; nothing to sweep." >&2
             exit 1
           fi
-          # Passed through verbatim: a spec like '$SCRATCH/downstream-ci' is
+          # Passed through verbatim: a spec like '$SCRATCH/github-ci' is
           # expanded on the cluster, so it must not be expanded by this shell.
           args=(
             --site hpc-batch

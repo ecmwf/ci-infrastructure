@@ -12,7 +12,7 @@ This is the HPC counterpart of the runner build step. It is invoked by the
 
     python -m ci_infrastructure.hpc submit-wait --site hpc-batch \\
         --job-script ./.ci/hpc/build.sh --artifact-name <name> \\
-        --remote-work-dir '$SCRATCH/downstream-ci' --local-install-path <local>/install/<name> \\
+        --remote-work-dir '$SCRATCH/github-ci' --local-install-path <local>/install/<name> \\
         --source-dir <workspace> --run-id <run>-<attempt> \\
         --tar-dir <local>/hpc-tars --cmake-prefix-path <prefix>
 
@@ -25,7 +25,7 @@ Design points that mirror the non-HPC path and satisfy the requirements:
   * The cluster work dir is expanded on the cluster (see
     ``site.resolve_remote_path``) and the per-artifact layout derived from it
     (see ``RemotePaths``), so the configured value stays portable
-    (``$SCRATCH/downstream-ci``) while every path the runner uses is literal.
+    (``$SCRATCH/github-ci``) while every path the runner uses is literal.
 
   * Submit-then-poll transfer. The job is submitted first (claiming its queue
     slot), then the runner scp's the source tarball into the shared staging dir
@@ -504,7 +504,7 @@ def main() -> None:
     "remote_work_dir",
     required=True,
     help="Cluster work dir, on a compute-node-visible FS. May name cluster variables "
-    "(e.g. '$SCRATCH/downstream-ci'); they are expanded on the cluster, not here.",
+    "(e.g. '$SCRATCH/github-ci'); they are expanded on the cluster, not here.",
 )
 @click.option(
     "--local-install-path",
@@ -732,7 +732,7 @@ def cancel(
     "--remote-work-dir",
     "remote_work_dir",
     required=True,
-    help="Cluster work dir to sweep. May name cluster variables (e.g. '$SCRATCH/downstream-ci').",
+    help="Cluster work dir to sweep. May name cluster variables (e.g. '$SCRATCH/github-ci').",
 )
 @click.option("--older-than-days", "older_than_days", type=int, default=7, help="Age threshold in days (default: 7)")
 @click.option("--dryrun", is_flag=True, default=False, help="List what would be removed; delete nothing")
@@ -770,7 +770,7 @@ def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) ->
     detail = f"{resolved!r}" if resolved == remote_dir else f"{resolved!r} (from {remote_dir!r})"
     raise CIError(
         f"{command}: refusing a top-level cluster path: {detail}. A path directly under / is almost "
-        "always an unset work-dir variable — set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '$SCRATCH/downstream-ci') "
+        "always an unset work-dir variable — set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '$SCRATCH/github-ci') "
         "so the path lands under it."
     )
 

@@ -88,7 +88,7 @@ See `samples/hpc/build.sh` for a template recipe.
 - **`vars.HPC_CI_REMOTE_WORK_DIR`** (a repo/org Actions *variable*): the base
   directory on the cluster for the staged source, job output and the install
   tree, on a filesystem visible to the compute nodes and writable by the troika
-  user. **Recommended: `$SCRATCH/downstream-ci`.** The value may name cluster
+  user. **Recommended: `$SCRATCH/github-ci`.** The value may name cluster
   variables — it is expanded **on the cluster** (in a login shell, once per run)
   before any path is derived from it, so the configured value stays portable and
   needs no deploy username. The expansion must yield an absolute path; the step

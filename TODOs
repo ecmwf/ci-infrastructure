@@ -125,8 +125,8 @@ HPC:
   workflows, and run an end-to-end job on the cluster (needs cluster access);
   validate reattach-after-cancel and cache-hit-after-success on the real site.
 
-- vars.HPC_CI_REMOTE_WORK_DIR = '$SCRATCH/downstream-ci' is the ONE setting the
-  HPC path needs, and it is being set now. Single-quote it: the spec is expanded
+- vars.HPC_CI_REMOTE_WORK_DIR = '$SCRATCH/github-ci' is the ONE setting the
+  HPC path needs, and it is now set. Single-quote it: the spec is expanded
   on the cluster, in a login shell, not on the runner. It has no fallback by
   design (build-on-hpc:177 and smoke-test-hpc.yml both hard-fail on it), since
   a runner-local default would be invisible to compute nodes -- the classic
