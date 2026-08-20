@@ -105,6 +105,11 @@ Usage:
     cd <consumer-repo>
     ci-infrastructure-generate [--check]
 
+For a coordinated change that spans repos, before the sibling manifests are on
+their default branches, point the generator at your local clones instead:
+
+    ci-infrastructure-generate --sibling-root ~/code/rollout
+
 The script always operates on the cwd's manifest and fetches every sibling
 manifest named in [[deps]] / [[trigger-downstream]] over the GitHub GraphQL
 API (no clones, ≤2-3 batched queries per BFS layer). Auth: GH_TOKEN env, or
@@ -2162,7 +2167,32 @@ def _check_orchestrator_caps(
 _FETCH_DEPTH_CAP: Final = 8  # Same depth budget resolve_deps uses for upstream BFS.
 
 
-def _fetch_sibling_manifests(local: Manifest, token: str | None, manifest_path: str) -> list[Manifest]:
+def _local_sibling_layer(
+    layer: Sequence[tuple[str, str]],
+    sibling_root: Path,
+    manifest_path: str,
+) -> dict[tuple[str, str], tuple[str | None, bool]]:
+    """Resolve a BFS layer from sibling clones under `sibling_root` instead of GitHub.
+
+    Same shape as fetch_manifests_layer, so the BFS below is unchanged. `owner/repo`
+    maps to `<sibling_root>/<repo>`; a directory that isn't there yields None and is
+    skipped exactly as a missing remote manifest would be. The ref is ignored on
+    purpose — the point is to read each clone's WORKING TREE, which is what makes a
+    coordinated multi-repo change checkable before any of it is pushed.
+    """
+    out: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    for repo, ref in layer:
+        candidate = sibling_root / repo.split("/")[-1] / manifest_path
+        out[(repo, ref)] = (candidate.read_text() if candidate.is_file() else None, False)
+    return out
+
+
+def _fetch_sibling_manifests(
+    local: Manifest,
+    token: str | None,
+    manifest_path: str,
+    sibling_root: Path | None = None,
+) -> list[Manifest]:
     """BFS the dep+trigger graph outward from `local`, fetching each sibling's
     manifest TOML text via GraphQL and parsing it. Missing manifests (None text)
     are skipped — `validate_graph` already treats unknown repos as external, so
@@ -2182,7 +2212,10 @@ def _fetch_sibling_manifests(local: Manifest, token: str | None, manifest_path: 
         layer = [(r, ref) for (r, ref) in queue if r not in seen]
         if not layer:
             break
-        results = fetch_manifests_layer(layer, sync_branch=None, token=token, manifest_path=manifest_path)
+        if sibling_root is not None:
+            results = _local_sibling_layer(layer, sibling_root, manifest_path)
+        else:
+            results = fetch_manifests_layer(layer, sync_branch=None, token=token, manifest_path=manifest_path)
         next_q: list[tuple[str, str]] = []
         for (repo, ref), (text, _sync) in results.items():
             if text is None:
@@ -2236,11 +2269,22 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> bool:
     is_flag=True,
     help="Don't write; exit 1 if any generated file is stale.",
 )
-def main(manifest_path: str, check: bool) -> None:
-    _run(manifest_path, check)
+@click.option(
+    "--sibling-root",
+    "sibling_root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Read sibling manifests from clones under this directory (<root>/<repo-name>) "
+    "instead of GitHub. Use when a coordinated change spans repos and the sibling "
+    "manifests are not on their default branches yet — without it they look absent, "
+    "and a consumer that has not landed is indistinguishable from one that does not "
+    "exist, so orchestrator jobs are silently dropped.",
+)
+def main(manifest_path: str, check: bool, sibling_root: Path | None) -> None:
+    _run(manifest_path, check, sibling_root)
 
 
-def _run(manifest_path: str, check: bool) -> None:
+def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> None:
     local_manifest_path = Path(manifest_path)
     if not local_manifest_path.is_file():
         raise CIError(f"no manifest found at {local_manifest_path}")
@@ -2255,7 +2299,7 @@ def _run(manifest_path: str, check: bool) -> None:
     # surfaces from `gh api graphql` directly rather than being second-guessed.
     token = select_token()
 
-    manifests = _fetch_sibling_manifests(local, token, manifest_path)
+    manifests = _fetch_sibling_manifests(local, token, manifest_path, sibling_root)
 
     try:
         validate_graph(manifests)

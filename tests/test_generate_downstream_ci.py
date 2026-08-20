@@ -32,6 +32,7 @@ from ci_infrastructure.generate_downstream_ci import (
     SLIM_RUNNER,
     SchemaError,
     _cross_package_deps,
+    _local_sibling_layer,
     _write_or_check_path,
     compute_transitive_consumers,
     parse_manifest_text,
@@ -2187,3 +2188,35 @@ def test_write_or_check_path_modes(tmp_path: Path) -> None:
     assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
     assert _write_or_check_path(out, None, check=False) is False
+
+
+def test_local_sibling_layer_reads_clones_and_skips_missing(tmp_path: Path) -> None:
+    """--sibling-root resolves owner/repo to <root>/<repo-name>/<manifest-path>.
+
+    A sibling that is not checked out yields None, the same signal a missing remote
+    manifest gives, so the BFS skips it rather than failing. That is what makes the
+    flag safe to point at a partially-populated directory.
+    """
+    (tmp_path / "upstream" / ".ci").mkdir(parents=True)
+    (tmp_path / "upstream" / ".ci" / "manifest.toml").write_text('[package]\nname = "up"\n')
+
+    got = _local_sibling_layer(
+        [("ecmwf/upstream", "develop"), ("ecmwf/absent", "develop")],
+        tmp_path,
+        ".ci/manifest.toml",
+    )
+
+    assert got[("ecmwf/upstream", "develop")] == ('[package]\nname = "up"\n', False)
+    assert got[("ecmwf/absent", "develop")] == (None, False)
+
+
+def test_local_sibling_layer_ignores_the_ref(tmp_path: Path) -> None:
+    """The ref is deliberately ignored: the flag exists to read each clone's WORKING
+    TREE, which is the state a coordinated cross-repo change lives in before it is
+    pushed anywhere."""
+    (tmp_path / "up" / ".ci").mkdir(parents=True)
+    (tmp_path / "up" / ".ci" / "manifest.toml").write_text("x = 1\n")
+
+    for ref in ("develop", "some-feature-branch", "HEAD"):
+        got = _local_sibling_layer([("ecmwf/up", ref)], tmp_path, ".ci/manifest.toml")
+        assert got[("ecmwf/up", ref)] == ("x = 1\n", False)
