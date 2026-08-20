@@ -12,12 +12,6 @@ description: >
   those live in expression contexts, not in the environment, and a composite
   action cannot reach them:
 
-      - uses: ./actions/require-environment-variable
-        with:
-          name: HPC_CI_REMOTE_WORK_DIR
-        env:
-          HPC_CI_REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
-
   Forget the `env:` block and every name reports as unset, which is why the error
   says which of the two it was: `unset` means nothing put it in the environment
   (usually a missing `env:` block), `empty` means something did but the value was

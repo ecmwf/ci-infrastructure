@@ -4,42 +4,6 @@
 
 name: Smoke test HPC
 
-# Two end-to-end checks against the real cluster, sharing one runner and one
-# image, cheapest first:
-#
-#   ssh           -- proves the private internal-tools image can reach HPC at all,
-#                    using the ssh keys, ~/.ssh/config host aliases and
-#                    known_hosts baked into it.
-#   hpc-roundtrip -- proves the push-tree / fetch-tree / remove-tree primitives
-#                    work against shared scratch, driving the composite actions
-#                    exactly as a consumer would.
-#
-# Independent jobs rather than chained: a broken ssh setup fails both, and which
-# one failed is the diagnosis. Chaining would only hide the second result.
-#
-# Runs on every push and pull request, so a change to the transfer path is caught
-# before it is dispatched by hand. push is scoped to main so a branch with an open
-# PR runs the pull_request copy only, not a redundant second run.
-#
-# Requires:
-#   - the pull-only eccr robot secrets (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN);
-#     pulling the private image exercises the robot's private-project access.
-#   - secrets.HPC_CI_SSH_USER: the HPC login user. It must match one of the baked
-#     config's `Match originalhost hpc-* user <...>` blocks so the corresponding
-#     baked identity is selected.
-#   - vars.HPC_CI_REMOTE_WORK_DIR: the cluster work dir trees are created under.
-#
-# Neither job can run for a pull request from a fork: secrets are withheld there,
-# and both resolve `container:` (registry credentials included) at job setup, so a
-# fork PR dies before any step of ours gets to explain why. That is an explicit
-# failure rather than a skip, because a skipped job counts as PASSING for branch
-# protection -- a fork PR would otherwise appear to have this coverage without
-# ever running it.
-#
-# Per-run trees go under <work dir>/transfer-e2e/, one of run_gc's GC_SUBDIRS: the
-# cleanup step at the end has no `if:`, so it deliberately leaves the tree behind
-# when the round-trip fails, and the nightly sweep is what stops those
-# accumulating.
 on:
   push:
     branches: [main]
