@@ -125,6 +125,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
 import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -2227,6 +2228,27 @@ def _fetch_sibling_manifests(
             for t in m.triggers:
                 next_q.append((t.repo, t.ref or "HEAD"))
         queue = next_q
+
+    # A [[trigger-downstream]] target we could not read is the one silent failure
+    # in this whole path. validate_graph skips unknown repos as "external", which
+    # is right for a [[deps]] entry on something outside the graph, but a trigger
+    # target IS the graph: unresolved, it contributes no orchestrator job, so the
+    # fan-out quietly shrinks and both --check and a plain run agree the smaller
+    # output is correct. A typo'd repo and a consumer whose manifest has not landed
+    # on its ref yet are indistinguishable here, and neither is an error, so warn
+    # rather than fail — and name the fix for the case that is not a typo.
+    unresolved = sorted({t.repo for t in local.triggers if t.repo not in seen})
+    if unresolved:
+        where = f"under {sibling_root}" if sibling_root is not None else "at the ref it declares"
+        for repo in unresolved:
+            print(
+                f"::warning::[[trigger-downstream]] target {repo} has no readable "
+                f"{manifest_path} {where}, so it contributes no jobs to this repo's "
+                "orchestrator. Check the repo name; if the manifest simply is not on "
+                "that ref yet (a coordinated change still on branches), pass "
+                "--sibling-root <dir> to read the sibling clones instead.",
+                file=sys.stderr,
+            )
 
     # Stable order: local first, siblings sorted by repo name for predictable error messages.
     return [local] + sorted((m for m in seen.values() if m.repo != local.repo), key=lambda m: m.repo)
