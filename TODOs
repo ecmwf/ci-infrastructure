@@ -194,3 +194,27 @@ Vault (investigated, not started):
   trust store must carry it or vault-action needs caCertificate -- same class of
   problem as sccache's, and the root is already vendored in
   src/ci_infrastructure/certs/.
+
+## container images: pin dependents to the base digest
+
+The five variants under public-images/ FROM the base at :latest. That is safe
+today only because images.yml builds the base first and then all dependents in
+one run, under a concurrency group that never cancels -- and build-image.sh
+refuses a variant-on-variant chain rather than let it race.
+
+Give them `ARG BASE_IMAGE=...:latest` + `FROM ${BASE_IMAGE}` (the pattern
+ci-container-images already uses for its external base) and have build-base emit
+the digest it pushed, so dependents pin to it. Two payoffs: the intra-run
+:latest race closes by construction, and a pull request could validate its
+dependents against the PR's OWN base instead of the published one -- which would
+retire `--discover --mode validate`'s "skip dependents whose base is rebuilding"
+rule entirely. Costs a job output and a matrix rewrite.
+
+## container images: EXTRA_TAG_PATHS over-approximates
+
+build-image.sh puts src, pyproject.toml and LICENSE in EVERY image's tag paths,
+so an image that installed no ci_infrastructure would still retag on every src/
+commit. That is deliberate -- over-building is safe, under-building is not, and
+the alternative is a per-Dockerfile "does this bake the package?" probe, which is
+exactly the machinery the current design deleted. Revisit only if a genuinely
+independent image is added and the wasted rebuilds start to hurt.

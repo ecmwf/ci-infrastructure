@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The build context for every image under public-images/ is the REPO ROOT, so
+# without this docker uploads .git, .venv and every cache directory on each
+# build -- hundreds of MB, and __pycache__ would be baked into the installed
+# package by `COPY src`.
+#
+# Do NOT add src, pyproject.toml or LICENSE here: the base image installs the
+# package from this context and needs all three.
+.git
+.venv
+build/
+**/__pycache__
+*.egg-info
+.mypy_cache
+.pytest_cache
+.ruff_cache

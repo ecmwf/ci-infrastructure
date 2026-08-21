@@ -1,0 +1,197 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Images
+
+# Build and push the CI container images under public-images/ to the eccr
+# Harbor. Naming, tagging and conventions: IMAGES.md.
+#
+# There is ONE answer to "does this image need rebuilding?": its tag is the short
+# SHA of the last commit touching its build inputs, and it is rebuilt exactly
+# when that tag is not already in the registry. build-image.sh owns that answer
+# and both the discover job and the build jobs go through it, so they cannot
+# drift apart. That is why this file has:
+#
+#   - no `paths:` filter          )  each would be a second, independent answer
+#   - no `git diff` change set    )  to the same question, to be kept in sync
+#   - no list of images anywhere  )  by hand. The previous incarnation had all
+#                                    three, and they did drift.
+#
+# On a pull request nothing is pushed, so "tag missing" means "this is what
+# merging would build" -- exactly the set worth validating.
+on:
+  workflow_call:
+    # Named explicitly rather than taking `secrets: inherit` from the caller:
+    # this is the one workflow that executes pull-request-authored Dockerfiles,
+    # and it has no business seeing the AWS keys, the HPC SSH user or the
+    # artifact-store credentials that inherit would also hand it.
+    secrets:
+      PUBLIC_ECCR_ROBOT_NAME:
+        required: false
+      PUBLIC_ECCR_ROBOT_TOKEN:
+        required: false
+      CI_PERMISSIONS_APP_CLIENT_ID:
+        required: false
+      CI_PERMISSIONS_APP_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: >
+          Rebuild past the registry check: 'all', or space-separated
+          <platform>/<variant> names. Empty means "only what is missing", which
+          on an unchanged tree is a no-op. Use this for an upstream ubuntu:24.04
+          CVE, or to restore a tag someone deleted by hand.
+        default: ''
+        required: false
+
+concurrency:
+  # Never cancel a run mid-push to the registry.
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Push for pushes to main; never for pull_request validation.
+  PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+  discover:
+    # ubuntu-latest, not ubuntu-slim: the registry query goes through
+    # `docker buildx imagetools`, and slim runs unprivileged with no docker.
+    # The reads are anonymous -- public-playground-ci is world-readable -- so
+    # this job needs no secrets and works on pull requests from forks.
+    runs-on: ubuntu-latest
+    outputs:
+      base-matrix: ${{ steps.d.outputs.base-matrix }}
+      dependent-matrix: ${{ steps.d.outputs.dependent-matrix }}
+      base-in-set: ${{ steps.d.outputs.base-in-set }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0          # the tag is `git log` over the build inputs
+          # This repo is PUBLIC and the build context is the repo root, so a
+          # pull-request-authored Dockerfile runs `docker build` over it. Without
+          # this, actions/checkout leaves the GITHUB_TOKEN in .git/config as an
+          # http.extraheader -- and .dockerignore, which excludes .git, is itself
+          # a file a PR can edit. We never push with git here, so drop the token.
+          persist-credentials: false
+      - id: d
+        env:
+          # publish keeps dependents in the set; validate drops the ones whose
+          # base is being rebuilt in the same run, because without a push they
+          # would build against the previously published base and prove nothing.
+          MODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && 'publish' || 'validate' }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD"
+
+  build-base:
+    needs: discover
+    if: ${{ needs.discover.outputs.base-matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.base-matrix) }}
+    name: build ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # see the discover job -- no git push here
+      - name: Build ${{ matrix.name }}
+        env:
+          IMAGE: ${{ matrix.name }}
+          # Only the publishing leg gets the push credentials. A pull request
+          # cannot push (PUSH is false), and it does not need them to PULL either:
+          # public-playground-ci is world-readable -- smoke-test-runners.yml pulls
+          # the base with its `credentials:` block commented out. build-image.sh
+          # treats empty values as "skip login", so PR builds just work.
+          PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
+          PUBLIC_ECCR_ROBOT_TOKEN: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_TOKEN || '' }}
+        run: |
+          args=("$IMAGE")
+          # --require-clean on the publish leg only: the tag is a function of
+          # committed content, so a published image must never come from a tree
+          # that differs from it.
+          [ "$PUSH" = "true" ] && args+=(--push --require-clean)
+          ./build-image.sh "${args[@]}"
+
+  build-dependents:
+    needs: [discover, build-base]
+    # Run even when build-base was skipped (base already current); fail only if
+    # it actually failed.
+    if: ${{ !cancelled()
+            && needs.discover.result == 'success'
+            && needs.discover.outputs.dependent-matrix != '{"include":[]}'
+            && (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.dependent-matrix) }}
+    name: build ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # see the discover job -- no git push here
+      - name: Build ${{ matrix.name }}
+        env:
+          IMAGE: ${{ matrix.name }}
+          # Only the publishing leg gets the push credentials. A pull request
+          # cannot push (PUSH is false), and it does not need them to PULL either:
+          # public-playground-ci is world-readable -- smoke-test-runners.yml pulls
+          # the base with its `credentials:` block commented out. build-image.sh
+          # treats empty values as "skip login", so PR builds just work.
+          PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
+          PUBLIC_ECCR_ROBOT_TOKEN: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_TOKEN || '' }}
+        run: |
+          # Dependents FROM their base at :latest. build-base has just pushed it
+          # (or the base was already current), and the concurrency group above
+          # serialises runs, so :latest cannot move underneath this build.
+          args=("$IMAGE")
+          [ "$PUSH" = "true" ] && args+=(--push --require-clean)
+          ./build-image.sh "${args[@]}"
+
+  # The private images in ecmwf/ci-container-images FROM our base. That repo
+  # holds nothing but Dockerfiles, so it needs no change detection of its own --
+  # it rebuilds on any trigger. A BARE dispatch is therefore all it needs: no
+  # pin file, no input, no commit, and no `contents: write` anywhere. Only
+  # actions:write, on that repo alone.
+  notify-container-images:
+    needs: [discover, build-base, build-dependents]
+    if: ${{ !cancelled()
+            && github.event_name != 'pull_request'
+            && github.ref == 'refs/heads/main'
+            && needs.discover.outputs.base-in-set == 'true'
+            && needs.build-base.result == 'success'
+            && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
+    runs-on: ubuntu-slim
+    steps:
+      # github.token is scoped to this repo and cannot dispatch into another, so
+      # mint a short-lived installation token narrowed to actions:write. Same
+      # pattern as actions/resolve-deps.
+      - id: mint
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ci-container-images
+          permission-actions: write
+      - name: Dispatch the private image rebuild
+        env:
+          GH_TOKEN: ${{ steps.mint.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-image.yml --repo ecmwf/ci-container-images --ref main
+          url="https://github.com/ecmwf/ci-container-images/actions/workflows/build-image.yml"
+          echo "::notice title=Private image rebuild dispatched::the public base moved — $url"
+          {
+            echo "### Private image rebuild dispatched"
+            echo
+            echo "The public base was republished, so \`ecmwf/ci-container-images\` was asked to"
+            echo "rebuild against the new base digest."
+            echo
+            echo "[Watch the build]($url)"
+          } >> "$GITHUB_STEP_SUMMARY"

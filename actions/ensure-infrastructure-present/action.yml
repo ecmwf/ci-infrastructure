@@ -69,7 +69,9 @@ inputs:
       default: reuse a matching baked interpreter, else a content-keyed venv.
       Set this in ci-infrastructure's own end-to-end jobs, which must exercise
       the branch rather than whatever an image happens to carry — it makes those
-      jobs independent of the image pin entirely.
+      jobs independent of which commit the image was built from. Needed on any
+      pull-request job that runs inside one of the published images, because the
+      image necessarily lags the branch under test.
     required: false
     default: ''
 
@@ -170,7 +172,7 @@ runs:
             echo "ensure-infrastructure-present: reusing the baked interpreter $python (*.py digest $baked_hash matches the checkout)"
           else
             baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
-            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The image is behind: rebuild it by dispatching ecmwf/ci-container-images' docker-images.yml with ci-infrastructure-ref set, or set force-reinstall: true on this step to install from the checkout instead." >&2
+            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The images are rebuilt automatically by ecmwf/ci-infrastructure's images.yml on every push to main that changes what gets installed, so on a pull request -- or on a commit that just landed -- the image is EXPECTED to lag and this is not a fault: set force-reinstall: true on this step to install from the checkout instead. If the checkout is an already-published main commit, the publish failed or was skipped; re-run images.yml." >&2
             exit 1
           fi
         fi

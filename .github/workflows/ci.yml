@@ -47,72 +47,24 @@ jobs:
       - name: pytest
         run: pytest
 
-  # Keep the container images' baked ci-infrastructure current. Since
-  # ensure-infrastructure-present now REFUSES a baked copy that does not match the
-  # checkout, a stale image is a hard failure for every consumer using it -- so the
-  # images have to follow main automatically rather than when someone remembers.
+  # Build and publish the container images under public-images/. Gated behind the
+  # tests via `needs:` rather than given its own `on: push`, so the registry is
+  # never touched by a commit whose tests are red -- a separate workflow could
+  # only express that with workflow_run, which TODOs already records as a trap.
   #
-  # Only the pin bump moves an image's identity, and only ci-container-images can
-  # commit its own pin, so we dispatch and it does the rest. That also keeps write
-  # access to that repo inside that repo: this job needs nothing but actions:write.
-  rebuild-container-images:
+  # This replaces a cross-repo dance: this job used to diff `src pyproject.toml`
+  # against HEAD~1, mint a GitHub App token, and dispatch ecmwf/ci-container-images
+  # to commit a CI_INFRASTRUCTURE_REF pin. The images live here now, so the pin,
+  # the diff heuristic and the bot commit are all gone -- an image's tag is a
+  # function of this repo's committed content, and images.yml owns that answer.
+  images:
     needs: mypy_and_tests
-    # Pushes to main only. A pull request must never touch the registry, and the
-    # commit has to exist on main before an image can be pinned to it.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 2          # enough to diff this push against its parent
-          persist-credentials: false
-
-      # A docs- or workflow-only merge changes nothing that gets installed, and an
-      # image build is not free. Anything that lands in the image is under src/ or
-      # is declared in pyproject.toml, so those two paths are the whole test.
-      - id: changed
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --name-only HEAD~1 HEAD -- src pyproject.toml | grep -q .; then
-            echo "install-surface-changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "install-surface-changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no change under src/ or pyproject.toml — leaving the container images alone"
-          fi
-
-      # github.token is scoped to this repo and cannot dispatch into another, so
-      # mint a short-lived installation token, narrowed to actions:write. Same
-      # pattern as actions/resolve-deps.
-      - id: mint
-        if: steps.changed.outputs.install-surface-changed == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ci-container-images
-          permission-actions: write
-
-      - name: Dispatch the image rebuild
-        if: steps.changed.outputs.install-surface-changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.mint.outputs.token }}
-        run: |
-          set -euo pipefail
-          # --ref main so the dispatched run pushes: docker-images.yml gates
-          # pushing on github.ref == refs/heads/main.
-          gh workflow run docker-images.yml \
-            --repo ecmwf/ci-container-images \
-            --ref main \
-            -f ci-infrastructure-ref="$GITHUB_SHA"
-          url="https://github.com/ecmwf/ci-container-images/actions/workflows/docker-images.yml"
-          echo "::notice title=Container image rebuild dispatched::ci-infrastructure-ref=$GITHUB_SHA — $url"
-          {
-            echo "### Container image rebuild dispatched"
-            echo
-            echo "Pinning \`ecmwf/ci-container-images\` to \`$GITHUB_SHA\`."
-            echo
-            echo "[Watch the build]($url)"
-          } >> "$GITHUB_STEP_SUMMARY"
+    uses: ./.github/workflows/images.yml
+    # Not `inherit`: images.yml is the only workflow here that runs a
+    # pull-request-authored Dockerfile, so it gets the four secrets it uses and
+    # none of the other ten (AWS keys, HPC SSH user, artifact store, ...).
+    secrets:
+      PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
+      PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
+      CI_PERMISSIONS_APP_CLIENT_ID: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
+      CI_PERMISSIONS_APP_PRIVATE_KEY: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
