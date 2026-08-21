@@ -295,6 +295,91 @@ def test_job_name_includes_python_version_when_legs_vary_it(tmp_path: Path) -> N
     )
 
 
+def test_job_name_includes_options_when_a_leg_carries_them(tmp_path: Path) -> None:
+    """Two legs that differ ONLY by `options` must not render the same job name.
+
+    `options` is part of artifact identity, so such legs publish different
+    artifacts — but compiler and platform, the fields the name is built from, are
+    identical. Without an options slot both the Actions-tab job and the check run
+    posted back to the dispatcher's commit are indistinguishable. The leg without
+    options shows `default` rather than a blank, matching the hand-written
+    ci.yml convention.
+    """
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [package]
+        name = "a"
+        prefix = "a"
+        repo = "org/a"
+        compiler-inputs = ["cxx-compiler"]
+
+        [matrix.build]
+        triggers = ["rebuild-request"]
+        action = "./.github/actions/build-a"
+        forwarded-inputs = ["cxx-compiler", "options"]
+        needs = []
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-13"
+        platform = "ubuntu-24.04"
+        runs-on = "ubuntu-latest"
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-13"
+        options = "eckit-geo"
+        platform = "ubuntu-24.04"
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
+    assert yaml is not None
+    assert (
+        "name: a/build (${{ matrix['cxx-compiler'] }}, ${{ matrix.platform }}, "
+        "${{ matrix.options || 'default' }})" in yaml
+    )
+
+
+def test_job_name_omits_options_slot_when_no_leg_has_them(tmp_path: Path) -> None:
+    """The options slot is opt-in: a kind whose legs never set `options` keeps the
+    name it had before the slot existed, so unrelated repos' check-run names — and
+    any required-status-check configured on them — do not shift."""
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [package]
+        name = "a"
+        prefix = "a"
+        repo = "org/a"
+        compiler-inputs = ["cxx-compiler"]
+
+        [matrix.build]
+        triggers = ["rebuild-request"]
+        action = "./.github/actions/build-a"
+        forwarded-inputs = ["cxx-compiler"]
+        needs = []
+
+        [[matrix.build.include]]
+        cxx-compiler = "clang++-18"
+        platform = "ubuntu-24.04"
+        runs-on = "ubuntu-latest"
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-13"
+        platform = "ubuntu-24.04"
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
+    assert yaml is not None
+    assert "name: a/build (${{ matrix['cxx-compiler'] }}, ${{ matrix.platform }})" in yaml
+    assert "matrix.options" not in yaml
+
+
 def test_job_name_python_version_not_duplicated_when_sole_distinguisher(tmp_path: Path) -> None:
     """When python-version is itself the distinguishing field, it appears exactly
     once (py-prefixed) — never as both the primary slot and a second py<version>

@@ -1451,16 +1451,27 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     # py<version> slot whenever the legs carry a python-version (so a job that
     # varies python shows it even when another field is the primary
     # distinguisher — mirrors the hand-written ci.yml names, e.g.
-    # "build+test (clang++-18, py3.11, ubuntu-24.04)"), then the platform.
-    # platform and python-version get dedicated handling so neither is duplicated
-    # when it is itself the distinguisher.
+    # "build+test (clang++-18, py3.11, ubuntu-24.04)"), then the platform, then
+    # the build options.
+    # platform, python-version and options get dedicated handling so none is
+    # duplicated when it is itself the distinguisher.
     slots: list[str] = []
-    if distinguishing not in ("platform", "python-version"):
+    if distinguishing not in ("platform", "python-version", "options"):
         expr = f"matrix['{distinguishing}']" if "-" in distinguishing else f"matrix.{distinguishing}"
         slots.append(f"${{{{ {expr} }}}}")
     if any("python-version" in leg for leg in mk.legs):
         slots.append("py${{ matrix.python-version }}")
     slots.append("${{ matrix.platform }}")
+    # `options` is the one leg field that is routinely present on some legs and
+    # absent from others, and it is part of artifact identity — so two legs can
+    # differ ONLY by it and otherwise render an identical name. eccodes' plain
+    # and eckit-geo legs are exactly that: same compiler, same platform, two
+    # different artifacts. Without this slot both the Actions-tab job and the
+    # check run posted back to the dispatcher's commit are indistinguishable.
+    # `|| 'default'` (not an empty string) matches the hand-written ci.yml
+    # convention and keeps the optionless legs' names from trailing a blank.
+    if any("options" in leg for leg in mk.legs):
+        slots.append("${{ matrix.options || 'default' }}")
     job_name = f"{display} ({', '.join(slots)})"
 
     steps: list[Step] = [
