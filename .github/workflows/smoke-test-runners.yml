@@ -76,6 +76,13 @@ jobs:
           set -euo pipefail
           : "${CI_INFRASTRUCTURE_PYTHON:?the base image should set CI_INFRASTRUCTURE_PYTHON}"
           "$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure; print("ok")'
+          # Reaches the image through a --build-arg that build-image.sh only
+          # passes to Dockerfiles declaring `ARG SOURCE_REVISION`. If that wiring
+          # ever breaks, the ENV is silently EMPTY rather than absent -- the image
+          # still works, but ensure-infrastructure-present loses the commit from
+          # its mismatch message and the provenance trail goes cold. Assert it.
+          : "${CI_INFRASTRUCTURE_BAKED_REF:?the base image should record which commit it baked}"
+          echo "baked ci-infrastructure: $CI_INFRASTRUCTURE_BAKED_REF"
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 

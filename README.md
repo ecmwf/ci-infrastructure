@@ -22,14 +22,22 @@ testing ECMWF's downstream package graph. It provides:
   artifact fetch/publish, HPC build submission, check-run reporting, etc.)
   used to wire the above into workflow YAML.
 
-See [`HPC.md`](HPC.md) for details on the SLURM/HPC execution path.
+See [`HPC.md`](HPC.md) for details on the SLURM/HPC execution path, and
+[`IMAGES.md`](IMAGES.md) for the container images the CI jobs run inside —
+they are built from `public-images/` in this repo, so an image and the
+`ci_infrastructure` it carries can never drift apart.
 
 ## Scope
 
 This repository only contains CI orchestration plumbing (dependency graph
-resolution, artifact caching, workflow generation, HPC job submission). It is
+resolution, artifact caching, workflow generation, HPC job submission) and the
+Dockerfiles for the public container images those jobs run inside. It is
 **not** a scientific or operational package and does not process or produce
 forecast data itself.
+
+Images whose *content* must stay internal — anything with credentials baked in —
+live in [`ecmwf/ci-container-images`](https://github.com/ecmwf/ci-container-images)
+instead.
 
 ## Software maturity & support
 

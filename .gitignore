@@ -6,6 +6,12 @@ __pycache__/
 .*_cache/
 ci_infrastructure.egg-info
 build/
+
+# Ignored today only because uv writes .venv/.gitignore containing '*'. Recreate
+# the environment with plain `python -m venv` and that file is gone, at which
+# point `git add -A` would stage the whole tree. .dockerignore already lists it;
+# these two must agree, because the image build context is the repo root.
+.venv/
 .reuse
 
 uv.lock

@@ -25,3 +25,14 @@ repos:
     rev: v1.7.12
     hooks:
       - id: actionlint
+
+  # build-image.sh owns image discovery, tagging and the rebuild decision, and
+  # there is no test suite behind it. shellcheck is the cheapest guard against
+  # the classic set -euo pipefail footguns it is full of.
+  # shellcheck-py, not koalaman/shellcheck-precommit: that one runs shellcheck in
+  # a container, and the pre-commit job runs on ubuntu-slim, which is
+  # unprivileged and has no docker. This one is a plain pip wheel.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
