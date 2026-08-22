@@ -448,6 +448,103 @@ def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> Non
     assert "build-type: ${{ steps.m.outputs.build-type }}" in yaml
 
 
+_CTEST_MANIFEST = """
+    [matrix.build]
+    triggers = ["upstream-change", "rebuild-request"]
+    action = "./.github/actions/build-thisrepo"
+    needs = []
+    {extra}
+
+    [[matrix.build.include]]
+    runs-on = "ubuntu-latest"
+    build-type = "Release"
+    """
+
+
+def _render_a(tmp_path: Path, extra: str) -> str:
+    write_repo(tmp_path, "a", _CTEST_MANIFEST.format(extra=extra))
+    [m] = parse_all(tmp_path)
+    out = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
+    assert out is not None
+    return out
+
+
+def test_ctest_absent_by_default(tmp_path: Path) -> None:
+    """Without the flag the fan-out job still only compiles — the historical shape."""
+    assert "ctest" not in _render_a(tmp_path, "")
+
+
+def test_ctest_step_emitted_after_publish(tmp_path: Path) -> None:
+    """`ctest = true` adds a Test step reading the composite's build-dir output.
+
+    Order matters as much as presence: publishing first is what lets a consumer
+    of THIS package start while these tests are still running.
+    """
+    out = _render_a(tmp_path, "ctest = true")
+    assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure' in out
+    assert out.index("mode: publish") < out.index("ctest --test-dir")
+
+
+def test_ctest_args_appended_verbatim(tmp_path: Path) -> None:
+    out = _render_a(tmp_path, 'ctest = true\n    ctest-args = "-L nightly -E s_http"')
+    assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure -L nightly -E s_http' in out
+
+
+def test_ctest_args_without_ctest_rejected(tmp_path: Path) -> None:
+    """Inert arguments are a forgotten `ctest = true`, not a deliberate no-op."""
+    write_repo(tmp_path, "a", _CTEST_MANIFEST.format(extra='ctest-args = "-E slow"'))
+    with pytest.raises(SchemaError, match="ctest-args.*without"):
+        parse_all(tmp_path)
+
+
+def test_ctest_rejected_on_hpc_kind(tmp_path: Path) -> None:
+    """A generated ctest step would run on the pod that SUBMITTED the SLURM job,
+    not on the compute node holding the build tree — so it must be refused."""
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [matrix.build-hpc]
+        execution = "hpc"
+        triggers = ["rebuild-request"]
+        job-script = "./.ci/hpc/build.sh"
+        ctest = true
+        needs = []
+
+        [[matrix.build-hpc.include]]
+        runs-on = "hpc-login-selfhosted"
+        site = "hpc-batch"
+        build-type = "Release"
+        platform = "atos-hpc-gnu"
+        """,
+    )
+    with pytest.raises(SchemaError, match="ctest.*execution = 'hpc'"):
+        parse_all(tmp_path)
+
+
+def test_ctest_rejected_on_non_publishing_kind(tmp_path: Path) -> None:
+    """A test kind downloads an artifact and owns its own run command — it has
+    no build tree, so its composite exposes no build-dir for ctest to target."""
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [matrix.build]
+        triggers = ["upstream-change"]
+        action = "./.github/actions/run-checks"
+        publishes = false
+        ctest = true
+        needs = []
+
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        build-type = "Release"
+        """,
+    )
+    with pytest.raises(SchemaError, match="ctest.*publishes = false"):
+        parse_all(tmp_path)
+
+
 def test_trigger_downstream_rejects_unknown_keys(tmp_path: Path) -> None:
     write_repo(
         tmp_path,
