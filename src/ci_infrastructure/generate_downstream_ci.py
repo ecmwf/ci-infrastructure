@@ -67,6 +67,16 @@ Schema additions consumed (sibling to the existing [[deps]] / [[matrix.X.include
     #    artifact was missing
     # An empty/missing triggers means push/PR-only (no cross-repo entry).
     needs = ["fortmath/build"]   # cross-repo: "<package-name>/<kind>"
+    ctest = true                 # optional; run ctest against the build tree
+                                 # after publishing, so an upstream-driven build
+                                 # proves the consumer still WORKS and not just
+                                 # that it still links. Requires the `action`
+                                 # composite to expose a `build-dir` output.
+                                 # Runner-only: an HPC kind's ctest belongs in
+                                 # its job-script, where it runs on the compute
+                                 # node rather than on the submitting pod.
+    ctest-args = "-E slow_.*"    # optional; appended verbatim to that ctest
+                                 # invocation. Rejected without ctest = true.
 
     [matrix.test]
     triggers = ["upstream-change"]   # tests run on upstream change but NOT
@@ -326,6 +336,14 @@ class MatrixKind:
     # Kind-level rather than per-leg because one `container:` block is rendered
     # per job, and a job covers every leg of the kind.
     container_credentials: bool
+    # Whether the per-kind job runs ctest against the build tree after
+    # publishing. Opt-in, and runner-only: an HPC kind's ctest belongs in the
+    # repo's job-script, where it runs on the compute node. Requires the
+    # manifest's `action` composite to expose a `build-dir` output.
+    ctest: bool
+    # Extra arguments appended verbatim to the generated ctest invocation (e.g.
+    # "-L nightly -E s_http"). Only meaningful when `ctest` is true.
+    ctest_args: str
 
 
 @dataclass(frozen=True)
@@ -370,6 +388,8 @@ _RESERVED_MATRIX_KEYS: Final = frozenset(
         "publishes",
         "artifact-prefix",
         "container-credentials",
+        "ctest",
+        "ctest-args",
     }
 )
 # Valid entries for `forwarded-deps-outputs` — must correspond to real outputs
@@ -438,6 +458,8 @@ class _MatrixKindRaw(BaseModel):
     publishes: bool = True
     artifact_prefix: str | None = Field(default=None, alias="artifact-prefix")
     container_credentials: bool = Field(default=False, alias="container-credentials")
+    ctest: bool = False
+    ctest_args: str = Field(default="", alias="ctest-args")
 
     @model_validator(mode="before")
     @classmethod
@@ -668,6 +690,15 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
                     "execution = 'hpc' but has no `job-script`; there is no build recipe to submit"
                 )
+            # A generated ctest step would run in the container that SUBMITTED
+            # the SLURM job, not on the compute node where the build tree is —
+            # so it would test nothing. HPC recipes call ctest themselves.
+            if body.ctest:
+                raise SchemaError(
+                    f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc'; "
+                    f"run ctest inside {body.job_script or 'the job-script'} instead, "
+                    "where it executes on the compute node"
+                )
         else:
             if body.job_script:
                 raise SchemaError(
@@ -681,6 +712,25 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
                     "but has no `action`; cross-repo-trigger.yml has nothing to invoke"
                 )
+
+        # `ctest-args` alone is inert — almost always a forgotten `ctest = true`
+        # rather than a deliberate no-op, so reject it instead of silently
+        # dropping the arguments.
+        if body.ctest_args and not body.ctest:
+            raise SchemaError(
+                f"{path}: [matrix.{kind}] sets `ctest-args` without `ctest = true`; the arguments would never be used"
+            )
+
+        # The generated step tests the tree the BUILD left behind. A kind that
+        # publishes nothing is a test kind: it downloads an artifact and its
+        # composite owns whatever it runs, with no build tree and so no
+        # `build-dir` output to point ctest at.
+        if body.ctest and not body.publishes:
+            raise SchemaError(
+                f"{path}: [matrix.{kind}] sets `ctest` with `publishes = false`; "
+                "a non-publishing kind has no build tree — run the tests inside "
+                f"{body.action or 'its action'} instead"
+            )
 
         # Every forwarded-input must appear as a key in at least one matrix leg,
         # otherwise it's a typo that would only surface as an empty `require`
@@ -708,6 +758,8 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
             forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
             container_credentials=body.container_credentials,
+            ctest=body.ctest,
+            ctest_args=body.ctest_args.strip(),
         )
     return resolved
 
@@ -1429,9 +1481,23 @@ def _check_run_finish_step(check_name: str) -> Step:
     }
 
 
+def _ctest_step(mk: MatrixKind) -> Step:
+    """`ctest` against the build tree the kind's composite left behind.
+
+    Emitted after the publish step, mirroring each repo's hand-written ci.yml:
+    a consumer of THIS package picks the artifact up as soon as publish runs and
+    never waits on these tests. Reads `build-dir` from the composite (id: build),
+    which is why a kind that sets `ctest` must expose that output.
+    """
+    cmd = 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure'
+    if mk.ctest_args:
+        cmd = f"{cmd} {mk.ctest_args}"
+    return {"name": "Test", "run": cmd}
+
+
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     """One job per kind: mint → checkout → decode → (setup-python) → fetch →
-    action call → (publish). The action call is the manifest-declared
+    action call → (publish) → (test). The action call is the manifest-declared
     composite (e.g. build-cxxmath); the per-job dispatch shim that used to
     live in each repo's downstream-job composite is inlined here.
 
@@ -1536,6 +1602,11 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     },
                 }
             )
+            # Inside the publishes branch on purpose: ctest tests the tree the
+            # build left behind, and the schema rejects ctest on a kind that
+            # publishes nothing (it has no build tree).
+            if mk.ctest:
+                steps.append(_ctest_step(mk))
     # Last step: report the final conclusion back to the dispatcher (always()).
     steps.append(_check_run_finish_step(job_name))
 
