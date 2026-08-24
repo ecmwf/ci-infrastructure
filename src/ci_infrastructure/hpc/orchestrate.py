@@ -644,6 +644,33 @@ def submit_wait(
     # fresh submit; a reattach is handled below (re-ship only if its marker is
     # missing) so an in-flight job's sources are never disturbed.
     def ship_for(this_run_id: str) -> None:
+        """Stage the source and dep prefixes, unless someone already has.
+
+        The skip is not an optimisation, it is a safety property. Two runs can
+        want the same artifact at once (a repo's own CI and a fan-out), and the
+        loser of the submit race still reaches this. ``ship_source`` starts by
+        RESETTING the staging dir — it renames the tree aside — so a second ship
+        deletes ``deps/<i>`` out from under a job that is already reading them.
+        That is not hypothetical: it took out an ecflow atos-hpc-nvidia job with
+
+            CMake Error at CMakeLists.txt:28 (find_package):
+              Could not find a package configuration file provided by "ecbuild"
+
+        while the first job, reading the same staging dir, had found ecbuild and
+        compiled a thousand targets.
+
+        Skipping is safe because staging is per-artifact and the artifact name
+        embeds the source SHA and the deps hash: a completed transfer sitting in
+        this staging dir is, by construction, the same source and the same deps
+        we were about to write. A PARTIAL transfer leaves no marker, so this
+        still ships (and resets) in the case the reset exists for.
+        """
+        if transfer.marker_exists(site._connection, staging_dir=staging_dir):
+            print(
+                f"submit-wait: staging for '{artifact_name}' is already complete "
+                "(another run shipped it); not re-shipping."
+            )
+            return
         transfer.ship_source(
             site._connection,
             local_source_dir=source_dir,
