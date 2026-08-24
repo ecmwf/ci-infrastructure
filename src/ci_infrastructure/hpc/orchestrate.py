@@ -29,9 +29,11 @@ Design points that mirror the non-HPC path and satisfy the requirements:
 
   * Submit-then-poll transfer. The job is submitted first (claiming its queue
     slot), then the runner scp's the source tarball into the shared staging dir
-    and ``touch``es ``TRANSFER_COMPLETED_<run_id>``. The job blocks on that
-    marker, unpacks the checkout into node-local ``$TMPDIR`` and builds. A
-    reattach re-checks the marker and re-ships only if it is missing.
+    and ``touch``es ``TRANSFER_COMPLETED`` in it. The job blocks on that marker,
+    unpacks the checkout into node-local ``$TMPDIR`` and builds. A reattach
+    re-checks the marker and re-ships only if it is missing. The marker is named
+    for the staging dir (already per-artifact), not for the submitting run, so a
+    reattaching runner needs nothing from the job it adopts beyond its jid.
 
   * Restartable / idempotent. On every (re-)run ``submit-wait``:
       (a) if the artifact already exists in the S3 store -> skip (cache hit);
@@ -39,10 +41,11 @@ Design points that mirror the non-HPC path and satisfy the requirements:
           (no duplicate job);
       (c) otherwise submit a fresh job.
     Reattach uses the *scheduler itself* as the shared job store: each job is
-    stamped with a stable per-artifact name and its submitting run id (in the
-    ``--comment``), and ``submit-wait`` finds an in-flight job by name before
-    submitting. Because the scheduler is global, this dedups across independent
-    runners — a runner-local record could not.
+    stamped with a stable per-artifact name, and ``submit-wait`` finds an
+    in-flight job by name before submitting. Because the scheduler is global,
+    this dedups across independent runners — a runner-local record could not.
+    The name is all we read back; the ``--comment`` we also write is provenance
+    for humans, never parsed (see ``find_active_job_by_name``).
 
   * Rate-friendly polling. A completed SLURM job disappears from ``squeue``, so
     the job's ``Finished: SUCCESS`` / ``Finished: FAILURE`` output sentinel — not
@@ -146,25 +149,34 @@ def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str,
 # --------------------------------------------------------------------------- #
 # Reattach lookup (the scheduler is the shared, cross-runner job store)
 # --------------------------------------------------------------------------- #
-def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> tuple[int, str] | None:
-    """Return the ``(jid, run_id)`` of an active SLURM job named ``job_name``, or None.
+def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> int | None:
+    """Return the jid of an active SLURM job named ``job_name``, or None.
 
     Reattach uses the scheduler as the shared job store: a job is stamped with a
-    stable per-artifact name (``jobscript.job_name_for``) and its submitting run
-    id in the ``--comment``. Querying by name lets a second run on a *different*
-    runner reattach to an in-flight job instead of submitting a duplicate — the
-    runner-local jid file this replaces was invisible across runners.
+    stable per-artifact name (``jobscript.job_name_for``). Querying by name lets a
+    second run on a *different* runner reattach to an in-flight job instead of
+    submitting a duplicate — the runner-local jid file this replaces was invisible
+    across runners.
 
-    ``squeue -h -n <name> -t <active states> -o '%i|%k'`` prints one
-    ``<jid>|<run_id>`` line per matching job (``%k`` is the job Comment). Empty
-    output -> no active job -> the caller submits fresh. More than one line means
-    two runs raced the submit (the residual window reattach-only accepts); we take
-    the lowest jid so every later run converges on the same one, and warn. A
-    ``squeue`` that itself errors yields None (fail open -> submit), matching the
-    prior ``_get_state(strict=False)`` behaviour.
+    The NAME is the whole of what we read back. We deliberately do not ask for the
+    job's ``Comment`` (``%k``), even though we write our run id into it: that field
+    belongs to the scheduler and sites rewrite it. ECMWF's sbatch wrapper appends
+    its own accounting fields, so the value returned here was
+    ``<run>-<attempt>;Gres=gres/ssdtmp:20G;`` — and because the caller then used it
+    to name a marker and a local tarball, every reattaching HPC job died on
+    ``tar -czf .../<that>.src.tgz``. Nothing needs it now: the transfer marker is
+    named for the staging dir (``jobscript.TRANSFER_MARKER_NAME``), so a
+    reattaching runner can check and re-drop it without knowing who submitted.
+
+    ``squeue -h -n <name> -t <active states> -o '%i'`` prints one jid per matching
+    job. Empty output -> no active job -> the caller submits fresh. More than one
+    line means two runs raced the submit (the residual window reattach-only
+    accepts); we take the lowest jid so every later run converges on the same one,
+    and warn. A ``squeue`` that itself errors yields None (fail open -> submit),
+    matching the prior ``_get_state(strict=False)`` behaviour.
     """
     states = ",".join(sorted(ACTIVE_STATES))
-    argv = ["squeue", "-h", "-n", job_name, "-t", states, "-o", "%i|%k"]
+    argv = ["squeue", "-h", "-n", job_name, "-t", states, "-o", "%i"]
     if user:
         argv += ["-u", user]
     proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -172,23 +184,22 @@ def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> tu
     if proc.returncode != 0:
         return None
     text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
-    parsed: list[tuple[int, str]] = []
+    jids: list[int] = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        jid_str, _, run_id = line.partition("|")
+        # Tolerate a trailing field should a site's squeue ever add one.
         try:
-            parsed.append((int(jid_str.strip()), run_id.strip()))
+            jids.append(int(line.split("|", 1)[0].strip()))
         except ValueError:
             continue
-    if not parsed:
+    if not jids:
         return None
-    parsed.sort(key=lambda pair: pair[0])
-    if len(parsed) > 1:
-        jids = [p[0] for p in parsed]
-        print(f"submit-wait: WARNING: {len(parsed)} jobs named {job_name!r} (jids {jids}); reattaching to {jids[0]}.")
-    return parsed[0]
+    jids.sort()
+    if len(jids) > 1:
+        print(f"submit-wait: WARNING: {len(jids)} jobs named {job_name!r} (jids {jids}); reattaching to {jids[0]}.")
+    return jids[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -203,27 +214,25 @@ def submit_or_reattach(
     job_name: str,
     after_submit: Callable[[], None] | None = None,
     dryrun: bool = False,
-) -> tuple[int, Literal["submitted", "reattached", "dryrun"], str | None]:
+) -> tuple[int, Literal["submitted", "reattached", "dryrun"]]:
     """Reattach to a still-active job for this artifact, else submit a fresh one.
 
     Reattach is by scheduler name (``find_active_job_by_name``): if an active job
-    named ``job_name`` exists, we adopt its jid and the run id it recorded in its
-    ``--comment``. This dedups across independent runners.
+    named ``job_name`` exists, we adopt its jid. That is all we take from the
+    scheduler — see that function for why the job's ``--comment`` is not read.
+    This dedups across independent runners.
 
     Submit-then-poll: on a fresh submit the job is submitted first (claiming its
     queue slot), then ``after_submit`` ships the source and drops the transfer
     marker the job is waiting on. A reattach never re-ships, so an in-flight job's
     sources are left untouched (the caller re-checks the marker for that case).
 
-    Returns ``(jid, action, run_id)``. ``run_id`` is the submitting run's id read
-    back from the scheduler on reattach (so the caller can check that run's
-    marker), and None on a fresh submit or dry run. ``jid`` is -1 for a dry run.
+    Returns ``(jid, action)``. ``jid`` is -1 for a dry run.
     """
     if not dryrun:
         found = find_active_job_by_name(site._connection, job_name=job_name, user=user)
         if found is not None:
-            jid, found_run_id = found
-            return jid, "reattached", found_run_id
+            return found, "reattached"
 
     # troika's submit() scp's the script into the output directory on the remote,
     # but the mkdir -p that would create it lives in the `create_output_dir`
@@ -238,11 +247,11 @@ def submit_or_reattach(
 
     jid = site.submit(str(script_path), user, output, dryrun=dryrun)
     if dryrun:
-        return -1, "dryrun", None
+        return -1, "dryrun"
     jid = int(jid)
     if after_submit is not None:
         after_submit()
-    return jid, "submitted", None
+    return jid, "submitted"
 
 
 def wait_for_job(
@@ -294,6 +303,12 @@ def cancel_job(
 # --------------------------------------------------------------------------- #
 # Cleanup (nightly GC of the cluster work dir)
 # --------------------------------------------------------------------------- #
+#: A run id becomes a path segment (the local source tarball, the ``.trash.<id>``
+#: staging rename, the node-local ``ci-src-<id>``), so it may not contain a
+#: separator or shell metacharacter. Mirrors site._SAFE_SPEC in intent.
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 #: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
 #: one entry per artifact (or a .out file for hpc-jobs), so a maxdepth-1 sweep
 #: reclaims whole builds without touching the roots. "transfer-e2e" is not
@@ -514,7 +529,13 @@ def main() -> None:
 )
 @click.option("--source-dir", "source_dir", default="", help="Runner-local checkout tarred and shipped to the cluster")
 @click.option(
-    "--run-id", "run_id", default="", help="Unique id of this submission; names the TRANSFER_COMPLETED marker"
+    "--run-id",
+    "run_id",
+    default="",
+    help=(
+        "Unique id of this submission (<gh-run-id>-<attempt>); names the local "
+        "source tarball and the node-local source dir"
+    ),
 )
 @click.option(
     "--marker-wait-timeout",
@@ -554,6 +575,19 @@ def submit_wait(
     # (a) Cache hit: the artifact already exists — nothing to build. This is what
     # makes a GitHub re-run cheap and makes downstream reuse work identically to
     # the non-HPC path. The publish/print steps read the runner-local path.
+    # The run id names a local tarball, the moved-aside staging tree and the
+    # node-local source dir, so it must stay a single safe path segment. It comes
+    # from our own --run-id and should always be `<gh-run-id>-<attempt>`; this is
+    # the guard that keeps it that way. Its absence is what turned a scheduler
+    # field leaking a '/' into `tar: .../<run>;Gres=gres/ssdtmp:20G;.src.tgz: No
+    # such file or directory` rather than a named error.
+    if run_id and not _SAFE_RUN_ID.fullmatch(run_id):
+        raise CIError(
+            f"--run-id {run_id!r} is not a safe path segment (expected {_SAFE_RUN_ID.pattern}). "
+            "It names a tarball and remote directories, so a separator or metacharacter in it "
+            "would write outside the intended paths."
+        )
+
     # Skipped in --no-publish (test) mode: a test publishes no artifact, so there
     # is nothing to cache against — it must run on every (re-)run.
     if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
@@ -620,7 +654,7 @@ def submit_wait(
             remote_deps_dir=remote_deps_dir,
         )
 
-    jid, action, found_run_id = submit_or_reattach(
+    jid, action = submit_or_reattach(
         site=site,
         script_path=script_path,
         user=troika_user,
@@ -634,14 +668,14 @@ def submit_wait(
         return
 
     if action == "reattached" and ships_source:
-        # The reattached job waits for the marker of the run that submitted it —
-        # its run id, read back from the scheduler (the job's --comment). If that
-        # marker is missing (submit succeeded but the runner died before the
-        # ship), re-ship so the waiting job can proceed.
-        waiting_run_id = found_run_id or run_id
-        if not transfer.marker_exists(site._connection, staging_dir=staging_dir, run_id=waiting_run_id):
+        # The reattached job waits for a marker in its staging dir, not for one
+        # named after whoever submitted it — so we can answer "has anyone finished
+        # shipping?" without knowing that run at all. If nothing has (submit
+        # succeeded but the runner died before the ship), re-ship under OUR run id
+        # so the waiting job can proceed.
+        if not transfer.marker_exists(site._connection, staging_dir=staging_dir):
             print(f"submit-wait: reattached job {jid} has no transfer marker; re-shipping source.")
-            ship_for(waiting_run_id)
+            ship_for(run_id)
 
     # From here a GitHub cancellation must scancel the batch job, not orphan it.
     _install_cancel_handler(site, script_path, output, jid)
@@ -713,7 +747,7 @@ def cancel(
     if found is None:
         print(f"cancel: no active job for '{artifact_name}'; nothing to cancel.")
         return
-    jid, _run_id = found
+    jid = found
     # The job script path isn't needed to cancel by explicit jid, but troika's
     # kill() signature takes it; a placeholder next to nothing is fine since jid
     # is passed explicitly.

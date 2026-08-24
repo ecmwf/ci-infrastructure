@@ -11,8 +11,8 @@ job — both driven over the same troika connection troika already uses for
 submit/tail, so they need no extra transport:
 
   * :func:`ship_source` (submit-then-poll) tars the runner's checkout, scp's the
-    tarball into the shared staging dir and finally ``touch``es a
-    ``TRANSFER_COMPLETED_<run_id>`` marker; the already-submitted job blocks on
+    tarball into the shared staging dir and finally ``touch``es the
+    ``TRANSFER_COMPLETED`` marker; the already-submitted job blocks on
     that marker, then unpacks the tarball itself into node-local ``$TMPDIR``. The
     marker is dropped **last** so the job never sees a half-copied tarball;
   * :func:`fetch_install` tars the install tree the job produced on the cluster,
@@ -63,19 +63,36 @@ def touch_remote_file(conn: Connection, *, path: str) -> None:
     _run_remote(conn, ["touch", path], what=f"Remote touch of {path}")
 
 
-def _marker_path(staging_dir: str, run_id: str) -> str:
-    return str(PurePosixPath(staging_dir) / f"TRANSFER_COMPLETED_{run_id}")
+def _marker_path(staging_dir: str) -> str:
+    return str(PurePosixPath(staging_dir) / jobscript.TRANSFER_MARKER_NAME)
 
 
-def marker_exists(conn: Connection, *, staging_dir: str, run_id: str) -> bool:
-    """Whether the source-transfer marker for ``run_id`` is present in the staging dir.
+def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
+    """Whether a completed source transfer is present in the artifact's staging dir.
 
     Used on reattach: if a job was submitted but the runner died before the scp
     or the marker, the still-waiting job needs the source (re-)shipped.
+
+    Keyed by the staging dir alone. That dir is already per-artifact, which is
+    exactly the scope of the question being asked ("did anyone finish shipping
+    for this job?"), so a reattaching runner does not need to know which run
+    submitted the job it adopted — and therefore never has to read the
+    scheduler's ``Comment``, which sites rewrite.
+
+    ROLLOVER SHIM: also true for a legacy per-run ``TRANSFER_COMPLETED_<run_id>``,
+    so a job submitted by a pre-fix runner (whose source IS already staged) is not
+    needlessly re-shipped over. Drop the second test once no pre-fix job can still
+    be in flight.
     """
-    proc = conn.execute(
-        ["test", "-f", _marker_path(staging_dir, run_id)], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    # The directory is quoted, the trailing `*` is NOT: it has to reach the shell
+    # unquoted to expand. Quoting the whole pattern would look for a file literally
+    # named "TRANSFER_COMPLETED_*".
+    staging_q = shlex.quote(str(PurePosixPath(staging_dir)))
+    probe = (
+        f"test -f {shlex.quote(_marker_path(staging_dir))} "
+        f"|| ls {staging_q}/{jobscript.TRANSFER_MARKER_NAME}_* >/dev/null 2>&1"
     )
+    proc = conn.execute(["sh", "-c", probe], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.communicate()
     return bool(proc.returncode == 0)
 
@@ -157,7 +174,7 @@ def ship_source(
                 local_tar_name=f"{run_id}.dep{index}.tgz",
             )
     # Marker last: the job must never see it before every input is fully staged.
-    _run_remote(conn, ["touch", _marker_path(staging_dir, run_id)], what="Transfer-complete marker")
+    _run_remote(conn, ["touch", _marker_path(staging_dir)], what="Transfer-complete marker")
 
 
 def fetch_tree(
