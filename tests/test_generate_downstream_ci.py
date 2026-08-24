@@ -474,15 +474,17 @@ def test_ctest_absent_by_default(tmp_path: Path) -> None:
     assert "ctest" not in _render_a(tmp_path, "")
 
 
-def test_ctest_step_emitted_after_publish(tmp_path: Path) -> None:
+def test_ctest_step_emitted_before_publish(tmp_path: Path) -> None:
     """`ctest = true` adds a Test step reading the composite's build-dir output.
 
-    Order matters as much as presence: publishing first is what lets a consumer
-    of THIS package start while these tests are still running.
+    Order is the actual safety property, not a style choice: a failing step ends
+    the job, so testing first is what keeps a red build's artifact out of the
+    store. Nothing downstream can recover that distinction afterwards --
+    resolve_deps and fetch_deps both decide on a bare `object_exists`.
     """
     out = _render_a(tmp_path, "ctest = true")
     assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure' in out
-    assert out.index("mode: publish") < out.index("ctest --test-dir")
+    assert out.index("ctest --test-dir") < out.index("mode: publish")
 
 
 def test_ctest_args_appended_verbatim(tmp_path: Path) -> None:
