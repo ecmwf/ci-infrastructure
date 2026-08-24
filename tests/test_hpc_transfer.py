@@ -124,7 +124,7 @@ def test_ship_source_clears_stages_and_marks(tmp_path: Path) -> None:
     assert "mv /remote/staging/art /remote/staging/art.trash.42-1" in reset
     assert "rm -rf /remote/staging/art.trash.42-1" in reset
     assert reset.rstrip().endswith("mkdir -p /remote/staging/art")
-    assert conn.executed[1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+    assert conn.executed[1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED"]
 
 
 def test_ship_source_ships_and_unpacks_dep_prefixes_before_the_marker(tmp_path: Path) -> None:
@@ -153,7 +153,7 @@ def test_ship_source_ships_and_unpacks_dep_prefixes_before_the_marker(tmp_path: 
     untars = [c[2] for c in conn.executed if c[:2] == ["bash", "-c"]]
     assert any("tar -xzf" in u and "/remote/staging/art/deps/0" in u for u in untars)
     # Marker LAST, after source and every dep are staged.
-    assert conn.executed[-1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+    assert conn.executed[-1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED"]
 
 
 def test_ship_source_dryrun_does_nothing(tmp_path: Path) -> None:
@@ -222,7 +222,7 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert not (staging / "deps").exists()
     assert not (staging.parent / "art.trash.42-1").exists()  # moved-aside copy deleted
     assert (staging / "source.tgz").is_file()
-    assert (staging / "TRANSFER_COMPLETED_42-1").is_file()
+    assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
 # --------------------------------------------------------------------------- #
@@ -230,13 +230,29 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 def test_marker_exists_true_on_zero_exit() -> None:
     conn = FakeConnection(exec_returncode=0)
-    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art", run_id="42-1") is True
-    assert conn.executed[0] == ["test", "-f", "/remote/staging/art/TRANSFER_COMPLETED_42-1"]
+    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art") is True
+    probe = conn.executed[0]
+    assert probe[:2] == ["sh", "-c"]
+    # Keyed by the staging dir alone — no run id, so a reattaching runner can ask
+    # "has anyone finished shipping?" without reading the scheduler's Comment.
+    assert "test -f /remote/staging/art/TRANSFER_COMPLETED " in probe[2]
+
+
+def test_marker_exists_accepts_a_legacy_per_run_marker() -> None:
+    """Rollover shim: a job submitted by a pre-fix runner already has its source
+    staged under TRANSFER_COMPLETED_<run_id>, and must not be re-shipped over."""
+    conn = FakeConnection(exec_returncode=0)
+    transfer.marker_exists(conn, staging_dir="/remote/staging/art")
+    probe = conn.executed[0][2]
+    assert "/remote/staging/art/TRANSFER_COMPLETED_*" in probe
+    # The glob must reach the shell UNQUOTED or it matches a file literally
+    # named "TRANSFER_COMPLETED_*".
+    assert "'/remote/staging/art/TRANSFER_COMPLETED_*'" not in probe
 
 
 def test_marker_exists_false_on_nonzero_exit() -> None:
     conn = FakeConnection(exec_returncode=1)
-    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art", run_id="42-1") is False
+    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -370,7 +386,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     # The staged tarball + marker are present; unpacking the tarball (what the
     # job does) reproduces the checkout.
     assert (staging / "source.tgz").is_file()
-    assert (staging / "TRANSFER_COMPLETED_42-1").is_file()
+    assert (staging / "TRANSFER_COMPLETED").is_file()
     unpacked = tmp_path / "unpacked"
     unpacked.mkdir()
     with tarfile.open(staging / "source.tgz") as tar:

@@ -28,7 +28,7 @@ login-node self-hosted runner
   API directly (`ci_infrastructure.hpc`) — no shell-out to the troika CLI.
 - **Submit-then-poll transfer.** The runner submits the job first (claiming its
   queue slot), then scp's the source tarball into the cluster staging dir and
-  `touch`es a `TRANSFER_COMPLETED_<run_id>` marker. The compute node blocks until
+  `touch`es the `TRANSFER_COMPLETED` marker there. The compute node blocks until
   the marker appears, unpacks the checkout into node-local `$TMPDIR` and builds
   there. The runner owns the checkout and the S3 store; **no GitHub token or
   egress lives on the cluster**. A reattach re-checks the marker and re-ships only
@@ -141,10 +141,22 @@ Re-running a job is safe and cheap:
 3. else **submit** fresh.
 
 Reattach uses the **scheduler** as the shared job store: each job is named
-`ci-<artifact>` and stamps its submitting run id into the SLURM `--comment`, so
-`submit-wait` finds an in-flight job by name (`squeue -n`) before submitting.
-Because the scheduler is global, this dedups across independent runners — the old
-runner-local jid file could not, so two runners could each submit a duplicate.
+`ci-<artifact>`, and `submit-wait` finds an in-flight job by name (`squeue -n`)
+before submitting. Because the scheduler is global, this dedups across
+independent runners — the old runner-local jid file could not, so two runners
+could each submit a duplicate.
+
+The **name is the only thing read back**. A job also carries its submitting run
+id in the SLURM `--comment`, but that is provenance for a human reading
+`squeue`/`sacct` and is never parsed. `Comment` belongs to the scheduler and
+sites rewrite it: ECMWF's `sbatch` wrapper appends its own accounting fields, so
+a run id recovered from it arrives as `<run>-<attempt>;Gres=gres/ssdtmp:20G;`.
+While that value was used to name the transfer marker and the local source
+tarball, every reattaching job died in `tar -czf` on the `/` inside
+`gres/ssdtmp`. The transfer marker is therefore named for the **staging dir**,
+which is already per-artifact — exactly the scope the rendezvous needs — so a
+reattaching runner can ask "has anyone finished shipping?" and re-drop the marker
+without knowing which run submitted the job it adopted.
 
 Cancelling the GitHub job scancels the batch job (a signal handler in
 `submit-wait`), so a cancellation never orphans work on the cluster. troika has
@@ -156,7 +168,7 @@ The submit-then-poll path leaves per-artifact `staging/`, `src/`, `install/` and
 `hpc-jobs/` trees under `HPC_CI_REMOTE_WORK_DIR`. Two mechanisms reclaim them:
 
 - **Opportunistic**: a fresh submit clears the artifact's staging dir before
-  shipping (also removes stale `TRANSFER_COMPLETED_*` markers).
+  shipping (also removes any stale `TRANSFER_COMPLETED` marker).
 - **Nightly GC**: `.github/workflows/hpc-nightly-cleanup.yml` runs
   `python -m ci_infrastructure.hpc gc --remote-work-dir <…> --older-than-days N`
   on the login-node runner, sweeping per-artifact trees older than `N` days. Run
