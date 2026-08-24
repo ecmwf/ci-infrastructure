@@ -813,6 +813,43 @@ def test_submit_wait_reattach_reships_under_our_own_run_id(monkeypatch: pytest.M
     assert shipped_run_ids == ["1-1"]
 
 
+def test_submit_wait_fresh_submit_does_not_reship_over_a_complete_staging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Losing the submit race must not destroy the winner's staged inputs.
+
+    squeue shows nothing (so this run submits its own job), but a completed
+    transfer is already in the artifact's staging dir because another run got
+    there first. ship_source RESETS that dir before writing — it renames the tree
+    aside — so shipping here would delete deps/<i> from under a job already
+    reading them. That is what failed an ecflow atos-hpc-nvidia job with
+    "Could not find a package configuration file provided by ecbuild" while the
+    other job, on the same staging dir, was compiling happily.
+
+    Safe to skip: staging is per-artifact and the artifact name embeds the source
+    SHA and deps hash, so what is already there is the same content.
+    """
+    result, calls, _ = _invoke_submit_wait(
+        monkeypatch, tmp_path, no_publish=False, squeue_stdout=b"", marker_present=True
+    )
+    assert result.exit_code == 0, result.output
+    assert calls["ship_source"] == 0
+    assert "already complete" in result.output
+
+
+def test_submit_wait_fresh_submit_ships_when_staging_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The contrast: no marker means no (or a partial) transfer, which is exactly
+    the case the reset exists for — so this must still ship."""
+    result, calls, shipped = _invoke_submit_wait(
+        monkeypatch, tmp_path, no_publish=False, squeue_stdout=b"", marker_present=False
+    )
+    assert result.exit_code == 0, result.output
+    assert calls["ship_source"] == 1
+    assert shipped == ["1-1"]
+
+
 @pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])
 def test_submit_wait_rejects_an_unsafe_run_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
     """The run id names a tarball and remote directories, so a separator or shell
