@@ -10,9 +10,9 @@ body with only the orchestration bits it must control:
 
   * ``#SBATCH --output/--error`` pointing at the path we tail for completion,
   * the dependency environment (``CMAKE_PREFIX_PATH``, ``CI_INSTALL_PREFIX``),
-  * a **submit-then-poll** preamble: the job blocks until the runner drops a
-    ``TRANSFER_COMPLETED_<run_id>`` marker in the shared staging dir (the runner
-    submits first, then scp's the source tarball and touches the marker), then
+  * a **submit-then-poll** preamble: the job blocks until the runner drops the
+    ``TRANSFER_COMPLETED`` marker in the shared staging dir (the runner submits
+    first, then scp's the source tarball and touches the marker), then
     unpacks the checkout into node-local ``$TMPDIR`` and ``cd``s there,
   * a ``Finished: SUCCESS`` / ``Finished: FAILURE`` sentinel so the poller can
     tell the outcome (a completed SLURM job vanishes from ``squeue``, so the
@@ -36,18 +36,29 @@ DEFAULT_MARKER_WAIT_TIMEOUT = 1800
 #: the job unpacks. Independent of the run id so a reattach can re-drop it.
 SOURCE_TARBALL_NAME = "source.tgz"
 
+#: Fixed name of the source-transfer marker, for the same reason as the tarball:
+#: the staging dir is already per-artifact, which is exactly the scope this
+#: rendezvous needs, so keying it by run id bought nothing and cost a dependency
+#: on the scheduler's `Comment` field — which sites may rewrite. A reattaching
+#: runner can now check and re-drop this marker without knowing which run
+#: submitted the job it is adopting.
+TRANSFER_MARKER_NAME = "TRANSFER_COMPLETED"
+
 
 def job_name_for(artifact_name: str) -> str:
     """SLURM job name for an artifact — the key a re-run reattaches by.
 
-    The scheduler is the shared, cross-runner job store: each job is stamped with
-    this name and its submitting run id (in ``--comment``), so a second run finds
-    the in-flight job by name instead of submitting a duplicate (the runner-local
-    jid file this replaces was invisible to other runners). Artifact names are the
-    safe ``[A-Za-z0-9_.-]`` set and well within SLURM's name length, so they are
-    used verbatim under a ``ci-`` namespace prefix. Should a cluster ever cap the
-    name length, hash the artifact here (``ci-<sha256(artifact)[:32]>``) and keep
-    the full name only in the comment.
+    The scheduler is the shared, cross-runner job store, and this name is the
+    whole of the key: a second run finds the in-flight job by name instead of
+    submitting a duplicate (the runner-local jid file this replaces was invisible
+    to other runners). Nothing else about the job is read back — see the
+    ``--comment`` note in ``render_job_script``.
+
+    Artifact names are the safe ``[A-Za-z0-9_.-]`` set and well within SLURM's
+    name length, so they are used verbatim under a ``ci-`` namespace prefix.
+    Should a cluster ever cap the name length, hash the artifact here
+    (``ci-<sha256(artifact)[:32]>``); the full name would then have to go
+    somewhere we own, not into the comment.
     """
     return f"ci-{artifact_name}"
 
@@ -81,22 +92,27 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
     """Emit the bounded wait for the source-transfer marker + node-local unpack.
 
     The runner submits the job first, then scp's the source tarball into
-    ``staging_dir`` and finally ``touch``es ``TRANSFER_COMPLETED_<run_id>``. The
+    ``staging_dir`` and finally ``touch``es ``TRANSFER_MARKER_NAME`` there. The
     job blocks here until that marker appears (so it never unpacks a half-copied
     tarball), then unpacks the checkout into ``$TMPDIR`` and ``cd``s there — the
     recipe then sees its sources as ``$CI_SOURCE_DIR``, node-local for a fast
     build. A marker that never arrives is a failure (an explicit sentinel, since
     the ``ERR`` trap does not fire on a bare ``exit``).
+
+    The marker is named for the staging dir, not the run: any runner that finds
+    this job can satisfy it. ``run_id`` still names ``CI_SOURCE_DIR`` so two runs
+    unpacking on one node cannot collide — that value is always the local
+    ``--run-id``, never anything read back from the scheduler.
     """
-    marker = f"{staging_dir}/TRANSFER_COMPLETED_{run_id}"
+    marker = f"{staging_dir}/{TRANSFER_MARKER_NAME}"
     tarball = f"{staging_dir}/{SOURCE_TARBALL_NAME}"
     return [
-        f'echo "ci: waiting for source-transfer marker {run_id}..."',
+        'echo "ci: waiting for source-transfer marker..."',
         f'_ci_marker="{marker}"',
         f"_ci_deadline=$(( $(date +%s) + {marker_wait_timeout} ))",
         'until [ -f "$_ci_marker" ]; do',
         '  if [ "$(date +%s)" -ge "$_ci_deadline" ]; then',
-        f'    echo "ci: source-transfer marker {run_id} never arrived within {marker_wait_timeout}s" >&2',
+        f'    echo "ci: source-transfer marker never arrived within {marker_wait_timeout}s" >&2',
         f'    echo "{SENTINEL_FAILURE}"',
         "    exit 1",
         "  fi",
@@ -135,9 +151,16 @@ def render_job_script(
     out.extend(header)
     out.append(f"#SBATCH --output={output_path}")
     out.append(f"#SBATCH --error={output_path}")
-    # Name + comment make the scheduler the shared job store: submit-wait finds an
-    # in-flight job for this artifact by name and reads back the submitting run id
-    # from the comment (see orchestrate.find_active_job_by_name).
+    # The NAME makes the scheduler the shared job store: submit-wait finds an
+    # in-flight job for this artifact by name and reattaches to it (see
+    # orchestrate.find_active_job_by_name).
+    #
+    # The COMMENT is provenance only — which run submitted this job, for a human
+    # reading `squeue`/`sacct`. It is deliberately never read back: it belongs to
+    # the scheduler, and sites rewrite it. ECMWF's sbatch wrapper appends its own
+    # fields, so a run id recovered from it came back as
+    # `<run>-<attempt>;Gres=gres/ssdtmp:20G;` — which, when it had been used to
+    # name a marker and a tarball path, broke every reattaching HPC job.
     if job_name is not None:
         out.append(f"#SBATCH --job-name={job_name}")
     if run_id is not None:

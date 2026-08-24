@@ -186,13 +186,29 @@ def test_resolve_remote_path_rejects_shell_metacharacters(spec: str) -> None:
 # --------------------------------------------------------------------------- #
 # find_active_job_by_name (the reattach lookup — scheduler as shared job store)
 # --------------------------------------------------------------------------- #
-def test_find_active_job_parses_jid_and_run_id() -> None:
-    conn = RecordingConnection(squeue_stdout=b"777|9001-2\n")
-    assert find_active_job_by_name(conn, job_name="ci-art", user="deploy") == (777, "9001-2")
-    # Queries by name, scoped to the user, over the active states.
+def test_find_active_job_parses_jid() -> None:
+    conn = RecordingConnection(squeue_stdout=b"777\n")
+    assert find_active_job_by_name(conn, job_name="ci-art", user="deploy") == 777
+    # Queries by name, scoped to the user, over the active states...
     squeue = next(c for c in conn.executed if c and c[0] == "squeue")
     assert "-n" in squeue and "ci-art" in squeue
     assert squeue[squeue.index("-u") + 1] == "deploy"
+    # ...and asks for the jid ALONE. %k (Comment) is deliberately not requested:
+    # it is scheduler-owned and sites rewrite it.
+    assert squeue[squeue.index("-o") + 1] == "%i"
+
+
+def test_find_active_job_ignores_a_site_decorated_comment() -> None:
+    """The regression that broke every reattaching HPC job.
+
+    ECMWF's sbatch wrapper appends its own accounting fields to the job Comment,
+    so a run id read back from it arrived as
+    ``32724386465-1;Gres=gres/ssdtmp:20G;``. That value was then used to name a
+    local tarball, and the embedded '/' made `tar -czf` fail outright. We must
+    return the jid and nothing else, whatever the site puts in the extra field.
+    """
+    conn = RecordingConnection(squeue_stdout=b"777|32724386465-1;Gres=gres/ssdtmp:20G;\n")
+    assert find_active_job_by_name(conn, job_name="ci-art", user=None) == 777
 
 
 def test_find_active_job_empty_output_is_none() -> None:
@@ -207,8 +223,8 @@ def test_find_active_job_squeue_error_is_none() -> None:
 def test_find_active_job_multiple_takes_lowest_jid() -> None:
     # Two runs raced the submit (the residual window); every later run must
     # converge on the same job, so we take the lowest jid.
-    conn = RecordingConnection(squeue_stdout=b"902|b-1\n811|a-1\n")
-    assert find_active_job_by_name(conn, job_name="ci-art", user=None) == (811, "a-1")
+    conn = RecordingConnection(squeue_stdout=b"902\n811\n")
+    assert find_active_job_by_name(conn, job_name="ci-art", user=None) == 811
 
 
 # --------------------------------------------------------------------------- #
@@ -217,14 +233,14 @@ def test_find_active_job_multiple_takes_lowest_jid() -> None:
 def test_submit_when_no_active_job(tmp_path: Path) -> None:
     # squeue finds nothing (default RecordingConnection) -> fresh submit.
     site = FakeSlurmSite(next_jid=500)
-    jid, action, run_id = submit_or_reattach(
+    jid, action = submit_or_reattach(
         site=site,
         script_path=tmp_path / "job.sh",
         user=None,
         output="/scratch/out",
         job_name="ci-art",
     )
-    assert (jid, action, run_id) == (500, "submitted", None)
+    assert (jid, action) == (500, "submitted")
     assert site.submitted  # a job was actually submitted
 
 
@@ -253,15 +269,15 @@ def test_output_file_is_created_before_submit(tmp_path: Path) -> None:
 
 def test_reattach_when_active_job_found_by_name(tmp_path: Path) -> None:
     # An active job named ci-art exists on the scheduler (any runner submitted it).
-    site = FakeSlurmSite(next_jid=999, connection=RecordingConnection(squeue_stdout=b"777|orig-run\n"))
-    jid, action, run_id = submit_or_reattach(
+    site = FakeSlurmSite(next_jid=999, connection=RecordingConnection(squeue_stdout=b"777\n"))
+    jid, action = submit_or_reattach(
         site=site,
         script_path=tmp_path / "job.sh",
         user=None,
         output="/scratch/out",
         job_name="ci-art",
     )
-    assert (jid, action, run_id) == (777, "reattached", "orig-run")
+    assert (jid, action) == (777, "reattached")
     assert not site.submitted  # crucially, NO duplicate submission
     assert not site.output_dirs  # reattach touches nothing on the remote
 
@@ -287,9 +303,9 @@ def test_after_submit_runs_after_fresh_submit(tmp_path: Path) -> None:
 
 
 def test_after_submit_skipped_on_reattach(tmp_path: Path) -> None:
-    site = FakeSlurmSite(next_jid=999, connection=RecordingConnection(squeue_stdout=b"777|orig-run\n"))
+    site = FakeSlurmSite(next_jid=999, connection=RecordingConnection(squeue_stdout=b"777\n"))
     calls: list[str] = []
-    _, action, _ = submit_or_reattach(
+    _, action = submit_or_reattach(
         site=site,
         script_path=tmp_path / "job.sh",
         user=None,
@@ -303,7 +319,7 @@ def test_after_submit_skipped_on_reattach(tmp_path: Path) -> None:
 
 def test_dryrun_does_not_submit(tmp_path: Path) -> None:
     site = FakeSlurmSite()
-    jid, action, run_id = submit_or_reattach(
+    jid, action = submit_or_reattach(
         site=site,
         script_path=tmp_path / "job.sh",
         user=None,
@@ -312,7 +328,7 @@ def test_dryrun_does_not_submit(tmp_path: Path) -> None:
         dryrun=True,
     )
     # A dry run goes through troika in pretend mode: no real job id, no reattach.
-    assert (jid, action, run_id) == (-1, "dryrun", None)
+    assert (jid, action) == (-1, "dryrun")
 
 
 # --------------------------------------------------------------------------- #
@@ -517,8 +533,11 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
         marker_wait_timeout=1200,
     )
     lines = script.splitlines()
-    # Blocks on the run-scoped marker, with the timeout the caller passed.
-    assert '_ci_marker="/scratch/staging/art/TRANSFER_COMPLETED_99-1"' in script
+    # Blocks on the staging-dir-scoped marker, with the timeout the caller passed.
+    # NOT run-scoped: any runner that finds this job must be able to satisfy it
+    # without knowing which run submitted it (see find_active_job_by_name).
+    assert '_ci_marker="/scratch/staging/art/TRANSFER_COMPLETED"' in script
+    assert "TRANSFER_COMPLETED_99-1" not in script
     assert "$(date +%s) + 1200" in script
     assert f'echo "{jobscript.SENTINEL_FAILURE}"' in script  # marker-never-arrives branch
     # Unpacks the shipped tarball into node-local $TMPDIR and cds there.
@@ -662,20 +681,32 @@ def test_stream_job_output_tails_live_and_quits_at_a_sentinel() -> None:
 # consults the artifact cache, and it never fetches an install tree on success.
 # --------------------------------------------------------------------------- #
 def _invoke_submit_wait(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, no_publish: bool
-) -> tuple[Result, dict[str, int]]:
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    no_publish: bool,
+    squeue_stdout: bytes = b"",
+    marker_present: bool = False,
+    run_id: str = "1-1",
+) -> tuple[Result, dict[str, int], list[str]]:
     """Run submit-wait to a SUCCESS verdict with every collaborator stubbed.
 
     Returns the CliRunner result and a dict counting the calls that distinguish
-    publish from test-only mode (`object_exists`, `fetch_install`).
+    publish from test-only mode (`object_exists`, `fetch_install`) and the
+    reattach paths (`ship_source`), plus the run ids `ship_source` was handed.
     """
-    calls = {"object_exists": 0, "fetch_install": 0}
+    calls = {"object_exists": 0, "fetch_install": 0, "ship_source": 0}
+    shipped_run_ids: list[str] = []
 
     recipe = tmp_path / "build.sh"
     recipe.write_text("#!/bin/bash\n#SBATCH --time=00:10:00\nctest --test-dir build\n")
     (tmp_path / "src").mkdir()
 
-    site = FakeSlurmSite(next_jid=500)
+    site = FakeSlurmSite(next_jid=500, connection=RecordingConnection(squeue_stdout=squeue_stdout))
+
+    def _ship_source(*_a: object, **k: object) -> None:
+        calls["ship_source"] += 1
+        shipped_run_ids.append(str(k.get("run_id", "")))
 
     def _object_exists(_name: str) -> bool:
         calls["object_exists"] += 1
@@ -693,7 +724,8 @@ def _invoke_submit_wait(
     monkeypatch.setattr(orch, "load_site", lambda *a, **k: site)
     monkeypatch.setattr(orch, "ensure_batch_site", lambda *a, **k: None)
     monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, spec: spec)
-    monkeypatch.setattr(transfer, "ship_source", lambda *a, **k: None)
+    monkeypatch.setattr(transfer, "ship_source", _ship_source)
+    monkeypatch.setattr(transfer, "marker_exists", lambda *a, **k: marker_present)
     monkeypatch.setattr(transfer, "touch_remote_file", lambda *a, **k: None)
     monkeypatch.setattr(transfer, "fetch_install", _fetch_install)
     monkeypatch.setattr(orch, "_install_cancel_handler", lambda *a, **k: None)
@@ -715,7 +747,7 @@ def _invoke_submit_wait(
         "--source-dir",
         str(tmp_path / "src"),
         "--run-id",
-        "1-1",
+        run_id,
         "--tar-dir",
         str(tmp_path / "tars"),
         "--cmake-prefix-path",
@@ -724,22 +756,73 @@ def _invoke_submit_wait(
     if no_publish:
         args.append("--no-publish")
     result = CliRunner().invoke(orch.submit_wait, args)
-    return result, calls
+    return result, calls, shipped_run_ids
 
 
 def test_submit_wait_test_only_skips_cache_and_fetch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """--no-publish runs the job for its verdict but consults no cache and fetches nothing."""
-    result, calls = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=True)
+    result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=True)
     assert result.exit_code == 0, result.output
-    assert calls == {"object_exists": 0, "fetch_install": 0}
+    assert (calls["object_exists"], calls["fetch_install"]) == (0, 0)
     assert "nothing to publish" in result.output
 
 
 def test_submit_wait_publish_mode_checks_cache_and_fetches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The default (publish) mode still cache-checks and fetches the built tree — the contrast."""
-    result, calls = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False)
+    result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False)
     assert result.exit_code == 0, result.output
-    assert calls == {"object_exists": 1, "fetch_install": 1}
+    assert (calls["object_exists"], calls["fetch_install"]) == (1, 1)
+
+
+def test_submit_wait_reattach_does_not_reship_when_a_marker_is_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The scenario that broke every HPC leg in the Downstream HPC fan-out.
+
+    squeue reports an in-flight job for this artifact, so we reattach. Its source
+    is already staged (a marker is present), so nothing may be re-shipped — the
+    job may be mid-build, and `ship_source` renames the staging tree aside.
+
+    Before the fix this path read the submitting run id out of the job's SLURM
+    Comment. ECMWF's sbatch wrapper decorates that field, so the value came back
+    as `<run>-<attempt>;Gres=gres/ssdtmp:20G;`, no marker of that name ever
+    existed, and every reattach re-shipped — dying on `tar -czf` because of the
+    '/' in `gres/ssdtmp`. Nothing here reads the Comment any more, so a decorated
+    one is simply never seen.
+    """
+    result, calls, _ = _invoke_submit_wait(
+        monkeypatch, tmp_path, no_publish=False, squeue_stdout=b"777\n", marker_present=True
+    )
+    assert result.exit_code == 0, result.output
+    assert "reattached job 777" in result.output
+    assert calls["ship_source"] == 0
+    assert "re-shipping source" not in result.output
+
+
+def test_submit_wait_reattach_reships_under_our_own_run_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Submit succeeded but the submitter died before shipping: the waiting job
+    still needs its source. We re-ship under OUR --run-id — the only run id in
+    play now — and the job finds it because the marker is named for the staging
+    dir rather than for whoever submitted."""
+    result, calls, shipped_run_ids = _invoke_submit_wait(
+        monkeypatch, tmp_path, no_publish=False, squeue_stdout=b"777\n", marker_present=False
+    )
+    assert result.exit_code == 0, result.output
+    assert "re-shipping source" in result.output
+    assert calls["ship_source"] == 1
+    assert shipped_run_ids == ["1-1"]
+
+
+@pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])
+def test_submit_wait_rejects_an_unsafe_run_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
+    """The run id names a tarball and remote directories, so a separator or shell
+    metacharacter in it must be refused by name rather than surfacing as a tar
+    error from somewhere deep in the transfer."""
+    result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, run_id=bad)
+    # CIError is a click.ClickException, so click renders it and exits non-zero.
+    assert result.exit_code != 0
+    assert "not a safe path segment" in result.output
+    assert calls["ship_source"] == 0  # rejected before anything was written
 
 
 # --------------------------------------------------------------------------- #
