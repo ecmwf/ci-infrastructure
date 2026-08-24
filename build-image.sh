@@ -56,7 +56,7 @@
 set -euo pipefail
 
 REGISTRY="${REGISTRY:-eccr.ecmwf.int}"
-PROJECT="${PROJECT:-public-playground-ci}"
+PROJECT="${PROJECT:-public-ci-images}"
 IMAGES_DIR="${IMAGES_DIR:-public-images}"
 EXTRA_TAG_PATHS="src pyproject.toml LICENSE"
 

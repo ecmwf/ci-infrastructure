@@ -51,7 +51,7 @@ jobs:
     name: smoke (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/public-playground-ci/ubuntu24.04-base:latest
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
       # credentials:
       #   username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
       #   password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
@@ -136,7 +136,7 @@ jobs:
     name: sccache (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/public-playground-ci/ubuntu24.04-clang18-gfortran13:latest
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-clang18-gfortran13:latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
