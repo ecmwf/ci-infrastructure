@@ -12,7 +12,7 @@ on:
 
 jobs:
   ssh:
-    name: ssh to HPC (${{ matrix.name }})
+    name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
     strategy:
       fail-fast: false
       # Two lanes for the same test. `arc` is an ARC pod that pulls the
@@ -25,12 +25,23 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      # lane x site. `include` entries whose keys match an existing combination
+      # add their remaining keys to it, so each lane's runner/container is
+      # written once and applies to both of that lane's sites.
+      #
+      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
+      # fetch-hpc-tree against a cluster that was working fine — the site was
+      # simply missing from our troika config, and nothing exercised it. Both
+      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
+      # its known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
+        lane: [arc, hpc]
+        site: [hpc-batch, ac-batch]
         include:
-          - name: arc
+          - lane: arc
             runner: arc-hpc-pet-vsphere-prod
             container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
-          - name: hpc
+          - lane: hpc
             runner: hpc
             container: ''
     runs-on: ${{ matrix.runner }}
@@ -56,16 +67,16 @@ jobs:
         run: |
           set -euo pipefail
           : "${HPC_CI_SSH_USER:?set the HPC_CI_SSH_USER secret to the HPC login user}"
-          # hpc-batch is an alias from ~/.ssh/config with a matching
+          # The site name doubles as the ssh alias: an entry in ~/.ssh/config with a matching
           # known_hosts entry — baked into the image on the `arc` leg, present on
           # the host on the `hpc` leg. BatchMode fails instead of prompting, so a
           # missing key or unknown host is an error here rather than a hang.
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
-            "${HPC_CI_SSH_USER}@hpc-batch" \
+            "${HPC_CI_SSH_USER}@${{ matrix.site }}" \
             'echo "connected to HPC"'
 
   hpc-roundtrip:
-    name: transfer round-trip (${{ matrix.name }})
+    name: transfer round-trip (${{ matrix.lane }}, ${{ matrix.site }})
     strategy:
       fail-fast: false
       # Two lanes for the same test. `arc` is an ARC pod that pulls the
@@ -78,12 +89,23 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      # lane x site. `include` entries whose keys match an existing combination
+      # add their remaining keys to it, so each lane's runner/container is
+      # written once and applies to both of that lane's sites.
+      #
+      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
+      # fetch-hpc-tree against a cluster that was working fine — the site was
+      # simply missing from our troika config, and nothing exercised it. Both
+      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
+      # its known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
+        lane: [arc, hpc]
+        site: [hpc-batch, ac-batch]
         include:
-          - name: arc
+          - lane: arc
             runner: arc-hpc-pet-vsphere-prod
             container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
-          - name: hpc
+          - lane: hpc
             runner: hpc
             container: ''
     runs-on: ${{ matrix.runner }}
@@ -127,16 +149,18 @@ jobs:
         id: push
         uses: ./actions/push-hpc-tree
         with:
-          site: hpc-batch
+          site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           local-dir: ${{ runner.temp }}/hpc-e2e/src
-          remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e/${{ github.run_id }}
+          # Per leg, not just per run: four legs run concurrently and a shared
+          # remote dir would have them pushing and removing each other's trees.
+          remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e/${{ github.run_id }}-${{ matrix.lane }}-${{ matrix.site }}
 
       - name: Fetch the tree back from the cluster
         id: fetch
         uses: ./actions/fetch-hpc-tree
         with:
-          site: hpc-batch
+          site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           remote-dir: ${{ steps.push.outputs.remote-dir }}
           local-dir: ${{ runner.temp }}/hpc-e2e/back
@@ -154,12 +178,12 @@ jobs:
       - name: Remove the cluster scratch dir
         uses: ./actions/remove-hpc-tree
         with:
-          site: hpc-batch
+          site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           remote-dir: ${{ steps.push.outputs.remote-dir }}
 
   hpc-submit:
-    name: submit a SLURM job (${{ matrix.name }})
+    name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
     # The transfer round-trip above proves ssh, $SCRATCH expansion and a writable
     # work dir. This proves the half the build path actually depends on and
     # nothing else covered: troika submits to the scheduler, the compute node
@@ -183,12 +207,23 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      # lane x site. `include` entries whose keys match an existing combination
+      # add their remaining keys to it, so each lane's runner/container is
+      # written once and applies to both of that lane's sites.
+      #
+      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
+      # fetch-hpc-tree against a cluster that was working fine — the site was
+      # simply missing from our troika config, and nothing exercised it. Both
+      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
+      # its known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
+        lane: [arc, hpc]
+        site: [hpc-batch, ac-batch]
         include:
-          - name: arc
+          - lane: arc
             runner: arc-hpc-pet-vsphere-prod
             container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
-          - name: hpc
+          - lane: hpc
             runner: hpc
             container: ''
     runs-on: ${{ matrix.runner }}
@@ -255,10 +290,10 @@ jobs:
           # Passed through verbatim: the spec is expanded on the cluster, so this
           # shell must not expand it first.
           "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait \
-            --site hpc-batch \
+            --site "${{ matrix.site }}" \
             --troika-user "$HPC_CI_SSH_USER" \
             --job-script "$RUNNER_TEMP/hpc-submit/src/.ci/hpc/smoke.sh" \
-            --artifact-name "ci-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --artifact-name "ci-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.lane }}-${{ matrix.site }}" \
             --remote-work-dir "$HPC_CI_REMOTE_WORK_DIR" \
             --local-install-path "$RUNNER_TEMP/hpc-submit/install" \
             --source-dir "$RUNNER_TEMP/hpc-submit/src" \
