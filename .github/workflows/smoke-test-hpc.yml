@@ -15,7 +15,7 @@ jobs:
     name: ssh to HPC
     runs-on: arc-hpc-pet-vsphere-prod
     container:
-      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
@@ -37,7 +37,7 @@ jobs:
   hpc-roundtrip:
     runs-on: arc-hpc-pet-vsphere-prod
     container:
-      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
@@ -113,7 +113,7 @@ jobs:
     # sweeps.
     runs-on: arc-hpc-pet-vsphere-prod
     container:
-      image: eccr.ecmwf.int/private-playground-ci/ubuntu24.04-internal-tools:latest
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
