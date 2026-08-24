@@ -24,17 +24,50 @@ sites:
     pre_submit: ["create_output_dir"]
     at_exit: ["copy_submit_logfile"]
 
-  # The AC and AG clusters, same shape as hpc-batch — only the ssh alias differs.
-  # ac-batch is in active use: ectrans' ci-hpc job targets it, and fetch-hpc-tree
-  # failed there with `troika.InvocationError: Unknown site 'ac-batch'` purely
-  # because this file did not list it. ag-batch is added alongside it because the
-  # same gap would produce the same confusing error for the next consumer; it is
-  # a real ECMWF site name (see ecflow's .github/cd-config.yml) but, unlike
-  # ac-batch, we have not yet seen a job use it through this path.
+  # The rest of the Atos batch clusters. This list is kept in step with
+  # ecmwf/build-package-hpc's config.yml, which is what ecmwf-actions'
+  # ci-hpc-generic drives and therefore the de-facto register of what exists;
+  # the internal-tools image's known_hosts carries the same set (aa, ab, ac, ad,
+  # ag, hpc, lumi).
+  #
+  # Being short of one is not a soft failure: ectrans' fetch-hpc-tree died with
+  # `troika.InvocationError: Unknown site 'ac-batch'` against a cluster that was
+  # working perfectly, purely because this file did not list it. So the whole
+  # set is here rather than only the ones we have seen used.
+  #
+  # build-package-hpc also carries `sync_clusters` and `hpc_type` per site. Those
+  # are its own scheduling concepts, not troika's, and nothing here reads them.
+  aa-batch:
+    type: slurm
+    connection: ssh
+    host: aa-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  ab-batch:
+    type: slurm
+    connection: ssh
+    host: ab-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
   ac-batch:
     type: slurm
     connection: ssh
     host: ac-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  ad-batch:
+    type: slurm
+    connection: ssh
+    host: ad-batch
     copy_script: true
     at_startup: ["check_connection"]
     pre_submit: ["create_output_dir"]
@@ -62,6 +95,15 @@ sites:
     type: direct
     connection: ssh
     host: hpc-login
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  lumi-login:
+    type: direct
+    connection: ssh
+    host: lumi
     copy_script: true
     at_startup: ["check_connection"]
     pre_submit: ["create_output_dir"]

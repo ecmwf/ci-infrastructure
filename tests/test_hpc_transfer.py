@@ -415,7 +415,11 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
 # These load the real packaged config, so a site that is removed, renamed or
 # mistyped fails here instead of in a consumer's HPC job.
 # --------------------------------------------------------------------------- #
-BATCH_SITES = ["hpc-batch", "ac-batch", "ag-batch", "lumi"]
+# Kept in step with ecmwf/build-package-hpc's config.yml, the de-facto register
+# of which sites exist (ci-hpc-generic drives it). A site missing from our copy
+# is not a soft failure — it is `Unknown site` in a consumer's HPC job.
+BATCH_SITES = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
+DIRECT_SITES = ["hpc-login", "lumi-login", "local-direct"]
 
 
 @pytest.mark.parametrize("site_name", BATCH_SITES)
@@ -424,6 +428,16 @@ def test_packaged_config_provides_batch_site(site_name: str) -> None:
     # ensure_batch_site is what the orchestrator gates on: a `direct` site cannot
     # be driven by the build path (no job id to reattach by, no state to poll).
     ensure_batch_site(site, site_name)
+
+
+@pytest.mark.parametrize("site_name", DIRECT_SITES)
+def test_packaged_config_provides_direct_site(site_name: str) -> None:
+    """The non-batch sites load too, and are correctly REJECTED for build use:
+    the build path needs a job id to reattach by and a state to poll, which a
+    direct site has neither of."""
+    site = load_site(site_name)
+    with pytest.raises(CIError):
+        ensure_batch_site(site, site_name)
 
 
 def test_packaged_config_rejects_an_unknown_site() -> None:
