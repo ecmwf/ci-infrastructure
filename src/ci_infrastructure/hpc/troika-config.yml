@@ -24,6 +24,31 @@ sites:
     pre_submit: ["create_output_dir"]
     at_exit: ["copy_submit_logfile"]
 
+  # The AC and AG clusters, same shape as hpc-batch — only the ssh alias differs.
+  # ac-batch is in active use: ectrans' ci-hpc job targets it, and fetch-hpc-tree
+  # failed there with `troika.InvocationError: Unknown site 'ac-batch'` purely
+  # because this file did not list it. ag-batch is added alongside it because the
+  # same gap would produce the same confusing error for the next consumer; it is
+  # a real ECMWF site name (see ecflow's .github/cd-config.yml) but, unlike
+  # ac-batch, we have not yet seen a job use it through this path.
+  ac-batch:
+    type: slurm
+    connection: ssh
+    host: ac-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
+  ag-batch:
+    type: slurm
+    connection: ssh
+    host: ag-batch
+    copy_script: true
+    at_startup: ["check_connection"]
+    pre_submit: ["create_output_dir"]
+    at_exit: ["copy_submit_logfile"]
+
   lumi:
     type: slurm
     connection: ssh

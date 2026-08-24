@@ -20,6 +20,7 @@ import pytest
 
 from ci_infrastructure._errors import CIError
 from ci_infrastructure.hpc import transfer
+from ci_infrastructure.hpc.site import ensure_batch_site, load_site
 
 
 class FakeProc:
@@ -401,3 +402,31 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
         tar_dir=str(tmp_path / "stage2"),
     )
     assert (fetched / "hello.txt").read_text() == "content-xyz"
+
+
+# --------------------------------------------------------------------------- #
+# The packaged troika site config
+#
+# Nothing else in the suite touches it: every other HPC test monkeypatches
+# load_site, so the site name it is handed is only a string. That blind spot is
+# how `ac-batch` stayed missing until ectrans' ci-hpc job hit
+# `troika.InvocationError: Unknown site 'ac-batch'` in fetch-hpc-tree — the
+# cluster and the ssh alias were fine, the config simply did not list the site.
+# These load the real packaged config, so a site that is removed, renamed or
+# mistyped fails here instead of in a consumer's HPC job.
+# --------------------------------------------------------------------------- #
+BATCH_SITES = ["hpc-batch", "ac-batch", "ag-batch", "lumi"]
+
+
+@pytest.mark.parametrize("site_name", BATCH_SITES)
+def test_packaged_config_provides_batch_site(site_name: str) -> None:
+    site = load_site(site_name)
+    # ensure_batch_site is what the orchestrator gates on: a `direct` site cannot
+    # be driven by the build path (no job id to reattach by, no state to poll).
+    ensure_batch_site(site, site_name)
+
+
+def test_packaged_config_rejects_an_unknown_site() -> None:
+    """The failure mode this file exists to prevent, pinned as a real error."""
+    with pytest.raises(Exception, match="Unknown site"):
+        load_site("no-such-cluster")
