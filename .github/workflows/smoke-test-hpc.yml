@@ -12,10 +12,39 @@ on:
 
 jobs:
   ssh:
-    name: ssh to HPC
-    runs-on: arc-hpc-pet-vsphere-prod
+    name: ssh to HPC (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      # Two lanes for the same test. `arc` is an ARC pod that pulls the
+      # internal-tools image, which is where the cluster ssh identity (keys, the
+      # hpc-batch alias, known_hosts) lives — hence the registry credentials.
+      # `hpc` is one of the pre-existing self-hosted runners labelled `hpc`:
+      # those carry the same identity on the host and run NO container, so they
+      # exercise the path that predates the ARC lane and prove these actions do
+      # not quietly depend on something baked into the image.
+      #
+      # fail-fast off, because which lane broke is the whole signal: green `arc`
+      # beside red `hpc` says "image-only assumption" out loud.
+      matrix:
+        include:
+          - name: arc
+            runner: arc-hpc-pet-vsphere-prod
+            container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+          - name: hpc
+            runner: hpc
+            container: ''
+    runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      # An empty image runs the job on the host — that is what the `hpc` leg
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
+      image: ${{ matrix.container }}
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
@@ -27,17 +56,48 @@ jobs:
         run: |
           set -euo pipefail
           : "${HPC_CI_SSH_USER:?set the HPC_CI_SSH_USER secret to the HPC login user}"
-          # hpc-batch is the alias baked into the image's ~/.ssh/config and
-          # known_hosts. BatchMode fails instead of prompting; the baked
-          # known_hosts is what lets host-key checking pass for hpc-batch.
+          # hpc-batch is an alias from ~/.ssh/config with a matching
+          # known_hosts entry — baked into the image on the `arc` leg, present on
+          # the host on the `hpc` leg. BatchMode fails instead of prompting, so a
+          # missing key or unknown host is an error here rather than a hang.
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "${HPC_CI_SSH_USER}@hpc-batch" \
             'echo "connected to HPC"'
 
   hpc-roundtrip:
-    runs-on: arc-hpc-pet-vsphere-prod
+    name: transfer round-trip (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      # Two lanes for the same test. `arc` is an ARC pod that pulls the
+      # internal-tools image, which is where the cluster ssh identity (keys, the
+      # hpc-batch alias, known_hosts) lives — hence the registry credentials.
+      # `hpc` is one of the pre-existing self-hosted runners labelled `hpc`:
+      # those carry the same identity on the host and run NO container, so they
+      # exercise the path that predates the ARC lane and prove these actions do
+      # not quietly depend on something baked into the image.
+      #
+      # fail-fast off, because which lane broke is the whole signal: green `arc`
+      # beside red `hpc` says "image-only assumption" out loud.
+      matrix:
+        include:
+          - name: arc
+            runner: arc-hpc-pet-vsphere-prod
+            container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+          - name: hpc
+            runner: hpc
+            container: ''
+    runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      # An empty image runs the job on the host — that is what the `hpc` leg
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
+      image: ${{ matrix.container }}
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
@@ -99,7 +159,7 @@ jobs:
           remote-dir: ${{ steps.push.outputs.remote-dir }}
 
   hpc-submit:
-    name: submit a SLURM job
+    name: submit a SLURM job (${{ matrix.name }})
     # The transfer round-trip above proves ssh, $SCRATCH expansion and a writable
     # work dir. This proves the half the build path actually depends on and
     # nothing else covered: troika submits to the scheduler, the compute node
@@ -111,9 +171,38 @@ jobs:
     # unique per run+attempt, so a re-run never reattaches to a finished job; the
     # per-artifact trees it leaves under the work dir are what the nightly GC
     # sweeps.
-    runs-on: arc-hpc-pet-vsphere-prod
+    strategy:
+      fail-fast: false
+      # Two lanes for the same test. `arc` is an ARC pod that pulls the
+      # internal-tools image, which is where the cluster ssh identity (keys, the
+      # hpc-batch alias, known_hosts) lives — hence the registry credentials.
+      # `hpc` is one of the pre-existing self-hosted runners labelled `hpc`:
+      # those carry the same identity on the host and run NO container, so they
+      # exercise the path that predates the ARC lane and prove these actions do
+      # not quietly depend on something baked into the image.
+      #
+      # fail-fast off, because which lane broke is the whole signal: green `arc`
+      # beside red `hpc` says "image-only assumption" out loud.
+      matrix:
+        include:
+          - name: arc
+            runner: arc-hpc-pet-vsphere-prod
+            container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+          - name: hpc
+            runner: hpc
+            container: ''
+    runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      # An empty image runs the job on the host — that is what the `hpc` leg
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
+      image: ${{ matrix.container }}
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
