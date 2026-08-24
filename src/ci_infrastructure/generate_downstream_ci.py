@@ -68,10 +68,12 @@ Schema additions consumed (sibling to the existing [[deps]] / [[matrix.X.include
     # An empty/missing triggers means push/PR-only (no cross-repo entry).
     needs = ["fortmath/build"]   # cross-repo: "<package-name>/<kind>"
     ctest = true                 # optional; run ctest against the build tree
-                                 # after publishing, so an upstream-driven build
+                                 # BEFORE publishing, so an upstream-driven build
                                  # proves the consumer still WORKS and not just
-                                 # that it still links. Requires the `action`
-                                 # composite to expose a `build-dir` output.
+                                 # that it still links -- and a red suite leaves
+                                 # no artifact for anyone to consume. Requires the
+                                 # `action` composite to expose a `build-dir`
+                                 # output.
                                  # Runner-only: an HPC kind's ctest belongs in
                                  # its job-script, where it runs on the compute
                                  # node rather than on the submitting pod.
@@ -1484,10 +1486,22 @@ def _check_run_finish_step(check_name: str) -> Step:
 def _ctest_step(mk: MatrixKind) -> Step:
     """`ctest` against the build tree the kind's composite left behind.
 
-    Emitted after the publish step, mirroring each repo's hand-written ci.yml:
-    a consumer of THIS package picks the artifact up as soon as publish runs and
-    never waits on these tests. Reads `build-dir` from the composite (id: build),
-    which is why a kind that sets `ctest` must expose that output.
+    Emitted BEFORE the publish step, so a red suite means no artifact. That
+    ordering is the only thing standing between a failing test and a consumer
+    linking against its output: the store records existence and nothing else --
+    resolve_deps and fetch_deps both decide with a bare `object_exists`, and
+    check_artifact deliberately stops asking about the producing run the moment
+    the object is found. An artifact published before its tests ran is therefore
+    indistinguishable from a green one, and the `conclusion == 'success'` gate on
+    the orchestrator does not help: it stops the FAN-OUT from starting, not a
+    rebuild-request waiter or a later run from consuming what is already there.
+
+    The cost is that a consumer now waits for this package's tests, where it used
+    to pick the artifact up as soon as publish ran. Accepted deliberately; revisit
+    with a marker object or an artifact retraction if the wall-clock hurts.
+
+    Reads `build-dir` from the composite (id: build), which is why a kind that
+    sets `ctest` must expose that output.
     """
     cmd = 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure'
     if mk.ctest_args:
@@ -1497,7 +1511,7 @@ def _ctest_step(mk: MatrixKind) -> Step:
 
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     """One job per kind: mint → checkout → decode → (setup-python) → fetch →
-    action call → (publish) → (test). The action call is the manifest-declared
+    action call → (test) → (publish). The action call is the manifest-declared
     composite (e.g. build-cxxmath); the per-job dispatch shim that used to
     live in each repo's downstream-job composite is inlined here.
 
@@ -1591,6 +1605,16 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     else:
         steps.append(_action_call_step(mk))
         if mk.publishes:
+            # Test BEFORE publish: a failing step ends the job, so a red suite
+            # leaves nothing in the store for a consumer to find. See _ctest_step
+            # for why nothing downstream can tell a red artifact from a green one
+            # once it has been published.
+            #
+            # Inside the publishes branch on purpose: ctest tests the tree the
+            # build left behind, and the schema rejects ctest on a kind that
+            # publishes nothing (it has no build tree).
+            if mk.ctest:
+                steps.append(_ctest_step(mk))
             steps.append(
                 {
                     "name": "Publish",
@@ -1602,11 +1626,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     },
                 }
             )
-            # Inside the publishes branch on purpose: ctest tests the tree the
-            # build left behind, and the schema rejects ctest on a kind that
-            # publishes nothing (it has no build tree).
-            if mk.ctest:
-                steps.append(_ctest_step(mk))
     # Last step: report the final conclusion back to the dispatcher (always()).
     steps.append(_check_run_finish_step(job_name))
 

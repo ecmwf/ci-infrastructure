@@ -16,6 +16,16 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # We intentionally install sudo so the same scripts work both:
 # - inside CI containers (where we are typically root already)
 # - on GitHub-hosted runners (where sudo is required)
+#
+# Two test runners belong here rather than in a variant, because every repo in
+# the stack runs its suite from CI and both are consumed as `<runner> ...` with
+# nothing declaring them:
+#   ctest   comes with the `cmake` package below -- no separate install needed.
+#   pytest  as the DISTRO package, not pip: ecflow's py3_u_* tests shell out to
+#           `/usr/bin/python3 -m pytest`, so it has to be importable from the
+#           system interpreter (dist-packages), which is exactly where apt puts
+#           it. Without it those ~52 tests fail instantly with "No module named
+#           pytest" rather than actually running.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -33,6 +43,7 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     python3-pip \
     python3-venv \
+    python3-pytest \
     python-is-python3 \
     libssl-dev \
  && rm -rf /var/lib/apt/lists/*
