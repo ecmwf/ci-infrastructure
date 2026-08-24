@@ -36,12 +36,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       # An empty image runs the job on the host — that is what the `hpc` leg
-      # wants. Credentials are gated on the image for the same reason: there is
-      # nothing to pull, so handing them over would be meaningless.
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
       image: ${{ matrix.container }}
       credentials:
-        username: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_NAME || '' }}
-        password: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_TOKEN || '' }}
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - name: SSH to HPC
         shell: bash
@@ -83,12 +89,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       # An empty image runs the job on the host — that is what the `hpc` leg
-      # wants. Credentials are gated on the image for the same reason: there is
-      # nothing to pull, so handing them over would be meaningless.
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
       image: ${{ matrix.container }}
       credentials:
-        username: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_NAME || '' }}
-        password: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_TOKEN || '' }}
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -182,12 +194,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       # An empty image runs the job on the host — that is what the `hpc` leg
-      # wants. Credentials are gated on the image for the same reason: there is
-      # nothing to pull, so handing them over would be meaningless.
+      # wants, and the validator accepts it here.
+      #
+      # The credentials are NOT gated on the image, though the instinct is to.
+      # `${{ matrix.container != '' && secrets.X || '' }}` fails template
+      # validation on the hpc leg with "Unexpected value ''": an empty image is
+      # allowed, an empty credentials username/password is not. So they are
+      # passed unconditionally and are simply unused when there is no image to
+      # pull — the secrets are always non-empty, which is all the validator wants.
       image: ${{ matrix.container }}
       credentials:
-        username: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_NAME || '' }}
-        password: ${{ matrix.container != '' && secrets.ECCR_PULL_ROBOT_TOKEN || '' }}
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
