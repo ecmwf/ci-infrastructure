@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-playground-ci/ubuntu24.04-gfortran13-boost-qt6
+# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gfortran13-boost-qt6
 # Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 #
 # FROMs the shared base and installs its whole toolchain, rather than layering on
@@ -16,7 +16,7 @@
 # that only packages actually linking them need; OpenSSL, being small and wanted
 # by several, lives in the base. So this image's name says exactly what it adds
 # over base.
-FROM eccr.ecmwf.int/public-playground-ci/ubuntu24.04-base:latest
+FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1

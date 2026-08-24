@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-playground-ci/ubuntu24.04-base
+# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-base
 # Shared foundation: every other public-images/ubuntu24.04/* image FROMs this, as
 # do the private images in ecmwf/ci-container-images.
 # Built/pushed by .github/workflows/images.yml (see IMAGES.md).

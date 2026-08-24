@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 # CI container images
 
 The container images the downstream-CI jobs run inside, hosted on the ECMWF
-Harbor registry **`eccr.ecmwf.int`**, project **`public-playground-ci`**
+Harbor registry **`eccr.ecmwf.int`**, project **`public-ci-images`**
 (world-readable). They are built and pushed by
 [`.github/workflows/images.yml`](.github/workflows/images.yml), which does its
 work through [`build-image.sh`](build-image.sh).
@@ -23,7 +23,7 @@ follow the conventions on this page.
 ```
 public-images/<platform>/<variant>/Dockerfile
   <->
-eccr.ecmwf.int/public-playground-ci/<platform>-<variant>
+eccr.ecmwf.int/public-ci-images/<platform>-<variant>
 ```
 
 The `/` becomes `-` because Harbor supports only two-level repository paths
@@ -127,14 +127,14 @@ would build against the previously published base and prove nothing.
 digest rather than a tag, the labels have it:
 
 ```sh
-skopeo inspect docker://eccr.ecmwf.int/public-playground-ci/<platform>-<variant>:<tag> \
+skopeo inspect docker://eccr.ecmwf.int/public-ci-images/<platform>-<variant>:<tag> \
   | jq '.Labels | {dockerfile: ."int.ecmwf.ci.dockerfile",
                    revision:   ."org.opencontainers.image.revision"}'
 ```
 
 From inside a running container: `echo "$CI_INFRASTRUCTURE_BAKED_REF"`.
 
-**Source → image:** `eccr.ecmwf.int/public-playground-ci/<platform>-<variant>`,
+**Source → image:** `eccr.ecmwf.int/public-ci-images/<platform>-<variant>`,
 at the tag `./build-image.sh --print-tag <platform>/<variant>` prints.
 
 ### Label set
@@ -148,7 +148,7 @@ because its base is external and its content is not a pure function of git).
 
 1. Create `public-images/<platform>/<variant>/Dockerfile`.
 2. If it builds on the shared foundation, start with
-   `FROM eccr.ecmwf.int/public-playground-ci/<platform>-base:latest`.
+   `FROM eccr.ecmwf.int/public-ci-images/<platform>-base:latest`.
 3. Open a PR — the workflow discovers the new directory and validates it. On
    merge to `main` it is built and pushed.
 
@@ -182,7 +182,7 @@ the tag names.
 
 | Secret | Used for |
 |---|---|
-| `PUBLIC_ECCR_ROBOT_NAME` / `PUBLIC_ECCR_ROBOT_TOKEN` | pushing to `public-playground-ci` |
+| `PUBLIC_ECCR_ROBOT_NAME` / `PUBLIC_ECCR_ROBOT_TOKEN` | pushing to `public-ci-images` |
 | `CI_PERMISSIONS_APP_CLIENT_ID` / `CI_PERMISSIONS_APP_PRIVATE_KEY` | minting the `actions: write` token that dispatches the private image rebuild |
 
 Reads are anonymous, so the discover job needs no secrets and works on pull

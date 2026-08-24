@@ -60,7 +60,7 @@ jobs:
   discover:
     # ubuntu-latest, not ubuntu-slim: the registry query goes through
     # `docker buildx imagetools`, and slim runs unprivileged with no docker.
-    # The reads are anonymous -- public-playground-ci is world-readable -- so
+    # The reads are anonymous -- public-ci-images is world-readable -- so
     # this job needs no secrets and works on pull requests from forks.
     runs-on: ubuntu-latest
     outputs:
@@ -104,7 +104,7 @@ jobs:
           IMAGE: ${{ matrix.name }}
           # Only the publishing leg gets the push credentials. A pull request
           # cannot push (PUSH is false), and it does not need them to PULL either:
-          # public-playground-ci is world-readable -- smoke-test-runners.yml pulls
+          # public-ci-images is world-readable -- smoke-test-runners.yml pulls
           # the base with its `credentials:` block commented out. build-image.sh
           # treats empty values as "skip login", so PR builds just work.
           PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
@@ -140,7 +140,7 @@ jobs:
           IMAGE: ${{ matrix.name }}
           # Only the publishing leg gets the push credentials. A pull request
           # cannot push (PUSH is false), and it does not need them to PULL either:
-          # public-playground-ci is world-readable -- smoke-test-runners.yml pulls
+          # public-ci-images is world-readable -- smoke-test-runners.yml pulls
           # the base with its `credentials:` block commented out. build-image.sh
           # treats empty values as "skip login", so PR builds just work.
           PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
