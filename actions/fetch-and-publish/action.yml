@@ -186,20 +186,13 @@ runs:
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
         INSTALL_PATH: ${{ inputs.install-path }}
 
-    # Note: an earlier revision wrote `path: install-path / key: artifact-name`
-    # via actions/cache/save@v5 here. That cache had no consumer in the
-    # playground (artifacts are distributed via upload-artifact + the gh
-    # artifact store, read on the consumer side by fetch_deps.py), and it
-    # raced across concurrent runs at the same SHA — both runs would try to
-    # reserve the same key, one would lose with "Unable to reserve cache
-    # with key …, another job may be creating this cache" and silently
-    # continue. The step was removed because nothing read what it wrote.
-    #
-    # If anyone re-introduces actions/cache/save (or actions/cache@v5) here,
-    # do NOT let "Unable to reserve" / "Failed to save" warnings flow through
-    # silently — wrap the call in a post-step that greps the action's stderr
-    # and `exit 1`s on either phrase. The current code carries no cache, so
-    # any future warning of that shape is by definition a regression.
+    # Deliberately no actions/cache here: artifacts are distributed via the
+    # object store and read back by fetch_deps.py, so a per-SHA cache has no
+    # consumer, and concurrent runs at the same SHA race for the key ("Unable to
+    # reserve cache with key …") and then silently continue. If you do
+    # re-introduce it, wrap the call in a post-step that greps the action's
+    # stderr for "Unable to reserve" / "Failed to save" and `exit 1`s — this
+    # action carries no cache, so any warning of that shape is a regression.
 
     - name: Create artifact tar
       if: inputs.mode == 'publish' && inputs.found != 'true'

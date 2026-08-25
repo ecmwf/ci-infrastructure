@@ -30,10 +30,9 @@ sites:
   # the internal-tools image's known_hosts carries the same set (aa, ab, ac, ad,
   # ag, hpc, lumi).
   #
-  # Being short of one is not a soft failure: ectrans' fetch-hpc-tree died with
-  # `troika.InvocationError: Unknown site 'ac-batch'` against a cluster that was
-  # working perfectly, purely because this file did not list it. So the whole
-  # set is here rather than only the ones we have seen used.
+  # Being short of one is not a soft failure: a consumer's job dies with
+  # `troika.InvocationError: Unknown site '<name>'` against a perfectly healthy
+  # cluster. So the whole set is here, not only the sites we have seen used.
   #
   # build-package-hpc also carries `sync_clusters` and `hpc_type` per site. Those
   # are its own scheduling concepts, not troika's, and nothing here reads them.

@@ -33,7 +33,7 @@ name: Smoke test runners
 # The second job compiles a small C++ project through sccache and proves the
 # result came back from the bucket rather than from a local cache. Its logic
 # lives in scripts/probe_sccache.py, not in this file, so it can be run by hand
-# the same way -- which is how the object-store probe's own bug was found.
+# the same way.
 on:
   workflow_dispatch:
 
@@ -52,9 +52,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
-      # credentials:
-      #   username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
-      #   password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
       - name: Report runner facts
         shell: bash
@@ -104,22 +101,8 @@ jobs:
 
       - name: Probe object store access
         shell: bash
-        # env:
-          # The artifact store and sccache share one endpoint and one credential
-          # pair, differing only in bucket. The names match what s3_store reads,
-          # so this block is a passthrough and the same names work by hand.
-          # ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
-          # ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
-          # ARTIFACT_S3_BUCKET: ${{ secrets.ARTIFACT_S3_BUCKET }}
-          # SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
-          # AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          # AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # ARTIFACT_S3_ENDPOINT: ${{ vault_ARTIFACT_S3_ENDPOINT }}
-          # ARTIFACT_S3_REGION: ${{ vault_ARTIFACT_S3_REGION }}
-          # ARTIFACT_S3_BUCKET: ${{ vault_ARTIFACT_S3_BUCKET }}
-          # SCCACHE_BUCKET: ${{ vault_SCCACHE_BUCKET }}
-          # AWS_ACCESS_KEY_ID: ${{ vault_AWS_ACCESS_KEY_ID }}
-          # AWS_SECRET_ACCESS_KEY: ${{ vault_AWS_SECRET_ACCESS_KEY }}
+        # The vault-action step above exports the names s3_store itself reads, so
+        # the probe needs no env block and the same command works by hand.
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py

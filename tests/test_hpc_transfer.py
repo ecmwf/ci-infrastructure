@@ -408,16 +408,13 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
 # The packaged troika site config
 #
 # Nothing else in the suite touches it: every other HPC test monkeypatches
-# load_site, so the site name it is handed is only a string. That blind spot is
-# how `ac-batch` stayed missing until ectrans' ci-hpc job hit
-# `troika.InvocationError: Unknown site 'ac-batch'` in fetch-hpc-tree — the
-# cluster and the ssh alias were fine, the config simply did not list the site.
-# These load the real packaged config, so a site that is removed, renamed or
-# mistyped fails here instead of in a consumer's HPC job.
-# --------------------------------------------------------------------------- #
+# load_site, so the site name it is handed is only a string. These load the real
+# packaged config, so a site that is removed, renamed or mistyped fails here
+# instead of in a consumer's HPC job with `troika.InvocationError: Unknown site`.
+#
 # Kept in step with ecmwf/build-package-hpc's config.yml, the de-facto register
-# of which sites exist (ci-hpc-generic drives it). A site missing from our copy
-# is not a soft failure — it is `Unknown site` in a consumer's HPC job.
+# of which sites exist (ci-hpc-generic drives it).
+# --------------------------------------------------------------------------- #
 BATCH_SITES = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
 DIRECT_SITES = ["hpc-login", "lumi-login", "local-direct"]
 

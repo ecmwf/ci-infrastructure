@@ -217,7 +217,7 @@ def compute_platform_slug(platform: str) -> str:
     by a cxxmath build under the second instead of being rebuilt just because
     the image tag changed.
 
-    Because the image tag no longer enters the slug, the caller owns cache
+    Because the image tag does not enter the slug, the caller owns cache
     invalidation: bump the platform string (e.g. `ubuntu-24.04-r2`) when an
     ABI-relevant change ships within one distro release.
 

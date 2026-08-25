@@ -199,13 +199,10 @@ def test_find_active_job_parses_jid() -> None:
 
 
 def test_find_active_job_ignores_a_site_decorated_comment() -> None:
-    """The regression that broke every reattaching HPC job.
-
-    ECMWF's sbatch wrapper appends its own accounting fields to the job Comment,
-    so a run id read back from it arrived as
-    ``32724386465-1;Gres=gres/ssdtmp:20G;``. That value was then used to name a
-    local tarball, and the embedded '/' made `tar -czf` fail outright. We must
-    return the jid and nothing else, whatever the site puts in the extra field.
+    """ECMWF's sbatch wrapper appends its own accounting fields to the job
+    Comment, so a run id read back from it arrives as
+    ``32724386465-1;Gres=gres/ssdtmp:20G;`` — an embedded '/' that no file can be
+    named for. Return the jid and nothing else, whatever the site appends.
     """
     conn = RecordingConnection(squeue_stdout=b"777|32724386465-1;Gres=gres/ssdtmp:20G;\n")
     assert find_active_job_by_name(conn, job_name="ci-art", user=None) == 777
@@ -777,18 +774,14 @@ def test_submit_wait_publish_mode_checks_cache_and_fetches(monkeypatch: pytest.M
 def test_submit_wait_reattach_does_not_reship_when_a_marker_is_present(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The scenario that broke every HPC leg in the Downstream HPC fan-out.
+    """squeue reports an in-flight job for this artifact, so we reattach. Its
+    source is already staged (a marker is present), so nothing may be re-shipped
+    — the job may be mid-build, and `ship_source` renames the staging tree aside.
 
-    squeue reports an in-flight job for this artifact, so we reattach. Its source
-    is already staged (a marker is present), so nothing may be re-shipped — the
-    job may be mid-build, and `ship_source` renames the staging tree aside.
-
-    Before the fix this path read the submitting run id out of the job's SLURM
-    Comment. ECMWF's sbatch wrapper decorates that field, so the value came back
-    as `<run>-<attempt>;Gres=gres/ssdtmp:20G;`, no marker of that name ever
-    existed, and every reattach re-shipped — dying on `tar -czf` because of the
-    '/' in `gres/ssdtmp`. Nothing here reads the Comment any more, so a decorated
-    one is simply never seen.
+    The marker is named for the staging dir, never for the submitting run id: the
+    job's SLURM Comment is decorated by ECMWF's sbatch wrapper, so a run id read
+    back from it would name a marker that never existed and every reattach would
+    re-ship.
     """
     result, calls, _ = _invoke_submit_wait(
         monkeypatch, tmp_path, no_publish=False, squeue_stdout=b"777\n", marker_present=True
@@ -954,10 +947,10 @@ def test_every_cli_command_dispatches_through_the_group() -> None:
 
     Every other CLI test here invokes a command *function* directly, which never
     touches the group — so a command renamed or not registered would be invisible
-    to this suite. That is how a stale image reporting "No such command
-    'push-tree'" got as far as it did. The composite actions call these names
-    verbatim (see actions/{push,fetch,remove}-hpc-tree and build-on-hpc), so the
-    set is a contract, not an implementation detail.
+    to this suite, and only surface as "No such command" in a consumer's job. The
+    composite actions call these names verbatim (see
+    actions/{push,fetch,remove}-hpc-tree and build-on-hpc), so the set is a
+    contract, not an implementation detail.
     """
     expected = {"submit-wait", "cancel", "gc", "fetch-tree", "push-tree", "remove-tree"}
     assert set(orch.main.commands) == expected

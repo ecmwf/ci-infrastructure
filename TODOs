@@ -2,13 +2,11 @@
 
 - create documentation
 
-- use Macbook images
+- use Mac images
 
 - give a link to the artifact [SECURITY]
 
 - improve output of ctest, perhaps there is an available action?
-
-- use ubuntu-slim where possible
 
 - document that fan-out changes cannot be tested on a branch. `on: workflow_run`
   always executes the DEFAULT BRANCH's copy of trigger-downstream.yml, so a
@@ -162,6 +160,59 @@ HPC:
   generate_downstream_ci.py:284/1514, hpc/__init__.py:8, hpc/orchestrate.py:11.
   Correct as-is, meaning the CLUSTER's login node: HPC.md:189, s3_store.py:49,
   the harica cert header, troika-config.yml:13, hpc/orchestrate.py:435.
+
+- HPC job paths are keyed on the artifact name alone, so two runs building the
+  same artifact collide. RemotePaths.derive(work_dir, artifact_name) gives both
+  hpc-jobs/<artifact>.out (jobscript's #SBATCH --output) and staging/<artifact>/,
+  under which plan_remote_prefixes unpacks the deps as deps/<i>. submit-wait then
+  TAILS that .out live, so a concurrent run's job writes into the file this run is
+  reading and this run reports the other job's outcome.
+
+  Seen on ecmwf/ecflow run 32743760455, build-hpc (atos-hpc-nvidia): its own job
+  37369545 was memory-killed at 15:27:40, then at 15:28:15 job 37370645
+  (--comment=32744666086-1, i.e. a DIFFERENT github run) appeared in the same .out
+  and its "Could not find a package configuration file provided by ecbuild"
+  became this run's reported failure. The tell is right in the error text -- the
+  run blames a job id it never submitted. Hours went into the find_package red
+  herring before the job ids gave it away. The shared staging/<artifact>/deps is
+  very likely why that second job could not find ecbuild in the first place: the
+  two runs race on one deps dir.
+
+  Not a simple "add the run id" fix: the artifact-keyed name is load-bearing for
+  reattach (find_active_job_by_name is how a re-run adopts an in-flight job).
+  Needs a deliberate split -- reattach keyed on the SLURM job name, but per-run
+  output and deps paths -- plus a decision on what a reattaching run should tail.
+  Minimum viable improvement meanwhile: have submit-wait verify the job id in the
+  output it reports against the one it submitted, and say so loudly when they
+  differ, so this never again presents as a build error.
+
+- -DCMAKE_PREFIX_PATH in the HPC recipes is inert, and is a trap the day the
+  environment stops covering for it. jobscript.py:172 exports CMAKE_PREFIX_PATH
+  colon-joined (plan_remote_prefixes returns ":".join(...)), which is correct for
+  an ENVIRONMENT variable. But ecflow's four recipes
+  (.ci/hpc/build-{gnu,intel,aocc,nvidia}.sh) then pass
+  -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH", and a -D CACHE variable is a
+  SEMICOLON-separated list -- so the colon-joined string arrives as one path that
+  does not exist.
+
+  Verified against a real ecbuild install: -D colon + env set -> found (the env
+  var rescues it); -D semicolon + env empty -> found; -D colon + env EMPTY ->
+  "Could not find a package configuration file provided by ecbuild". So today the
+  flag does nothing, and any build whose env var is cleared or empty (a no-deps
+  build exports an empty value) fails with a message that points at the package
+  rather than at the separator.
+
+  Fix either way: drop the -D from the recipes and let the env var do the work, or
+  emit the value semicolon-joined for -D use. Do not leave both halves disagreeing.
+
+- ecflow's atos-hpc-gnu leg is red on a runtime libstdc++ mismatch, unrelated to
+  the nvidia memory kill. ctest's python tests fail with
+  "ImportError: /lib64/libstdc++.so.6: version `GLIBCXX_3.4.32' not found
+  (required by .../libs/pyext/python3/ecflow.so)": the extension is built with the
+  gcc/15.2.0 module but resolves the SYSTEM libstdc++ (8.5.0) when imported.
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON does not help -- it governs the INSTALL
+  tree, and ctest runs out of the build tree. Wants the module's libstdc++ on the
+  runtime path for the test step (LD_LIBRARY_PATH, or a build-tree RPATH).
 
 
 - declare version for troika and pin to it
