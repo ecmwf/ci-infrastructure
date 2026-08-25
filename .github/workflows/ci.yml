@@ -52,11 +52,8 @@ jobs:
   # never touched by a commit whose tests are red -- a separate workflow could
   # only express that with workflow_run, which TODOs already records as a trap.
   #
-  # This replaces a cross-repo dance: this job used to diff `src pyproject.toml`
-  # against HEAD~1, mint a GitHub App token, and dispatch ecmwf/ci-container-images
-  # to commit a CI_INFRASTRUCTURE_REF pin. The images live here now, so the pin,
-  # the diff heuristic and the bot commit are all gone -- an image's tag is a
-  # function of this repo's committed content, and images.yml owns that answer.
+  # The images live in this repo, so an image's tag is a function of this repo's
+  # committed content and images.yml owns that answer.
   images:
     needs: mypy_and_tests
     uses: ./.github/workflows/images.yml

@@ -96,9 +96,9 @@ See `samples/hpc/build.sh` for a template recipe.
   compute nodes and is the classic "wrong work directory" failure.
 - **`vars.HPC_CI_WORK_DIR`** (a repo/org Actions *variable*): a **runner-local**
   scratch directory for the shipped/fetched tarballs and the fetched install
-  tree. It no longer needs to survive across re-runs — reattach goes through the
-  scheduler by job name, not a local file — so any writable dir works; if unset
-  it falls back to `$RUNNER_TEMP`.
+  tree. It need not survive across re-runs — reattach goes through the scheduler
+  by job name, not a local file — so any writable dir works; if unset it falls
+  back to `$RUNNER_TEMP`.
 - **`secrets.TROIKA_USER`** (optional): the remote/scheduler user for troika.
 
 ### Why the work dir is expanded on the cluster, not on the runner
@@ -143,20 +143,19 @@ Re-running a job is safe and cheap:
 Reattach uses the **scheduler** as the shared job store: each job is named
 `ci-<artifact>`, and `submit-wait` finds an in-flight job by name (`squeue -n`)
 before submitting. Because the scheduler is global, this dedups across
-independent runners — the old runner-local jid file could not, so two runners
-could each submit a duplicate.
+independent runners; a runner-local jid file cannot, so two runners would each
+submit a duplicate.
 
 The **name is the only thing read back**. A job also carries its submitting run
 id in the SLURM `--comment`, but that is provenance for a human reading
 `squeue`/`sacct` and is never parsed. `Comment` belongs to the scheduler and
 sites rewrite it: ECMWF's `sbatch` wrapper appends its own accounting fields, so
-a run id recovered from it arrives as `<run>-<attempt>;Gres=gres/ssdtmp:20G;`.
-While that value was used to name the transfer marker and the local source
-tarball, every reattaching job died in `tar -czf` on the `/` inside
-`gres/ssdtmp`. The transfer marker is therefore named for the **staging dir**,
-which is already per-artifact — exactly the scope the rendezvous needs — so a
-reattaching runner can ask "has anyone finished shipping?" and re-drop the marker
-without knowing which run submitted the job it adopted.
+a run id recovered from it arrives as `<run>-<attempt>;Gres=gres/ssdtmp:20G;` —
+which contains a `/` and so cannot name a file at all. The transfer marker is
+therefore named for the **staging dir**, which is already per-artifact — exactly
+the scope the rendezvous needs — so a reattaching runner can ask "has anyone
+finished shipping?" and re-drop the marker without knowing which run submitted
+the job it adopted.
 
 Cancelling the GitHub job scancels the batch job (a signal handler in
 `submit-wait`), so a cancellation never orphans work on the cluster. troika has

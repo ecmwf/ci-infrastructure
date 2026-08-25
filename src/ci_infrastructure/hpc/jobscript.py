@@ -158,9 +158,9 @@ def render_job_script(
     # The COMMENT is provenance only — which run submitted this job, for a human
     # reading `squeue`/`sacct`. It is deliberately never read back: it belongs to
     # the scheduler, and sites rewrite it. ECMWF's sbatch wrapper appends its own
-    # fields, so a run id recovered from it came back as
-    # `<run>-<attempt>;Gres=gres/ssdtmp:20G;` — which, when it had been used to
-    # name a marker and a tarball path, broke every reattaching HPC job.
+    # fields, so a run id recovered from it comes back as
+    # `<run>-<attempt>;Gres=gres/ssdtmp:20G;` — a string with a `/` in it, which
+    # cannot name a marker or a tarball path.
     if job_name is not None:
         out.append(f"#SBATCH --job-name={job_name}")
     if run_id is not None:

@@ -14,9 +14,8 @@ name: Images
 # drift apart. That is why this file has:
 #
 #   - no `paths:` filter          )  each would be a second, independent answer
-#   - no `git diff` change set    )  to the same question, to be kept in sync
-#   - no list of images anywhere  )  by hand. The previous incarnation had all
-#                                    three, and they did drift.
+#   - no `git diff` change set    )  to the same question, to be kept in sync by
+#   - no list of images anywhere  )  hand -- and hand-kept answers drift.
 #
 # On a pull request nothing is pushed, so "tag missing" means "this is what
 # merging would build" -- exactly the set worth validating.

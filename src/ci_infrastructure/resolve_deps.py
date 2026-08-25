@@ -64,7 +64,7 @@ platform slot. `runs-on` and `container` are pure scheduling (which runner / ima
 delivers the tools) and never enter artifact identity. Declaring the same `platform`
 across legs lets several ABI-compatible images (and a same-distro host runner) share one
 artifact: a producer built under one image is reused under another instead of rebuilt.
-Because the image tag no longer enters the slug, you own cache invalidation — bump the
+Because the image tag does not enter the slug, you own cache invalidation — bump the
 platform string when the ABI changes within a distro release.
 
 The compiler segment of an artifact name is built by sorting the listed compiler-inputs
@@ -213,7 +213,7 @@ class DepSpec:
     option: str = ""
     options_input: str | None = None
     # Optional leg predicate: {matrix-field: {accepted values}}. None means the dep
-    # applies to every leg (the default, and the behaviour before this existed).
+    # applies to every leg (the default).
     # A dep that does not apply to a leg is absent from that leg's cmake-prefix-path
     # AND from its deps-hash8, so an upstream only enters the artifact identity of
     # the legs that actually build against it.

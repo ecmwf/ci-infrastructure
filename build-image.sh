@@ -21,14 +21,11 @@
 #   rebuild <=> that tag is not in the registry
 #
 # --discover and the build path compute that tag through the same functions
-# below, which is the whole point of this file. The predecessor of this script
-# had a second, independent answer -- a `git diff` changed-set in the workflow --
-# that had to be kept consistent with this one by hand. It was not: a change that
-# moved no directory in the diff also moved no tag, image_exists skipped the
-# build, and a dependent's :latest went on pointing at an image built on the
-# previous base. That is how a 26-commit-stale ci-infrastructure reached the HPC
-# round-trip job. Do not reintroduce a second mechanism -- not a `git diff`, not
-# a workflow `paths:` filter, not a hand-maintained list of images.
+# below, which is the whole point of this file. Do not reintroduce a second
+# mechanism -- not a `git diff`, not a workflow `paths:` filter, not a
+# hand-maintained list of images. A second answer drifts from this one, and when
+# it does the build is skipped, a dependent's :latest keeps pointing at an image
+# built on the previous base, and CI goes green on a stale image.
 #
 # Conventions (see IMAGES.md):
 #   - image ref  = <REGISTRY>/<PROJECT>/<platform>-<variant>:<tag>
@@ -46,10 +43,10 @@
 # absent: actions are fetched by GitHub at job time and never baked, and tests
 # are not installed.
 #
-# This deliberately OVER-approximates. An image that installs no ci-infrastructure
-# would still retag on every src/ commit. Over-building is safe and
+# This deliberately OVER-approximates: an image that installs no
+# ci-infrastructure still retags on every src/ commit. Over-building is safe and
 # under-building is not, so accept it rather than probing each Dockerfile for
-# what it installs -- that probe is exactly the machinery this script replaced.
+# what it installs.
 #
 # Env overrides: REGISTRY, PROJECT, IMAGE_TAG, IMAGE_SOURCE_REPO, BUILDX_BUILDER,
 #   PUBLIC_ECCR_ROBOT_NAME, PUBLIC_ECCR_ROBOT_TOKEN

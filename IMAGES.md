@@ -109,11 +109,9 @@ independent answer to the same question, to be kept in sync by hand:
 - no `paths:` filter on the workflow
 - no hand-maintained list of images anywhere (discovery is a glob)
 
-The predecessor of this design had all three. They drifted: a change that moved
-no directory in the diff also moved no tag, the existence check skipped the
-build, and a dependent's `:latest` went on pointing at an image built on the
-previous base — which is how a 26-commit-stale `ci-infrastructure` reached the
-HPC round-trip job.
+When a second answer drifts from the tag, the existence check skips the build
+and a dependent's `:latest` keeps pointing at an image built on the previous
+base — a stale image that CI happily reports green.
 
 On a pull request nothing is pushed, so "tag missing" means "this is what merging
 would build" — exactly the set worth validating. Dependents whose base is *also*

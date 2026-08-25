@@ -25,15 +25,13 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      #
       # lane x site. `include` entries whose keys match an existing combination
       # add their remaining keys to it, so each lane's runner/container is
-      # written once and applies to both of that lane's sites.
-      #
-      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
-      # fetch-hpc-tree against a cluster that was working fine — the site was
-      # simply missing from our troika config, and nothing exercised it. Both
-      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
-      # its known_hosts carries aa/ab/ac/ad/ag-batch.
+      # written once and applies to both of that lane's sites. ac-batch is
+      # covered alongside hpc-batch so a second cluster is exercised: both lanes
+      # can reach it — the image's ssh config matches `Host hpc-* a?-*` and its
+      # known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
         lane: [arc, hpc]
         site: [hpc-batch, ac-batch]
@@ -89,15 +87,13 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      #
       # lane x site. `include` entries whose keys match an existing combination
       # add their remaining keys to it, so each lane's runner/container is
-      # written once and applies to both of that lane's sites.
-      #
-      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
-      # fetch-hpc-tree against a cluster that was working fine — the site was
-      # simply missing from our troika config, and nothing exercised it. Both
-      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
-      # its known_hosts carries aa/ab/ac/ad/ag-batch.
+      # written once and applies to both of that lane's sites. ac-batch is
+      # covered alongside hpc-batch so a second cluster is exercised: both lanes
+      # can reach it — the image's ssh config matches `Host hpc-* a?-*` and its
+      # known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
         lane: [arc, hpc]
         site: [hpc-batch, ac-batch]
@@ -207,15 +203,13 @@ jobs:
       #
       # fail-fast off, because which lane broke is the whole signal: green `arc`
       # beside red `hpc` says "image-only assumption" out loud.
+      #
       # lane x site. `include` entries whose keys match an existing combination
       # add their remaining keys to it, so each lane's runner/container is
-      # written once and applies to both of that lane's sites.
-      #
-      # ac-batch is here because ectrans hit `Unknown site 'ac-batch'` in
-      # fetch-hpc-tree against a cluster that was working fine — the site was
-      # simply missing from our troika config, and nothing exercised it. Both
-      # lanes can reach it: the image's ssh config matches `Host hpc-* a?-*` and
-      # its known_hosts carries aa/ab/ac/ad/ag-batch.
+      # written once and applies to both of that lane's sites. ac-batch is
+      # covered alongside hpc-batch so a second cluster is exercised: both lanes
+      # can reach it — the image's ssh config matches `Host hpc-* a?-*` and its
+      # known_hosts carries aa/ab/ac/ad/ag-batch.
       matrix:
         lane: [arc, hpc]
         site: [hpc-batch, ac-batch]
