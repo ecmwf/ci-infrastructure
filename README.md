@@ -134,6 +134,65 @@ bot PRs are skipped by default. See
 [`actions/check-pr-declaration`](actions/check-pr-declaration/action.yml) for the
 matching rules, the known gaps, and the full input list.
 
+## Letting fork pull requests onto self-hosted hardware
+
+What is at risk here is the hardware and the credentials that reach it — an HPC
+account, a GPU node, a registry robot, an object store key. A `pull_request` run
+from a fork gets none of them, which is why jobs that need them do not merely
+fail for outside contributors, they cannot work at all. `pull_request_target`
+hands them over — to anyone who opens a pull request, the moment the job checks
+their branch out and runs it.
+[`actions/require-ci-approval`](actions/require-ci-approval/action.yml) is what
+makes that trade payable: the branch runs only after someone with write access
+has read the diff and applied `approved-for-ci`.
+
+```yaml
+jobs:
+  ci-approval:
+    # bash, jq, and gh only for revocation — no checkout, no Python, no network
+    # to reach a verdict, so the cheapest runner is the right one. The action
+    # says which tool is missing if an image turns out not to carry one.
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: write   # only so the label can be revoked again
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+
+  build-on-hpc:
+    needs: ci-approval
+    runs-on: hpc
+    ...
+```
+
+The step succeeds exactly when the gated jobs may run, so `needs:` is the whole
+wiring — no `if:` on the dependants. Two properties are the point, and both are
+easy to lose by rewriting this into something that looks equivalent:
+
+- **It fails; it does not skip.** The obvious spelling — `if: contains(labels,
+  'approved-for-ci')` on each job — is wrong, because a job skipped by a
+  conditional reports *Success* to the merge box. An unapproved pull request
+  would show a row of green ticks meaning "these never ran", and a required
+  status check on them would enforce nothing.
+- **Approval is per-push.** A `synchronize` or `reopened` event deletes the
+  label and fails, so a contributor cannot earn approval on a harmless diff and
+  then push the payload into the same pull request. The caller must therefore
+  listen for `synchronize`; without it the gate is decorative.
+
+It answers "may this contributor's code run on our hardware?", never "is this
+job worth running on this pull request?". Opt-in labels, paths filters and
+similar policy stay in the consuming repository, on the **gate job's own `if:`**
+— skipping the gate skips everything behind it, which is the right outcome when
+the jobs were not wanted anyway. The one thing that must not happen is that
+condition being folded into a per-job `if:` that also subsumes the approval
+decision.
+
+Two things it cannot do for you. Applying a label needs only *triage*
+permission, so a repository that hands triage to people it would not hand an
+HPC account has widened the gate — treat "who may label" as "who may approve".
+And a `pull_request_target` workflow always runs the base branch's copy of
+itself, so a pull request editing the gated workflow cannot test that edit; use
+`workflow_dispatch` on the branch.
+
 ## License
 
 [Apache License 2.0](LICENSE) In applying this licence, ECMWF does not

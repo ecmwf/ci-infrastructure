@@ -1,0 +1,171 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Require CI approval for fork pull requests
+description: >
+  Fail unless a fork pull request has been approved to run CI, so a
+  `pull_request_target` workflow cannot put an outside contributor's code onto
+  this repository's self-hosted hardware -- or near the credentials that reach
+  it -- until someone with write access has read the diff.
+
+  Approved: anything that is not a pull request; a head branch in the base
+  repository, since pushing to it already needed write access; or a fork
+  carrying `label`. Otherwise the step fails.
+
+  Hang the gated jobs off it with `needs:` and nothing else -- the step succeeds
+  exactly when they may run. Two invariants are easy to lose by "simplifying"
+  this. It FAILS rather than skipping, because a job skipped by an `if:` reports
+  Success, so gating on the label directly would show green ticks meaning "never
+  ran" and a required check on them would enforce nothing. And
+  `synchronize`/`reopened` revokes the label, so approval never outlives the
+  commit it was given for -- which means the caller MUST listen for
+  `synchronize`, or the gate is decorative.
+
+  Repository policy (opt-in labels, paths filters) belongs on the gate job's own
+  `if:`, where a skip skips everything behind it -- not in here, and never on
+  the gated jobs. Applying a label needs only triage permission, so treat "who
+  may label" as "who may approve". Needs bash and jq, plus gh only to revoke:
+  run it on the cheapest label. See the README for the rest.
+
+inputs:
+  label:
+    description: 'Label that grants approval. Applied by a maintainer, deleted again on every push.'
+    required: false
+    default: 'approved-for-ci'
+  revoke-on-push:
+    description: >
+      'true' (default): on `synchronize`/`reopened` of a fork pull request,
+      delete the label and fail. Needs `pull-requests: write`. Turning it off
+      means one approval covers every future push to that branch.
+    required: false
+    default: 'true'
+  trust-same-repo:
+    description: >
+      'true' (default) treats a head branch in the base repository as approved.
+      Set 'false' to demand the label from everyone.
+    required: false
+    default: 'true'
+  token:
+    description: 'Token with pull-requests:write, used only to revoke. Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  reason:
+    description: >
+      Why the step passed: not-a-pull-request, same-repo or approved. For logs
+      only -- do NOT gate jobs on it, or unapproved pull requests go green again.
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        # Per this repo's convention (commit a48f078) no input is interpolated
+        # into the script body. The pull request payload is not interpolated
+        # either: it is read from $GITHUB_EVENT_PATH with jq, so a label or a
+        # repository name can never reach the shell as syntax.
+        LABEL_INPUT: ${{ inputs.label }}
+        REVOKE_INPUT: ${{ inputs.revoke-on-push }}
+        TRUST_SAME_REPO_INPUT: ${{ inputs.trust-same-repo }}
+      run: |
+        set -euo pipefail
+
+        label="${LABEL_INPUT:-approved-for-ci}"
+
+        # Tri-state parse, so a typo ("yes", "True ") stops the workflow rather
+        # than silently picking the permissive branch of a security gate.
+        parse_bool() {
+          case "$2" in
+            ''|true|TRUE|True) printf 'true' ;;
+            false|FALSE|False) printf 'false' ;;
+            *)
+              echo "::error title=CI approval::input '$1' must be 'true' or 'false', got '$2'." >&2
+              exit 1
+              ;;
+          esac
+        }
+        revoke="$(parse_bool revoke-on-push "${REVOKE_INPUT:-}")"
+        trust_same_repo="$(parse_bool trust-same-repo "${TRUST_SAME_REPO_INPUT:-}")"
+
+        # Only ever called on the passing paths: the output exists for logs and
+        # for a caller that wants to say WHY it ran, not to gate anything.
+        pass() {
+          echo "reason=$1" >> "$GITHUB_OUTPUT"
+          echo "CI approval: $1"
+          exit 0
+        }
+
+        event="${GITHUB_EVENT_PATH:-}"
+        if [ -z "$event" ] || [ ! -f "$event" ]; then
+          echo "::error title=CI approval::no event payload at \$GITHUB_EVENT_PATH." >&2
+          exit 1
+        fi
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error title=CI approval::jq is not on PATH; run this job on ubuntu-latest or add jq to the runner image." >&2
+          exit 1
+        fi
+
+        pr_number="$(jq -r '.pull_request.number // empty' "$event")"
+
+        # No pull request in the payload: schedule, workflow_dispatch, push and
+        # merge_group have no fork to distrust, and gating them would strand the
+        # nightly run behind a label nobody can apply.
+        if [ -z "$pr_number" ]; then
+          pass not-a-pull-request
+        fi
+
+        head_repo="$(jq -r '.pull_request.head.repo.full_name // empty' "$event")"
+        base_repo="$(jq -r '.pull_request.base.repo.full_name // empty' "$event")"
+        action="$(jq -r '.action // empty' "$event")"
+        has_label="$(jq -r --arg l "$label" \
+          '[.pull_request.labels[]?.name] | index($l) | if . == null then "no" else "yes" end' "$event")"
+
+        # A deleted fork leaves head.repo null. Treat unknown provenance as a
+        # fork -- the fail-closed direction.
+        if [ -n "$head_repo" ] && [ "$head_repo" = "$base_repo" ] && [ "$trust_same_repo" = "true" ]; then
+          pass same-repo
+        fi
+
+        # Approval is spent by the push that follows it. Revoke first, so the
+        # label is gone even if the failure message below is never read.
+        if [ "$revoke" = "true" ] && { [ "$action" = "synchronize" ] || [ "$action" = "reopened" ]; }; then
+          if [ "$has_label" = "yes" ]; then
+            # @uri, not the raw name: labels may contain spaces and slashes.
+            encoded="$(printf '%s' "$label" | jq -sRr @uri)"
+            if ! gh api -X DELETE \
+                 "repos/$GITHUB_REPOSITORY/issues/$pr_number/labels/$encoded" >/dev/null 2>&1; then
+              # Fail loudly. A revocation that silently did not happen leaves a
+              # stale approval on a branch that has since changed, which is the
+              # exact hole this action exists to close.
+              echo "::error title=CI approval::could not remove the approval label from #$pr_number. Grant this job 'pull-requests: write', or set revoke-on-push: 'false' if that is really what you want." >&2
+              exit 1
+            fi
+            echo "Removed the approval label from #$pr_number: the head commit changed since it was applied."
+          fi
+          {
+            echo "### CI approval required"
+            echo
+            echo "The head commit of this pull request changed, so its earlier approval no longer applies."
+            printf "A maintainer must review the new commits and re-apply the '%s' label.\n" "$label"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=CI approval::new commits need a fresh approval; a maintainer must re-apply the approval label after reviewing them." >&2
+          exit 1
+        fi
+
+        if [ "$has_label" = "yes" ]; then
+          pass approved
+        fi
+
+        {
+          echo "### CI approval required"
+          echo
+          echo "This pull request comes from a fork, and the jobs behind this gate run its code"
+          echo "with repository secrets. A maintainer must read the diff and apply the"
+          printf "'%s' label before they will run.\n" "$label"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "::error title=CI approval::this fork pull request is not approved to run CI; a maintainer must apply the approval label after reviewing the diff." >&2
+        exit 1
