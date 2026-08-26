@@ -30,7 +30,7 @@ _DEP: Final = {
     "repo": "org/downstream-ci-repo-cxx-py",
     "ref": "main",
     "sha": "deadbeef",
-    "artifact-name": "cxxmath-python-atos-hpc-gnu-Release-deadbeef",
+    "artifact-name": "cxxmath-python-hpc-atos-gnu-Release-deadbeef",
     "cached": True,
     "source": "store",
     "install-path": "/tmp/install/cxxmath-python",

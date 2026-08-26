@@ -61,7 +61,10 @@ Manifest schema (.ci/manifest.toml in each consumer repo):
 
 `platform` is REQUIRED on every matrix leg and is used verbatim as the artifact-name
 platform slot. `runs-on` and `container` are pure scheduling (which runner / image
-delivers the tools) and never enter artifact identity. Declaring the same `platform`
+delivers the tools) and never enter artifact identity. `runs-on` may name a runner
+*class* from `runners.RUNNER_CLASSES` (e.g. "hpc-submit") instead of a fleet label; the
+class is substituted for the label in the emitted matrix, so an org-wide runner rename is
+one edit in that table rather than one per leg. Any other value passes through verbatim. Declaring the same `platform`
 across legs lets several ABI-compatible images (and a same-distro host runner) share one
 artifact: a producer built under one image is reused under another instead of rebuilt.
 Because the image tag does not enter the slug, you own cache invalidation — bump the
@@ -124,6 +127,7 @@ from ._github_api import (
 )
 from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
+from .runners import resolve_runner
 
 # Discriminating fields that identify a buildable leg — the inputs to the
 # artifact name. `platform` is the binary-compatibility class; `runs-on` and
@@ -1187,6 +1191,14 @@ def _run(
                 ),
             }
             merged = {**entry, "_resolved": resolved_block}
+            # Substitute runner classes LAST, after the leg has been used for
+            # resolution: `runs-on` is scheduling only and never enters an
+            # artifact name, so what the manifest wrote is what identity was
+            # computed from either way. It has to happen here rather than in the
+            # workflow, because `runs-on: ${{ matrix['runs-on'] }}` is not
+            # re-evaluated -- whatever this JSON holds is the label GitHub uses.
+            if "runs-on" in merged:
+                merged["runs-on"] = resolve_runner(merged["runs-on"])
             out_include.append(merged)
 
         matrices_out[mname] = {"include": out_include}

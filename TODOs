@@ -168,7 +168,7 @@ HPC:
   TAILS that .out live, so a concurrent run's job writes into the file this run is
   reading and this run reports the other job's outcome.
 
-  Seen on ecmwf/ecflow run 32743760455, build-hpc (atos-hpc-nvidia): its own job
+  Seen on ecmwf/ecflow run 32743760455, build-hpc (hpc-atos-nvidia): its own job
   37369545 was memory-killed at 15:27:40, then at 15:28:15 job 37370645
   (--comment=32744666086-1, i.e. a DIFFERENT github run) appeared in the same .out
   and its "Could not find a package configuration file provided by ecbuild"
@@ -212,7 +212,7 @@ HPC:
   Fix either way: drop the -D from the recipes and let the env var do the work, or
   emit the value semicolon-joined for -D use. Do not leave both halves disagreeing.
 
-- ecflow's atos-hpc-gnu leg is red on a runtime libstdc++ mismatch, unrelated to
+- ecflow's hpc-atos-gnu leg is red on a runtime libstdc++ mismatch, unrelated to
   the nvidia memory kill. ctest's python tests fail with
   "ImportError: /lib64/libstdc++.so.6: version `GLIBCXX_3.4.32' not found
   (required by .../libs/pyext/python3/ecflow.so)": the extension is built with the

@@ -38,7 +38,7 @@ _HPC_MANIFEST: Final = """
     site = "hpc-batch"
     compiler = "gnu-12"
     build-type = "Release"
-    platform = "atos-hpc-gnu"
+    platform = "hpc-atos-gnu"
     """
 
 
@@ -90,7 +90,7 @@ def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> N
         site = "hpc-batch"
         python-version = "3.11"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         job-script = "./.ci/hpc/build-py3.11.sh"
 
         [[matrix.build-hpc.include]]
@@ -98,7 +98,7 @@ def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> N
         site = "hpc-batch"
         python-version = "3.12"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         job-script = "./.ci/hpc/build-py3.12.sh"
         """,
     )
@@ -130,7 +130,7 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
         runs-on = ["self-hosted", "linux", "hpc"]
         site = "hpc-batch"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         job-script = "./.ci/hpc/test.sh"
         """,
     )
@@ -224,14 +224,14 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
         site = "hpc-batch"
         compiler = "gnu-12"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
 
         [[matrix.build.include]]
         runs-on = "hpc-login-selfhosted"
         site = "lumi"
         compiler = "gnu-12"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     [m] = parse_all(tmp_path)
@@ -258,7 +258,7 @@ def test_hpc_leg_accepts_list_runs_on(tmp_path: Path) -> None:
         site = "hpc-batch"
         compiler = "gnu-12"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     [m] = parse_all(tmp_path)
@@ -282,7 +282,7 @@ def test_hpc_kind_rejects_action(tmp_path: Path) -> None:
         [[matrix.build.include]]
         runs-on = "hpc-login-selfhosted"
         site = "hpc-batch"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     with pytest.raises(SchemaError, match="execution = 'hpc' and `action`"):
@@ -302,7 +302,7 @@ def test_hpc_kind_requires_job_script_when_triggered(tmp_path: Path) -> None:
         [[matrix.build.include]]
         runs-on = "hpc-login-selfhosted"
         site = "hpc-batch"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     with pytest.raises(SchemaError, match="no `job-script`"):
@@ -343,7 +343,7 @@ def test_unknown_execution_value_rejected(tmp_path: Path) -> None:
         [[matrix.build.include]]
         runs-on = "hpc-login-selfhosted"
         site = "hpc-batch"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     with pytest.raises(SchemaError):

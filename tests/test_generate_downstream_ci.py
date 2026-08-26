@@ -292,7 +292,7 @@ def test_job_name_includes_python_version_when_legs_vary_it(tmp_path: Path) -> N
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
     assert yaml is not None
     assert (
-        "name: a/build (${{ matrix['cxx-compiler'] }}, py${{ matrix.python-version }}, ${{ matrix.platform }})" in yaml
+        "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }}, py${{ matrix.python-version }})" in yaml
     )
 
 
@@ -338,7 +338,7 @@ def test_job_name_includes_options_when_a_leg_carries_them(tmp_path: Path) -> No
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
     assert yaml is not None
     assert (
-        "name: a/build (${{ matrix['cxx-compiler'] }}, ${{ matrix.platform }}, "
+        "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }}, "
         "${{ matrix.options || 'default' }})" in yaml
     )
 
@@ -377,7 +377,7 @@ def test_job_name_omits_options_slot_when_no_leg_has_them(tmp_path: Path) -> Non
     [m] = parse_all(tmp_path)
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
     assert yaml is not None
-    assert "name: a/build (${{ matrix['cxx-compiler'] }}, ${{ matrix.platform }})" in yaml
+    assert "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }})" in yaml
     assert "matrix.options" not in yaml
 
 
@@ -410,7 +410,7 @@ def test_job_name_python_version_not_duplicated_when_sole_distinguisher(tmp_path
     [m] = parse_all(tmp_path)
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
     assert yaml is not None
-    assert "name: a/test (py${{ matrix.python-version }}, ${{ matrix.platform }})" in yaml
+    assert "name: a/test (${{ matrix.platform }}, py${{ matrix.python-version }})" in yaml
 
 
 def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> None:
@@ -518,7 +518,7 @@ def test_ctest_rejected_on_hpc_kind(tmp_path: Path) -> None:
         runs-on = "hpc-login-selfhosted"
         site = "hpc-batch"
         build-type = "Release"
-        platform = "atos-hpc-gnu"
+        platform = "hpc-atos-gnu"
         """,
     )
     with pytest.raises(SchemaError, match="ctest.*execution = 'hpc'"):

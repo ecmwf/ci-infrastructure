@@ -651,7 +651,7 @@ def submit_wait(
         loser of the submit race still reaches this. ``ship_source`` starts by
         RESETTING the staging dir — it renames the tree aside — so a second ship
         deletes ``deps/<i>`` out from under a job that is already reading them.
-        That is not hypothetical: it took out an ecflow atos-hpc-nvidia job with
+        That is not hypothetical: it took out an ecflow hpc-atos-nvidia job with
 
             CMake Error at CMakeLists.txt:28 (find_package):
               Could not find a package configuration file provided by "ecbuild"
