@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, TypedDict, Unpack
+from typing import Any, Final, Literal, TypedDict, Unpack
 
 import pytest
 
@@ -46,8 +46,8 @@ from ci_infrastructure.resolve_deps import (
     resolve_leg,
 )
 
-BRANCH_HEAD = "a" * 40
-MERGE_COMMIT = "b" * 40
+BRANCH_HEAD: Final = "a" * 40
+MERGE_COMMIT: Final = "b" * 40
 
 
 def test_own_sha_uses_branch_head_not_github_sha(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,7 +139,7 @@ def test_to_json_blanks_absent_optionals() -> None:
 
 # --- build-options axis -----------------------------------------------------
 
-SHA40 = Sha("a" * 40)
+SHA40: Final = Sha("a" * 40)
 
 
 def test_option_segment_canonical() -> None:
@@ -188,7 +188,7 @@ def _producer(*legs: dict[str, Any]) -> Manifest:
     )
 
 
-_BASE_LEG = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
+_BASE_LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
 
 
 def test_producer_can_build_matches_requested_option() -> None:

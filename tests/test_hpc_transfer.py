@@ -15,7 +15,7 @@ import subprocess
 import tarfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -553,8 +553,8 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
 # Kept in step with ecmwf/build-package-hpc's config.yml, the de-facto register
 # of which sites exist (ci-hpc-generic drives it).
 # --------------------------------------------------------------------------- #
-BATCH_SITES = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
-DIRECT_SITES = ["hpc-login", "lumi-login", "local-direct"]
+BATCH_SITES: Final = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
+DIRECT_SITES: Final = ["hpc-login", "lumi-login", "local-direct"]
 
 
 @pytest.mark.parametrize("site_name", BATCH_SITES)

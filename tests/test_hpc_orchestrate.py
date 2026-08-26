@@ -16,6 +16,7 @@ import shlex
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
+from typing import Final
 
 import pytest
 from click.testing import CliRunner, Result
@@ -454,7 +455,7 @@ def test_sentinel_waiter_reads_the_verdict_from_the_output(tmp_path: Path, senti
 # --------------------------------------------------------------------------- #
 # job-script rendering
 # --------------------------------------------------------------------------- #
-_REPO_BUILD = """#!/bin/bash
+_REPO_BUILD: Final = """#!/bin/bash
 #SBATCH --partition=compute
 #SBATCH --time=00:30:00
 module load prgenv/gnu cmake

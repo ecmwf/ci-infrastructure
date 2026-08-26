@@ -20,7 +20,7 @@ import re
 import subprocess
 from importlib import resources
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from troika.config import get_config
 from troika.site import get_site
@@ -88,7 +88,7 @@ def ensure_batch_site(site: SlurmSiteLike, site_name: str) -> None:
 #: A work-dir spec may only name variables and path characters. Anything else
 #: (quotes, backticks, `;`, spaces, `$(`) would let the spec run commands on the
 #: cluster once we hand it to a remote shell below.
-_SAFE_SPEC = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
+_SAFE_SPEC: Final = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
 
 
 def resolve_remote_path(conn: Any, spec: str) -> str:

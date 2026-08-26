@@ -19,6 +19,8 @@ because the image tag differs. These tests pin that:
 
 from __future__ import annotations
 
+from typing import Final
+
 import pytest
 
 from ci_infrastructure._github_api import compute_platform_slug
@@ -30,7 +32,7 @@ from ci_infrastructure.resolve_deps import (
     producer_can_build,
 )
 
-CLANG_IMG = "registry.example/playground-ci/ubuntu24.04-clang18-gfortran13:0.2"
+CLANG_IMG: Final = "registry.example/playground-ci/ubuntu24.04-clang18-gfortran13:0.2"
 
 
 def test_platform_used_verbatim() -> None:
@@ -51,7 +53,7 @@ def test_hex_collision_guard_still_applies() -> None:
         compute_platform_slug("deadbeef-1")
 
 
-_FORTMATH_MANIFEST = """
+_FORTMATH_MANIFEST: Final = """
 [package]
 name = "fortmath"
 prefix = "fortmath"

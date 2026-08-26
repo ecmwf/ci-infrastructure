@@ -15,6 +15,7 @@ shows a branch but blanks a pinned SHA.
 from __future__ import annotations
 
 import json
+from typing import Final
 
 import pytest
 from click.testing import CliRunner
@@ -22,7 +23,7 @@ from click.testing import CliRunner
 from ci_infrastructure import print_dep_table
 from ci_infrastructure.print_dep_table import _looks_like_sha, _md_table, _row_from_dep
 
-SHA = "a" * 40
+SHA: Final = "a" * 40
 
 
 def _dep(**overrides: str) -> dict[str, str]:

@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import Final
 
 from ci_infrastructure.generate_downstream_ci import Manifest, parse_manifest
 
 #: The [package] block almost every fixture needs and no test is about. A body
 #: passed to `write_repo` that already opens with [package] keeps its own.
-_DEFAULT_PACKAGE = """
+_DEFAULT_PACKAGE: Final = """
     [package]
     name = "{name}"
     prefix = "{name}"

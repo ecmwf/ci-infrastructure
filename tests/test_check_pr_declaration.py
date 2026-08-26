@@ -18,7 +18,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 import yaml
@@ -42,13 +42,13 @@ from ci_infrastructure.check_pr_declaration import (
     render_summary,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "src" / "ci_infrastructure" / "check_pr_declaration.py"
+ROOT: Final = Path(__file__).resolve().parents[1]
+MODULE_PATH: Final = ROOT / "src" / "ci_infrastructure" / "check_pr_declaration.py"
 
 #: ecmwf/.github/.github/PULL_REQUEST_TEMPLATE.md, byte for byte as the API serves
 #: it: CRLF throughout, two blank lines under "### Description", and a final
 #: space-only line. 518 bytes, asserted below.
-ORG_TEMPLATE = (
+ORG_TEMPLATE: Final = (
     "### Description\r\n"
     "\r\n"
     "\r\n"
@@ -67,13 +67,13 @@ ORG_TEMPLATE = (
 
 #: The one-line variant ecmwf/anemoi-core and ecmwf/ellem ship today. It must
 #: fail until those repos converge on the org block.
-ANEMOI_TAIL = (
+ANEMOI_TAIL: Final = (
     "By opening this pull request, I affirm that all authors agree to the "
     "[Contributor License Agreement.]"
     "(https://github.com/ecmwf/codex/blob/main/Legal/Contributor-License-Agreement.md)\n"
 )
 
-DECLARATION_LINES = normalize(CANONICAL_DECLARATION)
+DECLARATION_LINES: Final = normalize(CANONICAL_DECLARATION)
 
 
 def body(*, prefix: str = "## Description\n\nsomething\n\n", declaration: str | None = None) -> str:
@@ -110,7 +110,7 @@ def run_main(
 # Stdlib purity -- the highest-value test in this file
 # --------------------------------------------------------------------------- #
 
-STDLIB_ALLOWLIST = frozenset(
+STDLIB_ALLOWLIST: Final = frozenset(
     {
         "__future__",
         "argparse",

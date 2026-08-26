@@ -25,16 +25,17 @@ The repo's leading directive block is preserved verbatim at the top so its
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Final
 
-SENTINEL_SUCCESS = "Finished: SUCCESS"
-SENTINEL_FAILURE = "Finished: FAILURE"
+SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
+SENTINEL_FAILURE: Final = "Finished: FAILURE"
 
 #: Default seconds the job waits for the source-transfer marker before giving up.
-DEFAULT_MARKER_WAIT_TIMEOUT = 1800
+DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
 #: Fixed name of the source tarball the runner scp's into the staging dir and
 #: the job unpacks. Independent of the run id so a reattach can re-drop it.
-SOURCE_TARBALL_NAME = "source.tgz"
+SOURCE_TARBALL_NAME: Final = "source.tgz"
 
 #: Fixed name of the source-transfer marker, for the same reason as the tarball:
 #: the staging dir is already per-artifact, which is exactly the scope this
@@ -42,7 +43,7 @@ SOURCE_TARBALL_NAME = "source.tgz"
 #: on the scheduler's `Comment` field — which sites may rewrite. A reattaching
 #: runner can now check and re-drop this marker without knowing which run
 #: submitted the job it is adopting.
-TRANSFER_MARKER_NAME = "TRANSFER_COMPLETED"
+TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 
 def job_name_for(artifact_name: str) -> str:

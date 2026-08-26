@@ -306,7 +306,7 @@ def cancel_job(
 #: A run id becomes a path segment (the local source tarball, the ``.trash.<id>``
 #: staging rename, the node-local ``ci-src-<id>``), so it may not contain a
 #: separator or shell metacharacter. Mirrors site._SAFE_SPEC in intent.
-_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_RUN_ID: Final = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 #: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
