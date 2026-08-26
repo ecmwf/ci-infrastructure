@@ -13,6 +13,7 @@ and the needs-graph must be identical to the runner path.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import pytest
 from conftest import parse_all, write_repo
@@ -24,7 +25,7 @@ from ci_infrastructure.generate_downstream_ci import (
     validate_graph,
 )
 
-_HPC_MANIFEST = """
+_HPC_MANIFEST: Final = """
     [matrix.build]
     execution = "hpc"
     triggers = ["rebuild-request"]

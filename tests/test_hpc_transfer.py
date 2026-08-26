@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import subprocess
 import tarfile
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -257,6 +258,143 @@ def test_marker_exists_false_on_nonzero_exit() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ship_lock (serialising two runs that ship the same artifact)
+# --------------------------------------------------------------------------- #
+class LockConnection(FakeConnection):
+    """A connection whose lock `mkdir` fails ``busy_for`` times, then succeeds.
+
+    Stands in for a peer run that is holding the staging lock and eventually
+    releases it. Only the acquire script is answered specially; everything else
+    keeps FakeConnection's blanket success.
+    """
+
+    def __init__(self, busy_for: int) -> None:
+        super().__init__()
+        self.busy_for = busy_for
+        self.attempts = 0
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        argv = [str(c) for c in command]
+        self.executed.append(argv)
+        if argv[:2] == ["bash", "-c"] and "mkdir" in argv[2] and transfer.SHIP_LOCK_SUFFIX in argv[2]:
+            self.attempts += 1
+            if self.attempts <= self.busy_for:
+                return FakeProc(returncode=1)
+        return FakeProc()
+
+
+class ShellConnection(FakeConnection):
+    """Really runs the remote script and reports its TRUE exit code.
+
+    CopyingConnection asserts success (`check=True`), but a lock claim's non-zero
+    exit is an *answer* — "someone else holds it" — not an error, so exercising
+    the acquire against a real filesystem needs a connection that reports rather
+    than raises.
+    """
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        argv = [str(c) for c in command]
+        self.executed.append(argv)
+        proc = subprocess.run(["bash", "-c", argv[2]] if argv[:2] == ["bash", "-c"] else argv)
+        return FakeProc(returncode=proc.returncode)
+
+
+def _lock_scripts(conn: FakeConnection) -> list[str]:
+    return [argv[2] for argv in conn.executed if argv[:2] == ["bash", "-c"] and transfer.SHIP_LOCK_SUFFIX in argv[2]]
+
+
+def test_ship_lock_acquires_and_releases_around_the_body() -> None:
+    conn = FakeConnection()
+    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1"):
+        during = len(conn.executed)
+    scripts = _lock_scripts(conn)
+    # The lock is a SIBLING of the staging dir: ship_source renames that dir
+    # aside, which would carry a lock living inside it away with the tree.
+    assert "\nif mkdir /remote/staging/art.shiplock " in scripts[0]
+    assert during == 1  # acquired before the body ran
+    assert scripts[-1].startswith("rm -rf /remote/staging/art.shiplock ")
+
+
+def test_ship_lock_creates_the_lock_parent_before_claiming(tmp_path: Path) -> None:
+    """A fresh work dir has no `staging/` yet — `_reset_staging_dir` makes it, but
+    that runs inside this lock. The claim `mkdir` is deliberately not `-p` (that
+    would succeed on an existing lock and defeat the test-and-set), so without a
+    separate parent `mkdir -p` every attempt fails ENOENT and the ship waits out
+    its whole timeout on a first-ever build."""
+    staging = tmp_path / "work" / "staging" / "art"
+    conn = ShellConnection()  # really runs the acquire script
+    with transfer.ship_lock(conn, staging_dir=str(staging), run_id="1-1"):
+        assert (tmp_path / "work" / "staging" / ("art" + transfer.SHIP_LOCK_SUFFIX)).is_dir()
+    assert not (tmp_path / "work" / "staging" / ("art" + transfer.SHIP_LOCK_SUFFIX)).exists()
+
+
+def test_ship_lock_is_exclusive_against_a_second_shipper(tmp_path: Path) -> None:
+    """The property the whole thing exists for, against a real filesystem: while
+    one run holds the lock, a second run's claim fails rather than proceeding into
+    ship_source and resetting the staging dir under the first."""
+    staging = tmp_path / "staging" / "art"
+    conn = ShellConnection()
+    with transfer.ship_lock(conn, staging_dir=str(staging), run_id="1-1"):
+        assert not transfer._try_acquire_ship_lock(
+            conn, lock_dir=transfer._ship_lock_path(str(staging)), run_id="2-1", stale_minutes=30
+        )
+    # Released: the next run gets it.
+    assert transfer._try_acquire_ship_lock(
+        conn, lock_dir=transfer._ship_lock_path(str(staging)), run_id="2-1", stale_minutes=30
+    )
+
+
+def test_ship_lock_waits_for_the_holder_then_acquires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A peer holds the lock for two polls; we wait rather than resetting under it."""
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    conn = LockConnection(busy_for=2)
+    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", poll=7):
+        pass
+    assert conn.attempts == 3
+    assert slept == [7, 7]
+
+
+def test_ship_lock_breaks_a_lock_left_behind_by_a_dead_runner() -> None:
+    """A runner that dies mid-ship cannot wedge the artifact forever, so the
+    acquire also breaks a lock older than the staleness threshold — and then
+    races for it again like everyone else rather than assuming it won."""
+    conn = FakeConnection()
+    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", stale_minutes=45):
+        pass
+    acquire = _lock_scripts(conn)[0]
+    assert "-mmin +45" in acquire
+    assert "rm -rf /remote/staging/art.shiplock " in acquire
+
+
+def test_ship_lock_times_out_rather_than_shipping_anyway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never fall through to the ship on a lock we could not get: that is exactly
+    the reset-under-a-peer this lock exists to prevent."""
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    conn = LockConnection(busy_for=10_000)
+    with pytest.raises(CIError, match="waiting for the staging lock"):
+        with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", timeout=0, poll=1):
+            raise AssertionError("body must not run without the lock")
+
+
+def test_ship_lock_releases_when_the_ship_fails() -> None:
+    """A failed ship must not leave the artifact locked until the staleness
+    threshold, and the release must not replace the error that is propagating."""
+    conn = FakeConnection()
+    with pytest.raises(CIError, match="boom"):
+        with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1"):
+            raise CIError("boom")
+    assert _lock_scripts(conn)[-1].startswith("rm -rf /remote/staging/art.shiplock ")
+
+
+def test_ship_lock_dryrun_touches_nothing() -> None:
+    conn = FakeConnection()
+    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", dryrun=True):
+        pass
+    assert conn.executed == []
+
+
+# --------------------------------------------------------------------------- #
 # fetch_install
 # --------------------------------------------------------------------------- #
 def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
@@ -415,8 +553,8 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
 # Kept in step with ecmwf/build-package-hpc's config.yml, the de-facto register
 # of which sites exist (ci-hpc-generic drives it).
 # --------------------------------------------------------------------------- #
-BATCH_SITES = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
-DIRECT_SITES = ["hpc-login", "lumi-login", "local-direct"]
+BATCH_SITES: Final = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
+DIRECT_SITES: Final = ["hpc-login", "lumi-login", "local-direct"]
 
 
 @pytest.mark.parametrize("site_name", BATCH_SITES)

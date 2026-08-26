@@ -306,7 +306,7 @@ def cancel_job(
 #: A run id becomes a path segment (the local source tarball, the ``.trash.<id>``
 #: staging rename, the node-local ``ci-src-<id>``), so it may not contain a
 #: separator or shell metacharacter. Mirrors site._SAFE_SPEC in intent.
-_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_RUN_ID: Final = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 #: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
@@ -664,6 +664,16 @@ def submit_wait(
         this staging dir is, by construction, the same source and the same deps
         we were about to write. A PARTIAL transfer leaves no marker, so this
         still ships (and resets) in the case the reset exists for.
+
+        The marker alone only rules out a peer that already FINISHED. Two runs
+        that start shipping together both see no marker, and the second one's
+        reset then pulls the first one's staged tarballs out from under it — the
+        eckit ``deps/1.tgz: Cannot open: No such file or directory`` unpack
+        failure. So the ship runs under ``transfer.ship_lock``, and the marker is
+        re-checked INSIDE it: the first shipper resets and stages alone, and the
+        second acquires only once the first is done, sees the marker and skips.
+        The check outside the lock stays as the fast path, so the common
+        already-built case still costs one ``test -f`` and no lock.
         """
         if transfer.marker_exists(site._connection, staging_dir=staging_dir):
             print(
@@ -671,15 +681,22 @@ def submit_wait(
                 "(another run shipped it); not re-shipping."
             )
             return
-        transfer.ship_source(
-            site._connection,
-            local_source_dir=source_dir,
-            staging_dir=staging_dir,
-            run_id=this_run_id,
-            tar_dir=tar_dir,
-            local_prefixes=local_prefixes,
-            remote_deps_dir=remote_deps_dir,
-        )
+        with transfer.ship_lock(site._connection, staging_dir=staging_dir, run_id=this_run_id):
+            if transfer.marker_exists(site._connection, staging_dir=staging_dir):
+                print(
+                    f"submit-wait: staging for '{artifact_name}' was completed by another run "
+                    "while we waited for the staging lock; not re-shipping."
+                )
+                return
+            transfer.ship_source(
+                site._connection,
+                local_source_dir=source_dir,
+                staging_dir=staging_dir,
+                run_id=this_run_id,
+                tar_dir=tar_dir,
+                local_prefixes=local_prefixes,
+                remote_deps_dir=remote_deps_dir,
+            )
 
     jid, action = submit_or_reattach(
         site=site,

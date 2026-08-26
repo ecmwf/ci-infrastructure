@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -30,11 +30,11 @@ from ci_infrastructure._github_api import (
 from ci_infrastructure.generate_downstream_ci import parse_manifest as generator_parse
 from ci_infrastructure.resolve_deps import parse_manifest as resolver_parse
 
-RUNNING = {"status": "in_progress", "html_url": "https://gh/run/1"}
-QUEUED = {"status": "queued", "html_url": "https://gh/run/2"}
-OK = {"status": "completed", "conclusion": "success"}
-FAILED = {"status": "completed", "conclusion": "failure"}
-CANCELLED = {"status": "completed", "conclusion": "cancelled"}
+RUNNING: Final = {"status": "in_progress", "html_url": "https://gh/run/1"}
+QUEUED: Final = {"status": "queued", "html_url": "https://gh/run/2"}
+OK: Final = {"status": "completed", "conclusion": "success"}
+FAILED: Final = {"status": "completed", "conclusion": "failure"}
+CANCELLED: Final = {"status": "completed", "conclusion": "cancelled"}
 
 
 def _payload(monkeypatch: pytest.MonkeyPatch, data: Any) -> None:
@@ -109,7 +109,7 @@ def test_non_dict_entries_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
 # --------------------------------------------------------------------------- #
 # make_artifact_name — the format IS the cache key, so it is pinned literally.
 # --------------------------------------------------------------------------- #
-SHA = "a" * 40
+SHA: Final = "a" * 40
 
 
 def test_artifact_name_full_shape() -> None:

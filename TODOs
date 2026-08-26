@@ -178,6 +178,13 @@ HPC:
   very likely why that second job could not find ecbuild in the first place: the
   two runs race on one deps dir.
 
+  The shipper-side half of that race is now closed: ship_source runs under
+  transfer.ship_lock (an atomic `mkdir <staging>.shiplock`) with the marker
+  re-checked inside it, so two runs can no longer reset the staging dir under each
+  other. That was the eckit `deps/1.tgz: Cannot open: No such file or directory`
+  unpack failure on an ecbuild fan-out. What remains below is the .out half — the
+  shared job output a concurrent run tails — plus the general per-run-path split.
+
   Not a simple "add the run id" fix: the artifact-keyed name is load-bearing for
   reattach (find_active_job_by_name is how a re-run adopts an in-flight job).
   Needs a deliberate split -- reattach keyed on the SLURM job name, but per-run

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
+from typing import Final
 
 import pytest
 import yaml
@@ -448,7 +449,7 @@ def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> Non
     assert "build-type: ${{ steps.m.outputs.build-type }}" in yaml
 
 
-_CTEST_MANIFEST = """
+_CTEST_MANIFEST: Final = """
     [matrix.build]
     triggers = ["upstream-change", "rebuild-request"]
     action = "./.github/actions/build-thisrepo"

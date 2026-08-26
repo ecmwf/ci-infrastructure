@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from click.testing import CliRunner
 
 from ci_infrastructure import fetch_deps
 
-_DEP = {
+_DEP: Final = {
     "name": "cxxmath-python",
     "repo": "org/downstream-ci-repo-cxx-py",
     "ref": "main",

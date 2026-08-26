@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .._errors import CIError
 from . import jobscript
@@ -54,6 +56,17 @@ def _run_remote(conn: Connection, argv: list[str], *, what: str, dryrun: bool = 
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
         raise CIError(f"{what} failed (exit {proc.returncode}): {detail}")
+
+
+def _probe_remote(conn: Connection, argv: list[str]) -> int:
+    """Run a command on the remote and return its exit code instead of raising.
+
+    For remote tests whose *failure* is an answer rather than an error — "is the
+    marker there?", "did the lock mkdir lose the race?".
+    """
+    proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc.communicate()
+    return int(proc.returncode)
 
 
 def touch_remote_file(conn: Connection, *, path: str) -> None:
@@ -97,6 +110,127 @@ def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
     return bool(proc.returncode == 0)
 
 
+#: The ship lock is a SIBLING of the staging dir, never a child: ``ship_source``
+#: starts by renaming the whole staging tree aside, which would carry a lock
+#: living inside it away with the tree it is meant to protect.
+SHIP_LOCK_SUFFIX: Final = ".shiplock"
+#: How long a shipper waits for a peer's lock before giving up. Comfortably under
+#: the job's own ``DEFAULT_MARKER_WAIT_TIMEOUT`` (1800s), so a runner that cannot
+#: get the lock fails with a lock error rather than leaving the job to time out on
+#: a marker that is never coming.
+DEFAULT_SHIP_LOCK_TIMEOUT: Final = 900
+#: Poll interval while waiting for a peer to release.
+SHIP_LOCK_POLL_SECONDS: Final = 10
+#: A lock directory older than this is assumed abandoned (its runner died mid-ship)
+#: and is broken by the next shipper. Longer than any healthy ship, which is a tar
+#: + scp of a checkout and a handful of install trees.
+SHIP_LOCK_STALE_MINUTES: Final = 30
+
+
+def _ship_lock_path(staging_dir: str) -> str:
+    return f"{staging_dir.rstrip('/')}{SHIP_LOCK_SUFFIX}"
+
+
+def _try_acquire_ship_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
+    """One attempt at claiming ``lock_dir``, breaking it if it is stale.
+
+    ``mkdir`` of a single directory is the atomic test-and-set: it succeeds for
+    exactly one caller and fails with ``EEXIST`` for the rest, on every filesystem
+    the cluster exports (unlike ``O_EXCL`` opens or flock over NFS/Lustre). The
+    owner file is written *inside* the new directory, so the directory's mtime is
+    the acquisition time and never gets refreshed — which is what makes the
+    staleness test below mean "held since", not "touched at".
+
+    The lock's own ``mkdir`` must stay non-``-p`` (``-p`` succeeds on an existing
+    directory, which is exactly the test being made), so its PARENT is created
+    separately first: on a fresh work dir nothing has made ``<work>/staging`` yet
+    — ``_reset_staging_dir`` does, but that runs *inside* this lock — and every
+    attempt would otherwise fail ``ENOENT`` until the wait timed out.
+    """
+    q_lock = shlex.quote(lock_dir)
+    q_owner = shlex.quote(f"{lock_dir}/owner")
+    q_parent = shlex.quote(str(PurePosixPath(lock_dir).parent))
+    claim = f"mkdir {q_lock} 2>/dev/null && {{ echo {shlex.quote(run_id)} > {q_owner} 2>/dev/null || true; }}"
+    # Newline-joined, not "; "-joined: a multi-line `if ... then` needs real line
+    # breaks — `then; rm ...` is a bash syntax error, and one that only shows up
+    # when the script is actually run.
+    script = "\n".join(
+        [
+            f"mkdir -p {q_parent} 2>/dev/null || true",
+            f"if {claim}; then exit 0; fi",
+            # Not ours. Break it only if nobody can plausibly still be shipping
+            # under it, then race for it again like everyone else.
+            f'if [ -n "$(find {q_lock} -maxdepth 0 -mmin +{stale_minutes} 2>/dev/null)" ]; then',
+            f"  rm -rf {q_lock} 2>/dev/null || true",
+            f"  if {claim}; then exit 0; fi",
+            "fi",
+            "exit 1",
+        ]
+    )
+    return _probe_remote(conn, ["bash", "-c", script]) == 0
+
+
+@contextmanager
+def ship_lock(
+    conn: Connection,
+    *,
+    staging_dir: str,
+    run_id: str,
+    timeout: int = DEFAULT_SHIP_LOCK_TIMEOUT,
+    poll: int = SHIP_LOCK_POLL_SECONDS,
+    stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
+    dryrun: bool = False,
+) -> Iterator[None]:
+    """Hold an exclusive cluster-wide claim on an artifact's staging dir while shipping into it.
+
+    Staging is keyed on the artifact alone, so two runs that both want the same
+    artifact (a repo's own CI and a fan-out, or two fan-outs from sibling PRs)
+    ship into ONE directory. The marker check in the caller only rules out a peer
+    that already *finished*; two shippers that start together both find no marker
+    and both proceed, and then :func:`ship_source`'s reset — which renames the
+    staging tree aside — deletes the peer's already-staged files out from under
+    it. The peer's very next command is a remote untar of a tarball that no longer
+    exists, which is the observed::
+
+        Remote tree unpack failed (exit 2): tar (child): <staging>/deps/1.tgz:
+          Cannot open: No such file or directory
+
+    Serialising the shippers is what makes the reset safe: only one resets at a
+    time, and whoever gets the lock second re-checks the marker and finds the
+    first one's completed transfer, so it skips instead of overwriting it.
+
+    Held across the whole ship (reset -> source -> deps -> marker) and released in
+    a ``finally``, best-effort, so a failed release cannot mask the real error;
+    an abandoned lock is broken after ``stale_minutes`` by the next shipper.
+    """
+    if dryrun:
+        yield
+        return
+    lock_dir = _ship_lock_path(staging_dir)
+    deadline = time.monotonic() + timeout
+    waited = False
+    while not _try_acquire_ship_lock(conn, lock_dir=lock_dir, run_id=run_id, stale_minutes=stale_minutes):
+        if time.monotonic() >= deadline:
+            raise CIError(
+                f"Timed out after {timeout}s waiting for the staging lock {lock_dir}. "
+                "Another run is shipping this artifact; remove the lock directory if its runner is gone."
+            )
+        if not waited:
+            waited = True
+            print(f"ship: staging for '{staging_dir}' is locked by another run; waiting up to {timeout}s.")
+        time.sleep(poll)
+    try:
+        yield
+    finally:
+        # Best-effort and always exit 0: a release that failed must not replace
+        # the exception (if any) that is already propagating out of the ship.
+        _run_remote(
+            conn,
+            ["bash", "-c", f"rm -rf {shlex.quote(lock_dir)} 2>/dev/null || true"],
+            what=f"Release of staging lock {lock_dir}",
+        )
+
+
 def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> None:
     """Reset the artifact's staging tree to empty, tolerating concurrent access.
 
@@ -108,9 +242,13 @@ def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> No
     ``ENOTEMPTY`` (the reported "cannot remove '<...>/deps': Directory not
     empty"). Instead rename the old tree aside in a single metadata operation —
     which cannot hit ``ENOTEMPTY`` — and delete the moved-aside copy best-effort,
-    so cleanup never fails the ship. A peer that renamed it first leaves the
-    ``mv`` a harmless no-op; the concurrent shippers then write byte-identical
-    inputs (same source SHA, same resolved deps) into the fresh tree.
+    so cleanup never fails the ship.
+
+    That makes the reset survivable, NOT concurrency-safe: renaming the tree aside
+    still takes a peer shipper's already-staged files with it, and the peer's next
+    remote untar then fails on a tarball that no longer exists. Callers must
+    therefore reset only while holding :func:`ship_lock`, which is what actually
+    makes "one resetter at a time" true.
 
     The trailing ``mkdir -p`` is the script's last command, so its exit status is
     the one ``_run_remote`` checks: a staging dir we genuinely cannot create
