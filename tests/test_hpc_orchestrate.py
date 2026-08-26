@@ -12,6 +12,7 @@ they run with no cluster, no ssh and no scheduler.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -684,13 +685,21 @@ def _invoke_submit_wait(
     no_publish: bool,
     squeue_stdout: bytes = b"",
     marker_present: bool = False,
+    marker_answers: list[bool] | None = None,
     run_id: str = "1-1",
+    connection: RecordingConnection | None = None,
 ) -> tuple[Result, dict[str, int], list[str]]:
     """Run submit-wait to a SUCCESS verdict with every collaborator stubbed.
 
     Returns the CliRunner result and a dict counting the calls that distinguish
     publish from test-only mode (`object_exists`, `fetch_install`) and the
     reattach paths (`ship_source`), plus the run ids `ship_source` was handed.
+
+    `marker_present` answers every `marker_exists` probe the same way.
+    `marker_answers` overrides it with one answer per probe (the last is reused
+    once exhausted), which is how a peer that lands its marker *between* two
+    probes — the fast-path check and the re-check under the staging lock — is
+    expressed.
     """
     calls = {"object_exists": 0, "fetch_install": 0, "ship_source": 0}
     shipped_run_ids: list[str] = []
@@ -699,7 +708,7 @@ def _invoke_submit_wait(
     recipe.write_text("#!/bin/bash\n#SBATCH --time=00:10:00\nctest --test-dir build\n")
     (tmp_path / "src").mkdir()
 
-    site = FakeSlurmSite(next_jid=500, connection=RecordingConnection(squeue_stdout=squeue_stdout))
+    site = FakeSlurmSite(next_jid=500, connection=connection or RecordingConnection(squeue_stdout=squeue_stdout))
 
     def _ship_source(*_a: object, **k: object) -> None:
         calls["ship_source"] += 1
@@ -722,7 +731,12 @@ def _invoke_submit_wait(
     monkeypatch.setattr(orch, "ensure_batch_site", lambda *a, **k: None)
     monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, spec: spec)
     monkeypatch.setattr(transfer, "ship_source", _ship_source)
-    monkeypatch.setattr(transfer, "marker_exists", lambda *a, **k: marker_present)
+    answers = list(marker_answers) if marker_answers else [marker_present]
+
+    def _marker_exists(*_a: object, **_k: object) -> bool:
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    monkeypatch.setattr(transfer, "marker_exists", _marker_exists)
     monkeypatch.setattr(transfer, "touch_remote_file", lambda *a, **k: None)
     monkeypatch.setattr(transfer, "fetch_install", _fetch_install)
     monkeypatch.setattr(orch, "_install_cancel_handler", lambda *a, **k: None)
@@ -841,6 +855,47 @@ def test_submit_wait_fresh_submit_ships_when_staging_is_incomplete(
     assert result.exit_code == 0, result.output
     assert calls["ship_source"] == 1
     assert shipped == ["1-1"]
+
+
+def test_submit_wait_ships_under_the_staging_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The ship is serialised per staging dir, not merely marker-guarded.
+
+    Two runs that start shipping the same artifact together both see no marker,
+    so the marker check alone lets both into ship_source — whose reset then pulls
+    the peer's already-staged tarballs out from under it, surfacing as
+    `deps/<i>.tgz: Cannot open: No such file or directory` from the peer's remote
+    untar. Holding the lock across the whole ship is what prevents that, so a ship
+    has to claim the lock and give it back around ship_source.
+    """
+    conn = RecordingConnection()
+    result, calls, _ = _invoke_submit_wait(
+        monkeypatch, tmp_path, no_publish=False, marker_present=False, connection=conn
+    )
+    assert result.exit_code == 0, result.output
+    assert calls["ship_source"] == 1
+    lock = shlex.quote("/scratch/ci/staging/pymath-abc-atos-hpc-gnu-py3.11" + transfer.SHIP_LOCK_SUFFIX)
+    scripts = [argv[2] for argv in conn.executed if argv[:2] == ["bash", "-c"]]
+    acquired = next(i for i, script in enumerate(scripts) if f"\nif mkdir {lock} " in script)
+    released = next(i for i, script in enumerate(scripts) if script.startswith(f"rm -rf {lock} "))
+    assert acquired < released
+
+
+def test_submit_wait_skips_shipping_when_a_peer_finishes_while_we_wait(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The re-check under the lock is what makes the lock worth taking.
+
+    The fast-path probe finds no marker (the peer is still shipping), so this run
+    queues for the staging lock. By the time it gets in, the peer has finished and
+    dropped the marker — the same completed transfer, by construction, since the
+    artifact name embeds the source SHA and the deps hash. Re-shipping now would
+    reset the staging dir under a job that is already reading `deps/<i>`, so the
+    second probe has to be believed and the ship skipped.
+    """
+    result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, marker_answers=[False, True])
+    assert result.exit_code == 0, result.output
+    assert calls["ship_source"] == 0
+    assert "while we waited for the staging lock" in result.output
 
 
 @pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])

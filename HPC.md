@@ -39,6 +39,16 @@ login-node self-hosted runner
   shared filesystem before the marker, and the job's `CMAKE_PREFIX_PATH` is pointed
   there (not at the runner paths). A build with no deps (e.g. stack-deps) ships
   nothing extra and its job script is unchanged.
+- **One shipper at a time.** Staging is keyed on the artifact alone, so two runs
+  that want the same artifact (a repo's own CI and a fan-out) ship into one
+  directory — and shipping starts by resetting that directory. A run therefore
+  holds `<staging>.shiplock` (an atomic remote `mkdir`, a *sibling* of the staging
+  dir because the reset renames the staging tree aside) for the whole ship, and
+  re-checks the marker once it has the lock: the second run finds the first one's
+  completed transfer and skips instead of deleting it mid-flight. Without it the
+  loser's next remote untar fails on a tarball the winner just moved away
+  (`deps/1.tgz: Cannot open: No such file or directory`). A lock left behind by a
+  dead runner is broken after 30 minutes by the next shipper.
 - Completion is detected by a `Finished: SUCCESS` / `Finished: FAILURE`
   **sentinel** in the job output (a completed job vanishes from `squeue`, so the
   scheduler is only used as a low-frequency liveness guard). The wait holds a
@@ -167,7 +177,8 @@ The submit-then-poll path leaves per-artifact `staging/`, `src/`, `install/` and
 `hpc-jobs/` trees under `HPC_CI_REMOTE_WORK_DIR`. Two mechanisms reclaim them:
 
 - **Opportunistic**: a fresh submit clears the artifact's staging dir before
-  shipping (also removes any stale `TRANSFER_COMPLETED` marker).
+  shipping (also removes any stale `TRANSFER_COMPLETED` marker), under the staging
+  lock so it cannot clear a concurrent shipper's tree.
 - **Nightly GC**: `.github/workflows/hpc-nightly-cleanup.yml` runs
   `python -m ci_infrastructure.hpc gc --remote-work-dir <…> --older-than-days N`
   on the login-node runner, sweeping per-artifact trees older than `N` days. Run
