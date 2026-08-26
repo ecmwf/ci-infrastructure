@@ -31,7 +31,7 @@ import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .._errors import CIError
 from . import jobscript
@@ -113,18 +113,18 @@ def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
 #: The ship lock is a SIBLING of the staging dir, never a child: ``ship_source``
 #: starts by renaming the whole staging tree aside, which would carry a lock
 #: living inside it away with the tree it is meant to protect.
-SHIP_LOCK_SUFFIX = ".shiplock"
+SHIP_LOCK_SUFFIX: Final = ".shiplock"
 #: How long a shipper waits for a peer's lock before giving up. Comfortably under
 #: the job's own ``DEFAULT_MARKER_WAIT_TIMEOUT`` (1800s), so a runner that cannot
 #: get the lock fails with a lock error rather than leaving the job to time out on
 #: a marker that is never coming.
-DEFAULT_SHIP_LOCK_TIMEOUT = 900
+DEFAULT_SHIP_LOCK_TIMEOUT: Final = 900
 #: Poll interval while waiting for a peer to release.
-SHIP_LOCK_POLL_SECONDS = 10
+SHIP_LOCK_POLL_SECONDS: Final = 10
 #: A lock directory older than this is assumed abandoned (its runner died mid-ship)
 #: and is broken by the next shipper. Longer than any healthy ship, which is a tar
 #: + scp of a checkout and a handful of install trees.
-SHIP_LOCK_STALE_MINUTES = 30
+SHIP_LOCK_STALE_MINUTES: Final = 30
 
 
 def _ship_lock_path(staging_dir: str) -> str:
