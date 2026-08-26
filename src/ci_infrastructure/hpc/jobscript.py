@@ -4,7 +4,7 @@
 
 """Rendering the SLURM job script from a repo's build recipe.
 
-The repo owns ``.ci/hpc/build.sh`` — its ``#SBATCH`` resource directives,
+The repo owns ``.ci/hpc/build-<toolchain>.sh`` — its ``#SBATCH`` resource directives,
 ``module load`` lines and its cmake/ctest body. ci-infrastructure wraps that
 body with only the orchestration bits it must control:
 
