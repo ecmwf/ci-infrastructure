@@ -4,7 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Sample HPC build recipe: copy to a package's .ci/hpc/build.sh and adapt.
+# Sample HPC build recipe: copy to a package's .ci/hpc/build-<toolchain>.sh and
+# adapt. Name it after the toolchain it loads (build-gnu.sh, build-intel.sh, ...)
+# even when the repo has only one -- a file called build.sh that loads prgenv/gnu
+# is a generic name doing specific work.
 #
 # The repo owns everything above the build itself:
 #   * the #SBATCH resource directives (qos / time / nodes / ntasks / gres),

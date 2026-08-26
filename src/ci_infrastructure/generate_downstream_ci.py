@@ -1527,21 +1527,20 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
 
     cond = _render_kind_filter(cross, mk.triggers)
     distinguishing = _first_distinguishing_field(mk.legs) or "runs-on"
-    # Build the display slots left-to-right: the distinguishing leg field, then a
-    # py<version> slot whenever the legs carry a python-version (so a job that
-    # varies python shows it even when another field is the primary
-    # distinguisher — mirrors the hand-written ci.yml names, e.g.
-    # "build+test (clang++-18, py3.11, ubuntu-24.04)"), then the platform, then
-    # the build options.
+    # Build the display slots left-to-right, general to detailed: the platform
+    # first (which lane and which ABI this is), then the distinguishing leg field
+    # — normally the compiler — then a py<version> slot whenever the legs carry a
+    # python-version (so a job that varies python shows it even when another
+    # field is the primary distinguisher), then the build options. So:
+    # "build+test (ubuntu-24.04, clang++-18, py3.11)".
     # platform, python-version and options get dedicated handling so none is
     # duplicated when it is itself the distinguisher.
-    slots: list[str] = []
+    slots: list[str] = ["${{ matrix.platform }}"]
     if distinguishing not in ("platform", "python-version", "options"):
         expr = f"matrix['{distinguishing}']" if "-" in distinguishing else f"matrix.{distinguishing}"
         slots.append(f"${{{{ {expr} }}}}")
     if any("python-version" in leg for leg in mk.legs):
         slots.append("py${{ matrix.python-version }}")
-    slots.append("${{ matrix.platform }}")
     # `options` is the one leg field that is routinely present on some legs and
     # absent from others, and it is part of artifact identity — so two legs can
     # differ ONLY by it and otherwise render an identical name. eccodes' plain

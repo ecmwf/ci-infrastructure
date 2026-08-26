@@ -492,11 +492,11 @@ def test_render_stamps_job_name_and_run_id_comment() -> None:
         output_path="/scratch/ci/art.out",
         cmake_prefix_path="/scratch/install/dep",
         install_path="/scratch/install/art",
-        job_name="ci-pymath-abc-atos-hpc-gnu-py3.11-Release",
+        job_name="ci-pymath-abc-hpc-atos-gnu-py3.11-Release",
         staging_dir="/scratch/staging/art",
         run_id="99-1",
     )
-    assert "#SBATCH --job-name=ci-pymath-abc-atos-hpc-gnu-py3.11-Release" in script
+    assert "#SBATCH --job-name=ci-pymath-abc-hpc-atos-gnu-py3.11-Release" in script
     assert "#SBATCH --comment=99-1" in script
 
 
@@ -751,7 +751,7 @@ def _invoke_submit_wait(
         "--job-script",
         str(recipe),
         "--artifact-name",
-        "pymath-abc-atos-hpc-gnu-py3.11",
+        "pymath-abc-hpc-atos-gnu-py3.11",
         "--remote-work-dir",
         "/scratch/ci",
         "--local-install-path",
@@ -830,7 +830,7 @@ def test_submit_wait_fresh_submit_does_not_reship_over_a_complete_staging(
     transfer is already in the artifact's staging dir because another run got
     there first. ship_source RESETS that dir before writing — it renames the tree
     aside — so shipping here would delete deps/<i> from under a job already
-    reading them. That is what failed an ecflow atos-hpc-nvidia job with
+    reading them. That is what failed an ecflow hpc-atos-nvidia job with
     "Could not find a package configuration file provided by ecbuild" while the
     other job, on the same staging dir, was compiling happily.
 
@@ -874,7 +874,7 @@ def test_submit_wait_ships_under_the_staging_lock(monkeypatch: pytest.MonkeyPatc
     )
     assert result.exit_code == 0, result.output
     assert calls["ship_source"] == 1
-    lock = shlex.quote("/scratch/ci/staging/pymath-abc-atos-hpc-gnu-py3.11" + transfer.SHIP_LOCK_SUFFIX)
+    lock = shlex.quote("/scratch/ci/staging/pymath-abc-hpc-atos-gnu-py3.11" + transfer.SHIP_LOCK_SUFFIX)
     scripts = [argv[2] for argv in conn.executed if argv[:2] == ["bash", "-c"]]
     acquired = next(i for i, script in enumerate(scripts) if f"\nif mkdir {lock} " in script)
     released = next(i for i, script in enumerate(scripts) if script.startswith(f"rm -rf {lock} "))

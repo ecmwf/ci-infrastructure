@@ -26,9 +26,19 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 #           system interpreter (dist-packages), which is exactly where apt puts
 #           it. Without it those ~52 tests fail instantly with "No module named
 #           pytest" rather than actually running.
+#
+# bison + flex belong in the BASE, not a toolchain variant. eckit's
+# ecbuild_generate_yy() builds eckit::sql and eckit::cmd from .y/.l sources, and
+# both features are declared with `CONDITION LEXYACC_FOUND` -- so without these
+# two packages ecbuild_add_option takes its non-fatal branch and the build is
+# GREEN while silently shipping neither library and skipping the whole tests/sql
+# suite. stack-deps needs them too, for libpq's generated parser. (perl, which
+# ecbuild_generate_yy also requires, arrives with build-essential.)
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
+    bison \
+    flex \
     curl \
     wget \
     ca-certificates \

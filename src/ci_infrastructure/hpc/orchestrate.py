@@ -11,7 +11,7 @@ This is the HPC counterpart of the runner build step. It is invoked by the
 ``build-on-hpc`` composite action on a login-node self-hosted runner:
 
     python -m ci_infrastructure.hpc submit-wait --site hpc-batch \\
-        --job-script ./.ci/hpc/build.sh --artifact-name <name> \\
+        --job-script ./.ci/hpc/build-gnu.sh --artifact-name <name> \\
         --remote-work-dir '$SCRATCH/github-ci' --local-install-path <local>/install/<name> \\
         --source-dir <workspace> --run-id <run>-<attempt> \\
         --tar-dir <local>/hpc-tars --cmake-prefix-path <prefix>
@@ -512,7 +512,7 @@ def main() -> None:
 
 @main.command("submit-wait", help="Submit (or reattach to) a build job and wait for it to finish.")
 @_site_options
-@click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build.sh")
+@click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build-<toolchain>.sh")
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact name (identity, job-name + cache key)")
 @click.option(
     "--remote-work-dir",
@@ -651,7 +651,7 @@ def submit_wait(
         loser of the submit race still reaches this. ``ship_source`` starts by
         RESETTING the staging dir — it renames the tree aside — so a second ship
         deletes ``deps/<i>`` out from under a job that is already reading them.
-        That is not hypothetical: it took out an ecflow atos-hpc-nvidia job with
+        That is not hypothetical: it took out an ecflow hpc-atos-nvidia job with
 
             CMake Error at CMakeLists.txt:28 (find_package):
               Could not find a package configuration file provided by "ecbuild"
