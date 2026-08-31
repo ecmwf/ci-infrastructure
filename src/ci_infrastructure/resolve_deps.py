@@ -86,6 +86,19 @@ Outputs (key=value to $GITHUB_OUTPUT, or stdout for debug):
           _resolved.own-artifact-name     this package's own artifact name for this leg
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
+          _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
+          _resolved.ctest-args            this kind's [matrix.<kind>].ctest-args ("" if unset)
+
+        The last two let a hand-written push/PR workflow run the SAME ctest
+        invocation the generated cross-repo-trigger.yml runs, without restating
+        the arguments:
+
+            - name: Test
+              if: ${{ matrix._resolved.ctest }}
+              run: ctest --test-dir "..." --output-on-failure ${{ matrix._resolved['ctest-args'] }}
+
+        They are per-kind, not per-leg, and are copied onto every leg of the
+        kind because a matrix leg is all a job step can see.
 
     json=<JSON: full output>
         All blocks together, keyed by matrix name. Useful for diagnostics.
@@ -245,6 +258,14 @@ class PackageSpec:
     compiler_inputs: Sequence[str]  # required: matrix fields whose values identify the OWN artifact
 
 
+@dataclass(frozen=True)
+class CtestSpec:
+    """A kind's `ctest` / `ctest-args` as written in [matrix.<kind>]."""
+
+    enabled: bool = False
+    args: str = ""
+
+
 @dataclass
 class Manifest:
     package: PackageSpec
@@ -256,6 +277,14 @@ class Manifest:
     # build-python publishes `ecflowmath-python-*`, distinct from build's
     # `ecflowmath-*`). The generator validates the value; we just consume it.
     artifact_prefix_by_kind: dict[str, str] = field(default_factory=dict)
+    # Per-kind (ctest, ctest-args), echoed into every leg's `_resolved` so a
+    # hand-written ci.yml can run the same invocation the generated
+    # cross-repo-trigger.yml runs instead of restating the arguments. Missing
+    # for a kind == (False, ""). Same division of labour as
+    # artifact_prefix_by_kind: the generator owns the semantic rules (no ctest
+    # on an HPC kind, no ctest-args without ctest, no ctest without a build
+    # tree); here we only type-check and pass through.
+    ctest_by_kind: dict[str, CtestSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -441,7 +470,9 @@ def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
     return deps
 
 
-def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
+def _parse_matrix(
+    data: Mapping[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], dict[str, CtestSpec]]:
     # Two passes: collect the raw blocks, then expand reuse-matrix against them.
     # The expansion is shared with the generator (resolve_reuse_matrix) because a
     # kind whose legs differed between the two would look up artifact names
@@ -454,6 +485,7 @@ def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any
 
     matrix: dict[str, list[dict[str, Any]]] = {}
     artifact_prefix_by_kind: dict[str, str] = {}
+    ctest_by_kind: dict[str, CtestSpec] = {}
     for job_name, job_block in raw_matrix.items():
         try:
             legs = resolve_reuse_matrix(job_name, job_block.get("include"), job_block.get("reuse-matrix"), raw_matrix)
@@ -465,8 +497,29 @@ def _parse_matrix(data: Mapping[str, Any]) -> tuple[dict[str, list[dict[str, Any
             if not isinstance(prefix_override, str) or not prefix_override.strip():
                 raise ValueError(f"[matrix.{job_name}].artifact-prefix must be a non-empty string")
             artifact_prefix_by_kind[str(job_name)] = prefix_override.strip()
+        ctest_by_kind[str(job_name)] = _parse_ctest(job_block, job_name)
 
-    return matrix, artifact_prefix_by_kind
+    return matrix, artifact_prefix_by_kind, ctest_by_kind
+
+
+def _parse_ctest(job_block: Mapping[str, Any], job_name: str) -> CtestSpec:
+    """Read a kind's `ctest` / `ctest-args` for echoing into `_resolved`.
+
+    Type-checking only. The generator owns the semantic rules — that an HPC kind
+    may not set `ctest` (its step would run in the submitting container, not on
+    the compute node), that `ctest-args` without `ctest = true` is a forgotten
+    opt-in, and that a non-publishing kind has no build tree to test — and it
+    reports them with the manifest path in the message. Re-checking them here
+    would be the second copy of a rule, which is exactly what this function
+    exists to stop.
+    """
+    enabled = job_block.get("ctest", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"[matrix.{job_name}].ctest must be a boolean")
+    args = job_block.get("ctest-args", "")
+    if not isinstance(args, str):
+        raise ValueError(f"[matrix.{job_name}].ctest-args must be a string")
+    return CtestSpec(enabled=enabled, args=args.strip())
 
 
 def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
@@ -474,12 +527,13 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     data = tomllib.loads(text)
     package = _parse_package(data, default_repo)
     deps = _parse_deps(data)
-    matrix, artifact_prefix_by_kind = _parse_matrix(data)
+    matrix, artifact_prefix_by_kind, ctest_by_kind = _parse_matrix(data)
     return Manifest(
         package=package,
         deps=deps,
         matrix=matrix,
         artifact_prefix_by_kind=artifact_prefix_by_kind,
+        ctest_by_kind=ctest_by_kind,
     )
 
 
@@ -1149,6 +1203,9 @@ def _run(
 
         out_include: list[dict[str, Any]] = []
         own_prefix_override = local_manifest.artifact_prefix_by_kind.get(mname)
+        # Per-kind, so hoisted out of the per-leg loop; copied onto each leg
+        # below because a workflow step can only read `matrix.*`.
+        ctest = local_manifest.ctest_by_kind.get(mname, CtestSpec())
         for entry in include:
             deps_resolved, own = resolve_leg(
                 own=local_manifest.package,
@@ -1189,6 +1246,11 @@ def _run(
                     for s in local_manifest.deps
                     if s.applies_to(entry)
                 ),
+                # The manifest's test invocation, so a hand-written push/PR
+                # workflow runs what the generated cross-repo-trigger.yml runs
+                # rather than a second copy of it that can drift.
+                "ctest": ctest.enabled,
+                "ctest-args": ctest.args,
             }
             merged = {**entry, "_resolved": resolved_block}
             # Substitute runner classes LAST, after the leg has been used for

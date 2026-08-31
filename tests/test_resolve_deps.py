@@ -14,6 +14,10 @@ missing branch fails loudly instead of minting a meaningless name.
 They also pin that ResolvedDep.to_json carries the structured fields (platform /
 compiler / build-type / python-version / deps-hash) explicitly, so the
 dependency table renders them without re-parsing the artifact name.
+
+Finally they pin the per-kind `ctest` / `ctest-args` the resolver echoes into
+`_resolved`, which is what lets a hand-written ci.yml run the manifest's test
+invocation rather than a second copy of it.
 """
 
 from __future__ import annotations
@@ -431,3 +435,93 @@ def test_when_scopes_dep_out_of_identity_of_nonmatching_legs(monkeypatch: pytest
     _, without_scoped = run([always], leg)
     assert plain_own.artifact_name == without_scoped.artifact_name
     assert plain_own.deps_hash == without_scoped.deps_hash
+
+
+# --- [matrix.<kind>] ctest / ctest-args -------------------------------------
+#
+# These two keys exist so a repo's hand-written push/PR ci.yml can run the SAME
+# ctest invocation the generated cross-repo-trigger.yml runs, by reading
+# `matrix._resolved.ctest` / `matrix._resolved['ctest-args']` instead of
+# restating the arguments. A second copy in ci.yml is what drifts.
+
+_CTEST_MANIFEST: Final = """
+[package]
+name = "x"
+prefix = "x"
+repo = "o/x"
+compiler-inputs = ["cxx-compiler"]
+
+[[matrix.build.include]]
+cxx-compiler = "g++-13"
+platform = "ubuntu-24.04"
+
+[matrix.build]
+ctest = true
+ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+
+[[matrix.build-hpc.include]]
+cxx-compiler = "g++-13"
+platform = "hpc-atos-gnu"
+
+[matrix.build-hpc]
+execution = "hpc"
+
+[matrix.test]
+reuse-matrix = "build"
+ctest = true
+ctest-args = '-j "$(nproc)"'
+"""
+
+
+def test_ctest_parsed_per_kind() -> None:
+    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
+
+    assert kinds["build"] == resolve_deps.CtestSpec(enabled=True, args="-L nightly -E 's_test|s_zombies' -j 8")
+    # A kind that says nothing gets the inert default rather than KeyError, so a
+    # workflow's `if: matrix._resolved.ctest` simply skips. HPC kinds are the
+    # normal case: their job-script calls ctest on the compute node itself.
+    assert kinds["build-hpc"] == resolve_deps.CtestSpec(enabled=False, args="")
+
+
+def test_ctest_is_per_kind_not_inherited_through_reuse_matrix() -> None:
+    # `reuse-matrix` shares LEGS, not the block's own settings: a test kind
+    # running against the build kind's matrix still owns its own invocation.
+    # Sharing these too would silently give a test kind the build kind's filters.
+    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
+
+    assert kinds["test"].args == '-j "$(nproc)"'
+    assert kinds["test"].args != kinds["build"].args
+
+
+def test_ctest_args_survive_shell_metacharacters_verbatim() -> None:
+    # The args are interpolated into a `run:` script and parsed by bash there,
+    # so quoting and command substitution must reach the workflow untouched.
+    # Stripping or re-quoting here would break `-E 's_test|s_zombies'` and turn
+    # `$(nproc)` into a literal.
+    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
+
+    assert "'s_test|s_zombies'" in kinds["build"].args
+    assert '"$(nproc)"' in kinds["test"].args
+
+
+def test_ctest_rejects_wrong_types() -> None:
+    def manifest(block: str) -> str:
+        return f"""
+[package]
+name = "x"
+prefix = "x"
+repo = "o/x"
+compiler-inputs = []
+
+[[matrix.build.include]]
+platform = "ubuntu-24.04"
+
+[matrix.build]
+{block}
+"""
+
+    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest must be a boolean"):
+        resolve_deps.parse_manifest(manifest('ctest = "yes"'))
+
+    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args must be a string"):
+        resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
