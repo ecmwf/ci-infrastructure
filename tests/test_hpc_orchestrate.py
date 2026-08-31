@@ -687,6 +687,7 @@ def _invoke_submit_wait(
     squeue_stdout: bytes = b"",
     marker_present: bool = False,
     marker_answers: list[bool] | None = None,
+    object_exists_answers: list[bool] | None = None,
     run_id: str = "1-1",
     connection: RecordingConnection | None = None,
 ) -> tuple[Result, dict[str, int], list[str]]:
@@ -715,9 +716,14 @@ def _invoke_submit_wait(
         calls["ship_source"] += 1
         shipped_run_ids.append(str(k.get("run_id", "")))
 
+    exists_answers = list(object_exists_answers) if object_exists_answers else [False]
+
     def _object_exists(_name: str) -> bool:
         calls["object_exists"] += 1
-        return False  # never a cache hit in publish mode -> proceeds to submit
+        # One answer per probe (the last is reused), which is how a peer that
+        # publishes BETWEEN the fast-path check and the re-check under the submit
+        # lock is expressed. Default: never a cache hit -> proceeds to submit.
+        return exists_answers.pop(0) if len(exists_answers) > 1 else exists_answers[0]
 
     def _fetch_install(*_a: object, **_k: object) -> None:
         calls["fetch_install"] += 1
@@ -768,6 +774,7 @@ def _invoke_submit_wait(
     if no_publish:
         args.append("--no-publish")
     result = CliRunner().invoke(orch.submit_wait, args)
+    _invoke_submit_wait.last_site = site  # type: ignore[attr-defined]
     return result, calls, shipped_run_ids
 
 
@@ -783,7 +790,9 @@ def test_submit_wait_publish_mode_checks_cache_and_fetches(monkeypatch: pytest.M
     """The default (publish) mode still cache-checks and fetches the built tree — the contrast."""
     result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False)
     assert result.exit_code == 0, result.output
-    assert (calls["object_exists"], calls["fetch_install"]) == (1, 1)
+    # Twice: the fast path before the submit lock, then again under it, so a peer
+    # that published while we queued for the lock is not rebuilt from scratch.
+    assert (calls["object_exists"], calls["fetch_install"]) == (2, 1)
 
 
 def test_submit_wait_reattach_does_not_reship_when_a_marker_is_present(
@@ -1069,3 +1078,91 @@ def test_push_tree_accepts_a_nested_remote_dir(monkeypatch: pytest.MonkeyPatch, 
     )
     assert result.exit_code == 0, result.output
     assert len(called) == 1
+
+
+# --- submit serialisation ---------------------------------------------------
+#
+# submit_or_reattach's reattach check is a check-then-act, and the scheduler is
+# shared across runners. Two fan-outs from sibling repos wanting the same consumer
+# artifact both looked, both saw no job, and both submitted: SLURM 30741016 and
+# 30741061 built ecflow-...-hpc-atos-nvidia-nvc++-Release into ONE install prefix
+# eleven seconds apart, and each run's fetch then tarred a tree the other job was
+# still writing --
+#
+#     Remote tree tar failed (exit 1): tar: ./bin/ecflow_server: file changed as we read it
+#
+# Same shape as the staging race ship_lock exists for; this is the other half.
+
+_SUBMIT_LOCK_DIR: Final = "/scratch/ci/locks/pymath-abc-hpc-atos-gnu-py3.11"
+
+
+def _joined(conn: RecordingConnection) -> str:
+    return "\n".join(" ".join(argv) for argv in conn.executed)
+
+
+#: The release command, matched exactly. A substring search for `rm -rf <lock>`
+#: also hits the ACQUIRE script, which carries the same `rm -rf` in its
+#: stale-lock-breaking branch -- so a loose match would "find" the release at the
+#: moment of acquisition and pass whether or not the lock is ever let go.
+_RELEASE_CMD: Final = f"bash -c rm -rf {_SUBMIT_LOCK_DIR} 2>/dev/null || true"
+
+
+def test_submit_takes_and_releases_a_per_artifact_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    conn = RecordingConnection()
+    result, _, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, connection=conn)
+    assert result.exit_code == 0, result.output
+
+    joined = _joined(conn)
+    # The lock is a plain per-artifact directory under the work dir, so GC sweeps
+    # it like every other tree a build leaves behind.
+    assert f"mkdir {_SUBMIT_LOCK_DIR}" in joined
+    assert _RELEASE_CMD in [" ".join(a) for a in conn.executed]
+
+
+def test_submit_lock_is_held_across_the_reattach_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The whole point: the check and the submit must be inside the lock.
+
+    Acquiring it afterwards would serialise nothing — both racers would already
+    have looked, seen no job, and decided to submit.
+    """
+    conn = RecordingConnection()
+    result, _, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, connection=conn)
+    assert result.exit_code == 0, result.output
+
+    argvs = [" ".join(a) for a in conn.executed]
+    acquire = next(i for i, a in enumerate(argvs) if f"mkdir {_SUBMIT_LOCK_DIR}" in a)
+    squeue = next(i for i, a in enumerate(argvs) if a.startswith("squeue"))
+    release = argvs.index(_RELEASE_CMD)
+    assert acquire < squeue < release
+
+
+def test_peer_publishing_while_we_wait_is_a_cache_hit_not_a_rebuild(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The loser of the race must not spend another hour of cluster time.
+
+    The fast-path check said "not built"; by the time the lock is ours the peer
+    has finished and published. Re-checking under the lock turns a redundant
+    submit into a cache hit.
+    """
+    result, calls, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, object_exists_answers=[False, True])
+    assert result.exit_code == 0, result.output
+    assert "cache hit" in result.output
+
+    site = _invoke_submit_wait.last_site  # type: ignore[attr-defined]
+    assert site.submitted == []
+    assert calls["fetch_install"] == 0
+
+
+def test_submit_lock_is_released_when_the_submit_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An abandoned lock would block every later run for stale_minutes."""
+    conn = RecordingConnection()
+
+    def _boom(*_a: object, **_k: object) -> tuple[int, str]:
+        raise CIError("submit exploded")
+
+    monkeypatch.setattr(orch, "submit_or_reattach", _boom)
+    result, _, _ = _invoke_submit_wait(monkeypatch, tmp_path, no_publish=False, connection=conn)
+
+    assert result.exit_code != 0
+    assert _RELEASE_CMD in [" ".join(a) for a in conn.executed]

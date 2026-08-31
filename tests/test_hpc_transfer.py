@@ -335,11 +335,11 @@ def test_ship_lock_is_exclusive_against_a_second_shipper(tmp_path: Path) -> None
     staging = tmp_path / "staging" / "art"
     conn = ShellConnection()
     with transfer.ship_lock(conn, staging_dir=str(staging), run_id="1-1"):
-        assert not transfer._try_acquire_ship_lock(
+        assert not transfer._try_acquire_lock(
             conn, lock_dir=transfer._ship_lock_path(str(staging)), run_id="2-1", stale_minutes=30
         )
     # Released: the next run gets it.
-    assert transfer._try_acquire_ship_lock(
+    assert transfer._try_acquire_lock(
         conn, lock_dir=transfer._ship_lock_path(str(staging)), run_id="2-1", stale_minutes=30
     )
 
