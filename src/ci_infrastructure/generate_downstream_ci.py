@@ -2183,28 +2183,12 @@ def _label_gate_job(label: str) -> dict[str, Any]:
     nothing there to label, so it always fans out. Only a pull request can opt out,
     and it does so by simply not carrying the label; the paired
     require-label-decision status is what stops that being an accident.
+
+    The verdict itself lives in actions/check-pr-label, not inlined here: the
+    rule (and the "a push has nothing to label" carve-out) is one behaviour, and
+    a copy rendered into every orchestrator in every repo is a copy that drifts
+    and cannot be unit-tested.
     """
-    # The label reaches the script through $GATE_LABEL only, never spliced into the
-    # body — a manifest string in a `run:` is how the Decode step broke (see
-    # _decode_step).
-    script = """set -euo pipefail
-pulls="$RUNNER_TEMP/pulls.json"
-gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" > "$pulls"
-open=$(jq '[.[] | select(.state == "open")] | length' "$pulls")
-if [ "$open" -eq 0 ]; then
-  run=true
-  why="no open pull request (push); fanning out"
-elif jq -e --arg l "$GATE_LABEL" \\
-     '[.[] | select(.state == "open") | .labels[].name] | index($l) != null' "$pulls" >/dev/null; then
-  run=true
-  why="pull request carries '$GATE_LABEL'"
-else
-  run=false
-  why="no '$GATE_LABEL' label; skipping the downstream fan-out"
-fi
-echo "run=$run" >> "$GITHUB_OUTPUT"
-echo "Downstream label gate: $why"
-"""
     return {
         "runs-on": SLIM_RUNNER,
         "outputs": {"run": "${{ steps.gate.outputs.run }}"},
@@ -2213,12 +2197,12 @@ echo "Downstream label gate: $why"
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
-                "env": {
-                    "GH_TOKEN": "${{ steps.mint.outputs.token }}",
-                    "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
-                    "GATE_LABEL": label,
+                "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
+                "with": {
+                    "label": label,
+                    "sha": "${{ github.event.workflow_run.head_sha }}",
+                    "token": "${{ steps.mint.outputs.token }}",
                 },
-                "run": _BlockScalar(script),
             },
         ],
     }
