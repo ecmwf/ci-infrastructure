@@ -119,6 +119,7 @@ class RemotePaths(NamedTuple):
     output: str
     install: str
     staging: str
+    lock: str
 
     @classmethod
     def derive(cls, work_dir: str, artifact_name: str) -> RemotePaths:
@@ -127,6 +128,9 @@ class RemotePaths(NamedTuple):
             output=str(base / "hpc-jobs" / f"{artifact_name}.out"),
             install=str(base / "install" / artifact_name),
             staging=str(base / "staging" / artifact_name),
+            # Deliberately not derived from `staging`: a leg that ships no source
+            # still submits, and submission is what this one serialises.
+            lock=str(base / "locks" / artifact_name),
         )
 
 
@@ -316,7 +320,7 @@ _SAFE_RUN_ID: Final = re.compile(r"^[A-Za-z0-9._-]+$")
 #: a failed round-trip, which deliberately leaves the tree behind for debugging,
 #: is still reclaimed eventually. Anything written directly under the work dir
 #: instead of one of these is never swept.
-GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "transfer-e2e")
+GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "locks", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
@@ -698,15 +702,48 @@ def submit_wait(
                 remote_deps_dir=remote_deps_dir,
             )
 
-    jid, action = submit_or_reattach(
-        site=site,
-        script_path=script_path,
-        user=troika_user,
-        output=output,
-        job_name=job_name,
-        after_submit=(lambda: ship_for(run_id)) if ships_source else None,
+    # Serialised per artifact, because submit_or_reattach's reattach check is a
+    # check-then-act and the scheduler is shared. Two fan-outs from sibling repos
+    # wanting the same consumer artifact both looked, both saw no job, and both
+    # submitted -- SLURM 30741016 and 30741061 built
+    # ecflow-...-hpc-atos-nvidia-nvc++-Release into ONE install prefix eleven
+    # seconds apart, and each run's fetch then tarred a tree the other job was
+    # still writing:
+    #
+    #     Remote tree tar failed (exit 1):
+    #       tar: ./bin/ecflow_server: file changed as we read it
+    #
+    # Same shape as the staging race ship_lock exists for (#33); this is the other
+    # half of the flow. Ordering is submit -> ship (after_submit takes ship_lock
+    # INSIDE this block), never the reverse, so the nesting cannot deadlock.
+    with transfer.remote_lock(
+        site._connection,
+        lock_dir=paths.lock,
+        run_id=run_id or artifact_name,
+        what="submit",
+        subject=artifact_name,
         dryrun=dryrun,
-    )
+    ):
+        # Re-checked under the lock: a peer that finished while we waited has
+        # published, and the loser of the race would otherwise spend another hour
+        # of cluster time rebuilding what is already in the store.
+        if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
+            print(
+                f"submit-wait: artifact '{artifact_name}' was published by another run "
+                "while we waited for the submit lock — skipping build (cache hit)."
+            )
+            write_outputs({"install-path": local_install_path, "cache-hit": "true"})
+            return
+
+        jid, action = submit_or_reattach(
+            site=site,
+            script_path=script_path,
+            user=troika_user,
+            output=output,
+            job_name=job_name,
+            after_submit=(lambda: ship_for(run_id)) if ships_source else None,
+            dryrun=dryrun,
+        )
     if dryrun:
         print(f"submit-wait: dry run complete; rendered {script_path} (no job submitted).")
         return

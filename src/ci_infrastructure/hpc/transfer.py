@@ -131,7 +131,7 @@ def _ship_lock_path(staging_dir: str) -> str:
     return f"{staging_dir.rstrip('/')}{SHIP_LOCK_SUFFIX}"
 
 
-def _try_acquire_ship_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
+def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
     """One attempt at claiming ``lock_dir``, breaking it if it is stale.
 
     ``mkdir`` of a single directory is the atomic test-and-set: it succeeds for
@@ -203,31 +203,71 @@ def ship_lock(
     a ``finally``, best-effort, so a failed release cannot mask the real error;
     an abandoned lock is broken after ``stale_minutes`` by the next shipper.
     """
+    with remote_lock(
+        conn,
+        lock_dir=_ship_lock_path(staging_dir),
+        run_id=run_id,
+        what="staging",
+        subject=staging_dir,
+        timeout=timeout,
+        poll=poll,
+        stale_minutes=stale_minutes,
+        dryrun=dryrun,
+    ):
+        yield
+
+
+@contextmanager
+def remote_lock(
+    conn: Connection,
+    *,
+    lock_dir: str,
+    run_id: str,
+    what: str,
+    subject: str,
+    timeout: int = DEFAULT_SHIP_LOCK_TIMEOUT,
+    poll: int = SHIP_LOCK_POLL_SECONDS,
+    stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
+    dryrun: bool = False,
+) -> Iterator[None]:
+    """Hold an exclusive cluster-wide claim on ``lock_dir`` for the duration of the block.
+
+    The cluster filesystem is the only thing every runner shares, so it is the only
+    place a claim can mean anything: job-id dedup is runner-local, and two runners
+    that both want one artifact cannot see each other any other way.
+
+    `what` and `subject` appear only in the waiting/timeout messages, so "staging"
+    and "submit" contention read distinctly in a log.
+
+    Acquisition is a non-``-p`` ``mkdir`` (see :func:`_try_acquire_lock`); release is
+    best-effort in a ``finally``, so a failed release cannot replace an exception
+    already propagating out of the block. An abandoned lock is broken by the next
+    caller after ``stale_minutes``.
+    """
     if dryrun:
         yield
         return
-    lock_dir = _ship_lock_path(staging_dir)
     deadline = time.monotonic() + timeout
     waited = False
-    while not _try_acquire_ship_lock(conn, lock_dir=lock_dir, run_id=run_id, stale_minutes=stale_minutes):
+    while not _try_acquire_lock(conn, lock_dir=lock_dir, run_id=run_id, stale_minutes=stale_minutes):
         if time.monotonic() >= deadline:
             raise CIError(
-                f"Timed out after {timeout}s waiting for the staging lock {lock_dir}. "
-                "Another run is shipping this artifact; remove the lock directory if its runner is gone."
+                f"Timed out after {timeout}s waiting for the {what} lock {lock_dir}. "
+                "Another run holds it for this artifact; remove the lock directory if its runner is gone."
             )
         if not waited:
             waited = True
-            print(f"ship: staging for '{staging_dir}' is locked by another run; waiting up to {timeout}s.")
+            print(f"{what}: '{subject}' is locked by another run; waiting up to {timeout}s.")
         time.sleep(poll)
     try:
         yield
     finally:
         # Best-effort and always exit 0: a release that failed must not replace
-        # the exception (if any) that is already propagating out of the ship.
+        # the exception (if any) that is already propagating out of the block.
         _run_remote(
             conn,
             ["bash", "-c", f"rm -rf {shlex.quote(lock_dir)} 2>/dev/null || true"],
-            what=f"Release of staging lock {lock_dir}",
+            what=f"Release of {what} lock {lock_dir}",
         )
 
 
