@@ -59,6 +59,14 @@ Schema additions consumed (sibling to the existing [[deps]] / [[matrix.X.include
     repo = "owner/consumer-repo"
     ref  = "main"                # required: ref to pin orchestrator `uses:`
 
+    [downstream-gate]            # optional; omit for "always fan out"
+    label = "run-downstream-CI"  # a pull request's fan-out runs only if it
+                                 # carries this label. A push has nothing to
+                                 # label, so it always runs. Pair it with
+                                 # actions/require-label-decision, which is what
+                                 # stops "no label" being an accident rather than
+                                 # a decision.
+
     [matrix.build]
     triggers = ["upstream-change", "rebuild-request"]
     # ^ "upstream-change" — fire when an upstream's trigger-downstream
@@ -374,6 +382,12 @@ class Manifest:
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
+    # [downstream-gate].label, or None for the default "always fan out". When set,
+    # the orchestrator runs a pull request's fan-out only if the pull request
+    # carries that label; a push, which has no pull request to label, always runs.
+    # Opt-in, because turning it on silently would stop every unlabelled repo's
+    # downstream CI.
+    downstream_gate_label: str | None = None
 
 
 _RESERVED_MATRIX_KEYS: Final = frozenset(
@@ -535,11 +549,17 @@ class _MatrixKindRaw(BaseModel):
         return stripped
 
 
+class _DownstreamGateRaw(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1)
+
+
 class _ManifestRaw(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
     package: _PackageRaw
     deps: tuple[_DepRefRaw, ...] = ()
     trigger_downstream: tuple[_TriggerDownstreamRaw, ...] = Field(default=(), alias="trigger-downstream")
+    downstream_gate: _DownstreamGateRaw | None = Field(default=None, alias="downstream-gate")
     matrix: dict[str, _MatrixKindRaw] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -655,6 +675,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
+        downstream_gate_label=raw.downstream_gate.label if raw.downstream_gate else None,
     )
 
 
@@ -1941,6 +1962,9 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
+    if m.downstream_gate_label:
+        jobs = _apply_label_gate(jobs, m.downstream_gate_label)
+
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
         # Top-level workflow_run: fires when this repo's CI completes. All ci.yml are
@@ -2118,6 +2142,86 @@ def _cross_package_deps(
                     continue
                 out[cpkg].add(pkg)
     return out
+
+
+_GATE_JOB_ID: Final = "label-gate"
+# Index syntax, not `needs.label-gate`: a hyphen in a context path parses as minus.
+_GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
+
+
+def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
+    """Put `label-gate` in front of every job in an orchestrator workflow.
+
+    Applied as a post-pass rather than threaded through each job constructor, so
+    a job added later is gated by construction instead of by remembering to.
+
+    Every job gains `needs: [label-gate, ...]` and has its `if:` ANDed with the
+    gate's verdict — including report-ci-failure, so an opted-out pull request
+    whose CI then fails posts nothing at all rather than a red downstream status
+    for a lane nobody asked to run.
+    """
+    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(label)}
+    for jid, job in jobs.items():
+        needs = job.get("needs", [])
+        job["needs"] = [_GATE_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
+        cond = job.get("if")
+        inner = cond[3:-2].strip() if isinstance(cond, str) and cond.startswith("${{") else None
+        job["if"] = f"${{{{ ({inner}) && {_GATE_PASSED} }}}}" if inner else f"${{{{ {_GATE_PASSED} }}}}"
+        gated[jid] = job
+    return gated
+
+
+def _label_gate_job(label: str) -> dict[str, Any]:
+    """`label-gate`: does the commit under test want its downstream fan-out run?
+
+    `workflow_run` carries no pull request and no labels, so the pull request is
+    looked up from the head SHA. Deliberately NOT gated on CI success: every other
+    root job needs this one, including report-ci-failure on the failure path, and
+    a skipped need would take its dependents down with it.
+
+    A commit with no OPEN pull request is a push to a protected branch — there is
+    nothing there to label, so it always fans out. Only a pull request can opt out,
+    and it does so by simply not carrying the label; the paired
+    require-label-decision status is what stops that being an accident.
+    """
+    # The label reaches the script through $GATE_LABEL only, never spliced into the
+    # body — a manifest string in a `run:` is how the Decode step broke (see
+    # _decode_step).
+    script = """set -euo pipefail
+pulls="$RUNNER_TEMP/pulls.json"
+gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" > "$pulls"
+open=$(jq '[.[] | select(.state == "open")] | length' "$pulls")
+if [ "$open" -eq 0 ]; then
+  run=true
+  why="no open pull request (push); fanning out"
+elif jq -e --arg l "$GATE_LABEL" \\
+     '[.[] | select(.state == "open") | .labels[].name] | index($l) != null' "$pulls" >/dev/null; then
+  run=true
+  why="pull request carries '$GATE_LABEL'"
+else
+  run=false
+  why="no '$GATE_LABEL' label; skipping the downstream fan-out"
+fi
+echo "run=$run" >> "$GITHUB_OUTPUT"
+echo "Downstream label gate: $why"
+"""
+    return {
+        "runs-on": SLIM_RUNNER,
+        "outputs": {"run": "${{ steps.gate.outputs.run }}"},
+        "steps": [
+            _mint_step(),
+            {
+                "name": "Check the downstream-CI label",
+                "id": "gate",
+                "env": {
+                    "GH_TOKEN": "${{ steps.mint.outputs.token }}",
+                    "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
+                    "GATE_LABEL": label,
+                },
+                "run": _BlockScalar(script),
+            },
+        ],
+    }
 
 
 def _validate_job() -> dict[str, Any]:

@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Require a label decision before merge
+description: >
+  Post a commit status that stays `pending` until a pull request declares whether
+  an expensive lane should run, via one of two labels.
+
+  PENDING, NOT FAILURE, IS THE POINT. A required check that is pending blocks the
+  merge with a grey button and no red X, so red stays reserved for something
+  actually being broken. A gate that failed instead would train reviewers to read
+  past red, which is what makes a real failure get merged. This is the opposite
+  choice from require-ci-approval, and deliberately so: that one answers "may a
+  fork's code touch our hardware", where refusing loudly IS the point.
+
+  Make `context` a required status check on the target branch, or this action
+  enforces nothing — it only reports.
+
+  Skipping the lane is a DECISION, not an omission: `opt-out-label` turns the
+  status green without running anything. Both labels at once resolves to "run",
+  with a warning, so a contradictory pull request never silently skips.
+
+  Runs on the pull request payload only — no checkout, nothing from the pull
+  request is executed — so it is safe under pull_request_target, which is what
+  lets it post a status on a fork's pull request and react to `labeled`.
+
+inputs:
+  label:
+    description: 'Label meaning "run the expensive lane".'
+    required: true
+  opt-out-label:
+    description: 'Label meaning "deliberately skip it".'
+    required: true
+  context:
+    description: 'Commit status context to post. Make THIS the required check.'
+    required: true
+  description-pending:
+    description: 'Status description while undecided. Defaults to naming both labels.'
+    required: false
+    default: ''
+  description-decided:
+    description: 'Status description once decided.'
+    required: false
+    default: 'Decision recorded'
+  token:
+    description: 'Token with statuses:write. Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  decision:
+    description: "'run', 'skip' or 'undecided' — for logs and for a caller that wants to branch on it."
+    value: ${{ steps.gate.outputs.decision }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        # Per this repo's convention (commit a48f078) no input is interpolated
+        # into the script body, and the pull request payload is read from
+        # $GITHUB_EVENT_PATH with jq — so a label name chosen by a contributor
+        # can never reach the shell as syntax.
+        LABEL_INPUT: ${{ inputs.label }}
+        OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
+        CONTEXT_INPUT: ${{ inputs.context }}
+        DESC_PENDING_INPUT: ${{ inputs.description-pending }}
+        DESC_DECIDED_INPUT: ${{ inputs.description-decided }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        for var in LABEL_INPUT OPT_OUT_INPUT CONTEXT_INPUT; do
+          if [ -z "${!var:-}" ]; then
+            echo "::error title=Label gate::input '${var%_INPUT}' is required and was empty." >&2
+            exit 1
+          fi
+        done
+        if [ "$LABEL_INPUT" = "$OPT_OUT_INPUT" ]; then
+          echo "::error title=Label gate::'label' and 'opt-out-label' are both '$LABEL_INPUT'; the gate could never distinguish them." >&2
+          exit 1
+        fi
+
+        event="${GITHUB_EVENT_PATH:-}"
+        if [ -z "$event" ] || [ ! -f "$event" ]; then
+          echo "::error title=Label gate::no event payload at \$GITHUB_EVENT_PATH." >&2
+          exit 1
+        fi
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error title=Label gate::jq is not on PATH; run this job on a runner image that has it." >&2
+          exit 1
+        fi
+
+        sha="$(jq -r '.pull_request.head.sha // empty' "$event")"
+        if [ -z "$sha" ]; then
+          echo "::error title=Label gate::no .pull_request in the event payload; this action only runs on pull_request/pull_request_target." >&2
+          exit 1
+        fi
+
+        has_label() { jq -e --arg l "$1" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; }
+
+        if has_label "$LABEL_INPUT"; then
+          decision=run
+          has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '$LABEL_INPUT' and '$OPT_OUT_INPUT' are set; treating this as '$LABEL_INPUT'."
+        elif has_label "$OPT_OUT_INPUT"; then
+          decision=skip
+        else
+          decision=undecided
+        fi
+
+        if [ "$decision" = "undecided" ]; then
+          state=pending
+          description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT' or '$OPT_OUT_INPUT' to merge}"
+        else
+          state=success
+          description="${DESC_DECIDED_INPUT:-Decision recorded}"
+        fi
+
+        echo "decision=$decision" >> "$GITHUB_OUTPUT"
+        echo "Label gate: $decision -> $CONTEXT_INPUT is $state"
+
+        gh api -X POST \
+          "/repos/${GITHUB_REPOSITORY}/statuses/${sha}" \
+          -f state="$state" \
+          -f context="$CONTEXT_INPUT" \
+          -f target_url="$RUN_URL" \
+          -f description="$description"
