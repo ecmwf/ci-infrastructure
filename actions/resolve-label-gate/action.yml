@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Resolve a commit's label gate
+description: >
+  Decide whether an expensive lane should run for one commit, by looking up the
+  pull request that commit belongs to and asking whether it carries `label`.
+
+  For `on: workflow_run`, which carries no pull request and no labels in its
+  payload — the event the orchestrators run on. Hence `sha` rather than reading
+  the event: the caller passes `github.event.workflow_run.head_sha`.
+
+  A commit with no OPEN pull request answers `true`. That is a push to a branch,
+  where there is nothing to put a label on; refusing there would silently stop
+  the lane on `develop`. Only a pull request can withhold the label, and
+  actions/require-label-decision is what stops that being an accident rather than
+  a decision.
+
+  Reports `run`; it never fails the job on a verdict, so the caller decides what
+  a `false` means. Pair it with `if: steps.<id>.outputs.run == 'true'` or a job
+  output.
+
+inputs:
+  label:
+    description: 'Label that means "run the expensive lane".'
+    required: true
+  sha:
+    description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
+    required: true
+  token:
+    description: >
+      Token that can read pull requests on this repo. Defaults to github.token,
+      which suffices for a public repo; pass an App token where it does not.
+    required: false
+    default: ''
+
+outputs:
+  run:
+    description: "'true' or 'false' — whether the lane should run for this commit."
+    value: ${{ steps.gate.outputs.run }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        # Per this repo's convention (commit a48f078) no input is interpolated
+        # into the script body. A label reaching a `run:` as syntax is exactly
+        # how the Decode step broke (#36).
+        LABEL_INPUT: ${{ inputs.label }}
+        SHA_INPUT: ${{ inputs.sha }}
+      run: |
+        set -euo pipefail
+
+        for var in LABEL_INPUT SHA_INPUT; do
+          if [ -z "${!var:-}" ]; then
+            echo "::error title=Label gate::input '${var%_INPUT}' is required and was empty." >&2
+            exit 1
+          fi
+        done
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error title=Label gate::jq is not on PATH; run this job on a runner image that has it." >&2
+          exit 1
+        fi
+
+        pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"
+        gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
+
+        if [ "$(jq '[.[] | select(.state == "open")] | length' "$pulls")" -eq 0 ]; then
+          run=true
+          why="no open pull request (a push); running"
+        elif jq -e --arg l "$LABEL_INPUT" \
+             '[.[] | select(.state == "open") | .labels[].name] | index($l) != null' "$pulls" >/dev/null; then
+          run=true
+          why="pull request carries '$LABEL_INPUT'"
+        else
+          run=false
+          why="no '$LABEL_INPUT' label; skipping"
+        fi
+
+        echo "run=$run" >> "$GITHUB_OUTPUT"
+        echo "Label gate: $why"

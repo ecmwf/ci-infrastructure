@@ -2595,11 +2595,27 @@ def test_downstream_gate_job_is_not_itself_gated_on_ci_success(tmp_path: Path) -
     assert "if" not in doc["jobs"]["label-gate"]
 
 
-def test_downstream_gate_label_reaches_the_script_only_through_env(tmp_path: Path) -> None:
+def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Path) -> None:
+    """The rule lives in actions/resolve-label-gate, not inlined per repo.
+
+    A copy of it rendered into every orchestrator is a copy that drifts, and one
+    that no unit test can reach. The generated job should carry no shell at all.
+    """
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    steps = doc["jobs"]["label-gate"]["steps"]
+    assert not any("run" in s for s in steps)
+    gate = next(s for s in steps if s.get("id") == "gate")
+    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/resolve-label-gate@main"
+    assert gate["with"]["label"] == "run-downstream-CI"
+    assert gate["with"]["sha"] == "${{ github.event.workflow_run.head_sha }}"
+
+
+def test_downstream_gate_label_never_becomes_shell_syntax(tmp_path: Path) -> None:
     """A manifest string spliced into a `run:` body is how the Decode step broke:
-    one apostrophe closes the shell string and the rest executes as commands."""
+    one apostrophe closes the shell string and the rest executes as commands. The
+    label now travels as an action input, which is data all the way down."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace("run-downstream-CI", "it's-needed"))
 
-    step = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
-    assert step["env"]["GATE_LABEL"] == "it's-needed"
-    assert "it's-needed" not in step["run"]
+    gate = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
+    assert gate["with"]["label"] == "it's-needed"
