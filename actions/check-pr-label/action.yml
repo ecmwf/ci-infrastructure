@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Resolve a commit's label gate
+name: Check a commit's pull request label
 description: >
   Decide whether an expensive lane should run for one commit, by looking up the
   pull request that commit belongs to and asking whether it carries `label`.

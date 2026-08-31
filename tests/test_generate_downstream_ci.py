@@ -2596,7 +2596,7 @@ def test_downstream_gate_job_is_not_itself_gated_on_ci_success(tmp_path: Path) -
 
 
 def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Path) -> None:
-    """The rule lives in actions/resolve-label-gate, not inlined per repo.
+    """The rule lives in actions/check-pr-label, not inlined per repo.
 
     A copy of it rendered into every orchestrator is a copy that drifts, and one
     that no unit test can reach. The generated job should carry no shell at all.
@@ -2606,7 +2606,7 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     steps = doc["jobs"]["label-gate"]["steps"]
     assert not any("run" in s for s in steps)
     gate = next(s for s in steps if s.get("id") == "gate")
-    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/resolve-label-gate@main"
+    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
     assert gate["with"]["label"] == "run-downstream-CI"
     assert gate["with"]["sha"] == "${{ github.event.workflow_run.head_sha }}"
 

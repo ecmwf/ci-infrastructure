@@ -2184,7 +2184,7 @@ def _label_gate_job(label: str) -> dict[str, Any]:
     and it does so by simply not carrying the label; the paired
     require-label-decision status is what stops that being an accident.
 
-    The verdict itself lives in actions/resolve-label-gate, not inlined here: the
+    The verdict itself lives in actions/check-pr-label, not inlined here: the
     rule (and the "a push has nothing to label" carve-out) is one behaviour, and
     a copy rendered into every orchestrator in every repo is a copy that drifts
     and cannot be unit-tested.
@@ -2197,7 +2197,7 @@ def _label_gate_job(label: str) -> dict[str, Any]:
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
-                "uses": "ecmwf/ci-infrastructure/actions/resolve-label-gate@main",
+                "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
                 "with": {
                     "label": label,
                     "sha": "${{ github.event.workflow_run.head_sha }}",
