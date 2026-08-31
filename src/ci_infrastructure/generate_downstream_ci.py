@@ -1304,6 +1304,11 @@ def _decode_step(mk: MatrixKind) -> Step:
     """`Decode matrix-leg` step — extracts mk.forwarded_inputs +
     _resolved.own-artifact-name + _resolved.deps from the matrix leg JSON,
     fails loudly on empty/null via the require helper, writes outputs.
+
+    The leg JSON arrives through `env:`, never interpolated into the script —
+    see the comment on the `leg=` line. Keep every `${{ }}` out of the emitted
+    body: the leg carries manifest-authored strings, and one of them holding an
+    apostrophe is enough to turn the rest of the script into commands.
     """
     # A forwarded field that is absent from at least one leg (e.g. `options`, which a
     # plain build omits) is OPTIONAL: extract it with `// ""` and ALLOW empty. Fields
@@ -1334,7 +1339,15 @@ def _decode_step(mk: MatrixKind) -> Step:
         '  echo "::error::jq is required but not installed in this runner/image." >&2',
         "  exit 1",
         "}",
-        "leg='${{ toJSON(matrix) }}'",
+        # Via the environment, NEVER spliced into this script. An expression
+        # written into a `run:` body is concatenated as script TEXT before bash
+        # ever sees it, so a single quote anywhere in the leg -- e.g. ecflow's
+        # ctest-args, `-L nightly -E 's_test|s_zombies' -j 8` -- closes the
+        # string early and bash runs the remainder as commands. An `env:` value
+        # is handed to the process environment instead, where quoting and
+        # $(...) are inert. Same reason every input in print-dep-table's action
+        # arrives this way.
+        'leg="$MATRIX_LEG"',
         "require() {",
         "  local val",
         '  val=$(jq -r "$1" <<<"$leg")',
@@ -1353,6 +1366,7 @@ def _decode_step(mk: MatrixKind) -> Step:
         "name": "Decode matrix-leg",
         "id": "m",
         "shell": "bash",
+        "env": {"MATRIX_LEG": "${{ toJSON(matrix) }}"},
         "run": _BlockScalar("\n".join(body_lines) + "\n"),
     }
 
