@@ -2443,3 +2443,54 @@ def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: p
     _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
 
     assert "::warning::" not in capsys.readouterr().err
+
+
+def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) -> None:
+    """The matrix leg must reach bash as an environment value, never spliced
+    into the script text.
+
+    An expression written into a `run:` body is concatenated as script TEXT
+    before bash parses it, so a single quote anywhere in the leg closes the
+    surrounding string early and bash runs the remainder as commands. That is
+    not hypothetical: ecflow's `ctest-args` is `-L nightly -E 's_test|s_zombies'
+    -j 8`, and once resolve_deps started echoing it into `_resolved` the
+    generated fan-out died with
+
+        line 64: $'s_zombies -j 8"\\n  }\\n}': command not found
+
+    on every ecflow leg, while sibling repos whose args held no apostrophe
+    passed in the same run. An `env:` value is handed to the process
+    environment instead, where quoting and $(...) are inert.
+    """
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [matrix.build]
+        triggers = ["upstream-change"]
+        action = "./.github/actions/build-a"
+        needs = []
+        ctest = true
+        ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        platform = "ubuntu-24.04"
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    rendered = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
+    assert rendered is not None
+
+    decode = next(
+        s
+        for job in yaml.safe_load(rendered)["jobs"].values()
+        for s in job.get("steps", [])
+        if s.get("name") == "Decode matrix-leg"
+    )
+
+    assert decode["env"] == {"MATRIX_LEG": "${{ toJSON(matrix) }}"}
+    assert 'leg="$MATRIX_LEG"' in decode["run"]
+    # The decisive check: no expression at all inside the script body. A `${{`
+    # here is a value GitHub will paste in as text, which is the defect.
+    assert "${{" not in decode["run"]
