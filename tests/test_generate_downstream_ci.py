@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import textwrap
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 import yaml
@@ -2494,3 +2494,112 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
     # The decisive check: no expression at all inside the script body. A `${{`
     # here is a value GitHub will paste in as text, which is the defect.
     assert "${{" not in decode["run"]
+
+
+# --- [downstream-gate] ------------------------------------------------------
+#
+# An expensive fan-out that a pull request has not asked for should not run. The
+# gate is opt-in per manifest, because switching it on by default would silently
+# stop downstream CI in every repo that has not adopted the label yet.
+
+_GATE_UPSTREAM: Final = """
+    [[trigger-downstream]]
+    repo = "org/b"
+    ref = "main"
+    [downstream-gate]
+    label = "run-downstream-CI"
+    [matrix.build]
+    triggers = ["upstream-change"]
+    action = "./.github/actions/build"
+    needs = []
+    [[matrix.build.include]]
+    runs-on = "ubuntu-latest"
+"""
+
+_GATE_CONSUMER: Final = """
+    [[deps]]
+    repo = "org/a"
+    package = "a"
+    [matrix.build]
+    triggers = ["upstream-change"]
+    action = "./.github/actions/build"
+    needs = ["a/build"]
+    [[matrix.build.include]]
+    runs-on = "ubuntu-latest"
+"""
+
+
+def _render_gate(tmp_path: Path, upstream: str) -> dict[str, Any]:
+    write_repo(tmp_path, "a", upstream)
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    manifests = parse_all(tmp_path)
+    validate_graph(manifests)
+    closures = compute_transitive_consumers(manifests)
+    by_pkg = {m.package_name: m for m in manifests}
+    by_repo = {m.repo: m for m in manifests}
+    orch = render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
+    assert orch is not None
+    doc: dict[str, Any] = yaml.safe_load(orch)
+    return doc
+
+
+def test_downstream_gate_absent_by_default(tmp_path: Path) -> None:
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', ""))
+
+    assert "label-gate" not in doc["jobs"]
+    assert doc["jobs"]["validate"]["if"] == "${{ github.event.workflow_run.conclusion == 'success' }}"
+
+
+def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
+    """EVERY job, not just the consumer callers.
+
+    report-ci-failure included: an opted-out pull request whose CI then fails
+    should post nothing at all, rather than a red downstream status for a lane
+    nobody asked to run. And report-start included, or the status would go
+    pending and never be resolved.
+    """
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    assert doc["jobs"]["label-gate"]["outputs"] == {"run": "${{ steps.gate.outputs.run }}"}
+    for jid, job in doc["jobs"].items():
+        if jid == "label-gate":
+            continue
+        assert job["needs"][0] == "label-gate", jid
+        # Index syntax: `needs.label-gate` would parse the hyphen as minus.
+        assert "needs['label-gate'].outputs.run == 'true'" in job["if"], jid
+
+
+def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> None:
+    """The gate is ANDed onto each job's own `if:`, never substituted for it.
+
+    report-ci-failure's condition is the exact complement of every other root
+    job's; losing it would post a failure status on the success path too.
+    """
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    assert doc["jobs"]["validate"]["if"] == (
+        "${{ (github.event.workflow_run.conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
+    )
+    assert doc["jobs"]["report-ci-failure"]["if"] == (
+        "${{ (github.event.workflow_run.conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
+    )
+    assert doc["jobs"]["report-result"]["if"].startswith("${{ (always() && ")
+
+
+def test_downstream_gate_job_is_not_itself_gated_on_ci_success(tmp_path: Path) -> None:
+    """report-ci-failure needs the gate and runs on the FAILURE path, so a gate
+    carrying the success condition would be skipped there and take it down with
+    it — leaving a failed CI posting no downstream status at all."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    assert "if" not in doc["jobs"]["label-gate"]
+
+
+def test_downstream_gate_label_reaches_the_script_only_through_env(tmp_path: Path) -> None:
+    """A manifest string spliced into a `run:` body is how the Decode step broke:
+    one apostrophe closes the shell string and the rest executes as commands."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace("run-downstream-CI", "it's-needed"))
+
+    step = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
+    assert step["env"]["GATE_LABEL"] == "it's-needed"
+    assert "it's-needed" not in step["run"]
