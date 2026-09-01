@@ -12,11 +12,7 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: >
-          Runner label. Defaults to ubuntu-latest rather than this org's cheap
-          ubuntu-slim: the slim image is not guaranteed to carry a usable
-          python3 (the pre-commit workflow next door installs one via
-          setup-python).
+        description: 'Runner label.'
         type: string
         required: false
         default: ubuntu-latest
