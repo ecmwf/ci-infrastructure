@@ -63,6 +63,20 @@ class TarballConnection(FakeConnection):
 
     def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
         super().getfile(src, dst)
+        with tarfile.open(dst, "w:gz"):
+            pass
+
+
+class ZstdTarballConnection(FakeConnection):
+    """A connection whose ``getfile`` delivers a real (empty) .tar.zst.
+
+    Separate from TarballConnection on purpose: fetch_tree unpacks gzip and
+    fetch_install unpacks zstd, and one fake serving both formats only passes
+    where tar sniffs compression (bsdtar does, GNU tar does not).
+    """
+
+    def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
+        super().getfile(src, dst)
         _write_zstd_tar(Path(dst), None)
 
 
@@ -408,7 +422,7 @@ def test_ship_lock_dryrun_touches_nothing() -> None:
 # --------------------------------------------------------------------------- #
 def test_fetch_install_collects_the_archive_the_job_wrote(tmp_path: Path) -> None:
     """No remote tar: the job owns producing CI_INSTALL_ARCHIVE, we only fetch it."""
-    conn = TarballConnection()
+    conn = ZstdTarballConnection()
     transfer.fetch_install(
         conn,
         remote_install_dir="/remote/install/art",
@@ -422,7 +436,7 @@ def test_fetch_install_collects_the_archive_the_job_wrote(tmp_path: Path) -> Non
 
 def test_fetch_install_archive_path_matches_the_jobscript_export(tmp_path: Path) -> None:
     """The name the job is told to write is the name we come looking for."""
-    conn = TarballConnection()
+    conn = ZstdTarballConnection()
     transfer.fetch_install(
         conn,
         remote_install_dir="/remote/install/art",
