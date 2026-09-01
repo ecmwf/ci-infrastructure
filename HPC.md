@@ -69,9 +69,13 @@ tree, taken from wherever the recipe installed it:
 
 ```bash
 mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
-tar -czf "$CI_INSTALL_ARCHIVE.part" -C "$CI_INSTALL_PREFIX" .
+tar -cf - -C "$CI_INSTALL_PREFIX" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
 mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
 ```
+
+zstd rather than gzip, `-T0` so it uses every core the job asked for; the smaller result
+also comes back over the connection faster. `zstd` is in the public base image, so the
+runner side can unpack it.
 
 That is what `fetch_install` collects; it does not tar anything itself, and a job that
 finishes without the archive fails the fetch. Archiving on the compute node keeps the

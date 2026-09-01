@@ -449,6 +449,24 @@ def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> N
     )
 
 
+def _unzstd_into(archive: Path, dest: Path) -> None:
+    """Stream a .tar.zst into ``dest``.
+
+    Piped through the zstd binary rather than `tar --zstd`/`tar -I`: those spell
+    the same thing differently in GNU tar and bsdtar, and this runs on both a
+    Linux runner and a developer's machine.
+    """
+    dec = subprocess.Popen(["zstd", "-dc", str(archive)], stdout=subprocess.PIPE)
+    try:
+        untar = subprocess.run(["tar", "-xf", "-", "-C", str(dest)], stdin=dec.stdout)
+    finally:
+        if dec.stdout is not None:
+            dec.stdout.close()
+        decode_rc = dec.wait()
+    if decode_rc != 0 or untar.returncode != 0:
+        raise CIError(f"Unpacking {archive} failed (zstd exit {decode_rc}, tar exit {untar.returncode})")
+
+
 def fetch_install(
     conn: Connection,
     *,
@@ -477,4 +495,4 @@ def fetch_install(
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
     conn.getfile(remote_tgz, local_tgz)
     Path(local_install_dir).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_install_dir)], check=True)
+    _unzstd_into(local_tgz, Path(local_install_dir))

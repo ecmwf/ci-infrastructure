@@ -63,8 +63,7 @@ class TarballConnection(FakeConnection):
 
     def getfile(self, src: Any, dst: Any, dryrun: bool = False) -> None:
         super().getfile(src, dst)
-        with tarfile.open(dst, "w:gz"):
-            pass
+        _write_zstd_tar(Path(dst), None)
 
 
 class CopyingConnection(FakeConnection):
@@ -92,6 +91,16 @@ class CopyingConnection(FakeConnection):
         else:
             subprocess.run(argv, check=True)  # rm -rf / mkdir -p / touch
         return proc
+
+
+def _write_zstd_tar(archive: Path, tree: Path | None) -> None:
+    """Stand in for the job's final step: a .tar.zst of ``tree`` (empty if None)."""
+    plain = archive.with_suffix(".plain.tar")
+    with tarfile.open(plain, "w") as tar:
+        if tree is not None:
+            tar.add(tree, arcname=".")
+    subprocess.run(["zstd", "-q", "-f", str(plain), "-o", str(archive)], check=True)
+    plain.unlink()
 
 
 def _make_tree(root: Path, name: str, body: str) -> Path:
@@ -407,7 +416,7 @@ def test_fetch_install_collects_the_archive_the_job_wrote(tmp_path: Path) -> Non
         tar_dir=str(tmp_path / "stage"),
     )
     assert conn.executed == []
-    assert conn.fetched == [("/remote/install/art.install.tgz", str(tmp_path / "stage" / "art.install.tgz"))]
+    assert conn.fetched == [("/remote/install/art.install.tar.zst", str(tmp_path / "stage" / "art.install.tar.zst"))]
     assert (tmp_path / "local-install").is_dir()
 
 
@@ -546,8 +555,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     # Stand in for the job's final step: archive the install tree at the agreed
     # path. Without it there is nothing to fetch -- that is the contract.
     archive = jobscript.install_archive_path(str(unpacked))
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(unpacked, arcname=".")
+    _write_zstd_tar(Path(archive), unpacked)
 
     fetched = tmp_path / "back"
     transfer.fetch_install(

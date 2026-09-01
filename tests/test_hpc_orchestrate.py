@@ -1176,5 +1176,5 @@ def test_jobscript_exports_the_install_archive_path() -> None:
         cmake_prefix_path="/scratch/install/dep",
         install_path="/scratch/install/art",
     )
-    assert 'export CI_INSTALL_ARCHIVE="/scratch/install/art.install.tgz"' in script
-    assert jobscript.install_archive_path("/scratch/install/art") == "/scratch/install/art.install.tgz"
+    assert 'export CI_INSTALL_ARCHIVE="/scratch/install/art.install.tar.zst"' in script
+    assert jobscript.install_archive_path("/scratch/install/art") == "/scratch/install/art.install.tar.zst"

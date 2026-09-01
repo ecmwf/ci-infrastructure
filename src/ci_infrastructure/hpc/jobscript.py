@@ -46,9 +46,11 @@ SOURCE_TARBALL_NAME: Final = "source.tgz"
 #: submitted the job it is adopting.
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
-#: Suffix of the tarball the install tree travels home in. Shared with
-#: transfer.fetch_install so the job and the fetcher agree on one name.
-INSTALL_TARBALL_SUFFIX: Final = "install"
+#: Suffix of the archive the install tree travels home in. Shared with
+#: transfer.fetch_install so the job and the fetcher agree on one name. zstd
+#: rather than gzip: it compresses on all the job's cores and the smaller result
+#: is quicker to pull back over the connection.
+INSTALL_ARCHIVE_SUFFIX: Final = "install.tar.zst"
 
 
 def install_archive_path(install_path: str) -> str:
@@ -60,7 +62,7 @@ def install_archive_path(install_path: str) -> str:
     the fetcher takes any file at this path as complete.
     """
     p = PurePosixPath(install_path)
-    return str(p.parent / f"{p.name}.{INSTALL_TARBALL_SUFFIX}.tgz")
+    return str(p.parent / f"{p.name}.{INSTALL_ARCHIVE_SUFFIX}")
 
 
 def job_name_for(artifact_name: str) -> str:
