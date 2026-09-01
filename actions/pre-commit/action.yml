@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Run pre-commit
+description: >
+  Installs a Python and runs `pre-commit run --all-files` against the
+  already-checked-out repo, reading its .pre-commit-config.yaml.
+
+  Caller must have already run actions/checkout@v6 in the same job, and must set
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' as a job-level env -- checkout runs
+  before this action and needs it too, so it cannot be set from in here.
+
+inputs:
+  python-version:
+    description: 'Python that runs pre-commit itself, not the hooks pinned in the config.'
+    required: false
+    default: '3.12'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: ${{ inputs.python-version }}
+    - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
