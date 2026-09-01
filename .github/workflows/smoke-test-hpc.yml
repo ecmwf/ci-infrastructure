@@ -11,7 +11,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Pinned remote rather than ./actions/...: a fork's pull_request runs its own
+  # copy of this repo, so a local path would let the gate rewrite itself.
+  ci-approval:
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+
   ssh:
+    needs: ci-approval
     name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
     strategy:
       fail-fast: false
@@ -74,6 +84,7 @@ jobs:
             'echo "connected to HPC"'
 
   hpc-roundtrip:
+    needs: ci-approval
     name: transfer round-trip (${{ matrix.lane }}, ${{ matrix.site }})
     strategy:
       fail-fast: false
@@ -179,6 +190,7 @@ jobs:
           remote-dir: ${{ steps.push.outputs.remote-dir }}
 
   hpc-submit:
+    needs: ci-approval
     name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
     # The transfer round-trip above proves ssh, $SCRATCH expansion and a writable
     # work dir. This proves the half the build path actually depends on and

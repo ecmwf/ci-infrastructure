@@ -14,7 +14,7 @@ on:
 jobs:
   pre-commit:
     # Lint hooks need a CPU and a Python, nothing else — ubuntu-slim is the cheap
-    # 1-CPU ARC runner.
+    # 1-CPU GitHub-hosted runner.
     runs-on: ubuntu-slim
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'

@@ -14,9 +14,9 @@ on:
       runs-on:
         description: >
           Runner label. Defaults to ubuntu-latest rather than this org's cheap
-          ARC label ubuntu-slim: public consumers may have no ARC access, and
-          the slim image is not guaranteed to carry a usable python3 (the
-          pre-commit workflow next door installs one via setup-python).
+          ubuntu-slim: the slim image is not guaranteed to carry a usable
+          python3 (the pre-commit workflow next door installs one via
+          setup-python).
         type: string
         required: false
         default: ubuntu-latest

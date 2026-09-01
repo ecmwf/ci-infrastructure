@@ -25,6 +25,7 @@ ci-infrastructure-fetch = "ci_infrastructure.fetch_deps:main"
 ci-infrastructure-check = "ci_infrastructure.check_artifact:main"
 ci-infrastructure-print-dep-table = "ci_infrastructure.print_dep_table:main"
 ci-infrastructure-s3 = "ci_infrastructure.s3_store:main"
+ci-infrastructure-check-ci-approval = "ci_infrastructure.check_ci_approval:main"
 ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 # For local debugging only. actions/check-pr-declaration deliberately does NOT
 # use this entry point: it runs the module with `-m` and a PYTHONPATH, installing

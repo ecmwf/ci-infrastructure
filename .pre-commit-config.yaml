@@ -32,6 +32,15 @@ repos:
   # shellcheck-py, not koalaman/shellcheck-precommit: that one runs shellcheck in
   # a container, and the pre-commit job runs on ubuntu-slim, which is
   # unprivileged and has no docker. This one is a plain pip wheel.
+  - repo: local
+    hooks:
+      - id: check-ci-approval
+        name: require the ci-approval gate on workflows that can run fork code
+        entry: python src/ci_infrastructure/check_ci_approval.py
+        language: python
+        additional_dependencies: ["PyYAML>=6"]
+        files: ^\.github/workflows/.*\.ya?ml$
+
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:

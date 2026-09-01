@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+- id: check-ci-approval
+  name: require the ci-approval gate on workflows that can run fork code
+  description: >
+    Fails a workflow triggered by pull_request_target, or by pull_request onto a
+    non-GitHub-hosted runner, unless every job hangs off require-ci-approval via
+    `needs:`. Exemptions go in .github/ci-approval-allowlist.yml.
+  entry: ci-infrastructure-check-ci-approval
+  language: python
+  files: ^\.github/workflows/.*\.ya?ml$
