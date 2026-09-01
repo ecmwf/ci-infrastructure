@@ -34,6 +34,9 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # GREEN while silently shipping neither library and skipping the whole tests/sql
 # suite. stack-deps needs them too, for libpq's generated parser. (perl, which
 # ecbuild_generate_yy also requires, arrives with build-essential.)
+#
+# zstd is what HPC install archives are compressed with (CI_INSTALL_ARCHIVE);
+# fetch_install unpacks them here, so it is needed wherever an HPC job runs.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -46,6 +49,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     jq \
     unzip \
+    zstd \
     lsb-release \
     software-properties-common \
     build-essential \
