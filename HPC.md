@@ -62,7 +62,24 @@ login-node self-hosted runner
 The repo owns its build recipe in `.ci/hpc/build-<toolchain>.sh` (its `#SBATCH` resource
 directives, `module load` lines and cmake/ctest body). ci-infrastructure injects
 `#SBATCH --output/--error`, the dependency environment
-(`CMAKE_PREFIX_PATH` / `CI_INSTALL_PREFIX`) and the sentinel footer.
+(`CMAKE_PREFIX_PATH` / `CI_INSTALL_PREFIX` / `CI_INSTALL_ARCHIVE`) and the sentinel footer.
+
+**The recipe must end by writing `$CI_INSTALL_ARCHIVE`** — a gzipped tar of the install
+tree, taken from wherever the recipe installed it:
+
+```bash
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -czf "$CI_INSTALL_ARCHIVE.part" -C "$CI_INSTALL_PREFIX" .
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
+```
+
+That is what `fetch_install` collects; it does not tar anything itself, and a job that
+finishes without the archive fails the fetch. Archiving on the compute node keeps the
+install tree off shared storage — for a tree of many small files, creating it there and
+reading it back can cost more than the build — and compresses on the job's own cores. Use
+`.part` + `mv` so the file only ever appears complete. A recipe whose install step supports
+`DESTDIR` can go further and stage onto node-local disk, so the tree never reaches shared
+storage at all (see `eccodes/.ci/hpc/build-gnu.sh`).
 
 ```toml
 [[matrix.build.include]]

@@ -20,7 +20,7 @@ from typing import Any, Final
 import pytest
 
 from ci_infrastructure._errors import CIError
-from ci_infrastructure.hpc import transfer
+from ci_infrastructure.hpc import jobscript, transfer
 from ci_infrastructure.hpc.site import ensure_batch_site, load_site
 
 
@@ -397,7 +397,8 @@ def test_ship_lock_dryrun_touches_nothing() -> None:
 # --------------------------------------------------------------------------- #
 # fetch_install
 # --------------------------------------------------------------------------- #
-def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
+def test_fetch_install_collects_the_archive_the_job_wrote(tmp_path: Path) -> None:
+    """No remote tar: the job owns producing CI_INSTALL_ARCHIVE, we only fetch it."""
     conn = TarballConnection()
     transfer.fetch_install(
         conn,
@@ -405,11 +406,21 @@ def test_fetch_install_tar_getfile_unpack_order(tmp_path: Path) -> None:
         local_install_dir=str(tmp_path / "local-install"),
         tar_dir=str(tmp_path / "stage"),
     )
-    # Remote tar first, then scp back to the staging dir.
-    assert conn.executed[0][:2] == ["bash", "-c"]
-    assert "tar -czf" in conn.executed[0][2] and "/remote/install/art" in conn.executed[0][2]
+    assert conn.executed == []
     assert conn.fetched == [("/remote/install/art.install.tgz", str(tmp_path / "stage" / "art.install.tgz"))]
     assert (tmp_path / "local-install").is_dir()
+
+
+def test_fetch_install_archive_path_matches_the_jobscript_export(tmp_path: Path) -> None:
+    """The name the job is told to write is the name we come looking for."""
+    conn = TarballConnection()
+    transfer.fetch_install(
+        conn,
+        remote_install_dir="/remote/install/art",
+        local_install_dir=str(tmp_path / "local-install"),
+        tar_dir=str(tmp_path / "stage"),
+    )
+    assert conn.fetched[0][0] == jobscript.install_archive_path("/remote/install/art")
 
 
 # --------------------------------------------------------------------------- #
@@ -532,6 +543,12 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
         tar.extractall(unpacked, filter="data")
     assert (unpacked / "hello.txt").read_text() == "content-xyz"
 
+    # Stand in for the job's final step: archive the install tree at the agreed
+    # path. Without it there is nothing to fetch -- that is the contract.
+    archive = jobscript.install_archive_path(str(unpacked))
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(unpacked, arcname=".")
+
     fetched = tmp_path / "back"
     transfer.fetch_install(
         conn,
@@ -540,6 +557,18 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
         tar_dir=str(tmp_path / "stage2"),
     )
     assert (fetched / "hello.txt").read_text() == "content-xyz"
+
+
+def test_fetch_install_fails_when_the_job_wrote_no_archive(tmp_path: Path) -> None:
+    """A job that skips the archive fails here rather than publishing nothing."""
+    conn = CopyingConnection()
+    with pytest.raises(FileNotFoundError):
+        transfer.fetch_install(
+            conn,
+            remote_install_dir=str(tmp_path / "never-archived"),
+            local_install_dir=str(tmp_path / "back"),
+            tar_dir=str(tmp_path / "stage"),
+        )
 
 
 # --------------------------------------------------------------------------- #

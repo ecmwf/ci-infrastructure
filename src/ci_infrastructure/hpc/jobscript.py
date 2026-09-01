@@ -25,6 +25,7 @@ The repo's leading directive block is preserved verbatim at the top so its
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Final
 
 SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
@@ -44,6 +45,22 @@ SOURCE_TARBALL_NAME: Final = "source.tgz"
 #: runner can now check and re-drop this marker without knowing which run
 #: submitted the job it is adopting.
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
+
+#: Suffix of the tarball the install tree travels home in. Shared with
+#: transfer.fetch_install so the job and the fetcher agree on one name.
+INSTALL_TARBALL_SUFFIX: Final = "install"
+
+
+def install_archive_path(install_path: str) -> str:
+    """Where a job may leave its own install tarball, as ``CI_INSTALL_ARCHIVE``.
+
+    Writing it lets a job that installs onto node-local disk hand the fetcher a
+    finished archive, so the tree never has to be created on -- and then read
+    back off -- the shared filesystem. It must be moved into place atomically:
+    the fetcher takes any file at this path as complete.
+    """
+    p = PurePosixPath(install_path)
+    return str(p.parent / f"{p.name}.{INSTALL_TARBALL_SUFFIX}.tgz")
 
 
 def job_name_for(artifact_name: str) -> str:
@@ -172,6 +189,7 @@ def render_job_script(
     # pre-existing value on the tail.
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
     out.append(f'export CI_INSTALL_PREFIX="{install_path}"')
+    out.append(f'export CI_INSTALL_ARCHIVE="{install_archive_path(install_path)}"')
     for key, value in (env or {}).items():
         out.append(f'export {key}="{value}"')
     # A failure anywhere below (set -e trips ERR) prints the failure sentinel

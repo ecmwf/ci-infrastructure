@@ -1166,3 +1166,15 @@ def test_submit_lock_is_released_when_the_submit_fails(monkeypatch: pytest.Monke
 
     assert result.exit_code != 0
     assert _RELEASE_CMD in [" ".join(a) for a in conn.executed]
+
+
+def test_jobscript_exports_the_install_archive_path() -> None:
+    """The job is told exactly where to leave the archive fetch_install wants."""
+    script = jobscript.render_job_script(
+        repo_script=_REPO_BUILD,
+        output_path="/scratch/ci/art.out",
+        cmake_prefix_path="/scratch/install/dep",
+        install_path="/scratch/install/art",
+    )
+    assert 'export CI_INSTALL_ARCHIVE="/scratch/install/art.install.tgz"' in script
+    assert jobscript.install_archive_path("/scratch/install/art") == "/scratch/install/art.install.tgz"

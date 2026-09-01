@@ -457,16 +457,24 @@ def fetch_install(
     tar_dir: str,
     dryrun: bool = False,
 ) -> None:
-    """Tar the cluster's install tree and unpack it into ``local_install_dir`` on the runner.
+    """Fetch the install archive the job wrote and unpack it into ``local_install_dir``.
 
-    Thin wrapper over :func:`fetch_tree` that keeps the build flow's
-    ``<name>.install.tgz`` temp-tarball name.
+    The job is REQUIRED to leave an archive at ``CI_INSTALL_ARCHIVE`` -- see
+    :func:`jobscript.install_archive_path`. It is not optional and there is no
+    fallback: taring here instead would mean the login node reading the whole
+    install tree back off the shared filesystem, which for a tree of many small
+    files can cost more than the build. Producing it on the compute node writes
+    one file to shared storage and compresses on the job's own cores.
+
+    A job that finishes without writing it fails here, on the missing file,
+    rather than silently publishing nothing.
     """
-    fetch_tree(
-        conn,
-        remote_dir=remote_install_dir,
-        local_dir=local_install_dir,
-        tar_dir=tar_dir,
-        tarball_suffix="install",
-        dryrun=dryrun,
-    )
+    if dryrun:
+        return
+    remote_tgz = jobscript.install_archive_path(remote_install_dir)
+    local_tgz = Path(tar_dir) / PurePosixPath(remote_tgz).name
+
+    Path(tar_dir).mkdir(parents=True, exist_ok=True)
+    conn.getfile(remote_tgz, local_tgz)
+    Path(local_install_dir).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_install_dir)], check=True)
