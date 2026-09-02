@@ -71,7 +71,11 @@ running job can tell whether the image is current.
 > `ensure-infrastructure-present` compares a digest of the baked package's `*.py`
 > against the checkout's and **fails on a mismatch**. On a pull request the
 > published image necessarily lags the branch under test, so any PR job running
-> inside one of these images must pass `force-reinstall: true`.
+> inside one of these images must force a reinstall — set
+> `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in the job's `env:`. Use the env var,
+> not the action's `force-reinstall:` input: the bootstrap is almost always
+> reached through another action that nests it, and a nested `uses:` cannot
+> forward an input, so there is no step in your workflow to set it on.
 
 ## Tagging — `<sha>` + `latest`
 

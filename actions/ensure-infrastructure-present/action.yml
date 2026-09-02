@@ -4,6 +4,15 @@
 
 name: Ensure ci-infrastructure infrastructure is present
 description: >
+  YOU PROBABLY DO NOT NEED TO CALL THIS. Every action here that uses the
+  ci_infrastructure package nests it already, as its first step, so a caller
+  never bootstraps -- see README.md, and tests/test_action_conventions.py, which
+  enforces it. Call it directly only when a workflow runs
+  $CI_INFRASTRUCTURE_PYTHON itself rather than through an action, as
+  hpc-nightly-cleanup.yml and smoke-test-hpc.yml do. To force a reinstall from
+  inside a job that only reaches this through a nested action, set
+  CI_INFRASTRUCTURE_FORCE_REINSTALL=true in the job's env.
+
   Materialise a dedicated venv at
   $RUNNER_TOOL_CACHE/ci-infrastructure-venv/<ref>-<src-hash> with the
   ci-infrastructure package installed, isolated from the test interpreter's
@@ -67,6 +76,12 @@ inputs:
       When 'true', ignore any baked interpreter and any cached venv and install
       ci-infrastructure fresh from the checkout. Empty or 'false' keeps the
       default: reuse a matching baked interpreter, else a content-keyed venv.
+
+      The environment variable CI_INFRASTRUCTURE_FORCE_REINSTALL=true does the
+      same thing and is what a consumer normally wants: this action is usually
+      reached through another action that nests it, and a nested `uses:` cannot
+      forward an input. Set the env var once on the job and every bootstrap in
+      that job honours it.
       Set this in ci-infrastructure's own end-to-end jobs, which must exercise
       the branch rather than whatever an image happens to carry — it makes those
       jobs independent of which commit the image was built from. Needed on any
@@ -147,8 +162,15 @@ runs:
           echo "ensure-infrastructure-present: sources = the action checkout ($repo_root)"
         fi
 
+        # Either source enables it. The env var exists because this action is
+        # almost always reached through another action that nests it -- see the
+        # invariant in README.md -- and a nested `uses:` cannot forward an input.
+        # A consumer sets CI_INFRASTRUCTURE_FORCE_REINSTALL once at job level and
+        # every bootstrap in that job sees it, at any nesting depth. The input
+        # stays for the workflows that call this action directly.
         force_reinstall=false
         [ "${FORCE_REINSTALL_INPUT:-}" = "true" ] && force_reinstall=true
+        [ "${CI_INFRASTRUCTURE_FORCE_REINSTALL:-}" = "true" ] && force_reinstall=true
         if $force_reinstall && [ "$repo_root" != "${GITHUB_WORKSPACE:-}" ]; then
           echo "::warning::ensure-infrastructure-present: force-reinstall is set, but the workspace is not a ci-infrastructure checkout — installing from the action checkout ($repo_root), which is the ref this action was pinned at, not a branch under test."
         fi
@@ -172,7 +194,7 @@ runs:
             echo "ensure-infrastructure-present: reusing the baked interpreter $python (*.py digest $baked_hash matches the checkout)"
           else
             baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
-            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The images are rebuilt automatically by ecmwf/ci-infrastructure's images.yml on every push to main that changes what gets installed, so on a pull request -- or on a commit that just landed -- the image is EXPECTED to lag and this is not a fault: set force-reinstall: true on this step to install from the checkout instead. If the checkout is an already-published main commit, the publish failed or was skipped; re-run images.yml." >&2
+            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The images are rebuilt automatically by ecmwf/ci-infrastructure's images.yml on every push to main that changes what gets installed, so on a pull request -- or on a commit that just landed -- the image is EXPECTED to lag and this is not a fault: set CI_INFRASTRUCTURE_FORCE_REINSTALL=true in your job's env: to install from the checkout instead (or force-reinstall: true, if you call this action directly rather than through one that nests it). If the checkout is an already-published main commit, the publish failed or was skipped; re-run images.yml." >&2
             exit 1
           fi
         fi

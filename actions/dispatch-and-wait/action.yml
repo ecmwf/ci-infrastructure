@@ -83,7 +83,7 @@ inputs:
       Space-separated list of fully-computed artifact names to wait for. A
       dispatched run produces many artifacts (one per matrix leg); the caller
       already knows which ones it needs and computes the names with the same
-      logic as the check-artifact action. The wait succeeds once every name is
+      logic as ci_infrastructure.check_artifact. The wait succeeds once every name is
       present in the store. Empty (the default) skips the artifact wait — used
       by the upstream orchestrator dispatching a private consumer, which consumes
       no artifact back and instead waits on the run's conclusion (see below).
