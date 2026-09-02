@@ -21,11 +21,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # the stack runs its suite from CI and both are consumed as `<runner> ...` with
 # nothing declaring them:
 #   ctest   comes with the `cmake` package below -- no separate install needed.
-#   pytest  as the DISTRO package, not pip: ecflow's py3_u_* tests shell out to
-#           `/usr/bin/python3 -m pytest`, so it has to be importable from the
-#           system interpreter (dist-packages), which is exactly where apt puts
-#           it. Without it those ~52 tests fail instantly with "No module named
-#           pytest" rather than actually running.
+#   pytest  from pip, in its own layer below -- NOT the python3-pytest distro
 #
 # bison + flex belong in the BASE, not a toolchain variant. eckit's
 # ecbuild_generate_yy() builds eckit::sql and eckit::cmd from .y/.l sources, and
@@ -57,10 +53,14 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     python3-pip \
     python3-venv \
-    python3-pytest \
     python-is-python3 \
     libssl-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# pytest, from pip rather than the python3-pytest distro package.
+#
+# PIP_BREAK_SYSTEM_PACKAGES=1 above is what lets pip write outside a venv at all (PEP 668);
+RUN pip install 'pytest>=8'
 
 # Install GitHub CLI (gh)
 RUN mkdir -p /etc/apt/keyrings \
