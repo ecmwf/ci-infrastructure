@@ -81,6 +81,18 @@ jobs:
           : "${CI_INFRASTRUCTURE_BAKED_REF:?the base image should record which commit it baked}"
           echo "baked ci-infrastructure: $CI_INFRASTRUCTURE_BAKED_REF"
 
+          # Self-description, reaching the image through the same --build-arg
+          # wiring and failing the same silent-empty way. actions/announce-image
+          # prints these, and prints NOTHING when CI_IMAGE_NAME is empty, so
+          # without this assertion a broken wiring looks like a quiet job.
+          : "${CI_IMAGE_NAME:?the image should record its own name}"
+          : "${CI_IMAGE_TAG:?the image should record its own tag}"
+          : "${CI_IMAGE_CREATED:?the image should record when it was built}"
+          : "${CI_IMAGE_DOCKERFILE_URL:?the image should record a link to its Dockerfile}"
+          [ "$CI_IMAGE_NAME" = ubuntu24.04/base ] || {
+            echo "::error::image reports itself as '$CI_IMAGE_NAME', expected ubuntu24.04/base"; exit 1; }
+          echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Retrieve secret from Vault
@@ -133,6 +145,16 @@ jobs:
           # this compiler, and its absence is a finding about the image.
           command -v clang++-18 >/dev/null || { echo "::error::clang++-18 missing from the toolchain image"; exit 1; }
           command -v cmake >/dev/null || { echo "::error::cmake missing from the toolchain image"; exit 1; }
+
+          # This job runs a VARIANT, which is what makes the check below worth
+          # having: ENV is inherited, so if the CI_IMAGE_* block is ever added to
+          # a base only, every variant silently announces itself as that base.
+          # This is the assertion that catches it.
+          : "${CI_INFRASTRUCTURE_BAKED_REF:?the toolchain image should record which commit it baked}"
+          : "${CI_IMAGE_NAME:?the image should record its own name}"
+          [ "$CI_IMAGE_NAME" = ubuntu24.04/clang18-gfortran13 ] || {
+            echo "::error::variant reports itself as '$CI_IMAGE_NAME' — CI_IMAGE_* inherited from its base?"; exit 1; }
+          echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED"
 
       # Configures sccache the way downstream builds are told to, so this job
       # exercises the action itself -- which until now had no caller anywhere

@@ -213,6 +213,14 @@ From inside a running container: `echo "$CI_INFRASTRUCTURE_BAKED_REF"`.
 **Source → image:** `eccr.ecmwf.int/public-ci-images/<platform>-<variant>`,
 at the tag `./build-image.sh --print-tag <platform>/<variant>` prints.
 
+**From inside a running container**, where no label is readable:
+
+```sh
+docker run --rm <image> env | grep ^CI_IMAGE_
+```
+
+In a GitHub Actions job this is printed for you — see *Self-description* below.
+
 ### Label set
 
 `org.opencontainers.image.{source,revision,created,title,description}`, plus
@@ -220,11 +228,50 @@ at the tag `./build-image.sh --print-tag <platform>/<variant>` prints.
 writes the same set by hand (and adds `.base.digest` and `int.ecmwf.ci.build.run`,
 because its base is external and its content is not a pure function of git).
 
+### Self-description
+
+Labels answer "what is this image" only from **outside** — they need registry or
+daemon access. A job running *inside* the image has neither, so the same facts
+are baked in as environment:
+
+| variable | |
+|---|---|
+| `CI_IMAGE_NAME` | `<platform>/<variant>` |
+| `CI_IMAGE_TAG` | the tag it was published under |
+| `CI_IMAGE_CREATED` | when these bytes were built (not when the commit landed) |
+| `CI_IMAGE_DOCKERFILE_URL` | permalink to the exact Dockerfile |
+
+`CI_IMAGE_TAG` and `CI_IMAGE_CREATED` are not redundant: one says *which* build,
+the other *when it ran* — which is the pair you want when an upstream
+`ubuntu:24.04` shifts underneath a pinned tag.
+
+`actions/announce-image` prints them, and takes an `extra` input for anything the
+caller knows that the image does not (resolved dep refs, the matrix leg). The
+generator emits it into every job, so downstream repos get it without editing a
+workflow. It is pure bash and depends on nothing else in this repo — "which image
+am I" must not fail for an unrelated reason — and is silent on runners outside
+these images.
+
+This is as early as it can be. The runner's own "Set up job" block cannot be
+extended, and the job container's `ENTRYPOINT`/`CMD` never run — GitHub starts it
+with its own command, which is why every base here ends with `ENTRYPOINT []`. The
+image reference and digest *are* already in "Initialize containers"; what this
+adds is the readable provenance.
+
+> **Inheritance.** Docker `ENV` is inherited, so an image that `FROM`s one of
+> these **must re-declare the whole `ARG`/`ENV` block** or it will announce itself
+> as its base, with a Dockerfile URL pointing at the wrong file. Every variant
+> here re-declares it, and `smoke-test-runners.yml` asserts a variant reports its
+> own name. The same obligation falls on `ecmwf/ci-container-images`, whose
+> images `FROM` our base.
+
 ## Adding a new image
 
 1. Create `public-images/<platform>/<variant>/Dockerfile`.
 2. If it builds on the shared foundation, start with
    `FROM eccr.ecmwf.int/public-ci-images/<platform>-base:latest`.
+   Copy the `CI_IMAGE_*` `ARG`/`ENV` block from any existing image — see
+   *Self-description*; inheriting the base's is the one way to get it wrong.
 3. Open a PR — the workflow discovers the new directory and validates it. On
    merge to `main` it is built and pushed.
 

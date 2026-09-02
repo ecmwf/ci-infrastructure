@@ -363,16 +363,8 @@ build_one() {
     registry_login                     # buildkit pulls the base from the registry
   fi
 
-  local build_args=()
-  # Only pass SOURCE_REVISION to images that declare it, so the other five do not
-  # emit an "unused build arg" warning on every build. This is about build args,
-  # not identity -- identity is TAG_PATHS and nothing else.
-  if grep -qE '^[[:space:]]*ARG[[:space:]]+SOURCE_REVISION([[:space:]]|=|$)' "$dockerfile"; then
-    build_args+=(--build-arg "SOURCE_REVISION=$revision")
-  fi
-
   # OCI labels: https://specs.opencontainers.org/image-spec/annotations/
-  local source_repo server_url source_url created labels=()
+  local source_repo server_url source_url created dockerfile_url labels=()
   source_repo="${IMAGE_SOURCE_REPO:-${GITHUB_REPOSITORY:-}}"
   if [ -z "$source_repo" ]; then
     # `|| true`: a checkout with no origin (or no remote at all) is a normal
@@ -384,15 +376,36 @@ build_one() {
   server_url="${GITHUB_SERVER_URL:-https://github.com}"
   source_url="$server_url/$source_repo"
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  dockerfile_url="$source_url/blob/$revision/$IMAGES_DIR/$name/Dockerfile"
   labels=(
     --label "org.opencontainers.image.source=$source_url"
     --label "org.opencontainers.image.revision=$revision"
     --label "org.opencontainers.image.created=$created"
     --label "org.opencontainers.image.title=$name"
     --label "org.opencontainers.image.description=CI image $name built from $IMAGES_DIR/$name/Dockerfile"
-    --label "int.ecmwf.ci.dockerfile=$source_url/blob/$revision/$IMAGES_DIR/$name/Dockerfile"
+    --label "int.ecmwf.ci.dockerfile=$dockerfile_url"
   )
   [ -n "$base" ] && labels+=(--label "org.opencontainers.image.base.name=$(image_ref "$base" latest)")
+
+  # Build args. Every value here is ALSO a label above -- the difference is that a
+  # label can only be read from OUTSIDE the image (registry or daemon), and a job
+  # running inside it has neither. So the same facts are baked in as CI_IMAGE_*
+  # environment, which actions/announce-image prints. See IMAGES.md.
+  #
+  # Each is passed only to an image that declares the ARG, so one that does not
+  # (a future image, or the private repo's) still builds without an "unused build
+  # arg" warning. None of this is identity: identity is TAG_PATHS and nothing else.
+  local build_args=() a
+  for a in SOURCE_REVISION IMAGE_NAME IMAGE_TAG IMAGE_CREATED IMAGE_DOCKERFILE_URL; do
+    grep -qE "^[[:space:]]*ARG[[:space:]]+$a([[:space:]]|=|\$)" "$dockerfile" || continue
+    case "$a" in
+      SOURCE_REVISION)      build_args+=(--build-arg "$a=$revision") ;;
+      IMAGE_NAME)           build_args+=(--build-arg "$a=$name") ;;
+      IMAGE_TAG)            build_args+=(--build-arg "$a=$tag") ;;
+      IMAGE_CREATED)        build_args+=(--build-arg "$a=$created") ;;
+      IMAGE_DOCKERFILE_URL) build_args+=(--build-arg "$a=$dockerfile_url") ;;
+    esac
+  done
 
   local push_args=() tag_args=(-t "$ref")
   if $push; then push_args=(--push); tag_args+=(-t "$latest_ref"); fi
