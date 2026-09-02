@@ -20,6 +20,16 @@
 #   tag = short SHA of the last commit touching the image's build inputs
 #   rebuild <=> that tag is not in the registry
 #
+# ROLLING PLATFORMS bend the first line, never the second. An image under
+# public-images/rolling/ tracks upstream continuously, so its content is NOT a
+# function of our git history: the same commit yields a different image every
+# night. Its tag therefore carries a UTC date as well -- <sha>-<YYYYMMDD> -- and
+# the rule above then does the right thing on its own, because each night's tag
+# is genuinely new and genuinely absent from the registry. Note what this is NOT:
+# it is not a second answer to the rebuild question, and it is not a forced
+# rebuild that republishes one tag with different content. Both would break the
+# guarantee that a tag names fixed bytes.
+#
 # --discover and the build path compute that tag through the same functions
 # below, which is the whole point of this file. Do not reintroduce a second
 # mechanism -- not a `git diff`, not a workflow `paths:` filter, not a
@@ -157,7 +167,29 @@ _git_identity() {
   echo "$out"
 }
 
-compute_tag()      { echo "${IMAGE_TAG:-$(_git_identity "$1" %h)}"; }
+# Rolling platforms are identified by the platform component of their path, so
+# there is still no list to maintain -- the same reason discovery is a glob.
+# public-images/rolling/* is the whole rule; see the header and IMAGES.md.
+is_rolling() {
+  case "$1" in rolling/*) return 0 ;; *) return 1 ;; esac
+}
+
+# A rolling image's tag gets a UTC date suffix, because its content changes
+# without a commit. IMAGE_TAG still wins outright: images.yml pins the tag
+# discover computed, so a run that crosses midnight UTC cannot have the discover
+# job decide to build <sha>-20260902 and the build job then publish
+# <sha>-20260903.
+compute_tag() {
+  local t
+  [ -n "${IMAGE_TAG:-}" ] && { echo "$IMAGE_TAG"; return 0; }
+  t="$(_git_identity "$1" %h)"
+  if is_rolling "$1"; then
+    echo "$t-$(date -u +%Y%m%d)"
+  else
+    echo "$t"
+  fi
+}
+
 compute_revision() { _git_identity "$1" %H; }
 
 flat_name() { echo "${1//\//-}"; }   # ubuntu24.04/base -> ubuntu24.04-base
@@ -259,7 +291,7 @@ discover() {
     printf '{"include":['
     for n in $1; do
       $first || printf ','; first=false
-      printf '{"name":"%s"}' "$n"
+      printf '{"name":"%s","tag":"%s"}' "$n" "$(compute_tag "$n")"
     done
     printf ']}'
   }
