@@ -21,7 +21,7 @@
 #   rebuild <=> that tag is not in the registry
 #
 # ROLLING PLATFORMS bend the first line, never the second. An image under
-# public-images/rolling/ tracks upstream continuously, so its content is NOT a
+# public-images/rolling-*/ tracks upstream continuously, so its content is NOT a
 # function of our git history: the same commit yields a different image every
 # night. Its tag therefore carries a UTC date as well -- <sha>-<YYYYMMDD> -- and
 # the rule above then does the right thing on its own, because each night's tag
@@ -168,10 +168,12 @@ _git_identity() {
 }
 
 # Rolling platforms are identified by the platform component of their path, so
-# there is still no list to maintain -- the same reason discovery is a glob.
-# public-images/rolling/* is the whole rule; see the header and IMAGES.md.
+# there is still no list to maintain -- the same reason discovery is a glob. A
+# platform named `rolling` or `rolling-<distro>` is the whole rule; see the header
+# and IMAGES.md. The prefix, not the exact name, so a second rolling platform
+# (rolling-fedora, say) needs no change here.
 is_rolling() {
-  case "$1" in rolling/*) return 0 ;; *) return 1 ;; esac
+  case "$1" in rolling/*|rolling-*/*) return 0 ;; *) return 1 ;; esac
 }
 
 # A rolling image's tag gets a UTC date suffix, because its content changes

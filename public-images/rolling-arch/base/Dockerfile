@@ -2,15 +2,16 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rolling-base
-# Shared foundation: every other public-images/rolling/* image FROMs this.
+# Published as eccr.ecmwf.int/public-ci-images/rolling-arch-base
+# Shared foundation: every other public-images/rolling-arch/* image FROMs this.
 # Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 #
-# THE PLATFORM IS CALLED `rolling`, NOT `arch`, AND THAT NAME IS LOAD-BEARING.
-# build-image.sh gives images under public-images/rolling/ a date-suffixed tag
-# and images.yml rebuilds them on a nightly schedule. Arch Linux is the current
-# implementation of "newest of everything"; the name describes the guarantee, and
-# renaming the directory would silently turn the nightly rebuild off.
+# THE `rolling-` PREFIX IS LOAD-BEARING. build-image.sh's is_rolling() matches any
+# platform named `rolling` or `rolling-*`, gives those images a date-suffixed tag,
+# and images.yml rebuilds them nightly. So the prefix states the guarantee -- this
+# tracks upstream rather than pinning a release -- while the suffix names the
+# distro delivering it, leaving room for a second rolling platform later. Renaming
+# the directory out of that prefix would silently turn the nightly rebuild off.
 #
 # What it is FOR: everything else in public-images/ pins a distro release, so the
 # stack only meets a new gcc, cmake or Qt when someone bumps an image. This one

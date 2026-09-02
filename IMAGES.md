@@ -43,9 +43,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
-| `public-images/rolling/base` | `…/rolling-base` |
-| `public-images/rolling/gfortran` | `…/rolling-gfortran` |
-| `public-images/rolling/gfortran-boost-qt6` | `…/rolling-gfortran-boost-qt6` |
+| `public-images/rolling-arch/base` | `…/rolling-arch-base` |
+| `public-images/rolling-arch/gfortran` | `…/rolling-arch-gfortran` |
+| `public-images/rolling-arch/gfortran-boost-qt6` | `…/rolling-arch-gfortran-boost-qt6` |
 
 `base` is the shared foundation (system packages, `cmake`, `gh`, Python with its
 development headers, OpenSSL headers, and the `ci_infrastructure` package). Every
@@ -70,7 +70,7 @@ is in the *name*, so what you get is never a surprise:
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 13 (SCL toolset) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
-| `rolling` | newest | 6 | newest | newest | `/usr/bin/python3` |
+| `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:
 
@@ -93,20 +93,23 @@ outside a distro archive.
 
 `rocky8` and `debian11` also take their pytest from pip rather than the distro,
 because in both cases the distro package targets an interpreter (3.6, 3.9) that
-is not the one those images run anything with. `ubuntu24.04` and `rolling` use
+is not the one those images run anything with. `ubuntu24.04` and `rolling-arch` use
 the distro package.
 
-### `rolling` — newest of everything, rebuilt nightly
+### `rolling-arch` — newest of everything, rebuilt nightly
 
 Every other platform pins a distro release, so the stack meets a new gcc, cmake
-or Qt only when someone bumps an image. `rolling` (Arch Linux today) tracks
+or Qt only when someone bumps an image. `rolling-arch` tracks
 upstream continuously, so a change that will reach the pinned platforms in a year
 breaks *here* first, on a nightly build nobody is waiting on. It is already a
 useful canary: it currently carries gcc 16 and **cmake 4**, which no longer
 accepts `cmake_minimum_required(VERSION < 3.5)`.
 
-The name is the platform, not the distro, and it is load-bearing — see the tag
-rule below. Renaming the directory turns the nightly rebuild off.
+The **`rolling-` prefix** is load-bearing — see the tag rule below. It states the
+guarantee (tracks upstream, rebuilt nightly) while the suffix names the distro
+delivering it, so a second rolling platform is just another `rolling-*` directory.
+`is_rolling()` matches the prefix, so nothing needs editing to add one; moving a
+directory out of it silently turns the nightly rebuild off.
 
 ## The base installs this repo
 
@@ -162,7 +165,7 @@ functions in `build-image.sh`, so they cannot disagree.
 
 #### Rolling platforms change the tag, never the rule
 
-An image under `public-images/rolling/` is not a function of our git history:
+An image under a `rolling-*` platform is not a function of our git history:
 the same commit yields a different image every night. So its tag carries a UTC
 date as well — `<sha>-<YYYYMMDD>` — and the rule above then does the right thing
 unaided, because each night's tag is genuinely new and genuinely absent from the
@@ -173,8 +176,8 @@ Note what this deliberately is **not**. It is not a second answer to the rebuild
 question. And it is not a forced rebuild republishing one tag with new content,
 which would break the guarantee that a tag names fixed bytes — the guarantee the
 whole "Two-way jump" section below rests on. Nothing in `images.yml` names the
-rolling images; `build-image.sh`'s `is_rolling()` keys off the platform
-directory, so there is still no list anywhere.
+rolling images; `build-image.sh`'s `is_rolling()` matches any platform named
+`rolling` or `rolling-*`, so there is still no list anywhere.
 
 The build jobs pin the tag `--discover` computed, via `IMAGE_TAG`. Without that,
 a run straddling midnight UTC could discover `<sha>-20260902` as missing and then

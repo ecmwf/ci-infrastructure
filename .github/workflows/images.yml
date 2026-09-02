@@ -37,7 +37,7 @@ on:
   # Nightly, for the rolling platform only -- in effect, not by configuration.
   # A scheduled run discovers every image exactly as a push does; the pinned
   # platforms' tags are already in the registry and are skipped, while
-  # public-images/rolling/* carries a UTC date in its tag (build-image.sh), so
+  # a `rolling-*` platform carries a UTC date in its tag (build-image.sh), so
   # each night's tag is new and gets built. Nothing here names the rolling
   # images: that would be a second answer to "what needs rebuilding", which is
   # the one thing this workflow is built to avoid.
