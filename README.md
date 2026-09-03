@@ -96,6 +96,31 @@ composite actions in [`actions/`](actions), e.g.:
     config: deps.yml
 ```
 
+### Actions never make you bootstrap
+
+That snippet is complete — there is no setup step to remember, and that is a
+guarantee rather than a coincidence:
+
+> **No action requires its caller to bootstrap.** An action that uses the
+> `ci_infrastructure` package runs `actions/ensure-infrastructure-present`
+> itself, as its first step. An action that does not use the package does not,
+> so it costs you no venv.
+
+`tests/test_action_conventions.py` enforces both halves, so it stays true as
+actions are added.
+
+Call `ensure-infrastructure-present` yourself only when a workflow runs
+`$CI_INFRASTRUCTURE_PYTHON` **directly** rather than through an action — as this
+repo's own `hpc-nightly-cleanup.yml` and `smoke-test-hpc.yml` do.
+
+One thing does reach it from outside: setting
+`CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in a job's `env:` makes every bootstrap
+in that job install from the checkout instead of trusting a baked interpreter.
+That is what a pull-request job running inside one of the published images needs,
+because the image necessarily lags the branch under test (see
+[`IMAGES.md`](IMAGES.md)). An env var rather than an input precisely because a
+nested `uses:` cannot forward one.
+
 ## Enforcing the PR Contributor Declaration
 
 Public ECMWF repos inherit a PR template from
