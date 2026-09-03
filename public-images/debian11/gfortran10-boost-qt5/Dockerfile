@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y \
 # Self-description. The same facts build-image.sh writes as OCI labels, baked in
 # as environment as well: a label can only be read from OUTSIDE the image
 # (registry or daemon), and a job running INSIDE it has neither.
-# actions/announce-image prints these. See IMAGES.md.
+# announce-image.sh and actions/announce-image print these. See IMAGES.md.
 #
 # Declared LAST so a new value never busts the cache of the layers above, and
 # repeated in EVERY image rather than inherited: ENV is inherited by descendants,

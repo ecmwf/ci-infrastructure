@@ -45,10 +45,18 @@ RUN dnf -y install epel-release \
 ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
 ENV LD_LIBRARY_PATH=/opt/rh/gcc-toolset-13/root/usr/lib64:/opt/rh/gcc-toolset-13/root/usr/lib
 
+# ubuntu and debian name compilers <tool>-<version>; an SCL toolset does not, so
+# `g++-13` -- what every manifest asks CMake for -- resolves nowhere. Match the
+# convention, and keep the version in the artifact name, where a toolset bump
+# invalidates the cache on its own.
+RUN for t in gcc g++ gfortran cpp; do \
+      ln -s /opt/rh/gcc-toolset-13/root/usr/bin/$t /usr/local/bin/$t-13; \
+    done
+
 # Self-description. The same facts build-image.sh writes as OCI labels, baked in
 # as environment as well: a label can only be read from OUTSIDE the image
 # (registry or daemon), and a job running INSIDE it has neither.
-# actions/announce-image prints these. See IMAGES.md.
+# announce-image.sh and actions/announce-image print these. See IMAGES.md.
 #
 # Declared LAST so a new value never busts the cache of the layers above, and
 # repeated in EVERY image rather than inherited: ENV is inherited by descendants,

@@ -248,12 +248,28 @@ are baked in as environment:
 the other *when it ran* — which is the pair you want when an upstream
 `ubuntu:24.04` shifts underneath a pinned tag.
 
-`actions/announce-image` prints them, and takes an `extra` input for anything the
-caller knows that the image does not (resolved dep refs, the matrix leg). The
-generator emits it into every job, so downstream repos get it without editing a
-workflow. It is pure bash and depends on nothing else in this repo — "which image
-am I" must not fail for an unrelated reason — and is silent on runners outside
-these images.
+Two things print them, and a job gets exactly one announcement either way.
+
+**Automatically, from the image.** Every base sets `BASH_ENV` to
+`public-images/announce-image.sh`, and GitHub runs each step as
+`bash --noprofile --norc -e -o pipefail`, which sources it. So *any* workflow in
+*any* repo announces on its first bash step with nothing declared — including the
+hand-written `ci.yml` files the generator never touches. It writes to **stderr**:
+it runs inside whichever step is first, and if that step is not bash the job's
+first bash can be a command substitution, whose stdout is a captured value rather
+than the log. That rules out `::notice`, which the runner only parses on stdout.
+
+**Explicitly, as a step.** `actions/announce-image` adds the `::notice`
+annotation and takes an `extra` input for anything the caller knows that the image
+does not (resolved dep refs, the matrix leg). The generator emits it into every
+job it writes. It is pure bash and depends on nothing else in this repo — "which
+image am I" must not fail for an unrelated reason.
+
+The action sets `CI_IMAGE_ANNOUNCE_ACTION` on its own step, which stands the
+script down for that step; the script otherwise claims the job by leaving
+`/tmp/.ci-image-announced` and writing `CI_IMAGE_ANNOUNCED` to `GITHUB_ENV`. Both
+are silent on runners outside these images (macOS legs), where `CI_IMAGE_NAME` is
+simply unset, and a `sh` step announces nothing because `sh` ignores `BASH_ENV`.
 
 This is as early as it can be. The runner's own "Set up job" block cannot be
 extended, and the job container's `ENTRYPOINT`/`CMD` never run — GitHub starts it
@@ -261,12 +277,14 @@ with its own command, which is why every base here ends with `ENTRYPOINT []`. Th
 image reference and digest *are* already in "Initialize containers"; what this
 adds is the readable provenance.
 
-> **Inheritance.** Docker `ENV` is inherited, so an image that `FROM`s one of
-> these **must re-declare the whole `ARG`/`ENV` block** or it will announce itself
-> as its base, with a Dockerfile URL pointing at the wrong file. Every variant
-> here re-declares it, and `smoke-test-runners.yml` asserts a variant reports its
-> own name. The same obligation falls on `ecmwf/ci-container-images`, whose
-> images `FROM` our base.
+> **Inheritance cuts both ways.** Docker `ENV` is inherited, so an image that
+> `FROM`s one of these **must re-declare the whole `CI_IMAGE_*` `ARG`/`ENV`
+> block** or it will announce itself as its base, with a Dockerfile URL pointing
+> at the wrong file. That is per-image *data*. The announcing script is
+> *behaviour* that reads that data at runtime, so it is declared once in each
+> base and inherited on purpose — do not repeat it in a variant.
+> `smoke-test-runners.yml` asserts both halves. The re-declaration obligation
+> falls on `ecmwf/ci-container-images` too, whose images `FROM` our base.
 
 ## Adding a new image
 

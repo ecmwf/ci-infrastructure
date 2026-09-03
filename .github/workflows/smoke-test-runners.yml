@@ -196,3 +196,75 @@ jobs:
         if: failure()
         shell: bash
         run: cat "${{ runner.temp }}/sccache-server.log" || true
+
+  # Per-image contract checks, one leg per toolchain image. Both failures that
+  # reached a downstream repo's CI -- rocky8 shipping gcc-toolset-13 under the
+  # unversioned name `g++`, and debian11's CMake below the floor our submodules
+  # require -- were image defects that nothing here would have caught.
+  image-contract:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu24.04-gfortran13-boost-qt6
+            declares: ubuntu24.04/gfortran13-boost-qt6
+            cxx: g++-13
+            cxx-major: '13'
+          - image: ubuntu24.04-clang18-gfortran13
+            declares: ubuntu24.04/clang18-gfortran13
+            cxx: clang++-18
+            cxx-major: '18'
+          - image: rocky8-gfortran13-boost-qt5
+            declares: rocky8/gfortran13-boost-qt5
+            cxx: g++-13
+            cxx-major: '13'
+          - image: debian11-gfortran10-boost-qt5
+            declares: debian11/gfortran10-boost-qt5
+            cxx: g++-10
+            cxx-major: '10'
+    name: image (${{ matrix.image }})
+    runs-on: arc-runner-normal
+    container:
+      image: eccr.ecmwf.int/public-ci-images/${{ matrix.image }}:latest
+    steps:
+      # First step of the job, so the images' BASH_ENV announcer fires on the way
+      # into this script -- the marker it leaves is the assertion below.
+      - name: Verify the image contract
+        shell: bash
+        env:
+          CXX_BINARY: ${{ matrix.cxx }}
+          CXX_MAJOR: ${{ matrix.cxx-major }}
+          DECLARES: ${{ matrix.declares }}
+          # The floor libaec sets, which is the highest of any submodule we build.
+          MIN_CMAKE: '3.26'
+        run: |
+          set -euo pipefail
+
+          # The compiler a manifest names must exist under exactly that name and
+          # be the version the image name promises.
+          command -v "$CXX_BINARY" >/dev/null || {
+            echo "::error::$CXX_BINARY is not on PATH in $DECLARES"; exit 1; }
+          major="$("$CXX_BINARY" -dumpversion | cut -d. -f1)"
+          [ "$major" = "$CXX_MAJOR" ] || {
+            echo "::error::$CXX_BINARY reports major $major, expected $CXX_MAJOR"; exit 1; }
+          echo "compiler: $(command -v "$CXX_BINARY") -> $("$CXX_BINARY" --version | head -1)"
+
+          have="$(cmake --version | head -1 | awk '{print $3}')"
+          [ "$(printf '%s\n%s\n' "$MIN_CMAKE" "$have" | sort -V | head -1)" = "$MIN_CMAKE" ] || {
+            echo "::error::cmake $have is below the $MIN_CMAKE floor in $DECLARES"; exit 1; }
+          echo "cmake: $have"
+
+          # ENV is inherited, so a variant that failed to re-declare CI_IMAGE_*
+          # would silently answer with its base's name and Dockerfile URL.
+          : "${CI_IMAGE_NAME:?the image should record its own name}"
+          [ "$CI_IMAGE_NAME" = "$DECLARES" ] || {
+            echo "::error::image reports itself as '$CI_IMAGE_NAME', expected $DECLARES"; exit 1; }
+
+          # announce-image.sh ran when bash sourced BASH_ENV entering this script.
+          # Without this, a broken COPY or ENV looks like a quiet job.
+          : "${BASH_ENV:?the image should point BASH_ENV at its announcer}"
+          [ -r "$BASH_ENV" ] || { echo "::error::BASH_ENV=$BASH_ENV is not readable"; exit 1; }
+          [ -e "${CI_IMAGE_ANNOUNCED_MARKER:-/tmp/.ci-image-announced}" ] || {
+            echo "::error::$BASH_ENV did not announce on the first bash step"; exit 1; }
