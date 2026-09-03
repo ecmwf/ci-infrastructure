@@ -26,6 +26,14 @@ FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 # (ecflow cmake/Dependencies.cmake:180, whose comment names rocky 8 as the reason
 # that floor is where it is). So this image is the thing that keeps that floor
 # honest rather than merely satisfying it.
+#
+# boost-static (CRB, enabled in the base) is there for a single component:
+# ecflow asks find_package for test_exec_monitor, and boost builds that one
+# static-only, so rocky 8 ships it as libboost_test_exec_monitor.a in
+# boost-static while boost-devel carries only .so files -- unlike libboost-all-dev
+# on ubuntu/debian, which bundles the .a alongside. Without it, configure fails
+# with 'Could NOT find Boost (missing: test_exec_monitor)'. Everything else stays
+# shared: ENABLE_STATIC_BOOST_LIBS=OFF leaves CMake preferring .so where both exist.
 # epel-release is pulled in for exactly one package: qt5-qtcharts-devel is not in
 # AppStream or CRB, only in EPEL. Dropping charts instead would silently turn
 # ECFLOW_LOGVIEW off here while it is on in the ubuntu image, which is the kind
@@ -35,6 +43,7 @@ RUN dnf -y install epel-release \
  && dnf -y install \
     gcc-toolset-13 \
     boost-devel \
+    boost-static \
     qt5-qtbase-devel \
     qt5-qtsvg-devel \
     qt5-qtcharts-devel \
