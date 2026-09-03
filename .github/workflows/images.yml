@@ -34,6 +34,18 @@ on:
         required: false
       CI_PERMISSIONS_APP_PRIVATE_KEY:
         required: false
+  # Nightly, for the rolling platform only -- in effect, not by configuration.
+  # A scheduled run discovers every image exactly as a push does; the pinned
+  # platforms' tags are already in the registry and are skipped, while
+  # a `rolling-*` platform carries a UTC date in its tag (build-image.sh), so
+  # each night's tag is new and gets built. Nothing here names the rolling
+  # images: that would be a second answer to "what needs rebuilding", which is
+  # the one thing this workflow is built to avoid.
+  #
+  # 03:17 UTC: after the Arch mirrors' nightly churn has settled, and off the
+  # hour, where scheduled workloads pile up on GitHub's runners.
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       rebuild:
@@ -101,6 +113,12 @@ jobs:
       - name: Build ${{ matrix.name }}
         env:
           IMAGE: ${{ matrix.name }}
+          # Pin the tag discover computed rather than recomputing it here. For
+          # the pinned platforms the two are identical by construction; for a
+          # rolling image the tag carries a UTC date, and a run that straddles
+          # midnight would otherwise discover <sha>-20260902 as missing and then
+          # publish <sha>-20260903.
+          IMAGE_TAG: ${{ matrix.tag }}
           # Only the publishing leg gets the push credentials. A pull request
           # cannot push (PUSH is false), and it does not need them to PULL either:
           # public-ci-images is world-readable -- smoke-test-runners.yml pulls
@@ -137,6 +155,12 @@ jobs:
       - name: Build ${{ matrix.name }}
         env:
           IMAGE: ${{ matrix.name }}
+          # Pin the tag discover computed rather than recomputing it here. For
+          # the pinned platforms the two are identical by construction; for a
+          # rolling image the tag carries a UTC date, and a run that straddles
+          # midnight would otherwise discover <sha>-20260902 as missing and then
+          # publish <sha>-20260903.
+          IMAGE_TAG: ${{ matrix.tag }}
           # Only the publishing leg gets the push credentials. A pull request
           # cannot push (PUSH is false), and it does not need them to PULL either:
           # public-ci-images is world-readable -- smoke-test-runners.yml pulls

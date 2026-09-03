@@ -1480,6 +1480,29 @@ _CHECK_RUN_DETAILS_URL: Final = "${{ github.server_url }}/${{ github.repository 
 _REPORT_CHECK_RUN_ACTION: Final = "ecmwf/ci-infrastructure/actions/report-check-run@main"
 
 
+_ANNOUNCE_IMAGE_ACTION: Final = "ecmwf/ci-infrastructure/actions/announce-image@main"
+
+
+def _announce_image_step() -> Step:
+    """Say which container image this job is running in, and when it was built.
+
+    Emitted for every kind, not just containerised ones: the action reads the
+    CI_IMAGE_* environment our images bake in and is silent when it is absent, so
+    an HPC-submit or bare-runner leg costs one no-op step rather than needing a
+    condition here that would have to track which kinds run in a container.
+
+    No `extra` is passed. The input exists for callers who know something the
+    image does not, but anything the generator could put there (compiler, matrix
+    leg) comes from manifest-specific forwarded-inputs that not every repo
+    declares, and a generated reference to a field a manifest lacks is a broken
+    workflow. Hand-written callers pass their own.
+    """
+    return {
+        "name": "Announce image",
+        "uses": _ANNOUNCE_IMAGE_ACTION,
+    }
+
+
 def _check_run_start_step(check_name: str) -> Step:
     """Post an in-progress check run to the dispatcher's commit (start of a
     dispatched per-kind job). No-op unless a public upstream dispatched us."""
@@ -1593,6 +1616,10 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         # Signal "in progress" on the dispatcher's PR before doing any work, so a
         # private consumer of a public upstream shows a pending check immediately.
         _check_run_start_step(job_name),
+        # Before the checkout, so the log says which image this ran in even when
+        # the job goes on to fail early. Needs nothing from the repo -- GitHub
+        # fetches the action itself.
+        _announce_image_step(),
         {
             # Explicit repository + token: under workflow_call github.repository
             # is the caller's, so a bare checkout would clone the upstream

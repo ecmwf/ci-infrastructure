@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Announce image
+description: >
+  Prints which CI container image this job is running in -- name, tag, build date
+  and a link to the exact Dockerfile -- plus any extra context the caller passes.
+
+  The values come from the CI_IMAGE_* environment baked into every image under
+  public-images/ (see IMAGES.md). build-image.sh writes the same facts as OCI
+  labels, but a label can only be read from OUTSIDE the image, and a job running
+  inside it has neither registry nor daemon access.
+
+  This CANNOT be folded into the runner's "Set up job" output: that block is
+  emitted by the runner before any workflow-controlled code runs, and the job
+  container's own ENTRYPOINT/CMD never execute (which is why the images set
+  `ENTRYPOINT []`). The earliest an image can speak for itself is the first real
+  step of the job -- which is where this belongs.
+
+  Deliberately pure bash. It depends on nothing else in this repo: not on
+  ensure-infrastructure-present, not on python, not on a checkout. "Which image
+  am I" must not be able to fail for a reason unrelated to the question.
+
+  Silent, and successful, when CI_IMAGE_NAME is unset -- runners outside these
+  images (macOS legs, the HPC submit lane) have nothing to announce.
+
+inputs:
+  extra:
+    description: >
+      Free text printed alongside the image facts. For whatever the caller knows
+      and the image does not: resolved dependency refs, the compiler, the matrix
+      leg. Multi-line is fine.
+    required: false
+    default: ''
+  title:
+    description: 'Heading for the notice and the step summary.'
+    required: false
+    default: 'CI image'
+
+runs:
+  using: composite
+  steps:
+    - id: announce
+      shell: bash
+      env:
+        EXTRA: ${{ inputs.extra }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        set -euo pipefail
+
+        # Not an image of ours -- say nothing rather than "unknown".
+        if [ -z "${CI_IMAGE_NAME:-}" ]; then
+          exit 0
+        fi
+
+        # Announce once per job. This action is cheap to call and callers should
+        # not have to coordinate: a generated job gets it in its preamble, and a
+        # workflow may well add its own. GITHUB_ENV is how a step hands state to
+        # later steps in the same job.
+        if [ -n "${CI_IMAGE_ANNOUNCED:-}" ]; then
+          exit 0
+        fi
+        [ -n "${GITHUB_ENV:-}" ] && echo "CI_IMAGE_ANNOUNCED=1" >> "$GITHUB_ENV"
+
+        # CI_IMAGE_TAG is the tag the image was published under; for the rolling
+        # platform it carries a UTC date, so it and CI_IMAGE_CREATED are not
+        # redundant -- one says which build, the other says when it ran.
+        line="$CI_IMAGE_NAME:${CI_IMAGE_TAG:-<untagged>} built ${CI_IMAGE_CREATED:-<unknown>}"
+
+        # A single-line ::notice:: is what shows up in the run's annotation list;
+        # the readable version goes to the step summary and the log below.
+        echo "::notice title=$TITLE::$line"
+
+        {
+          echo "$TITLE"
+          echo "  image:      $CI_IMAGE_NAME"
+          echo "  tag:        ${CI_IMAGE_TAG:-<untagged>}"
+          echo "  built:      ${CI_IMAGE_CREATED:-<unknown>}"
+          [ -n "${CI_IMAGE_DOCKERFILE_URL:-}" ] && echo "  dockerfile: $CI_IMAGE_DOCKERFILE_URL"
+          [ -n "${CI_INFRASTRUCTURE_BAKED_REF:-}" ] && echo "  ci-infra:   $CI_INFRASTRUCTURE_BAKED_REF"
+          [ -n "$EXTRA" ] && { echo "  --"; printf '%s\n' "$EXTRA" | sed 's/^/  /'; }
+        } || true
+
+        # Same content as a collapsed markdown block on the run summary. Appended
+        # behind a guard, never `>`: GITHUB_STEP_SUMMARY is shared with every
+        # other step in the job and truncating it would discard their output.
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          {
+            echo "<details><summary>$TITLE — <code>$CI_IMAGE_NAME</code></summary>"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| image | \`$CI_IMAGE_NAME\` |"
+            echo "| tag | \`${CI_IMAGE_TAG:-<untagged>}\` |"
+            echo "| built | \`${CI_IMAGE_CREATED:-<unknown>}\` |"
+            if [ -n "${CI_IMAGE_DOCKERFILE_URL:-}" ]; then
+              echo "| dockerfile | [$CI_IMAGE_NAME/Dockerfile]($CI_IMAGE_DOCKERFILE_URL) |"
+            fi
+            if [ -n "${CI_INFRASTRUCTURE_BAKED_REF:-}" ]; then
+              echo "| ci-infrastructure | \`$CI_INFRASTRUCTURE_BAKED_REF\` |"
+            fi
+            if [ -n "$EXTRA" ]; then
+              echo
+              printf '%s\n' "$EXTRA"
+            fi
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi

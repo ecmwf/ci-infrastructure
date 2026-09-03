@@ -1661,6 +1661,56 @@ def test_kind_job_posts_check_run_on_dispatch(tmp_path: Path) -> None:
     assert "details-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in yaml
 
 
+def test_kind_job_announces_its_image_before_the_checkout(tmp_path: Path) -> None:
+    """Every per-kind job says which container image it is running in, and says it
+    early enough to survive a job that fails at the checkout.
+
+    Emitted unconditionally rather than only for containerised kinds: the action
+    reads the CI_IMAGE_* environment the images bake in and is silent when it is
+    absent, so a bare-runner leg costs one no-op step instead of a condition here
+    that would have to track which kinds get a `container:`."""
+    _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
+    by_pkg = {m.package_name: m for m in parse_all(tmp_path)}
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+        rendered = render_workflow(by_pkg["b"], by_pkg, lane=lane)
+        if rendered is None:
+            continue
+        for job_name, job in yaml.safe_load(rendered)["jobs"].items():
+            steps = job.get("steps")
+            if steps is None:
+                continue
+            uses = [s.get("uses", "") for s in steps]
+            if "ecmwf/ci-infrastructure/actions/announce-image@main" not in uses:
+                # Only the per-kind build jobs carry it; resolve/report helpers
+                # legitimately do not.
+                continue
+            announce = uses.index("ecmwf/ci-infrastructure/actions/announce-image@main")
+            checkouts = [i for i, u in enumerate(uses) if u.startswith("actions/checkout@")]
+            assert checkouts, f"{lane}/{job_name}: expected a checkout step"
+            assert announce < checkouts[0], (
+                f"{lane}/{job_name}: image announced after the checkout, so a job "
+                "failing there never says which image it ran in"
+            )
+
+
+def test_announce_image_action_needs_nothing_from_this_repo() -> None:
+    """Guardrail: 'which image am I' must not be able to fail for an unrelated
+    reason, so the action stays pure bash -- no python bootstrap, no checkout, no
+    nesting of ensure-infrastructure-present."""
+    action = Path(__file__).resolve().parents[1] / "actions" / "announce-image" / "action.yml"
+    doc = yaml.safe_load(action.read_text())
+    steps = doc["runs"]["steps"]
+    # Asserted against the STEPS, not the file text: the description names the
+    # things it deliberately does not depend on, and should stay free to.
+    assert [s for s in steps if "run" in s], "expected an inline script"
+    assert not [s for s in steps if "uses" in s], (
+        "announce-image must not compose another action -- it has to work when the rest of this repo does not"
+    )
+    script = "\n".join(s.get("run", "") for s in steps)
+    for forbidden in ("ensure-infrastructure-present", "CI_INFRASTRUCTURE_PYTHON", "pip "):
+        assert forbidden not in script, f"{forbidden} reintroduces a bootstrap dependency"
+
+
 def test_dispatch_and_wait_never_ingests_remote_logs() -> None:
     """Guardrail: dispatching a private consumer must surface only its run URL
     (and optionally wait on S3 artifacts) — never pull the dispatched run's logs

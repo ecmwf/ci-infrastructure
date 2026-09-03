@@ -20,6 +20,16 @@
 #   tag = short SHA of the last commit touching the image's build inputs
 #   rebuild <=> that tag is not in the registry
 #
+# ROLLING PLATFORMS bend the first line, never the second. An image under
+# public-images/rolling-*/ tracks upstream continuously, so its content is NOT a
+# function of our git history: the same commit yields a different image every
+# night. Its tag therefore carries a UTC date as well -- <sha>-<YYYYMMDD> -- and
+# the rule above then does the right thing on its own, because each night's tag
+# is genuinely new and genuinely absent from the registry. Note what this is NOT:
+# it is not a second answer to the rebuild question, and it is not a forced
+# rebuild that republishes one tag with different content. Both would break the
+# guarantee that a tag names fixed bytes.
+#
 # --discover and the build path compute that tag through the same functions
 # below, which is the whole point of this file. Do not reintroduce a second
 # mechanism -- not a `git diff`, not a workflow `paths:` filter, not a
@@ -157,7 +167,31 @@ _git_identity() {
   echo "$out"
 }
 
-compute_tag()      { echo "${IMAGE_TAG:-$(_git_identity "$1" %h)}"; }
+# Rolling platforms are identified by the platform component of their path, so
+# there is still no list to maintain -- the same reason discovery is a glob. A
+# platform named `rolling` or `rolling-<distro>` is the whole rule; see the header
+# and IMAGES.md. The prefix, not the exact name, so a second rolling platform
+# (rolling-fedora, say) needs no change here.
+is_rolling() {
+  case "$1" in rolling/*|rolling-*/*) return 0 ;; *) return 1 ;; esac
+}
+
+# A rolling image's tag gets a UTC date suffix, because its content changes
+# without a commit. IMAGE_TAG still wins outright: images.yml pins the tag
+# discover computed, so a run that crosses midnight UTC cannot have the discover
+# job decide to build <sha>-20260902 and the build job then publish
+# <sha>-20260903.
+compute_tag() {
+  local t
+  [ -n "${IMAGE_TAG:-}" ] && { echo "$IMAGE_TAG"; return 0; }
+  t="$(_git_identity "$1" %h)"
+  if is_rolling "$1"; then
+    echo "$t-$(date -u +%Y%m%d)"
+  else
+    echo "$t"
+  fi
+}
+
 compute_revision() { _git_identity "$1" %H; }
 
 flat_name() { echo "${1//\//-}"; }   # ubuntu24.04/base -> ubuntu24.04-base
@@ -259,7 +293,7 @@ discover() {
     printf '{"include":['
     for n in $1; do
       $first || printf ','; first=false
-      printf '{"name":"%s"}' "$n"
+      printf '{"name":"%s","tag":"%s"}' "$n" "$(compute_tag "$n")"
     done
     printf ']}'
   }
@@ -331,16 +365,8 @@ build_one() {
     registry_login                     # buildkit pulls the base from the registry
   fi
 
-  local build_args=()
-  # Only pass SOURCE_REVISION to images that declare it, so the other five do not
-  # emit an "unused build arg" warning on every build. This is about build args,
-  # not identity -- identity is TAG_PATHS and nothing else.
-  if grep -qE '^[[:space:]]*ARG[[:space:]]+SOURCE_REVISION([[:space:]]|=|$)' "$dockerfile"; then
-    build_args+=(--build-arg "SOURCE_REVISION=$revision")
-  fi
-
   # OCI labels: https://specs.opencontainers.org/image-spec/annotations/
-  local source_repo server_url source_url created labels=()
+  local source_repo server_url source_url created dockerfile_url labels=()
   source_repo="${IMAGE_SOURCE_REPO:-${GITHUB_REPOSITORY:-}}"
   if [ -z "$source_repo" ]; then
     # `|| true`: a checkout with no origin (or no remote at all) is a normal
@@ -352,15 +378,36 @@ build_one() {
   server_url="${GITHUB_SERVER_URL:-https://github.com}"
   source_url="$server_url/$source_repo"
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  dockerfile_url="$source_url/blob/$revision/$IMAGES_DIR/$name/Dockerfile"
   labels=(
     --label "org.opencontainers.image.source=$source_url"
     --label "org.opencontainers.image.revision=$revision"
     --label "org.opencontainers.image.created=$created"
     --label "org.opencontainers.image.title=$name"
     --label "org.opencontainers.image.description=CI image $name built from $IMAGES_DIR/$name/Dockerfile"
-    --label "int.ecmwf.ci.dockerfile=$source_url/blob/$revision/$IMAGES_DIR/$name/Dockerfile"
+    --label "int.ecmwf.ci.dockerfile=$dockerfile_url"
   )
   [ -n "$base" ] && labels+=(--label "org.opencontainers.image.base.name=$(image_ref "$base" latest)")
+
+  # Build args. Every value here is ALSO a label above -- the difference is that a
+  # label can only be read from OUTSIDE the image (registry or daemon), and a job
+  # running inside it has neither. So the same facts are baked in as CI_IMAGE_*
+  # environment, which actions/announce-image prints. See IMAGES.md.
+  #
+  # Each is passed only to an image that declares the ARG, so one that does not
+  # (a future image, or the private repo's) still builds without an "unused build
+  # arg" warning. None of this is identity: identity is TAG_PATHS and nothing else.
+  local build_args=() a
+  for a in SOURCE_REVISION IMAGE_NAME IMAGE_TAG IMAGE_CREATED IMAGE_DOCKERFILE_URL; do
+    grep -qE "^[[:space:]]*ARG[[:space:]]+$a([[:space:]]|=|\$)" "$dockerfile" || continue
+    case "$a" in
+      SOURCE_REVISION)      build_args+=(--build-arg "$a=$revision") ;;
+      IMAGE_NAME)           build_args+=(--build-arg "$a=$name") ;;
+      IMAGE_TAG)            build_args+=(--build-arg "$a=$tag") ;;
+      IMAGE_CREATED)        build_args+=(--build-arg "$a=$created") ;;
+      IMAGE_DOCKERFILE_URL) build_args+=(--build-arg "$a=$dockerfile_url") ;;
+    esac
+  done
 
   local push_args=() tag_args=(-t "$ref")
   if $push; then push_args=(--push); tag_args+=(-t "$latest_ref"); fi
