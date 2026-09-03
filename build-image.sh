@@ -50,9 +50,10 @@
 # announce-image.sh -- the paths the base image COPYs out of the build context.
 # The rule is "everything outside the image's own directory that a Dockerfile
 # reads from the context"; edit
-# EXTRA_TAG_PATHS when that set changes. actions/ and tests/ are deliberately
-# absent: actions are fetched by GitHub at job time and never baked, and tests
-# are not installed.
+# EXTRA_TAG_PATHS when that set changes. actions/, runners/ and tests/ are
+# deliberately absent: actions are fetched by GitHub at job time and never baked,
+# runners/ configures the runner rather than the image, and tests are not
+# installed.
 #
 # This deliberately OVER-approximates: an image that installs no
 # ci-infrastructure still retags on every src/ commit. Over-building is safe and

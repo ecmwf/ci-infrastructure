@@ -16,7 +16,10 @@ description: >
   emitted by the runner before any workflow-controlled code runs, and the job
   container's own ENTRYPOINT/CMD never execute (which is why the images set
   `ENTRYPOINT []`). The earliest an image can speak for itself is the first real
-  step of the job -- which is where this belongs.
+  step of the job -- which is where this belongs. Earlier still is possible only
+  from the runner side, where runners/container-hook-wrapper.js names the image
+  in "Initialize containers"; ARC's Kubernetes hook otherwise prints nothing
+  there, unlike a GitHub-hosted runner.
 
   Deliberately pure bash. It depends on nothing else in this repo: not on
   ensure-infrastructure-present, not on python, not on a checkout. "Which image

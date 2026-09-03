@@ -275,11 +275,23 @@ script down for that step; the script otherwise claims the job by leaving
 are silent on runners outside these images (macOS legs), where `CI_IMAGE_NAME` is
 simply unset, and a `sh` step announces nothing because `sh` ignores `BASH_ENV`.
 
-This is as early as it can be. The runner's own "Set up job" block cannot be
-extended, and the job container's `ENTRYPOINT`/`CMD` never run — GitHub starts it
-with its own command, which is why every base here ends with `ENTRYPOINT []`. The
-image reference and digest *are* already in "Initialize containers"; what this
-adds is the readable provenance.
+> **In a hand-written `ci.yml`**, put `Announce image` first in every job that has
+> a `container:`. The generator already does this for the workflows it writes.
+> Forgetting it is not silent — `BASH_ENV` still announces — but the block then
+> lands inside whichever step runs bash first, which may be one that goes on to
+> produce twenty minutes of output.
+
+This is as early as workflow-controlled code can be. The runner's own "Set up
+job" block cannot be extended, and the job container's `ENTRYPOINT`/`CMD` never
+run — GitHub starts it with its own command, which is why every base here ends
+with `ENTRYPOINT []`.
+
+On a GitHub-hosted runner the image reference and digest are already in
+"Initialize containers". **Under ARC's Kubernetes mode they are not** — that step
+prints three lines of boilerplate and nothing else, which is what
+[`runners/container-hook-wrapper.js`](runners/README.md) restores. Until a scale
+set enables that hook, the announcement below is the only place a job's image
+appears at all.
 
 > **Inheritance cuts both ways.** Docker `ENV` is inherited, so an image that
 > `FROM`s one of these **must re-declare the whole `CI_IMAGE_*` `ARG`/`ENV`
