@@ -46,6 +46,10 @@ runs:
       env:
         EXTRA: ${{ inputs.extra }}
         TITLE: ${{ inputs.title }}
+        # Stands this step down from the images' BASH_ENV announcer, which would
+        # otherwise print the same facts (to stderr, without the annotation)
+        # when bash sources it on the way into this very script.
+        CI_IMAGE_ANNOUNCE_ACTION: '1'
       run: |
         set -euo pipefail
 
@@ -62,6 +66,9 @@ runs:
           exit 0
         fi
         [ -n "${GITHUB_ENV:-}" ] && echo "CI_IMAGE_ANNOUNCED=1" >> "$GITHUB_ENV"
+        # GITHUB_ENV only reaches LATER steps; the marker is what the BASH_ENV
+        # announcer checks, so nested bash within this step stays quiet too.
+        : > "${CI_IMAGE_ANNOUNCED_MARKER:-/tmp/.ci-image-announced}" 2>/dev/null || true
 
         # CI_IMAGE_TAG is the tag the image was published under; for the rolling
         # platform it carries a UTC date, so it and CI_IMAGE_CREATED are not

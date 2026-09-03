@@ -46,9 +46,10 @@
 #                  and their base's directory is part of their own identity.
 #
 # TAG PATHS. An image's identity is its own directory, plus its base's directory
-# if it is a dependent, plus src/, pyproject.toml and LICENSE -- the paths the
-# base image COPYs out of the build context. The rule is "everything outside the
-# image's own directory that a Dockerfile reads from the context"; edit
+# if it is a dependent, plus src/, pyproject.toml, LICENSE and
+# announce-image.sh -- the paths the base image COPYs out of the build context.
+# The rule is "everything outside the image's own directory that a Dockerfile
+# reads from the context"; edit
 # EXTRA_TAG_PATHS when that set changes. actions/ and tests/ are deliberately
 # absent: actions are fetched by GitHub at job time and never baked, and tests
 # are not installed.
@@ -65,7 +66,7 @@ set -euo pipefail
 REGISTRY="${REGISTRY:-eccr.ecmwf.int}"
 PROJECT="${PROJECT:-public-ci-images}"
 IMAGES_DIR="${IMAGES_DIR:-public-images}"
-EXTRA_TAG_PATHS="src pyproject.toml LICENSE"
+EXTRA_TAG_PATHS="src pyproject.toml LICENSE $IMAGES_DIR/announce-image.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"

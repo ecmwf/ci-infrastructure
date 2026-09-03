@@ -92,6 +92,12 @@ RUN cd /tmp \
 # `<interpreter> -m pytest`, so it has to be importable from python3.11.
 RUN python3.11 -m pip install --no-cache-dir pytest
 
+# CMake is the one piece of tooling here that is NOT what this platform exists to
+# test: the old compiler, boost and Qt are the point, the build driver is not.
+# Bullseye's 3.18 is below the 3.26 our submodules require (libaec). Pin a
+# modern one; /usr/local/bin precedes /usr/bin.
+RUN python3.11 -m pip install --no-cache-dir cmake==3.31.6
+
 # Install GitHub CLI (gh) -- same upstream apt repo as the ubuntu base; debian
 # ships no gh package either.
 RUN mkdir -p /etc/apt/keyrings \
@@ -130,10 +136,17 @@ CMD []
 # Useful default working directory
 WORKDIR /workspace
 
+# Announce the image from the first bash step of any job, no workflow step
+# required: GitHub runs every step as `bash --noprofile --norc -e -o pipefail`,
+# which sources $BASH_ENV. Inherited by descendants on purpose -- this is
+# behaviour reading the CI_IMAGE_* below, which each image re-declares itself.
+COPY public-images/announce-image.sh /opt/ci/announce-image.sh
+ENV BASH_ENV=/opt/ci/announce-image.sh
+
 # Self-description. The same facts build-image.sh writes as OCI labels, baked in
 # as environment as well: a label can only be read from OUTSIDE the image
 # (registry or daemon), and a job running INSIDE it has neither.
-# actions/announce-image prints these. See IMAGES.md.
+# announce-image.sh and actions/announce-image print these. See IMAGES.md.
 #
 # Declared LAST so a new value never busts the cache of the layers above, and
 # repeated in EVERY image rather than inherited: ENV is inherited by descendants,
