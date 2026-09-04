@@ -473,3 +473,127 @@ def test_toolchain_keys_do_not_become_the_job_display_name(tmp_path: Path) -> No
     assert "matrix['cxx-compiler']" in yaml
     assert "matrix.cc" not in yaml
     assert "matrix.modules" not in yaml
+
+
+# === The compiler always reaches the job title ==============================
+# It gets a dedicated slot like python-version and options do. Deriving it from
+# "whichever field varies" silently dropped it from three of the five real HPC
+# lanes, because in those the compiler is constant across the legs.
+
+
+def _names(tmp_path: Path, body: str) -> str:
+    write_repo(tmp_path, "pkg", body)
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"pkg": m}, lane=EXECUTION_HPC)
+    assert yaml is not None
+    return yaml
+
+
+_PKG_CXX: Final = """
+    [package]
+    name = "pkg"
+    prefix = "pkg"
+    repo = "org/pkg"
+    compiler-inputs = ["cxx-compiler"]
+"""
+
+
+def test_constant_compiler_still_appears_in_the_job_name(tmp_path: Path) -> None:
+    """eccodes' shape: two legs, same toolchain, differing only by `options`."""
+    yaml = _names(
+        tmp_path,
+        _PKG_CXX
+        + """
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        platform = "hpc-atos-gnu"
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        platform = "hpc-atos-gnu"
+        options = "eckit-geo"
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/build.sh"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    assert "matrix['cxx-compiler']" in yaml
+    assert "matrix.options || 'default'" in yaml
+
+
+def test_single_leg_kind_names_the_compiler_not_a_constant(tmp_path: Path) -> None:
+    """eckit's shape. With nothing varying, the old code fell back to the
+    first-ranked field and titled every job with a constant `Release`."""
+    yaml = _names(
+        tmp_path,
+        _PKG_CXX
+        + """
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        build-type = "RelWithDebInfo"
+        platform = "hpc-atos-gnu"
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/build.sh"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    assert "matrix['cxx-compiler']" in yaml
+    assert "matrix['build-type']" not in yaml
+
+
+def test_a_constant_second_compiler_input_is_left_out(tmp_path: Path) -> None:
+    """eccodes' runner lane varies cxx but never fortran; pinning a constant
+    `gfortran-13` into every title is noise, so only the varying one shows."""
+    yaml = _names(
+        tmp_path,
+        """
+        [package]
+        name = "pkg"
+        prefix = "pkg"
+        repo = "org/pkg"
+        compiler-inputs = ["cxx-compiler", "fortran-compiler"]
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-13"
+        fortran-compiler = "gfortran-13"
+        platform = "ubuntu-24.04"
+        [[matrix.build.include]]
+        cxx-compiler = "clang++-18"
+        fortran-compiler = "gfortran-13"
+        platform = "ubuntu-24.04"
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/build.sh"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    assert "matrix['cxx-compiler']" in yaml
+    assert "matrix['fortran-compiler']" not in yaml
+
+
+def test_without_compiler_inputs_the_templated_cxx_names_the_job(tmp_path: Path) -> None:
+    """ecbuild's shape: no compiler in its artifact identity at all, so the only
+    place its toolchain is written down is the leg its `.j2` recipe reads."""
+    yaml = _names(
+        tmp_path,
+        """
+        [[matrix.build.include]]
+        platform = "hpc-atos-gnu"
+        cc = "gcc"
+        cxx = "g++"
+        [[matrix.build.include]]
+        platform = "hpc-atos-intel"
+        cc = "icx"
+        cxx = "icpx"
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/build.sh"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    assert "matrix.cxx" in yaml

@@ -1592,7 +1592,9 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
 
     cond = _render_kind_filter(cross, mk.triggers)
-    distinguishing = _first_distinguishing_field(mk.legs, m.compiler_inputs) or "runs-on"
+    distinguishing = _first_distinguishing_field(mk.legs, m.compiler_inputs)
+    compiler_fields = _compiler_display_fields(m, mk)
+
     # Build the display slots left-to-right, general to detailed: the platform
     # first (which lane and which ABI this is), then the distinguishing leg field
     # — normally the compiler — then a py<version> slot whenever the legs carry a
@@ -1601,10 +1603,21 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     # "build+test (ubuntu-24.04, clang++-18, py3.11)".
     # platform, python-version and options get dedicated handling so none is
     # duplicated when it is itself the distinguisher.
+    def _slot(field: str) -> str:
+        expr = f"matrix['{field}']" if "-" in field else f"matrix.{field}"
+        return f"${{{{ {expr} }}}}"
+
     slots: list[str] = ["${{ matrix.platform }}"]
-    if distinguishing not in ("platform", "python-version", "options"):
-        expr = f"matrix['{distinguishing}']" if "-" in distinguishing else f"matrix.{distinguishing}"
-        slots.append(f"${{{{ {expr} }}}}")
+    slots.extend(_slot(f) for f in compiler_fields)
+    # Only when it adds something: a field already given its own slot below would
+    # be duplicated, and one that does not vary is a constant in every title.
+    if distinguishing is not None and distinguishing not in {
+        "platform",
+        "python-version",
+        "options",
+        *compiler_fields,
+    }:
+        slots.append(_slot(distinguishing))
     if any("python-version" in leg for leg in mk.legs):
         slots.append("py${{ matrix.python-version }}")
     # `options` is the one leg field that is routinely present on some legs and
@@ -1717,6 +1730,40 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     return job
 
 
+def _leg_values(legs: Sequence[dict[str, Any]], key: str) -> set[Any]:
+    """The distinct values legs give `key`. A list value (runs-on) is unhashable,
+    so normalise it to a tuple before the set sees it."""
+    return {tuple(v) if isinstance(v, list) else v for v in (leg.get(key) for leg in legs)}
+
+
+def _compiler_display_fields(m: Manifest, mk: MatrixKind) -> list[str]:
+    """Leg fields naming the toolchain, for the job title.
+
+    The compiler is what a human scans a job list for, so it gets a dedicated
+    slot like `python-version` and `options` do — emitted whenever the legs carry
+    it, NOT only when it happens to be the field that varies. Relying on variation
+    silently dropped it from three of the five HPC lanes: eccodes' two legs differ
+    only by `options` and eckit's kind has a single leg, so in both the compiler is
+    constant and was never picked.
+
+    `compiler-inputs` first: those are the fields the ARTIFACT NAME carries, so the
+    title matches the identity. A repo that declares none (ecbuild — its ABI class
+    rides entirely on the platform slug) falls back to a templated recipe's
+    `cxx`/`cc`, which is the only other place its toolchain is written down.
+
+    Among those, the ones that VARY win: eccodes declares both a cxx and a fortran
+    compiler but only ever varies the cxx one, and pinning a constant `gfortran-13`
+    into every title is noise. When none varies (a single-leg kind, or legs that
+    differ only by `options`) they are all shown — a constant compiler is still the
+    thing a reader wants, and it is better than an empty slot.
+    """
+    fields = [f for f in sorted(m.compiler_inputs) if any(f in leg for leg in mk.legs)]
+    if not fields:
+        fields = [f for f in ("cxx", "cc") if any(f in leg for leg in mk.legs)][:1]
+    varying = [f for f in fields if len(_leg_values(mk.legs, f)) > 1]
+    return varying or fields
+
+
 def _first_distinguishing_field(legs: Sequence[dict[str, Any]], compiler_inputs: Sequence[str] = ()) -> str | None:
     """Pick a matrix field whose values vary across legs; used in the job display name.
 
@@ -1749,13 +1796,12 @@ def _first_distinguishing_field(legs: Sequence[dict[str, Any]], compiler_inputs:
         return (2, k)
 
     for k in sorted(keys, key=sort_key):
-        # A leg value may be a list (e.g. runs-on = ["self-hosted", "linux", "hpc"]),
-        # which is unhashable; normalise to a tuple so the set can dedup it.
-        vals = {tuple(v) if isinstance(v, list) else v for v in (leg.get(k) for leg in legs)}
-        if len(vals) > 1:
+        if len(_leg_values(legs, k)) > 1:
             return k
-    # All legs identical: pick anything but still respect the ranking.
-    return next(iter(sorted(keys, key=sort_key)), None)
+    # Nothing varies (a single-leg kind, or legs that differ only in fields the
+    # ranking excludes). There is no distinguisher to show, and inventing one puts
+    # a constant in every job title — `eckit/build-hpc (hpc-atos-gnu, Release)`.
+    return None
 
 
 def compute_transitive_consumers(
