@@ -38,8 +38,8 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
 | `public-images/ubuntu24.04/gfortran13-boost-qt6` | `…/ubuntu24.04-gfortran13-boost-qt6` |
 | `public-images/rocky8/base` | `…/rocky8-base` |
-| `public-images/rocky8/gfortran13` | `…/rocky8-gfortran13` |
-| `public-images/rocky8/gfortran13-boost-qt5` | `…/rocky8-gfortran13-boost-qt5` |
+| `public-images/rocky8/gfortran8` | `…/rocky8-gfortran8` |
+| `public-images/rocky8/gfortran8-boost-qt5` | `…/rocky8-gfortran8-boost-qt5` |
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
@@ -68,7 +68,7 @@ is in the *name*, so what you get is never a surprise:
 | Platform | gcc | Qt | boost | cmake | `CI_INFRASTRUCTURE_PYTHON` |
 |---|---|---|---|---|---|
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
-| `rocky8` | 13 (SCL toolset) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
+| `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
@@ -79,10 +79,14 @@ bullseye predates it, and rocky 8 has it in no repo. ecflow's
 `cmake/Dependencies.cmake` accepts either, so these are real substitutions, and
 the image name says which you get.
 
-**`rocky8`'s gcc is an SCL toolset.** Rocky 8's own gcc is 8.5; 13 lives under
-`/opt/rh/gcc-toolset-13`. The variants put it on `PATH` with `ENV` rather than
-relying on `scl enable` or `BASH_ENV`, because those only fire for a shell that
-reads them and `sh -c` does not.
+**`rocky8` uses the distro's own gcc, 8.5.** Not a `gcc-toolset-N` SCL under
+`/opt/rh`: 8.5 is what the distro gives you by default and what the Atos HPC GNU
+builds target, so it is the combination worth testing. It is old enough to need
+care — `std::filesystem` still wants an explicit `-lstdc++fs`, which ecflow's
+`cmake/CompilerOptions.cmake` already does for GNU < 9 — but C++17, the standard
+every package here requires, is there. The variants symlink `gcc-8`/`g++-8`/
+`gfortran-8` into `/usr/local/bin`, because the rocky RPMs ship only unversioned
+names and every manifest asks CMake for a versioned one.
 
 **`debian11` builds its own Python.** `ci_infrastructure` needs >= 3.11
 (`pyproject.toml`) and bullseye's ceiling is 3.10, backports included. The base

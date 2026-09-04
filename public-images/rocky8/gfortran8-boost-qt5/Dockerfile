@@ -2,15 +2,19 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky8-gfortran13-boost-qt5
+# Published as eccr.ecmwf.int/public-ci-images/rocky8-gfortran8-boost-qt5
 # Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 #
 # FROMs the shared base and installs its whole toolchain, rather than layering on
-# rocky8-gfortran13: every variant is exactly one level above the base, because
+# rocky8-gfortran8: every variant is exactly one level above the base, because
 # images.yml builds the base and then every dependent in a single parallel
 # matrix, so a variant FROMing another variant would race on :latest.
 FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 
+# Rocky 8's OWN gcc, 8.5 -- see public-images/rocky8/gfortran8/Dockerfile for why
+# the distro default rather than an SCL toolset. The base already installs gcc
+# and gcc-c++; only Fortran is missing from it.
+#
 # Qt5, not Qt6 -- rocky 8 has no Qt6 at all, in AppStream or CRB. ecflow's
 # cmake/Dependencies.cmake accepts either ("Qt5/6 not found"), so this is a real
 # substitution rather than a gap, and the image name says which one you get.
@@ -41,7 +45,7 @@ FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 # build failure. Nothing else in this image comes from EPEL.
 RUN dnf -y install epel-release \
  && dnf -y install \
-    gcc-toolset-13 \
+    gcc-gfortran \
     boost-devel \
     boost-static \
     qt5-qtbase-devel \
@@ -49,17 +53,12 @@ RUN dnf -y install epel-release \
     qt5-qtcharts-devel \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# See public-images/rocky8/gfortran13/Dockerfile for why PATH is set directly
-# rather than through the toolset's `enable` script.
-ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
-ENV LD_LIBRARY_PATH=/opt/rh/gcc-toolset-13/root/usr/lib64:/opt/rh/gcc-toolset-13/root/usr/lib
-
-# ubuntu and debian name compilers <tool>-<version>; an SCL toolset does not, so
-# `g++-13` -- what every manifest asks CMake for -- resolves nowhere. Match the
-# convention, and keep the version in the artifact name, where a toolset bump
+# ubuntu and debian name compilers <tool>-<version>; the rocky RPMs do not, so
+# `g++-8` -- what every manifest asks CMake for -- resolves nowhere. Match the
+# convention, and keep the version in the artifact name, where a compiler bump
 # invalidates the cache on its own.
 RUN for t in gcc g++ gfortran cpp; do \
-      ln -s /opt/rh/gcc-toolset-13/root/usr/bin/$t /usr/local/bin/$t-13; \
+      ln -s /usr/bin/$t /usr/local/bin/$t-8; \
     done
 
 # Self-description. The same facts build-image.sh writes as OCI labels, baked in

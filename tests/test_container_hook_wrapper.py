@@ -36,7 +36,7 @@ PREPARE_JOB: Final[dict[str, Any]] = {
     "state": {},
     "args": {
         "container": {
-            "image": "eccr.ecmwf.int/public-ci-images/rocky8-gfortran13-boost-qt5:latest",
+            "image": "eccr.ecmwf.int/public-ci-images/rocky8-gfortran8-boost-qt5:latest",
             "workingDirectory": "/__w/stack-dependencies",
             "environmentVariables": {"NODE_ENV": "development"},
             "registry": {"username": "u", "password": "p", "serverUrl": "https://index.docker.io/v1"},
@@ -69,7 +69,7 @@ def _run(tmp_path: Path, payload: str, exit_code: int = 0) -> tuple[subprocess.C
 def test_prepare_job_names_the_job_and_service_images(tmp_path: Path) -> None:
     proc, _ = _run(tmp_path, json.dumps(PREPARE_JOB))
     assert proc.returncode == 0
-    assert "job container: eccr.ecmwf.int/public-ci-images/rocky8-gfortran13-boost-qt5:latest" in proc.stdout
+    assert "job container: eccr.ecmwf.int/public-ci-images/rocky8-gfortran8-boost-qt5:latest" in proc.stdout
     assert "service container: redis:7" in proc.stdout
 
 

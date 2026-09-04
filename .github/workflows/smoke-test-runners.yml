@@ -198,7 +198,7 @@ jobs:
         run: cat "${{ runner.temp }}/sccache-server.log" || true
 
   # Per-image contract checks, one leg per toolchain image. Both failures that
-  # reached a downstream repo's CI -- rocky8 shipping gcc-toolset-13 under the
+  # reached a downstream repo's CI -- rocky8 shipping a compiler under the
   # unversioned name `g++`, and debian11's CMake below the floor our submodules
   # require -- were image defects that nothing here would have caught.
   image-contract:
@@ -216,10 +216,10 @@ jobs:
             declares: ubuntu24.04/clang18-gfortran13
             cxx: clang++-18
             cxx-major: '18'
-          - image: rocky8-gfortran13-boost-qt5
-            declares: rocky8/gfortran13-boost-qt5
-            cxx: g++-13
-            cxx-major: '13'
+          - image: rocky8-gfortran8-boost-qt5
+            declares: rocky8/gfortran8-boost-qt5
+            cxx: g++-8
+            cxx-major: '8'
           - image: debian11-gfortran10-boost-qt5
             declares: debian11/gfortran10-boost-qt5
             cxx: g++-10
