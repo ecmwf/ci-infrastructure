@@ -19,9 +19,10 @@ caller, and a `pure-shell` action with it builds a venv nothing uses.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 import yaml
@@ -134,3 +135,35 @@ def test_stdlib_only_exemptions_exist_and_run_python() -> None:
         assert "python" in _executable_text(yaml.safe_load(path.read_text())).lower(), (
             f"{name} is exempted as stdlib-only python but runs no python at all"
         )
+
+
+# Contexts a COMPOSITE action may reference. `matrix`, `needs`, `job`, `vars` and
+# `secrets` belong to a workflow job, not to the action it calls.
+_COMPOSITE_CONTEXTS: Final = frozenset({"inputs", "github", "env", "runner", "steps", "strategy"})
+
+
+@pytest.mark.parametrize("path", _action_files(), ids=lambda p: p.parent.name)
+def test_action_descriptions_reference_no_workflow_only_context(path: Path) -> None:
+    """A `${{ ... }}` in an input description is EVALUATED, not documentation.
+
+    GitHub template-parses the whole action file, descriptions included, and an
+    expression naming a context a composite action does not have makes the action
+    fail to LOAD -- every caller dies before its first step, with an error that
+    points at a line of prose. build-on-hpc did exactly this by documenting its
+    matrix-leg input as `${{ toJSON(matrix) }}`: "Unrecognized named-value:
+    'matrix'", and every HPC leg in every repo went red at once.
+
+    actionlint does not cover this -- the pre-commit hook only matches
+    .github/workflows -- so the check lives here. Name such an expression without
+    the delimiters; the caller supplies the delimited form.
+    """
+    text = path.read_text()
+    for block in re.finditer(r"description:.*?(?=\n\s{0,4}[\w-]+:)", text, re.S):
+        for expr in re.findall(r"\$\{\{(.*?)\}\}", block.group(0), re.S):
+            named = set(re.findall(r"\b([a-z]+)\s*\.", expr)) | set(re.findall(r"\b([a-z]+)\s*\)", expr))
+            bad = sorted(n for n in named if n not in _COMPOSITE_CONTEXTS and n not in {"toJSON", "fromJSON"})
+            assert not bad, (
+                f"{path}: description contains a live expression '${{{{{expr}}}}}' naming "
+                f"{bad}, which a composite action cannot resolve — the action will fail to load. "
+                f"Write the expression without the delimiters."
+            )

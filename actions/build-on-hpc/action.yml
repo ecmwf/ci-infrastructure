@@ -40,12 +40,19 @@ inputs:
     required: true
   matrix-leg:
     description: >
-      The matrix leg as JSON — pass `${{ toJSON(matrix) }}`. It is the render
+      The matrix leg as JSON — pass the caller's toJSON(matrix). It is the render
       context for a `.j2` job-script and is ignored for any other recipe, so a
       caller with a hand-written recipe may leave it empty. It travels as an action
       input and then as an `env:` value; it is never interpolated into a `run:`
       body, because a manifest-authored string containing a quote would otherwise
       become commands (same reason as the generated Decode matrix-leg step).
+
+      Named WITHOUT expression delimiters on purpose. GitHub template-parses
+      expressions everywhere in this file, an input description included, and
+      `matrix` is not a context a composite action has — so writing the delimited
+      form here makes the whole action fail to LOAD ("Unrecognized named-value:
+      'matrix'"), taking every HPC leg with it before a single step runs. Callers
+      pass the delimited expression; this file only ever names it.
     required: false
     default: ''
   artifact-name:
