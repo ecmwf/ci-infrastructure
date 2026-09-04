@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-wait_for_artifacts.py
-
-Block until one or more named artifacts appear in the S3 artifact store.
+"""Block until one or more named artifacts appear in the S3 artifact store.
 
 Used by the `dispatch-and-wait` composite action after it fires another repo's
 ``cross-repo-trigger.yml``. Rather than waiting for the *whole* dispatched run to

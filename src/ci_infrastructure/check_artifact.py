@@ -4,48 +4,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-check_artifact.py
+"""Resolve a git ref to a full SHA and check whether its artifact already exists.
 
-Resolves a git ref to a full SHA and checks whether a named artifact already
-exists in a GitHub repository's artifact store. Also checks whether a workflow
-run for that SHA is currently in progress, so callers can wait intelligently.
+Also reports whether a workflow run for that SHA is in progress, so callers can
+wait rather than rebuild. Outputs go to $GITHUB_OUTPUT (or stdout if unset); the
+``Outputs`` TypedDict below is the list. Two that the types cannot express:
 
-Writes the following key=value pairs to $GITHUB_OUTPUT (or stdout if unset):
-  sha=<40-char SHA>
-  artifact-name=<prefix>-<sha>[-<deps-hash8>]-<platform>-<compiler>-<build-type>[-opts.<option>]
-  tar-name=<artifact-name>.tar.gz
-  found=true|false
-  original-ref=<the --ref value passed in, for threading into merge>
-  run-status=running|completed|none
-    running   — at least one workflow run for this SHA is queued or in_progress
-    completed — all runs for this SHA have finished
-    none      — no workflow runs found for this SHA
-  run-conclusion=success|failure|cancelled|skipped|  (empty when run-status != completed)
-    When multiple runs exist and any failed, conclusion is 'failure'.
-    When all succeeded, conclusion is 'success'.
+  run-status      running   at least one run for this SHA is queued/in_progress
+                  completed all runs for this SHA have finished
+                  none      no runs found for this SHA
+  run-conclusion  failure if any run failed, else success; empty unless completed
 
-When --deps-artifact-names is provided, a deps-hash8 segment is inserted into
-the artifact name after the SHA:
-  <prefix>-<sha>-<deps-hash8>-<platform>-<compiler>[-py<ver>]-<build-type>
+The artifact name is minted by ``_github_api.make_artifact_name``, which is the
+single definition of its format — this module only re-derives it to look one up,
+and the two must agree byte-for-byte or every cache lookup misses.
 
-deps-hash8 is the first 8 characters of the SHA-256 of the sorted,
-space-separated dep artifact names. This forms a Merkle tree so that
-re-compiling an upstream package invalidates all downstream artifact keys.
-
-Leaf packages with no compiled binary dependencies (e.g. fortmath) should
-not pass --deps-artifact-names; their artifact names stay in the original
-format without the deps-hash segment.
-
-The --compiler value should include the version so that builds for different
-compiler versions are stored and retrieved independently (e.g. gfortran-14,
-clang-18, gcc-13).
-
-The <platform> segment is the required --platform value, used verbatim (the
-explicit binary-compatibility class) — same as resolve_deps. The runner/image
-is pure scheduling and is not part of artifact identity. The slug's first
-hyphen-separated segment must not be exactly 8 hex chars (would collide with
-the deps-hash8 segment).
+``--platform`` is used verbatim as the binary-compatibility class; the runner or
+image is pure scheduling and is not part of artifact identity. ``--compiler``
+should carry its version (``gfortran-14``, ``clang-18``), so builds for different
+compiler versions resolve independently. Leaf packages with no compiled deps pass
+no ``--deps-artifact-names`` and get no deps-hash8 segment.
 """
 
 from typing import Literal, TypeAlias, TypedDict

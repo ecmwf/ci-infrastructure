@@ -140,27 +140,6 @@ HPC:
     * the troika user secret is HPC_CI_SSH_USER, not TROIKA_USER. TROIKA_USER is
       only the env-var name inside the composite actions.
 
-- fix HPC.md:103, which documents `secrets.TROIKA_USER` as the troika user. No
-  code reads that name: the generator (generate_downstream_ci.py:1393), all three
-  HPC workflows and HPC.md's own examples further down (203/212/228) use
-  secrets.HPC_CI_SSH_USER, and tests/test_generate_hpc.py:170 asserts
-  "TROIKA_USER" never appears in generated YAML. The doc line is a trap.
-
-- "login-node runner" is wrong wherever it appears, and HPC.md:190 is a factual
-  error rather than a mis-naming: it says the job script must live on "the same
-  Lustre $SCRATCH the login-node runner and the compute nodes all see". No runner
-  is on the cluster -- [hpc] is a self-hosted VM that only reaches HPC over troika
-  ssh -- so the runner sees no Lustre, and the script gets there by being pushed.
-  Fix that line first, then HPC.md:62, the inline comment a consumer copies into
-  their own manifest. This also voids the old "are $RUNNER_TEMP + work-dir on the
-  shared filesystem" worry outright rather than deferring it: no runner shares a
-  filesystem with the cluster, so everything local necessarily goes over ssh.
-  Cosmetic elsewhere: HPC.md:18/25/162/230 (and :173, which may mean the transfer
-  primitives, not the runner), actionlint.yaml:6, hpc-nightly-cleanup.yml:10,
-  generate_downstream_ci.py:284/1514, hpc/__init__.py:8, hpc/orchestrate.py:11.
-  Correct as-is, meaning the CLUSTER's login node: HPC.md:189, s3_store.py:49,
-  the harica cert header, troika-config.yml:13, hpc/orchestrate.py:435.
-
 - HPC job paths are keyed on the artifact name alone, so two runs building the
   same artifact collide. RemotePaths.derive(work_dir, artifact_name) gives both
   hpc-jobs/<artifact>.out (jobscript's #SBATCH --output) and staging/<artifact>/,

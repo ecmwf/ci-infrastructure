@@ -5,8 +5,8 @@
 """HPC (SLURM) execution backend for ci-infrastructure.
 
 An HPC matrix leg is an ordinary leg whose build runs *inside a SLURM job*
-rather than on the GitHub runner. A login-node self-hosted runner submits the
-job, waits for it, and publishes the resulting artifact through the same
+rather than on the GitHub runner. The `hpc` self-hosted runner submits the
+job over troika ssh, waits for it, and publishes the resulting artifact through the same
 name-keyed S3 store the non-HPC path uses.
 
 Orchestration (submit / poll / cancel) is pure Python driving troika's ``Site``

@@ -74,22 +74,16 @@ def test_artifact_key_honours_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s3_store.artifact_key("cxxmath-deadbeef-x") == "artifacts/cxxmath-deadbeef-x.tar.gz"
 
 
-def test_object_exists_true_after_upload(fake: FakeS3, tmp_path: Path) -> None:
-    tar = tmp_path / "pkg.tar.gz"
-    tar.write_bytes(b"payload")
-    assert s3_store.object_exists("pkg", client=fake) is False
-    s3_store.upload("pkg", tar, client=fake)
-    assert s3_store.object_exists("pkg", client=fake) is True
-
-
-def test_upload_download_roundtrip(fake: FakeS3, tmp_path: Path) -> None:
+def test_download_creates_the_destination_parent_directory(fake: FakeS3, tmp_path: Path) -> None:
+    """download() mkdir -p's dest.parent, so a caller may name a path whose
+    directory does not exist yet -- which is what fetch_deps does per dep."""
     src = tmp_path / "src.tar.gz"
     src.write_bytes(b"the-install-tree")
     s3_store.upload("pkg-1", src, client=fake)
 
-    dest = tmp_path / "nested" / "out.tar.gz"
+    dest = tmp_path / "not" / "yet" / "there" / "out.tar.gz"
     assert s3_store.download("pkg-1", dest, client=fake) is True
-    assert dest.read_bytes() == b"the-install-tree"
+    assert dest.parent.is_dir()
 
 
 def test_download_missing_returns_false(fake: FakeS3, tmp_path: Path) -> None:

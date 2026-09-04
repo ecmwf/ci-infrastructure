@@ -179,9 +179,7 @@ class Result:
         return self.verdict in (Verdict.OK, Verdict.BOT_EXEMPT)
 
 
-# --------------------------------------------------------------------------- #
-# Normalization
-# --------------------------------------------------------------------------- #
+# === Normalization ===
 
 
 def normalize(text: str) -> list[str]:
@@ -243,9 +241,7 @@ def expected_lines(source: str | None = None) -> list[str]:
     return lines
 
 
-# --------------------------------------------------------------------------- #
-# Event payload
-# --------------------------------------------------------------------------- #
+# === Event payload ===
 
 
 def body_from_event(payload: Mapping[str, Any]) -> str:
@@ -293,9 +289,7 @@ def parse_exempt_authors(raw: str) -> tuple[str, ...]:
     return entries if entries else DEFAULT_EXEMPT_AUTHORS
 
 
-# --------------------------------------------------------------------------- #
-# Locating and diffing the block
-# --------------------------------------------------------------------------- #
+# === Locating and diffing the block ===
 
 
 def find_block_start(lines: Sequence[str], heading: str = DECLARATION_HEADING) -> int | None:
@@ -399,9 +393,7 @@ def _hidden_reason(lines: Sequence[str], block_start: int) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# The check
-# --------------------------------------------------------------------------- #
+# === The check ===
 
 
 def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
@@ -468,9 +460,7 @@ def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
     return Result(Verdict.DIVERGED, headline, diff=diff, block_start=found + 1)
 
 
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
+# === Rendering ===
 
 
 def _strip_control(text: str) -> str:
@@ -575,9 +565,7 @@ def render_summary(result: Result, expected: Sequence[str]) -> str:
     return "\n".join(parts)
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
+# === CLI ===
 
 
 def _read_text(path: Path) -> str:

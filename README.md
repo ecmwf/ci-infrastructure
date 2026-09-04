@@ -75,6 +75,7 @@ ci-infrastructure-check
 ci-infrastructure-print-dep-table
 ci-infrastructure-s3
 ci-infrastructure-hpc
+ci-infrastructure-check-ci-approval
 ci-infrastructure-check-declaration
 ```
 

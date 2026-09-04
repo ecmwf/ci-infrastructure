@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-probe_object_store.py
-
-Round-trip an object through every configured bucket, so a bad endpoint or a
+"""Round-trip an object through every configured bucket, so a bad endpoint or a
 credential issued against the wrong store fails in the smoke test rather than
 halfway through a downstream publish.
 

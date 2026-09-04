@@ -89,22 +89,10 @@ def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
     Keyed by the staging dir alone. That dir is already per-artifact, which is
     exactly the scope of the question being asked ("did anyone finish shipping
     for this job?"), so a reattaching runner does not need to know which run
-    submitted the job it adopted — and therefore never has to read the
-    scheduler's ``Comment``, which sites rewrite.
-
-    ROLLOVER SHIM: also true for a legacy per-run ``TRANSFER_COMPLETED_<run_id>``,
-    so a job submitted by a pre-fix runner (whose source IS already staged) is not
-    needlessly re-shipped over. Drop the second test once no pre-fix job can still
-    be in flight.
+    submitted the job it adopted — and so never reads the scheduler's
+    ``Comment`` (see orchestrate.find_active_job_by_name).
     """
-    # The directory is quoted, the trailing `*` is NOT: it has to reach the shell
-    # unquoted to expand. Quoting the whole pattern would look for a file literally
-    # named "TRANSFER_COMPLETED_*".
-    staging_q = shlex.quote(str(PurePosixPath(staging_dir)))
-    probe = (
-        f"test -f {shlex.quote(_marker_path(staging_dir))} "
-        f"|| ls {staging_q}/{jobscript.TRANSFER_MARKER_NAME}_* >/dev/null 2>&1"
-    )
+    probe = f"test -f {shlex.quote(_marker_path(staging_dir))}"
     proc = conn.execute(["sh", "-c", probe], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.communicate()
     return bool(proc.returncode == 0)
@@ -339,8 +327,6 @@ def ship_source(
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_source_dir), "."], check=True)
     _reset_staging_dir(conn, staging_dir=staging_dir, run_id=run_id)
     conn.sendfile(local_tgz, remote_tgz)
-    # Ship each dependency prefix onto the shared FS before the marker, so the
-    # compute node's CMAKE_PREFIX_PATH resolves to trees it can actually read.
     if remote_deps_dir is not None:
         for index, prefix in enumerate(local_prefixes):
             push_tree(

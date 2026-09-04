@@ -39,11 +39,9 @@ DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 SOURCE_TARBALL_NAME: Final = "source.tgz"
 
 #: Fixed name of the source-transfer marker, for the same reason as the tarball:
-#: the staging dir is already per-artifact, which is exactly the scope this
-#: rendezvous needs, so keying it by run id bought nothing and cost a dependency
-#: on the scheduler's `Comment` field — which sites may rewrite. A reattaching
-#: runner can now check and re-drop this marker without knowing which run
-#: submitted the job it is adopting.
+#: the staging dir is already per-artifact, so a reattaching runner can check and
+#: re-drop it without knowing which run submitted the job it is adopting.
+#: (Why not the scheduler's `Comment`: see orchestrate.find_active_job_by_name.)
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 #: Suffix of the archive the install tree travels home in. Shared with

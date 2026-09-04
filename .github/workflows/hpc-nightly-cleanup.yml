@@ -7,7 +7,7 @@ name: HPC nightly cleanup
 # Age-based GC of the cluster HPC work dir. The submit-then-poll build path
 # leaves per-artifact staging/source/install trees and job output under
 # vars.HPC_CI_REMOTE_WORK_DIR; this sweeps the ones older than the threshold so
-# disk does not accumulate. Runs on the login-node self-hosted runner and reaches
+# disk does not accumulate. Runs on the `hpc` self-hosted runner and reaches
 # the cluster over troika's ssh connection (no S3, no scheduler).
 on:
   schedule:

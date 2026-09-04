@@ -106,9 +106,7 @@ def test_non_dict_entries_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_workflow_runs("o/r", "a" * 40, None).conclusion == "success"
 
 
-# --------------------------------------------------------------------------- #
-# make_artifact_name — the format IS the cache key, so it is pinned literally.
-# --------------------------------------------------------------------------- #
+# === make_artifact_name — the format IS the cache key, so it is pinned literally. ===
 SHA: Final = "a" * 40
 
 
@@ -135,9 +133,7 @@ def test_absent_segments_are_dropped_not_blanked(
     assert make_artifact_name("pkg", SHA, deps_hash8, "ubuntu-24.04", compiler, "Release", python_version) == expected
 
 
-# --------------------------------------------------------------------------- #
-# resolve_reuse_matrix — the generator and the resolver must agree on legs
-# --------------------------------------------------------------------------- #
+# === resolve_reuse_matrix — the generator and the resolver must agree on legs ===
 _BLOCKS: dict[str, dict[str, Any]] = {
     "build": {"include": [{"cxx-compiler": "clang++-18"}]},
     "test": {"reuse-matrix": "build"},

@@ -137,11 +137,13 @@ jobs:
         with:
           force-reinstall: true
 
-      - uses: ./actions/require-environment-variable
-        with:
-          name: HPC_CI_REMOTE_WORK_DIR
+      - name: Require HPC_CI_REMOTE_WORK_DIR
+        shell: bash
         env:
           HPC_CI_REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+        run: |
+          set -euo pipefail
+          : "${HPC_CI_REMOTE_WORK_DIR:?set vars.HPC_CI_REMOTE_WORK_DIR to the cluster work dir}"
 
       - name: Seed a tree to push to the cluster
         shell: bash
@@ -254,11 +256,13 @@ jobs:
         with:
           force-reinstall: true
 
-      - uses: ./actions/require-environment-variable
-        with:
-          name: HPC_CI_REMOTE_WORK_DIR
+      - name: Require HPC_CI_REMOTE_WORK_DIR
+        shell: bash
         env:
           HPC_CI_REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+        run: |
+          set -euo pipefail
+          : "${HPC_CI_REMOTE_WORK_DIR:?set vars.HPC_CI_REMOTE_WORK_DIR to the cluster work dir}"
 
       - name: Seed a source tree and a trivial recipe
         shell: bash

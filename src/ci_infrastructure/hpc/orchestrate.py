@@ -4,11 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-orchestrate.py — submit / wait / cancel a SLURM build job via troika (as a library).
+"""Submit / wait / cancel a SLURM build job via troika (as a library).
 
 This is the HPC counterpart of the runner build step. It is invoked by the
-``build-on-hpc`` composite action on a login-node self-hosted runner:
+``build-on-hpc`` composite action on the `hpc` self-hosted runner:
 
     python -m ci_infrastructure.hpc submit-wait --site hpc-batch \\
         --job-script ./.ci/hpc/build-gnu.sh --artifact-name <name> \\
@@ -80,8 +79,8 @@ from .._github_api import write_outputs
 from . import jobscript, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
-# SLURM states that mean "the job is still going"; anything else (or the job
-# having vanished from squeue) means it is no longer running.
+# Anything else — or the job having vanished from squeue — means it is no
+# longer running.
 ACTIVE_STATES: Final = frozenset(
     {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "RESIZING", "SUSPENDED", "REQUEUED"}
 )
@@ -94,9 +93,7 @@ _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we giv
 Verdict = Literal["SUCCESS", "FAILURE", "VANISHED", "TIMEOUT"]
 
 
-# --------------------------------------------------------------------------- #
-# The cluster-side layout
-# --------------------------------------------------------------------------- #
+# === The cluster-side layout ===
 def write_job_script(path: Path, rendered: str) -> None:
     """Write a rendered job script, executable.
 
@@ -150,9 +147,7 @@ def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str,
     return ":".join(remote_prefixes), local_prefixes, remote_deps_dir
 
 
-# --------------------------------------------------------------------------- #
-# Reattach lookup (the scheduler is the shared, cross-runner job store)
-# --------------------------------------------------------------------------- #
+# === Reattach lookup (the scheduler is the shared, cross-runner job store) ===
 def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> int | None:
     """Return the jid of an active SLURM job named ``job_name``, or None.
 
@@ -206,9 +201,7 @@ def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> in
     return jids[0]
 
 
-# --------------------------------------------------------------------------- #
-# Submit / reattach / wait / cancel
-# --------------------------------------------------------------------------- #
+# === Submit / reattach / wait / cancel ===
 def submit_or_reattach(
     *,
     site: SlurmSiteLike,
@@ -304,9 +297,7 @@ def cancel_job(
     return site.kill(str(script_path), None, output, jid=jid, dryrun=dryrun)
 
 
-# --------------------------------------------------------------------------- #
-# Cleanup (nightly GC of the cluster work dir)
-# --------------------------------------------------------------------------- #
+# === Cleanup (nightly GC of the cluster work dir) ===
 #: A run id becomes a path segment (the local source tarball, the ``.trash.<id>``
 #: staging rename, the node-local ``ci-src-<id>``), so it may not contain a
 #: separator or shell metacharacter. Mirrors site._SAFE_SPEC in intent.
@@ -416,9 +407,7 @@ def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict
     return wait
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
+# === CLI ===
 def _echo_remote_output(conn: Any, output: str) -> None:
     """Print the job's captured cluster output to the runner console.
 
@@ -576,9 +565,6 @@ def submit_wait(
     dryrun: bool,
     no_publish: bool,
 ) -> None:
-    # (a) Cache hit: the artifact already exists — nothing to build. This is what
-    # makes a GitHub re-run cheap and makes downstream reuse work identically to
-    # the non-HPC path. The publish/print steps read the runner-local path.
     # The run id names a local tarball, the moved-aside staging tree and the
     # node-local source dir, so it must stay a single safe path segment. It comes
     # from our own --run-id and should always be `<gh-run-id>-<attempt>`; this is
@@ -592,8 +578,10 @@ def submit_wait(
             "would write outside the intended paths."
         )
 
-    # Skipped in --no-publish (test) mode: a test publishes no artifact, so there
-    # is nothing to cache against — it must run on every (re-)run.
+    # Cache hit: the artifact already exists, so there is nothing to build. This
+    # is what makes a re-run cheap and makes downstream reuse work identically to
+    # the non-HPC path. Skipped under --no-publish: a test writes no artifact, so
+    # there is nothing to cache against and it must run every time.
     if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
         print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
         write_outputs({"install-path": local_install_path, "cache-hit": "true"})
@@ -669,15 +657,11 @@ def submit_wait(
         we were about to write. A PARTIAL transfer leaves no marker, so this
         still ships (and resets) in the case the reset exists for.
 
-        The marker alone only rules out a peer that already FINISHED. Two runs
-        that start shipping together both see no marker, and the second one's
-        reset then pulls the first one's staged tarballs out from under it — the
-        eckit ``deps/1.tgz: Cannot open: No such file or directory`` unpack
-        failure. So the ship runs under ``transfer.ship_lock``, and the marker is
-        re-checked INSIDE it: the first shipper resets and stages alone, and the
-        second acquires only once the first is done, sees the marker and skips.
-        The check outside the lock stays as the fast path, so the common
-        already-built case still costs one ``test -f`` and no lock.
+        The marker alone only rules out a peer that already FINISHED, so the ship
+        runs under ``transfer.ship_lock`` with the marker re-checked INSIDE it
+        (see that function for the race it closes). The check out here stays as
+        the fast path: the common already-built case costs one ``test -f`` and no
+        lock.
         """
         if transfer.marker_exists(site._connection, staging_dir=staging_dir):
             print(
@@ -792,7 +776,6 @@ def submit_wait(
             print(f"submit-wait: job {jid} finished successfully (test-only; nothing to publish).")
             return
         print(f"submit-wait: job {jid} finished successfully. Fetching install tree...")
-        # Pull the tree the compute node built back to the runner for publishing.
         transfer.fetch_install(
             site._connection,
             remote_install_dir=install_path,
@@ -822,8 +805,6 @@ def cancel(
     output: str,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    # Find the job through the scheduler by its artifact name (cross-runner), the
-    # same lookup submit-wait reattaches by.
     found = find_active_job_by_name(site._connection, job_name=jobscript.job_name_for(artifact_name), user=troika_user)
     if found is None:
         print(f"cancel: no active job for '{artifact_name}'; nothing to cancel.")
@@ -912,7 +893,7 @@ def fetch_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = _resolve_reported("fetch-tree", site._connection, remote_dir)  # the source lives on the cluster
+    resolved = _resolve_reported("fetch-tree", site._connection, remote_dir)
     transfer.fetch_tree(site._connection, remote_dir=resolved, local_dir=local_dir, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:
         print(f"fetch-tree: dry run; would fetch {resolved} -> {local_dir}")
@@ -943,7 +924,7 @@ def push_tree_cmd(
     dryrun: bool,
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
-    resolved = _resolve_reported("push-tree", site._connection, remote_dir)  # the destination lives on the cluster
+    resolved = _resolve_reported("push-tree", site._connection, remote_dir)
     _require_nested_remote_path("push-tree", remote_dir, resolved)
     transfer.push_tree(site._connection, local_dir=local_dir, remote_dir=resolved, tar_dir=tar_dir, dryrun=dryrun)
     if dryrun:

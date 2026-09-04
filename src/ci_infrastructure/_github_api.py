@@ -35,8 +35,7 @@ from ._errors import CIError
 
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
-# Restrict to GitHub's allowed alias chars; we use this when aliasing fields in
-# GraphQL queries to avoid quoting issues.
+# Restrict to GitHub's allowed alias chars.
 _ALIAS_SAFE_RE: Final = re.compile(r"[^A-Za-z0-9_]")
 
 # GitHub Actions run.status values that mean "not yet done". Used to gate
@@ -147,7 +146,6 @@ def fetch_manifests_layer(
     data = gh_api_graphql(query, token)
     out: dict[tuple[str, str], tuple[str | None, bool]] = {}
     if not isinstance(data, dict) or "data" not in data or not isinstance(data["data"], dict):
-        # Failed entirely — mark all as missing.
         for repo, ref in repos_refs:
             out[(repo, ref)] = (None, False)
         return out

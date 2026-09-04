@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-resolve_deps.py
-
-Reads a local .ci/manifest.toml, walks the upstream dependency graph by fetching
+"""Reads a local .ci/manifest.toml, walks the upstream dependency graph by fetching
 each dep's manifest from GitHub, and emits a fully resolved dependency tree as
 JSON. Designed to run once per workflow (in a 'resolve' job) so downstream
 build/test/clang-tidy jobs can consume the same resolved tree without
@@ -791,8 +788,7 @@ def _classify_orphan_pin(
          takes over.
 
     can_dispatch=False (no DISPATCH_TOKEN configured) folds the timing-skew
-    case into a hard fail with the legacy diagnostic — preserves the
-    pre-recovery behaviour for repos without App credentials.
+    case into a hard fail with the plain orphan-pin diagnostic.
     """
     producer_manifest = manifest_cache.get((spec.repo, ref))
     if producer_manifest is not None and not producer_can_build(producer_manifest, matrix_entry):
@@ -853,8 +849,7 @@ def resolve_leg(
     dispatch_plans: dict[tuple[Repo, Ref], DispatchPlan],
     own_prefix_override: str | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
-    """
-    Resolve the full transitive dep set for one matrix entry.
+    """Resolve the full transitive dep set for one matrix entry.
 
     Returns (deps_in_dependency_order, own).
     deps_in_dependency_order has leaves first, parents later — matches the order
@@ -887,7 +882,6 @@ def resolve_leg(
         else:
             dep_option = ""
 
-        # Apply sync-branch override.
         ref = sync_branch if sync_branch and sync_exists_by_repo.get(spec.repo, False) else spec.ref
 
         # Recurse into the dep's own deps first so deps-hash includes their artifact names.
@@ -908,13 +902,11 @@ def resolve_leg(
                     continue
                 sub_deps.append(visit(sub_spec, parent_ctx))
 
-        # Resolve SHA (via REST — one call per unique (repo, ref)).
         sha_key = (spec.repo, ref)
         if sha_key not in sha_cache:
             sha_cache[sha_key] = resolve_ref_to_sha(spec.repo, ref, token)
         sha = sha_cache[sha_key]
 
-        # Compute deps-hash8 from this dep's own direct compiled deps.
         deps_hash8 = compute_deps_hash8([d.artifact_name for d in sub_deps])
 
         artifact_name = make_artifact_name(
@@ -1006,7 +998,6 @@ def resolve_leg(
 
     deps_resolved = [visited[name] for name in order]
 
-    # Compute own artifact name using direct deps' artifact names for the hash.
     direct_dep_artifact_names = [visited[s.package].artifact_name for s in applicable_deps]
     own_compiler = _join_compilers(own.compiler_inputs, matrix_entry, context=f"[package] '{own.name}'")
     own_build_type = str(matrix_entry.get("build-type", "Release"))
@@ -1056,8 +1047,7 @@ def bfs_load_manifests(
     manifest_path: str,
     max_depth: int = 8,
 ) -> tuple[dict[tuple[Repo, Ref], Manifest], dict[Repo, bool]]:
-    """
-    Walk the dep graph layer-by-layer using GraphQL aliased queries.
+    """Walk the dep graph layer-by-layer using GraphQL aliased queries.
 
     Returns:
       manifest_cache: (repo, ref) -> Manifest
@@ -1068,7 +1058,6 @@ def bfs_load_manifests(
     queue: list[tuple[Repo, Ref]] = [(d.repo, d.ref) for d in root_deps]
 
     for _depth in range(max_depth):
-        # Filter to (repo, ref) we haven't seen yet.
         layer = [(r, ref) for (r, ref) in queue if (r, ref) not in manifest_cache]
         if not layer:
             break
@@ -1089,8 +1078,8 @@ def bfs_load_manifests(
                     next_queue.append((repo, sync_branch))
                     continue
             if text is None:
-                # No manifest at this ref. Treat as a leaf with no further deps.
-                # We still need a Manifest object so resolve_leg knows there are no sub-deps.
+                # No manifest at this ref: a leaf, but resolve_leg still needs a
+                # Manifest object to see that there are no sub-deps.
                 manifest_cache[(repo, ref)] = Manifest(
                     package=PackageSpec(
                         name=repo.split("/", 1)[1],
@@ -1163,7 +1152,6 @@ def _run(
             default_repo=self_repo or os.environ.get("GITHUB_REPOSITORY"),
         )
 
-    # Decide which sync-branch (if any) to look for upstream.
     sync_branch: Ref | None = None
     if current_branch and _SYNC_BRANCH_RE.match(current_branch):
         sync_branch = Ref(current_branch)
@@ -1172,7 +1160,6 @@ def _run(
 
     own_sha = _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
 
-    # 1. BFS-load all transitive upstream manifests (collapsed into ≤depth GraphQL calls).
     manifest_cache, sync_exists = bfs_load_manifests(
         root_deps=local_manifest.deps,
         sync_branch=sync_branch,
@@ -1180,7 +1167,6 @@ def _run(
         manifest_path=upstream_manifest_path,
     )
 
-    # 2. For each requested matrix block, resolve every leg.
     sha_cache: dict[tuple[Repo, Ref], Sha] = {}
     artifact_cache: dict[ArtifactName, bool] = {}
     run_state_cache: dict[tuple[Repo, Sha], bool] = {}
@@ -1188,7 +1174,7 @@ def _run(
 
     # Consumer-driven dispatch is only attempted when the resolve-deps action
     # minted an App token and passed it via DISPATCH_TOKEN. Without it, orphan
-    # pins still hard-fail the way they did pre-recovery.
+    # pins hard-fail.
     dispatch_token = os.environ.get("DISPATCH_TOKEN", "").strip()
     can_dispatch = bool(dispatch_token)
     dispatch_plans: dict[tuple[Repo, Ref], DispatchPlan] = {}
@@ -1265,7 +1251,7 @@ def _run(
 
         matrices_out[mname] = {"include": out_include}
 
-    # 3. Dispatch every timing-skew producer once, deduped on (repo, ref). The
+    # Dispatch every timing-skew producer once, deduped on (repo, ref). The
     # dispatch happens AFTER all legs resolve so a single producer flagged across
     # multiple matrix legs only gets dispatched once. Wait for each new run to
     # appear in the producer's API before exiting; this prevents a downstream
@@ -1302,12 +1288,10 @@ def _run(
     outputs["json"] = json.dumps(matrices_out, separators=(",", ":"))
     write_outputs(outputs)
 
-    # Echo a brief summary to stdout for human debugging.
     print(
         f"Resolved {sum(len(v['include']) for v in matrices_out.values())} matrix legs across "
         f"{len(matrices_out)} matrix block(s)."
     )
-    # Per-matrix-leg dump so the resolve job log shows what each downstream job will fetch.
     for mname, mdata in matrices_out.items():
         for entry in mdata["include"]:
             label_bits = [f"{k}={v}" for k, v in entry.items() if k != "_resolved"]

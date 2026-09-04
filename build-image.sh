@@ -45,20 +45,16 @@
 #                  the FROM line referencing REGISTRY/PROJECT. They FROM :latest,
 #                  and their base's directory is part of their own identity.
 #
-# TAG PATHS. An image's identity is its own directory, plus its base's directory
-# if it is a dependent, plus src/, pyproject.toml, LICENSE and
-# announce-image.sh -- the paths the base image COPYs out of the build context.
-# The rule is "everything outside the image's own directory that a Dockerfile
-# reads from the context"; edit
-# EXTRA_TAG_PATHS when that set changes. actions/, runners/ and tests/ are
+# TAG PATHS. An image's identity is its own directory, its base's directory if it
+# is a dependent, and every path outside its directory that a Dockerfile reads
+# from the build context (src/, pyproject.toml, LICENSE, announce-image.sh).
+# Edit EXTRA_TAG_PATHS when that set changes. actions/, runners/ and tests/ are
 # deliberately absent: actions are fetched by GitHub at job time and never baked,
-# runners/ configures the runner rather than the image, and tests are not
-# installed.
+# runners/ configures the runner rather than the image, tests are not installed.
 #
 # This deliberately OVER-approximates: an image that installs no
 # ci-infrastructure still retags on every src/ commit. Over-building is safe and
-# under-building is not, so accept it rather than probing each Dockerfile for
-# what it installs.
+# under-building is not, so accept it rather than probing each Dockerfile.
 #
 # Env overrides: REGISTRY, PROJECT, IMAGE_TAG, IMAGE_SOURCE_REPO, BUILDX_BUILDER,
 #   PUBLIC_ECCR_ROBOT_NAME, PUBLIC_ECCR_ROBOT_TOKEN
@@ -124,8 +120,7 @@ resolve_base() {
   esac
   base_repo="${from_line%:*}"          # strip :latest (or any tag)
   flat="${base_repo#"$REPO_PREFIX/"}"  # e.g. ubuntu24.04-base
-  # Reverse-map the flat registry name to a directory. Longest platform prefix
-  # wins, so 'ubuntu24.04' and a hypothetical 'ubuntu24.04-x' cannot collide.
+  # Reverse-map the flat registry name to a directory.
   for pdir in "$REPO_ROOT/$IMAGES_DIR"/*/; do
     [ -d "$pdir" ] || continue
     p="${pdir%/}"; p="${p##*/}"
@@ -446,7 +441,7 @@ while [ $# -gt 0 ]; do
     --push)          PUSH=true ;;
     --force)         FORCE=true ;;
     --require-clean) REQUIRE_CLEAN=true ;;
-    -h|--help)       sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,60p' "$0"; exit 0 ;;
     -*)              die "unknown flag: $1" ;;
     *)               [ -z "$NAME" ] || die "unexpected extra argument: $1"; NAME="$1" ;;
   esac

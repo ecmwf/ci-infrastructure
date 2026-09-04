@@ -14,6 +14,7 @@ from __future__ import annotations
 import subprocess
 import tarfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -123,9 +124,7 @@ def _make_tree(root: Path, name: str, body: str) -> Path:
     return root
 
 
-# --------------------------------------------------------------------------- #
-# ship_source (submit-then-poll: tar -> scp tarball -> touch marker)
-# --------------------------------------------------------------------------- #
+# === ship_source (submit-then-poll: tar -> scp tarball -> touch marker) ===
 def test_ship_source_clears_stages_and_marks(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
     conn = FakeConnection()
@@ -179,21 +178,6 @@ def test_ship_source_ships_and_unpacks_dep_prefixes_before_the_marker(tmp_path: 
     assert any("tar -xzf" in u and "/remote/staging/art/deps/0" in u for u in untars)
     # Marker LAST, after source and every dep are staged.
     assert conn.executed[-1] == ["touch", "/remote/staging/art/TRANSFER_COMPLETED"]
-
-
-def test_ship_source_dryrun_does_nothing(tmp_path: Path) -> None:
-    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
-    conn = FakeConnection()
-    transfer.ship_source(
-        conn,
-        local_source_dir=str(src),
-        staging_dir="/remote/staging/art",
-        run_id="42-1",
-        tar_dir=str(tmp_path / "stage"),
-        dryrun=True,
-    )
-    assert conn.executed == [] and conn.sent == []
-    assert not (tmp_path / "stage").exists()  # no local tarball either
 
 
 def test_ship_source_raises_on_remote_failure(tmp_path: Path) -> None:
@@ -250,39 +234,18 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
-# --------------------------------------------------------------------------- #
-# marker_exists
-# --------------------------------------------------------------------------- #
-def test_marker_exists_true_on_zero_exit() -> None:
-    conn = FakeConnection(exec_returncode=0)
-    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art") is True
-    probe = conn.executed[0]
-    assert probe[:2] == ["sh", "-c"]
-    # Keyed by the staging dir alone — no run id, so a reattaching runner can ask
-    # "has anyone finished shipping?" without reading the scheduler's Comment.
-    assert "test -f /remote/staging/art/TRANSFER_COMPLETED " in probe[2]
-
-
-def test_marker_exists_accepts_a_legacy_per_run_marker() -> None:
-    """Rollover shim: a job submitted by a pre-fix runner already has its source
-    staged under TRANSFER_COMPLETED_<run_id>, and must not be re-shipped over."""
+# === marker_exists ===
+def test_marker_exists_probes_the_staging_dir_alone() -> None:
     conn = FakeConnection(exec_returncode=0)
     transfer.marker_exists(conn, staging_dir="/remote/staging/art")
-    probe = conn.executed[0][2]
-    assert "/remote/staging/art/TRANSFER_COMPLETED_*" in probe
-    # The glob must reach the shell UNQUOTED or it matches a file literally
-    # named "TRANSFER_COMPLETED_*".
-    assert "'/remote/staging/art/TRANSFER_COMPLETED_*'" not in probe
+    probe = conn.executed[0]
+    assert probe[:2] == ["sh", "-c"]
+    # No run id, so a reattaching runner can ask "has anyone finished shipping?"
+    # without reading the scheduler's Comment.
+    assert probe[2] == "test -f /remote/staging/art/TRANSFER_COMPLETED"
 
 
-def test_marker_exists_false_on_nonzero_exit() -> None:
-    conn = FakeConnection(exec_returncode=1)
-    assert transfer.marker_exists(conn, staging_dir="/remote/staging/art") is False
-
-
-# --------------------------------------------------------------------------- #
-# ship_lock (serialising two runs that ship the same artifact)
-# --------------------------------------------------------------------------- #
+# === ship_lock (serialising two runs that ship the same artifact) ===
 class LockConnection(FakeConnection):
     """A connection whose lock `mkdir` fails ``busy_for`` times, then succeeds.
 
@@ -410,16 +373,7 @@ def test_ship_lock_releases_when_the_ship_fails() -> None:
     assert _lock_scripts(conn)[-1].startswith("rm -rf /remote/staging/art.shiplock ")
 
 
-def test_ship_lock_dryrun_touches_nothing() -> None:
-    conn = FakeConnection()
-    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", dryrun=True):
-        pass
-    assert conn.executed == []
-
-
-# --------------------------------------------------------------------------- #
-# fetch_install
-# --------------------------------------------------------------------------- #
+# === fetch_install ===
 def test_fetch_install_collects_the_archive_the_job_wrote(tmp_path: Path) -> None:
     """No remote tar: the job owns producing CI_INSTALL_ARCHIVE, we only fetch it."""
     conn = ZstdTarballConnection()
@@ -446,9 +400,7 @@ def test_fetch_install_archive_path_matches_the_jobscript_export(tmp_path: Path)
     assert conn.fetched[0][0] == jobscript.install_archive_path("/remote/install/art")
 
 
-# --------------------------------------------------------------------------- #
-# fetch_tree / push_tree (the generic HPC<->runner primitives)
-# --------------------------------------------------------------------------- #
+# === fetch_tree / push_tree (the generic HPC<->runner primitives) ===
 def test_fetch_tree_tar_getfile_unpack_order(tmp_path: Path) -> None:
     conn = TarballConnection()
     transfer.fetch_tree(
@@ -462,19 +414,6 @@ def test_fetch_tree_tar_getfile_unpack_order(tmp_path: Path) -> None:
     assert "tar -czf" in conn.executed[0][2] and "/remote/ref/art" in conn.executed[0][2]
     assert conn.fetched == [("/remote/ref/art.fetch.tgz", str(tmp_path / "stage" / "art.fetch.tgz"))]
     assert (tmp_path / "local").is_dir()
-
-
-def test_fetch_tree_dryrun_does_nothing(tmp_path: Path) -> None:
-    conn = FakeConnection()
-    transfer.fetch_tree(
-        conn,
-        remote_dir="/remote/ref/art",
-        local_dir=str(tmp_path / "local"),
-        tar_dir=str(tmp_path / "stage"),
-        dryrun=True,
-    )
-    assert conn.executed == [] and conn.fetched == []
-    assert not (tmp_path / "local").exists()
 
 
 def test_push_tree_tar_sendfile_unpack_order(tmp_path: Path) -> None:
@@ -493,9 +432,42 @@ def test_push_tree_tar_sendfile_unpack_order(tmp_path: Path) -> None:
     assert any("tar -xzf" in u and "/remote/inputs/art" in u for u in untars)
 
 
-def test_push_tree_dryrun_does_nothing(tmp_path: Path) -> None:
-    src = _make_tree(tmp_path / "inputs", "in.txt", "payload")
+def test_remove_tree_rms_dir_and_transfer_tarballs(tmp_path: Path) -> None:
     conn = FakeConnection()
+    transfer.remove_tree(conn, remote_dir="/remote/out/art")
+    assert conn.executed == [["rm", "-rf", "/remote/out/art", "/remote/out/art.push.tgz", "/remote/out/art.fetch.tgz"]]
+
+
+# === dryrun (every primitive must reach the network and the disk zero times) ===
+def _dryrun_ship_source(conn: FakeConnection, tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir="/remote/staging/art",
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+        dryrun=True,
+    )
+
+
+def _dryrun_ship_lock(conn: FakeConnection, tmp_path: Path) -> None:
+    with transfer.ship_lock(conn, staging_dir="/remote/staging/art", run_id="1-1", dryrun=True):
+        pass
+
+
+def _dryrun_fetch_tree(conn: FakeConnection, tmp_path: Path) -> None:
+    transfer.fetch_tree(
+        conn,
+        remote_dir="/remote/ref/art",
+        local_dir=str(tmp_path / "stage-out"),
+        tar_dir=str(tmp_path / "stage"),
+        dryrun=True,
+    )
+
+
+def _dryrun_push_tree(conn: FakeConnection, tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "inputs", "in.txt", "payload")
     transfer.push_tree(
         conn,
         local_dir=str(src),
@@ -503,20 +475,26 @@ def test_push_tree_dryrun_does_nothing(tmp_path: Path) -> None:
         tar_dir=str(tmp_path / "stage"),
         dryrun=True,
     )
-    assert conn.executed == [] and conn.sent == []
-    assert not (tmp_path / "stage").exists()  # no local tarball either
 
 
-def test_remove_tree_rms_dir_and_transfer_tarballs(tmp_path: Path) -> None:
-    conn = FakeConnection()
-    transfer.remove_tree(conn, remote_dir="/remote/out/art")
-    assert conn.executed == [["rm", "-rf", "/remote/out/art", "/remote/out/art.push.tgz", "/remote/out/art.fetch.tgz"]]
-
-
-def test_remove_tree_dryrun_does_nothing() -> None:
-    conn = FakeConnection()
+def _dryrun_remove_tree(conn: FakeConnection, tmp_path: Path) -> None:
     transfer.remove_tree(conn, remote_dir="/remote/out/art", dryrun=True)
-    assert conn.executed == []
+
+
+@pytest.mark.parametrize(
+    "primitive",
+    [_dryrun_ship_source, _dryrun_ship_lock, _dryrun_fetch_tree, _dryrun_push_tree, _dryrun_remove_tree],
+    ids=["ship_source", "ship_lock", "fetch_tree", "push_tree", "remove_tree"],
+)
+def test_dryrun_transfers_nothing_and_writes_no_local_tarball(
+    primitive: Callable[[FakeConnection, Path], None], tmp_path: Path
+) -> None:
+    conn = FakeConnection()
+    primitive(conn, tmp_path)
+    assert conn.executed == [] and conn.sent == [] and conn.fetched == []
+    # The local staging tar is skipped too, not just the remote half.
+    assert not (tmp_path / "stage").exists()
+    assert not (tmp_path / "stage-out").exists()
 
 
 def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
@@ -593,9 +571,7 @@ def test_fetch_install_fails_when_the_job_wrote_no_archive(tmp_path: Path) -> No
         )
 
 
-# --------------------------------------------------------------------------- #
-# The packaged troika site config
-#
+# === The packaged troika site config ===
 # Nothing else in the suite touches it: every other HPC test monkeypatches
 # load_site, so the site name it is handed is only a string. These load the real
 # packaged config, so a site that is removed, renamed or mistyped fails here
@@ -603,7 +579,6 @@ def test_fetch_install_fails_when_the_job_wrote_no_archive(tmp_path: Path) -> No
 #
 # Kept in step with ecmwf/build-package-hpc's config.yml, the de-facto register
 # of which sites exist (ci-hpc-generic drives it).
-# --------------------------------------------------------------------------- #
 BATCH_SITES: Final = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
 DIRECT_SITES: Final = ["hpc-login", "lumi-login", "local-direct"]
 

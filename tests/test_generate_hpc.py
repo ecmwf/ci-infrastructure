@@ -5,7 +5,7 @@
 """Tests for the HPC (SLURM) execution path in generate_downstream_ci.
 
 An HPC kind is an ordinary matrix kind with ``execution = "hpc"``: it names a
-``job-script`` instead of an ``action``, runs on a login-node self-hosted
+``job-script`` instead of an ``action``, runs on the ``hpc`` self-hosted
 runner, and its job invokes the shared build-on-hpc action. Artifact identity
 and the needs-graph must be identical to the runner path.
 """

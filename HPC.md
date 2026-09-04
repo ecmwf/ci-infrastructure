@@ -15,14 +15,14 @@ ordinary matrix leg with `execution = "hpc"`.
 ## How it fits together
 
 ```
-login-node self-hosted runner
+`hpc` self-hosted runner (reaches the cluster only over troika ssh)
   resolve ─▶ fetch deps (S3) ─▶ build-on-hpc: submit ─▶ ship source + deps + marker ─▶ wait ─▶ fetch install ─▶ publish
                                                  │                                 ▲
                                                  ▼  troika (as a Python library)   │ Finished: SUCCESS/FAILURE
                                           SLURM compute node: wait for marker ─▶ unpack into $TMPDIR ─▶ .ci/hpc/build-<toolchain>.sh
 ```
 
-- The job runs on a **login-node self-hosted runner** (`runs-on`), which submits
+- The job runs on the **`hpc` self-hosted runner** (`runs-on`), which submits
   the batch job, ships the source, waits for it, and publishes the result.
 - Submission / polling / cancellation is **pure Python** driving troika's `Site`
   API directly (`ci_infrastructure.hpc`) — no shell-out to the troika CLI.
@@ -143,7 +143,7 @@ See `samples/hpc/build-gnu.sh` for a template recipe.
   tree. It need not survive across re-runs — reattach goes through the scheduler
   by job name, not a local file — so any writable dir works; if unset it falls
   back to `$RUNNER_TEMP`.
-- **`secrets.TROIKA_USER`** (optional): the remote/scheduler user for troika.
+- **`secrets.HPC_CI_SSH_USER`** (optional): the remote/scheduler user for troika.
 
 ### Why the work dir is expanded on the cluster, not on the runner
 
@@ -215,7 +215,7 @@ The submit-then-poll path leaves per-artifact `staging/`, `src/`, `install/` and
   lock so it cannot clear a concurrent shipper's tree.
 - **Nightly GC**: `.github/workflows/hpc-nightly-cleanup.yml` runs
   `python -m ci_infrastructure.hpc gc --remote-work-dir <…> --older-than-days N`
-  on the login-node runner, sweeping per-artifact trees older than `N` days. Run
+  on the `hpc` runner, sweeping per-artifact trees older than `N` days. Run
   it via `workflow_dispatch` with `dryrun: true` first to see what it would
   remove.
 
@@ -226,7 +226,7 @@ connection. The same transfer is also available standalone, for any workflow tha
 needs to move a directory in or out of the cluster outside a build — e.g. pulling
 a job's reference/artifact directory back for a later processing step, or staging
 inputs onto shared scratch before a job reads them. Both directions are a plain
-login-node copy: **no scheduler and no S3**, so they work against `direct` sites
+ssh copy: **no scheduler and no S3**, so they work against `direct` sites
 too.
 
 - **`fetch-tree`** — cluster → runner. Tars `--remote-dir` on the cluster, brings
@@ -242,37 +242,52 @@ too.
 
 Two rules for the remote directory:
 
-- it must live on a filesystem the login node can reach (shared scratch — the same
-  Lustre `$SCRATCH` the login-node runner and the compute nodes all see);
+- it must live on a filesystem the **cluster** can reach (shared scratch — the
+  same Lustre `$SCRATCH` the login node and the compute nodes both see). No
+  runner is on the cluster, so nothing local is ever on that filesystem; the
+  tree gets there by being pushed.
 - `--remote-dir` is expanded **on the cluster**, so quote a `$SCRATCH/…` spec to
   keep the runner's shell from expanding it first (same rule as `--remote-work-dir`
   — see *Why the work dir is expanded on the cluster, not on the runner*).
 
-As composite actions (post-step to pull a job's output back to the runner):
-
-```yaml
-- uses: ecmwf/ci-infrastructure/actions/fetch-hpc-tree@main
-  with:
-    site: hpc-batch            # same troika site the job used (or lumi)
-    troika-user: ${{ secrets.HPC_CI_SSH_USER }}
-    remote-dir: ${{ env.OUTPUT_DIR }}/ectrans-reference-artifact
-    local-dir: ./ectrans-reference-artifact
-```
+As composite actions. `push-hpc-tree` writes the resolved cluster path as its
+`remote-dir` output and `fetch-hpc-tree` writes `local-dir`, so later steps read
+the resolved path rather than recomputing the spec. Neither needs a bootstrap
+step: both run `ensure-infrastructure-present` themselves.
 
 ```yaml
 - uses: ecmwf/ci-infrastructure/actions/push-hpc-tree@main
+  id: push
   with:
-    site: hpc-batch
+    site: hpc-batch            # same troika site the job uses (or lumi)
     troika-user: ${{ secrets.HPC_CI_SSH_USER }}
     local-dir: ./inputs
     remote-dir: ${{ env.OUTPUT_DIR }}/inputs
 ```
 
+```yaml
+# post-step, to pull a job's output back to the runner
+- uses: ecmwf/ci-infrastructure/actions/fetch-hpc-tree@main
+  with:
+    site: hpc-batch
+    troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+    remote-dir: ${{ steps.push.outputs.remote-dir }}
+    local-dir: ./ectrans-reference-artifact
+```
+
+Or directly, e.g. from a checkout, after `ensure-infrastructure-present`:
+
+```bash
+"$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.hpc fetch-tree --site hpc-batch \
+  --remote-dir "$OUTPUT_DIR/ectrans-reference-artifact" \
+  --local-dir ./ref --tar-dir "$RUNNER_TEMP/hpc-tars"
+```
+
 To reclaim scratch on success, add `remove-hpc-tree` as the **last** step and give
 it **no** `if:`. A step with no `if:` runs only when every prior step succeeded, so
 a failed job skips it and its trees stay on scratch for debugging (the nightly GC
-sweeps them up later). Do **not** add `if: always()` — that would wipe the trees on
-failure too.
+sweeps them up later). Do **not** add `if: always()` — that would wipe the trees
+on failure too.
 
 ```yaml
 # last step of the job; no `if:` -> runs only if everything went green
@@ -280,19 +295,11 @@ failure too.
   with:
     site: hpc-batch
     troika-user: ${{ secrets.HPC_CI_SSH_USER }}
-    remote-dir: ${{ env.OUTPUT_DIR }}/ectrans-reference-artifact
+    remote-dir: ${{ steps.push.outputs.remote-dir }}
 ```
 
-Or directly, e.g. on the login-node runner:
-
-```bash
-python -m ci_infrastructure.hpc fetch-tree --site hpc-batch \
-  --remote-dir "$OUTPUT_DIR/ectrans-reference-artifact" \
-  --local-dir ./ref --tar-dir "$RUNNER_TEMP/hpc-tars"
-```
-
-`.github/workflows/smoke-test-hpc.yml` exercises both commands and both actions
-against the real cluster, on every push and pull request. pytest covers the same
+`.github/workflows/smoke-test-hpc.yml` exercises all three actions against the
+real cluster, on every push and pull request. pytest covers the same
 ground without a cluster: `test_push_then_fetch_roundtrip_preserves_tree` does the
 same tar → transfer → untar round-trip through a connection that really copies
 bytes.

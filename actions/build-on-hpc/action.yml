@@ -4,7 +4,7 @@
 
 name: Build a package on HPC via SLURM
 description: >
-  The HPC counterpart of a repo's runner build composite. Runs on a login-node
+  The HPC counterpart of a repo's runner build composite. Runs on the `hpc`
   self-hosted runner: it submits the repo's .ci/hpc/build-<toolchain>.sh as a SLURM job
   (through troika, driven as a Python library), waits for it, and publishes the
   resulting install tree to the S3 artifact store under its artifact name.

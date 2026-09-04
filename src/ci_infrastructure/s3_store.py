@@ -4,37 +4,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-s3_store.py
+"""The artifact storage backend.
 
-The artifact storage backend. Every compiled package is stored as a single
-``<artifact-name>.tar.gz`` object in an S3-compatible bucket (the configured
-object store that also backs sccache), keyed *purely by its artifact name*:
+Every compiled package is stored as a single ``<artifact-name>.tar.gz`` object in
+an S3-compatible bucket (the configured object store that also backs sccache),
+keyed *purely by its artifact name*:
 
     s3://<bucket>/<key-prefix><artifact-name>.tar.gz
 
-The artifact name already encodes the full identity of a build
-(``<prefix>-<sha>[-<deps-hash8>]-<platform>-<compiler>[-py<ver>]-<build-type>[-opts.<option>]``)
-and is independent of which repository or workflow run produced it. The trailing
-``opts.`` segment is present only for builds that name a build-option config
-(a feature configuration orthogonal to build-type); plain builds omit it. Keying the
-object store by that name — rather than by the producer repo's GitHub Actions
-artifact store — is what lets any consumer resolve a dependency regardless of
-which run built it. That decoupling is the whole reason this module exists.
+The name is minted by ``_github_api.make_artifact_name``, which is the single
+definition of its format. It already encodes the full identity of a build and is
+independent of which repository or workflow run produced it — which is what lets
+any consumer resolve a dependency regardless of which run built it.
 
-This module is both a library (imported by resolve_deps / check_artifact /
-fetch_deps for existence checks and downloads) and a CLI (invoked from the
-composite actions for publish/download):
+Both a library (resolve_deps / check_artifact / fetch_deps) and a CLI:
 
     python -m ci_infrastructure.s3_store upload   --name <artifact-name> --file <tar.gz>
     python -m ci_infrastructure.s3_store download --name <artifact-name> --dest <tar.gz>
     python -m ci_infrastructure.s3_store exists    --name <artifact-name>
 
-Configuration is read from the environment. The object store's location has no
-built-in default — the deployment supplies it (e.g. via GitHub Actions repo/org
-variables). The endpoint and bucket are required; the AWS credentials
-(AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, picked up by boto3 directly) are
-mandatory too:
+Configuration comes from the environment; the store's location has no built-in
+default, the deployment supplies it. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+are picked up by boto3 directly and are mandatory.
 
     ARTIFACT_S3_ENDPOINT    required: S3-compatible endpoint URL
     ARTIFACT_S3_BUCKET      required: bucket name
@@ -44,13 +35,12 @@ mandatory too:
     ARTIFACT_S3_CA_BUNDLE   default: the HARICA root vendored with this package
 
 TLS trust is deliberately narrow: this client only ever talks to the configured
-object store, whose certificate chain is anchored by a single root (HARICA TLS
-RSA Root CA 2021). Rather than trust the runner's whole OS trust store — which
-on some runners (notably the HPC login nodes) is too old to include that root —
-we verify against just the vendored root. That both fixes the stale-store
-failure and pins the object store to one CA, so a mis-issuance by any other
-public CA cannot be used to intercept it. Point ARTIFACT_S3_CA_BUNDLE at your
-own bundle to override (e.g. if the store is ever re-hosted behind another CA).
+object store, whose chain is anchored by a single root (HARICA TLS RSA Root CA
+2021). Rather than trust the runner's whole OS trust store — which on some
+runners (notably the HPC login nodes) is too old to include that root — we verify
+against just the vendored root. That both fixes the stale-store failure and pins
+the object store to one CA, so a mis-issuance by any other public CA cannot be
+used to intercept it. Point ARTIFACT_S3_CA_BUNDLE at your own bundle to override.
 """
 
 from __future__ import annotations

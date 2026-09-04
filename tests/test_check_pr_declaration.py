@@ -106,9 +106,7 @@ def run_main(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Stdlib purity -- the highest-value test in this file
-# --------------------------------------------------------------------------- #
+# === Stdlib purity -- the highest-value test in this file ===
 
 STDLIB_ALLOWLIST: Final = frozenset(
     {
@@ -148,9 +146,7 @@ def test_module_imports_only_stdlib() -> None:
     assert imported <= STDLIB_ALLOWLIST, f"non-stdlib imports: {sorted(imported - STDLIB_ALLOWLIST)}"
 
 
-# --------------------------------------------------------------------------- #
-# Real data
-# --------------------------------------------------------------------------- #
+# === Real data ===
 
 
 def test_org_template_passes_unmodified() -> None:
@@ -184,9 +180,7 @@ def test_canonical_block_shape() -> None:
     assert "project's" in DECLARATION_LINES[5], "the apostrophe must stay ASCII U+0027"
 
 
-# --------------------------------------------------------------------------- #
-# Normalization
-# --------------------------------------------------------------------------- #
+# === Normalization ===
 
 
 def test_normalize_is_idempotent() -> None:
@@ -242,9 +236,7 @@ def test_unicode_line_separator_does_not_split_lines() -> None:
     assert check_body(tampered).verdict is Verdict.DIVERGED
 
 
-# --------------------------------------------------------------------------- #
-# Verdicts
-# --------------------------------------------------------------------------- #
+# === Verdicts ===
 
 
 @pytest.mark.parametrize("text", ["", "   \n\t\n", "\n\n\n"])
@@ -361,9 +353,7 @@ def test_last_heading_wins() -> None:
     assert result.diff.index == 8
 
 
-# --------------------------------------------------------------------------- #
-# Declaration source override
-# --------------------------------------------------------------------------- #
+# === Declaration source override ===
 
 
 def test_declaration_file_override() -> None:
@@ -381,9 +371,7 @@ def test_declaration_source_without_heading_is_used_whole() -> None:
     assert expected_lines("just this line\n") == ["just this line"]
 
 
-# --------------------------------------------------------------------------- #
-# Event payload and the bot allowlist
-# --------------------------------------------------------------------------- #
+# === Event payload and the bot allowlist ===
 
 
 def test_body_from_event_requires_a_pull_request() -> None:
@@ -409,9 +397,7 @@ def test_parse_exempt_authors() -> None:
     assert parse_exempt_authors("  a[bot] , b[bot] ") == ("a[bot]", "b[bot]")
 
 
-# --------------------------------------------------------------------------- #
-# Output safety
-# --------------------------------------------------------------------------- #
+# === Output safety ===
 
 
 def test_error_annotation_is_a_single_escaped_line() -> None:
@@ -457,9 +443,7 @@ def test_main_only_writes_a_fixed_verdict_to_the_output_file(
     assert output.splitlines() == ["verdict=not-at-end"]
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
+# === CLI ===
 
 
 def test_main_passes_on_a_compliant_body(
@@ -617,9 +601,7 @@ def test_cli_contract_via_subprocess(tmp_path: Path) -> None:
     assert "::error" not in completed.stdout
 
 
-# --------------------------------------------------------------------------- #
-# Shipped YAML and the repo's own template
-# --------------------------------------------------------------------------- #
+# === Shipped YAML and the repo's own template ===
 
 
 def test_vendored_pr_template_passes() -> None:

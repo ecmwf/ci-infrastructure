@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-generate_downstream_ci.py
-
-Reads every consumer repo's .ci/manifest.toml, validates the cross-repo
+"""Reads every consumer repo's .ci/manifest.toml, validates the cross-repo
 trigger / needs graph, and emits two generated files per repo:
 
   - .github/workflows/cross-repo-trigger.yml — has two entry points sharing
@@ -20,7 +17,7 @@ trigger / needs graph, and emits two generated files per repo:
     missing), which sets `rebuild-request=true`. Per-kind jobs gate on
     `contains(fromJSON(inputs.from-jobs), 'pkg/kind')` / `rebuild-request` via
     the kind's `triggers` field. Artifacts publish to shared S3 keyed by a deterministic
-    name (independent of the producing run), so it no longer matters whether
+    name (independent of the producing run), so it does not matter whether
     this runs standalone or nested inside the upstream's run. Runtime
     branch-matching happens in the resolve job's pick-ref step.
 
@@ -35,80 +32,13 @@ trigger / needs graph, and emits two generated files per repo:
     reached by several originator kinds still gets ONE caller job; its
     `from-jobs` carries the whole set so a single call wakes all its chains.
 
-    EXCEPTION (log isolation): when a PUBLIC upstream fans out to a PRIVATE
-    consumer, a reusable-workflow call would run the private consumer's jobs
-    inside the public run and expose its logs. Such an edge is instead emitted
-    as a workflow_dispatch (via the dispatch-and-wait action), so the consumer's
-    run — and logs — stay in the private repo. The orchestrator job waits on
-    that run's conclusion (polling run status, never logs) so it still gates the
-    upstream PR; the consumer's per-kind jobs additionally post per-leg check
-    runs back for at-a-glance detail. Every other edge (public->public,
-    private->private, private->public) keeps the native reusable-workflow call.
-    Visibility is declared per repo via [package].visibility.
+    EXCEPTION (log isolation): a public->private edge is dispatched rather than
+    called, so the private consumer's logs never render into the public run.
+    `_edge_needs_dispatch` is the predicate and carries the full rule.
 
-Schema additions consumed (sibling to the existing [[deps]] / [[matrix.X.include]]):
-
-    [package]
-    visibility = "public"        # optional; "private" (default) | "public".
-    # ^ Default "private" (fail closed): unlabelled repos are dispatched (not
-    #   called via `uses:`) by public upstreams so their CI logs never render
-    #   into a public run. Mark a repo "public" to opt into the native
-    #   reusable-workflow path.
-
-    [[trigger-downstream]]
-    repo = "owner/consumer-repo"
-    ref  = "main"                # required: ref to pin orchestrator `uses:`
-
-    [downstream-gate]            # optional; omit for "always fan out"
-    label = "run-downstream-CI"  # a pull request's fan-out runs only if it
-                                 # carries this label. A push has nothing to
-                                 # label, so it always runs. Pair it with
-                                 # actions/require-label-decision, which is what
-                                 # stops "no label" being an accident rather than
-                                 # a decision.
-
-    [matrix.build]
-    triggers = ["upstream-change", "rebuild-request"]
-    # ^ "upstream-change" — fire when an upstream's trigger-downstream
-    #    orchestrator dispatches us
-    # ^ "rebuild-request" — fire when a consumer dispatches us because our
-    #    artifact was missing
-    # An empty/missing triggers means push/PR-only (no cross-repo entry).
-    needs = ["fortmath/build"]   # cross-repo: "<package-name>/<kind>"
-    ctest = true                 # optional; run ctest against the build tree
-                                 # BEFORE publishing, so an upstream-driven build
-                                 # proves the consumer still WORKS and not just
-                                 # that it still links -- and a red suite leaves
-                                 # no artifact for anyone to consume. Requires the
-                                 # `action` composite to expose a `build-dir`
-                                 # output.
-                                 # Runner-only: an HPC kind's ctest belongs in
-                                 # its job-script, where it runs on the compute
-                                 # node rather than on the submitting pod.
-    ctest-args = "-E slow_.*"    # optional; appended verbatim to that ctest
-                                 # invocation. Rejected without ctest = true.
-
-    [matrix.test]
-    triggers = ["upstream-change"]   # tests run on upstream change but NOT
-                                     # on consumer rebuild (no artifact to
-                                     # verify, wasted compute)
-    reuse-matrix = "build"       # share the include legs of another kind
-    needs = ["build"]            # local: bare kind name
-
-    [matrix.build-hpc]
-    container-credentials = true # optional; the job's `container:` gets a
-                                 # credentials block reading the org registry
-                                 # robot secrets. Opt-in, because handing empty
-                                 # credentials to a public image would break the
-                                 # anonymous pulls the runner lane relies on.
-                                 # Kind-level: one container: is rendered per job.
-
-    # ci.yml-only kinds (no triggers) need no [matrix.<kind>] table at all —
-    # just [[matrix.<kind>.include]] legs. triggers defaults to empty;
-    # needs/reuse-matrix on a non-triggered kind are never consulted.
-    [[matrix.clang-tidy.include]]
-    cxx-compiler = "clang++-18"
-    ...
+Manifest schema: the pydantic models below are the definition — `Manifest`,
+`MatrixKind` and `TriggerDownstream`, each field carrying the rule that governs
+it. `--check` reports a violation in TOML notation (`[matrix.build]`).
 
 Invariants enforced (fail-loud, exit 1):
 
@@ -210,8 +140,6 @@ class _WorkflowDumper(yaml.SafeDumper):
     """
 
 
-# Reset the implicit resolvers, then re-add everything except the YAML 1.1
-# bool resolver, plus a YAML 1.2 bool resolver that only matches true/false.
 _WorkflowDumper.yaml_implicit_resolvers = {
     k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
     for k, v in yaml.SafeDumper.yaml_implicit_resolvers.items()
@@ -266,10 +194,7 @@ Execution: TypeAlias = Literal["runner", "hpc"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
 EXECUTION_HPC: Final[Execution] = "hpc"
 
-# A repo's [package].visibility. "private" repos must never have their CI logs
-# rendered into another repo's run: a public upstream that fans out to a private
-# consumer dispatches it (its run stays in the private repo) instead of calling
-# it as a reusable workflow. See render_orchestrator_workflow.
+# A repo's [package].visibility; see _edge_needs_dispatch for what it gates.
 Visibility: TypeAlias = Literal["public", "private"]
 VISIBILITY_PUBLIC: Final[Visibility] = "public"
 VISIBILITY_PRIVATE: Final[Visibility] = "private"
@@ -278,7 +203,7 @@ VISIBILITY_PRIVATE: Final[Visibility] = "private"
 def _lane_suffix(lane: Execution) -> str:
     """Filename suffix distinguishing the two lanes' generated workflow files.
 
-    The runner lane keeps the historical unsuffixed names (cross-repo-trigger.yml,
+    The runner lane uses the unsuffixed names (cross-repo-trigger.yml,
     trigger-downstream.yml); the hpc lane gets a `-hpc` sibling. Splitting the flow
     into two files per side (rather than one file gated by a `lane` input) keeps the
     concurrency groups distinct and avoids skipped jobs on the unused lane.
@@ -314,8 +239,8 @@ class MatrixKind:
     legs: Sequence[dict[str, Any]]  # raw include entries (after reuse resolution)
     # How this kind's build runs. "runner" (default) invokes the manifest's
     # `action` composite on the GitHub runner. "hpc" instead submits the repo's
-    # `job_script` as a SLURM job (via the shared build-on-hpc action) on a
-    # login-node self-hosted runner. Everything else — resolve, fetch, artifact
+    # `job_script` as a SLURM job (via the shared build-on-hpc action) from the
+    # `hpc` self-hosted runner. Everything else — resolve, fetch, artifact
     # identity, needs-graph — is identical between the two.
     execution: Execution
     # `action` is the composite the generated cross-repo-trigger.yml's per-kind
@@ -346,10 +271,9 @@ class MatrixKind:
     # Kind-level rather than per-leg because one `container:` block is rendered
     # per job, and a job covers every leg of the kind.
     container_credentials: bool
-    # Whether the per-kind job runs ctest against the build tree after
-    # publishing. Opt-in, and runner-only: an HPC kind's ctest belongs in the
-    # repo's job-script, where it runs on the compute node. Requires the
-    # manifest's `action` composite to expose a `build-dir` output.
+    # Whether the per-kind job runs ctest against the build tree BEFORE
+    # publishing (see _ctest_step). Runner-only: an HPC kind's ctest belongs in
+    # the repo's job-script, where it runs on the compute node.
     ctest: bool
     # Extra arguments appended verbatim to the generated ctest invocation (e.g.
     # "-L nightly -E s_http"). Only meaningful when `ctest` is true.
@@ -573,12 +497,10 @@ class _ManifestRaw(BaseModel):
 
 
 def _format_validation_error(path: Path, exc: ValidationError) -> str:
-    """Translate the first pydantic error into a single line that mirrors the
-    pre-pydantic SchemaError messages.
+    """Render the first pydantic error as one line in TOML notation.
 
-    The translator turns the pydantic loc tuple into TOML-ish notation
-    (`[matrix.build]`, `[[trigger-downstream]][1]`) so the existing
-    `pytest.raises(SchemaError, match=...)` assertions keep working.
+    Turns the pydantic loc tuple into `[matrix.build]` /
+    `[[trigger-downstream]][1]`, which is how the manifest spells it.
     """
     err = exc.errors()[0]
     loc: tuple[str | int, ...] = tuple(err["loc"])
@@ -873,7 +795,7 @@ def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str,
         for t in m.triggers:
             target = by_repo.get(t.repo)
             if target is None:
-                # Trigger to a repo we don't know about (external). Skip; we can't validate.
+                # External repo: not ours to validate.
                 continue
             depends_on_us = any(d.repo == m.repo for d in target.deps)
             if not depends_on_us:
@@ -939,7 +861,6 @@ def _check_needs(
                             f"{target_kind!r}, but no [matrix.{target_kind}] exists"
                         )
                     continue
-                # Cross-repo reference.
                 upstream = by_pkg.get(pkg)
                 if upstream is None:
                     raise SchemaError(
@@ -1647,8 +1568,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     }
     if is_hpc:
         # No setup-python ran above, so there is no consumer interpreter to
-        # install needs-python wheels into — and installing them on the login
-        # node would be pointless anyway. Stage them; the repo's job script
+        # install needs-python wheels into — and installing them on the runner
+        # would be pointless anyway. Stage them; the repo's job script
         # installs them on the compute node from $CMAKE_PREFIX_PATH.
         fetch_with["install-python-deps"] = "false"
     steps.append(
@@ -1666,14 +1587,9 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     else:
         steps.append(_action_call_step(mk))
         if mk.publishes:
-            # Test BEFORE publish: a failing step ends the job, so a red suite
-            # leaves nothing in the store for a consumer to find. See _ctest_step
-            # for why nothing downstream can tell a red artifact from a green one
-            # once it has been published.
-            #
-            # Inside the publishes branch on purpose: ctest tests the tree the
-            # build left behind, and the schema rejects ctest on a kind that
-            # publishes nothing (it has no build tree).
+            # Before the publish step (see _ctest_step), and inside the publishes
+            # branch on purpose: ctest tests the tree the build left behind, and
+            # the schema rejects ctest on a kind that publishes nothing.
             if mk.ctest:
                 steps.append(_ctest_step(mk))
             steps.append(
@@ -1875,7 +1791,7 @@ def resolve_consumer_refs(m: Manifest, by_repo: Mapping[str, Manifest]) -> dict[
 #      orchestrator's run (each reusable-workflow call is part of the same run, not a
 #      separately-dispatched one), so they count here. ORCHESTRATOR_MAX_TOTAL_JOBS
 #      is a tighter safety margin; _check_orchestrator_caps sums the expansion.
-#   2. 4 nested workflow levels. Our chain is now trigger-downstream{-hpc} (L1,
+#   2. 4 nested workflow levels. Our chain is trigger-downstream{-hpc} (L1,
 #      top-level workflow_run) -> consumer cross-repo-trigger{-hpc} (L2). The flat
 #      closure (compute_transitive_consumers) guarantees the consumer workflow never
 #      itself `uses:` another reusable workflow — it only calls composite actions,
@@ -1902,8 +1818,9 @@ def render_orchestrator_workflow(
     NOT a nested `workflow_call` from ci.yml. Each lane is its own Actions-tab run
     with its own 256-job / 20-reusable-workflow budget, so the two lanes never share
     a run and the graphs stay short. Root jobs gate on `workflow_run.conclusion ==
-    'success'`, so downstream now waits for the upstream's full CI (tests included) —
-    a deliberate relaxation of "depend only on the build step" for clean separate runs.
+    'success'`, so downstream waits for the upstream's full CI, tests included —
+    broader than "depend only on the build step", which is the right trade for
+    separate runs.
 
     Flat fan-out: one orchestrator job per in-lane consumer package. Each job invokes
     the consumer's cross-repo-trigger{-hpc}.yml as a reusable workflow (workflow_call)
@@ -1912,9 +1829,8 @@ def render_orchestrator_workflow(
     cross-repo build order is preserved; the called workflow handles intra-package kind
     ordering internally. All ordering is same-lane only (see _cross_package_deps).
 
-    The one exception is a PUBLIC upstream fanning out to a PRIVATE consumer
-    (_edge_needs_dispatch): that job dispatches the consumer instead of calling it,
-    keeping the private repo's logs out of this public run. See _orchestrator_dispatch_job.
+    The one exception is a public->private edge (_edge_needs_dispatch), which is
+    dispatched rather than called — see _orchestrator_dispatch_job.
 
     Because plain `workflow_run` runs post nothing to the PR, extra jobs post a commit
     status (`downstream/{lane}`) back to the tested head SHA — `report-start` (pending)
@@ -2138,11 +2054,19 @@ def _orchestrator_job_id(consumer_pkg: str) -> str:
 def _edge_needs_dispatch(caller: Manifest, consumer: Manifest) -> bool:
     """True iff a public upstream fans out to a private consumer.
 
+    THE single home for the log-isolation rule; other sites point here.
+
     That is the only edge that would leak: a reusable-workflow call runs the
-    consumer's jobs inside the caller's (public) run, so a private consumer must
-    be reached by cross-repo dispatch instead. All other combinations
-    (public->public, private->private, private->public) keep the native
-    reusable-workflow call — see render_orchestrator_workflow.
+    consumer's jobs inside the caller's (public) run, so a private consumer is
+    reached by workflow_dispatch instead (via dispatch-and-wait) and its run —
+    and its logs — stay in the private repo. The orchestrator job still gates the
+    upstream PR by polling that run's conclusion, never its logs, and the
+    consumer's per-kind jobs post per-leg check runs back for detail.
+
+    All other combinations (public->public, private->private, private->public)
+    keep the native reusable-workflow call. Visibility is declared per repo via
+    [package].visibility and defaults to "private" — fail closed, so an
+    unlabelled repo is dispatched rather than inlined.
     """
     return caller.visibility == VISIBILITY_PUBLIC and consumer.visibility == VISIBILITY_PRIVATE
 
@@ -2319,11 +2243,11 @@ def _orchestrator_dispatch_job(
 ) -> dict[str, Any]:
     """Per-consumer dispatch job for a PRIVATE consumer of a PUBLIC upstream.
 
-    Unlike _orchestrator_job (reusable-workflow call), this fires the consumer's
-    cross-repo-trigger{-hpc}.yml via workflow_dispatch through dispatch-and-wait, so
-    the consumer's run — and its logs — stay in the private repo. It then WAITS for
-    that run's conclusion (polling run status, never logs), so this job turns
-    red/green with the downstream and the cross-package `needs:` ordering is honoured.
+    The dispatch half of _edge_needs_dispatch's rule. Unlike _orchestrator_job
+    (a reusable-workflow call), this fires the consumer's cross-repo-trigger{-hpc}.yml
+    via workflow_dispatch through dispatch-and-wait, then WAITS for that run's
+    conclusion, so this job turns red/green with the downstream and the
+    cross-package `needs:` ordering is honoured.
 
     The hpc lane targets the `-hpc` workflow file via dispatch-and-wait's
     `workflow-file` input; the runner lane uses the action's default.
@@ -2372,8 +2296,7 @@ def _check_orchestrator_caps(
 ) -> None:
     """Pre-validate one lane's orchestrator against two GHA limits: the
     256-job-per-run hard cap and the 20-distinct-reusable-workflows-per-top-level-caller
-    cap. Each lane is its own top-level `workflow_run`, so the budgets are per lane and
-    the counts here only ever shrink relative to the pre-split single run.
+    cap. Each lane is its own top-level `workflow_run`, so the budgets are per lane.
 
     The orchestrator emits ONE caller job per in-lane consumer package. Each call
     expands inside the same run to 1 resolve job plus the legs of every in-lane kind
@@ -2504,7 +2427,7 @@ def _fetch_sibling_manifests(
                 file=sys.stderr,
             )
 
-    # Stable order: local first, siblings sorted by repo name for predictable error messages.
+    # Sorted so error messages are predictable.
     return [local] + sorted((m for m in seen.values() if m.repo != local.repo), key=lambda m: m.repo)
 
 

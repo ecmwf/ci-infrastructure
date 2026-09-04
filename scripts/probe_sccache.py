@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-probe_sccache.py
-
-Compile a small C++ project twice and prove the second compile was served from
+"""Compile a small C++ project twice and prove the second compile was served from
 the object store, so a broken sccache backend fails here rather than silently
 costing every downstream build its cache.
 
@@ -169,14 +166,8 @@ def _error_total(stats: dict[str, Any]) -> int:
 def _show_stats(sccache: str, env: dict[str, str]) -> dict[str, Any]:
     """The whole `--show-stats --stats-format=json` document.
 
-    Note this is NOT just the counters: the counters sit under "stats", but the
-    backend sits at the top level as "cache_location". Returning the document
-    whole keeps both reachable.
-
-    `--show-stats` deliberately does not start a daemon. If none is running it
-    rebuilds the storage description from config and reports a perfectly
-    plausible S3 location with every counter at zero -- which is why the caller
-    must also assert on compile_requests rather than trusting the location.
+    Whole, not just "stats": the backend sits at the top level as
+    "cache_location" and the counters under "stats", and callers need both.
     """
     proc = _run([sccache, "--show-stats", "--stats-format=json"], env)
     payload = json.loads(proc.stdout)

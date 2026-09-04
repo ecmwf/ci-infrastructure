@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-fetch_deps.py
-
-Downloads each dep listed in a resolved-deps JSON blob (from resolve_deps.py)
+"""Downloads each dep listed in a resolved-deps JSON blob (from resolve_deps.py)
 into its canonical install path. For each dep:
 
   1. If `cached` is set, download the artifact's object from the S3 store by
@@ -158,8 +155,7 @@ def _diagnose_missing_artifact(
 
 
 def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool:
-    """
-    Poll the artifact store until the named artifact appears or the upstream CI
+    """Poll the artifact store until the named artifact appears or the upstream CI
     gives up.
 
     Returns True once the artifact is present, or False if we should stop trying.
@@ -211,7 +207,6 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
             time.sleep(poll_interval)
             continue
 
-        # state == 'completed' or 'none' — no point polling further.
         _diagnose_missing_artifact(name, repo, sha, token, state)
         return False
 
@@ -438,7 +433,6 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
         print(f"  not cached yet, will re-check and may wait on an upstream build: {', '.join(pending)}")
 
     for entry in raw:
-        # Translate hyphenated keys from JSON to snake_case for our TypedDict.
         dep: Dep = {
             "name": entry["name"],
             "repo": entry["repo"],

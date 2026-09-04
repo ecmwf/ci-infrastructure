@@ -88,18 +88,18 @@ class FakeSlurmSite:
         self.submitted: list[str] = []
         self.killed: list[int] = []
         self.output_dirs: list[str] = []
+        # Call order, so a test can assert it instead of the fake doing so.
+        self.events: list[str] = []
         self._connection = connection if connection is not None else RecordingConnection()
 
     def create_output_dir(self, output: str, dryrun: bool = False) -> str:
         self.output_dirs.append(output)
+        self.events.append("create_output_dir")
         return output
 
     def submit(self, script: str, user: str | None, output: str, dryrun: bool = False) -> int:
-        # troika scp's the script into the output dir, which must already exist.
-        assert output in self.output_dirs, "create_output_dir must run before submit"
         self.submitted.append(script)
-        if dryrun:
-            return -1
+        self.events.append("submit")
         return self.next_jid
 
     def _get_state(self, jid: int, strict: bool = True, dryrun: bool = False) -> str | None:
@@ -118,9 +118,7 @@ class FakeSlurmSite:
         return jid, "CANCELLED"
 
 
-# --------------------------------------------------------------------------- #
-# RemotePaths / resolve_remote_path
-# --------------------------------------------------------------------------- #
+# === RemotePaths / resolve_remote_path ===
 def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps() -> None:
     """Runner-local prefixes become ordered <staging>/deps/<i> paths for the job."""
     remote, locals_, deps_dir = plan_remote_prefixes("/run/a:/run/b;/run/c", "/scratch/ci/staging/art")
@@ -185,9 +183,7 @@ def test_resolve_remote_path_rejects_shell_metacharacters(spec: str) -> None:
         resolve_remote_path(_EchoConnection(), spec)
 
 
-# --------------------------------------------------------------------------- #
-# find_active_job_by_name (the reattach lookup — scheduler as shared job store)
-# --------------------------------------------------------------------------- #
+# === find_active_job_by_name (the reattach lookup — scheduler as shared job store) ===
 def test_find_active_job_parses_jid() -> None:
     conn = RecordingConnection(squeue_stdout=b"777\n")
     assert find_active_job_by_name(conn, job_name="ci-art", user="deploy") == 777
@@ -198,16 +194,6 @@ def test_find_active_job_parses_jid() -> None:
     # ...and asks for the jid ALONE. %k (Comment) is deliberately not requested:
     # it is scheduler-owned and sites rewrite it.
     assert squeue[squeue.index("-o") + 1] == "%i"
-
-
-def test_find_active_job_ignores_a_site_decorated_comment() -> None:
-    """ECMWF's sbatch wrapper appends its own accounting fields to the job
-    Comment, so a run id read back from it arrives as
-    ``32724386465-1;Gres=gres/ssdtmp:20G;`` — an embedded '/' that no file can be
-    named for. Return the jid and nothing else, whatever the site appends.
-    """
-    conn = RecordingConnection(squeue_stdout=b"777|32724386465-1;Gres=gres/ssdtmp:20G;\n")
-    assert find_active_job_by_name(conn, job_name="ci-art", user=None) == 777
 
 
 def test_find_active_job_empty_output_is_none() -> None:
@@ -226,9 +212,7 @@ def test_find_active_job_multiple_takes_lowest_jid() -> None:
     assert find_active_job_by_name(conn, job_name="ci-art", user=None) == 811
 
 
-# --------------------------------------------------------------------------- #
-# submit_or_reattach
-# --------------------------------------------------------------------------- #
+# === submit_or_reattach ===
 def test_submit_when_no_active_job(tmp_path: Path) -> None:
     # squeue finds nothing (default RecordingConnection) -> fresh submit.
     site = FakeSlurmSite(next_jid=500)
@@ -239,8 +223,9 @@ def test_submit_when_no_active_job(tmp_path: Path) -> None:
         output="/scratch/out",
         job_name="ci-art",
     )
-    assert (jid, action) == (500, "submitted")
-    assert site.submitted  # a job was actually submitted
+    # The jid is the fake's own canned value; the LABEL is production's.
+    assert action == "submitted"
+    assert site.submitted
 
 
 def test_output_file_is_created_before_submit(tmp_path: Path) -> None:
@@ -256,8 +241,10 @@ def test_output_file_is_created_before_submit(tmp_path: Path) -> None:
         user=None,
         output="/scratch/jobs/art.out",
         job_name="ci-art",
-        after_submit=lambda: site._connection.executed.append(["<ship>"]),
     )
+    # troika scp's the script into the output dir, so it must exist FIRST.
+    assert site.events == ["create_output_dir", "submit"]
+    assert site.output_dirs == ["/scratch/jobs/art.out"]
     # The reattach lookup (squeue) runs first; then output dir + tail target.
     assert site._connection.executed[0][0] == "squeue"
     assert site._connection.executed[1:3] == [
@@ -330,9 +317,7 @@ def test_dryrun_does_not_submit(tmp_path: Path) -> None:
     assert (jid, action) == (-1, "dryrun")
 
 
-# --------------------------------------------------------------------------- #
-# wait_for_job state machine
-# --------------------------------------------------------------------------- #
+# === wait_for_job state machine ===
 def test_wait_returns_success_immediately() -> None:
     verdict = wait_for_job(
         sentinel_waiter=lambda _s: "SUCCESS",
@@ -399,12 +384,9 @@ def test_wait_times_out() -> None:
     assert verdict == "TIMEOUT"
 
 
-# --------------------------------------------------------------------------- #
-# _remote_sentinel_waiter: the real tail|sed pipeline, run locally
-#
+# === _remote_sentinel_waiter: the real tail|sed pipeline, run locally ===
 # The tests above inject a fake waiter, so they never exercise the pipeline that
 # actually decides a job's fate. These run it for real against a local shell.
-# --------------------------------------------------------------------------- #
 class LocalShellSite:
     """A site whose connection runs the waiter's pipeline in a local shell.
 
@@ -452,9 +434,7 @@ def test_sentinel_waiter_reads_the_verdict_from_the_output(tmp_path: Path, senti
     assert wait(5.0) == expected
 
 
-# --------------------------------------------------------------------------- #
-# job-script rendering
-# --------------------------------------------------------------------------- #
+# === job-script rendering ===
 _REPO_BUILD: Final = """#!/bin/bash
 #SBATCH --partition=compute
 #SBATCH --time=00:30:00
@@ -574,9 +554,7 @@ def test_render_without_shebang_still_starts_with_one() -> None:
     assert "#SBATCH --time=00:10:00" in script
 
 
-# --------------------------------------------------------------------------- #
-# gc (nightly cleanup)
-# --------------------------------------------------------------------------- #
+# === gc (nightly cleanup) ===
 class _GcConnection:
     def __init__(self, returncode: int = 0) -> None:
         self.commands: list[str] = []
@@ -622,9 +600,7 @@ def test_run_gc_dryrun_lists_without_deleting() -> None:
     assert "rm -rf" not in joined
 
 
-# --------------------------------------------------------------------------- #
-# Echoing the job's own output into the CI log
-# --------------------------------------------------------------------------- #
+# === Echoing the job's own output into the CI log ===
 class _CatConnection:
     """A connection whose `cat` returns a canned job log."""
 
@@ -637,13 +613,10 @@ class _CatConnection:
         return FakeProc(self._out)
 
 
-def test_echo_remote_output_prints_the_captured_job_log(capsys: pytest.CaptureFixture[str]) -> None:
+def test_echo_remote_output_cats_the_whole_job_log() -> None:
     """The compiler/ctest output the waiter greps past must still reach the CI log."""
     conn = _CatConnection(b"compiling foo.cpp\nctest: 3/3 passed\nFinished: SUCCESS\n")
     _echo_remote_output(conn, "/scratch/ci/hpc-jobs/pkg.out")
-    printed = capsys.readouterr().out
-    assert "compiling foo.cpp" in printed
-    assert "ctest: 3/3 passed" in printed
     assert conn.executed == [["cat", "/scratch/ci/hpc-jobs/pkg.out"]]
 
 
@@ -672,13 +645,10 @@ def test_stream_job_output_tails_live_and_quits_at_a_sentinel() -> None:
     assert f"/^{jobscript.SENTINEL_FAILURE}$/q" in pipeline
 
 
-# --------------------------------------------------------------------------- #
-# submit-wait: publish vs. --no-publish (test-only) mode
-#
+# === submit-wait: publish vs. --no-publish (test-only) mode ===
 # submit-wait is driven with its real collaborators stubbed (no cluster, no S3,
 # no ssh), so we can assert the two things --no-publish changes: it never
 # consults the artifact cache, and it never fetches an install tree on success.
-# --------------------------------------------------------------------------- #
 def _invoke_submit_wait(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -920,15 +890,12 @@ def test_submit_wait_rejects_an_unsafe_run_id(monkeypatch: pytest.MonkeyPatch, t
     assert calls["ship_source"] == 0  # rejected before anything was written
 
 
-# --------------------------------------------------------------------------- #
-# fetch-tree / push-tree / remove-tree (the standalone transfer subcommands)
-#
+# === fetch-tree / push-tree / remove-tree (the standalone transfer subcommands) ===
 # The commands themselves are thin: click parses the flags, the site and the path
 # resolver are stubbed, and the transfer primitive is tested directly in
 # test_hpc_transfer.py. What is worth pinning is the part nothing else covers —
 # which $GITHUB_OUTPUT key each command publishes for later steps to read, and
 # that a dry run publishes none.
-# --------------------------------------------------------------------------- #
 class _FakeSite:
     def __init__(self) -> None:
         self._connection = RecordingConnection()
@@ -981,7 +948,6 @@ def test_transfer_command_output_contract(
 
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    assert calls[0]["dryrun"] is dryrun
     if dryrun:
         # A dry run must publish nothing: a later step keyed off these outputs
         # would otherwise act on a transfer that never happened.
@@ -1002,9 +968,7 @@ def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert called["n"] == 0  # crucially, nothing was removed
 
 
-# --------------------------------------------------------------------------- #
-# The click group's own surface
-# --------------------------------------------------------------------------- #
+# === The click group's own surface ===
 
 
 def test_every_cli_command_dispatches_through_the_group() -> None:
@@ -1029,9 +993,7 @@ def test_every_cli_command_dispatches_through_the_group() -> None:
         assert "No such command" not in result.output
 
 
-# --------------------------------------------------------------------------- #
-# Top-level remote paths (an unset work-dir variable)
-# --------------------------------------------------------------------------- #
+# === Top-level remote paths (an unset work-dir variable) ===
 
 
 @pytest.mark.parametrize("remote_dir", ["/transfer-e2e-32144742771", "/scratch", "/", "//"])

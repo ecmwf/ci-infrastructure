@@ -4,10 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-print_dep_table.py
-
-Renders a Markdown table of the OWN package + each resolved dep to
+"""Renders a Markdown table of the OWN package + each resolved dep to
 $GITHUB_STEP_SUMMARY so CI job logs show a human-readable dependency
 overview with clickable links to each upstream repo and commit.
 
