@@ -18,8 +18,13 @@
 # the resolved dependency environment, and appends the success/failure sentinel.
 # So this script can rely on:
 #   * $CMAKE_PREFIX_PATH  — the resolved dependency install prefixes,
-#   * $CI_INSTALL_PREFIX  — where to install this package's build.
+#   * $CI_INSTALL_PREFIX  — where to install this package's build,
+#   * $CI_INSTALL_ARCHIVE — where it must leave the install tarball (see below).
 # and it must NOT print "Finished: SUCCESS" / "Finished: FAILURE" itself.
+#
+# For one recipe per toolchain, as here. A repo whose toolchains differ only in
+# their module block and compiler should write ONE build.sh.j2 instead and let the
+# matrix loop over them — see build.sh.j2 beside this file.
 
 # Resources below are tuned for ECMWF's atos (hpc2020): it selects on QoS rather
 # than partition, and ssdtmp sizes the node-local SSD behind $TMPDIR, which holds
@@ -43,3 +48,10 @@ cmake -B "${TMPDIR:-/tmp}/build" -S . \
 cmake --build "${TMPDIR:-/tmp}/build" --parallel "${SLURM_NTASKS:-8}"
 ctest --test-dir "${TMPDIR:-/tmp}/build" --output-on-failure
 cmake --install "${TMPDIR:-/tmp}/build"
+
+# The fetcher takes the artifact from CI_INSTALL_ARCHIVE, not from the install
+# tree, and a job that finishes without it fails the fetch. .part + mv so the file
+# only ever appears complete; zstd -T0 uses every core the job asked for.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$CI_INSTALL_PREFIX" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"

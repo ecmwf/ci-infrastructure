@@ -59,6 +59,7 @@ Batch (slurm) sites only — see ``site.ensure_batch_site``.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import shlex
@@ -91,6 +92,51 @@ _GRACE_SECONDS: Final = 10  # last look for a late-flushed sentinel after the jo
 _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we give up on the tail itself
 
 Verdict = Literal["SUCCESS", "FAILURE", "VANISHED", "TIMEOUT"]
+
+
+def _parse_matrix_leg(raw: str) -> dict[str, Any]:
+    """Parse ``--matrix-leg``. Empty means "no leg was passed".
+
+    A non-object is a caller bug, named as one here rather than surfacing later as
+    a Jinja ``TypeError`` about something that is not a mapping.
+    """
+    if not raw.strip():
+        return {}
+    try:
+        leg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CIError(f"--matrix-leg is not valid JSON: {exc}") from exc
+    if not isinstance(leg, dict):
+        raise CIError(f"--matrix-leg must be a JSON object (the matrix leg), got {type(leg).__name__}")
+    return leg
+
+
+def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) -> str:
+    """Read a job-script, rendering it first when it is a `.j2` template.
+
+    The two kinds of recipe converge here: what this returns is the plain shell a
+    hand-written `.sh` always was, and render_job_script wraps it either way.
+    """
+    source = repo_script.read_text()
+    if not jobscript.is_job_template(repo_script):
+        return source
+    leg = _parse_matrix_leg(matrix_leg)
+    if not leg:
+        raise CIError(
+            f"--job-script {repo_script} is a '{jobscript.JOB_TEMPLATE_SUFFIX}' template, but no "
+            "--matrix-leg was passed, so there is nothing to render it against. The build-on-hpc "
+            "action forwards it as `matrix-leg: ${{ toJSON(matrix) }}`; a hand-written caller must too."
+        )
+    try:
+        return jobscript.render_job_template(
+            template_source=source,
+            template_name=str(repo_script),
+            leg=leg,
+            artifact_name=artifact_name,
+            search_path=repo_script.parent,
+        )
+    except jobscript.JobTemplateError as exc:
+        raise CIError(str(exc)) from exc
 
 
 # === The cluster-side layout ===
@@ -503,6 +549,28 @@ def main() -> None:
     pass
 
 
+@main.command("render", help="Render a .j2 job-script against a matrix leg and print it. No cluster needed.")
+@click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build-<toolchain>.sh[.j2]")
+@click.option("--matrix-leg", "matrix_leg", default="", help="The matrix leg as JSON (the render context)")
+@click.option("--artifact-name", "artifact_name", default="", help="Value for the template's `artifact_name`")
+def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
+    """Print the recipe a leg would produce, without submitting anything.
+
+    Renders only: the SLURM wrapper (#SBATCH --output, the marker wait, the
+    sentinel) is added at submit time and needs cluster paths this command has no
+    way to know. What it prints is the recipe half -- the part a repo owns and the
+    part a conversion has to get right -- so `diff <(... render ...) build-gnu.sh`
+    is the check that a template still says what the script it replaces said.
+
+    submit-wait --dryrun is NOT an offline substitute: it still resolves the remote
+    work dir over ssh, because `$SCRATCH` can only be expanded on the cluster.
+    """
+    path = Path(job_script)
+    if not path.is_file():
+        raise CIError(f"--job-script does not exist: {path}")
+    sys.stdout.write(resolve_recipe(path, matrix_leg=matrix_leg, artifact_name=artifact_name))
+
+
 @main.command("submit-wait", help="Submit (or reattach to) a build job and wait for it to finish.")
 @_site_options
 @click.option("--job-script", "job_script", required=True, help="Path to the repo's .ci/hpc/build-<toolchain>.sh")
@@ -538,6 +606,12 @@ def main() -> None:
     help="Seconds the job waits for the source-transfer marker before failing",
 )
 @click.option("--tar-dir", "tar_dir", required=True, help="Runner-local scratch dir for shipped/fetched tarballs")
+@click.option(
+    "--matrix-leg",
+    "matrix_leg",
+    default="",
+    help="The matrix leg as JSON; the render context for a .j2 job-script. Ignored for any other recipe.",
+)
 @click.option("--cmake-prefix-path", "cmake_prefix_path", default="", help="Resolved dependency prefixes")
 @click.option("--dryrun", is_flag=True, default=False, help="Render + go through troika in dry-run mode; do not submit")
 @click.option(
@@ -561,6 +635,7 @@ def submit_wait(
     run_id: str,
     marker_wait_timeout: int,
     tar_dir: str,
+    matrix_leg: str,
     cmake_prefix_path: str,
     dryrun: bool,
     no_publish: bool,
@@ -590,6 +665,10 @@ def submit_wait(
     repo_script = Path(job_script)
     if not repo_script.is_file():
         raise CIError(f"--job-script does not exist: {repo_script}")
+    # Before load_site: a template that cannot render should cost no ssh round-trip
+    # and no queue slot. (Already past the cache-hit short-circuit, so a cache hit
+    # never renders at all.)
+    recipe = resolve_recipe(repo_script, matrix_leg=matrix_leg, artifact_name=artifact_name)
 
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     if not dryrun:
@@ -614,7 +693,7 @@ def submit_wait(
     # The scheduler-side identity a re-run reattaches by (see submit_or_reattach).
     job_name = jobscript.job_name_for(artifact_name)
     rendered = jobscript.render_job_script(
-        repo_script=repo_script.read_text(),
+        repo_script=recipe,
         output_path=paths.output,
         cmake_prefix_path=remote_cmake_prefix,
         install_path=paths.install,
@@ -623,6 +702,12 @@ def submit_wait(
         run_id=run_id if ships_source else None,
         marker_wait_timeout=marker_wait_timeout,
     )
+    if jobscript.is_job_template(repo_script):
+        # A template that renders wrongly is otherwise invisible until the job fails
+        # on the cluster half an hour later. Print what we are about to submit.
+        print(f"submit-wait: rendered {repo_script} for this leg:")
+        for line in recipe.splitlines():
+            print(f"  | {line}")
     # Render next to the repo script so troika's copy_script picks it up locally.
     script_path = repo_script.parent / f"job-{artifact_name}.sh"
     write_job_script(script_path, rendered)

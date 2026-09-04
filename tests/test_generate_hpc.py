@@ -21,8 +21,10 @@ from conftest import parse_all, write_repo
 from ci_infrastructure.generate_downstream_ci import (
     EXECUTION_HPC,
     SchemaError,
+    parse_manifest,
     render_workflow,
     validate_graph,
+    validate_job_templates,
 )
 
 _HPC_MANIFEST: Final = """
@@ -348,3 +350,126 @@ def test_unknown_execution_value_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(SchemaError):
         parse_all(tmp_path)
+
+
+# === Templated recipes (.j2) ===============================================
+# A `.j2` job-script is rendered against the leg that selected it, so the manifest
+# and the recipe cannot state the toolchain differently. These cover the wiring
+# (the leg must reach the action) and the generate-time check that catches a
+# disagreement on a laptop rather than 30 minutes into a SLURM queue.
+
+
+def _hpc_repo(tmp_path: Path, body: str, recipe: str | None = None, name: str = "build.sh.j2") -> Path:
+    manifest = write_repo(tmp_path, "pkg", body)
+    if recipe is not None:
+        script = manifest.parents[1] / ".ci" / "hpc" / name
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(recipe)
+    return manifest
+
+
+_TEMPLATED_MANIFEST = """
+    [[matrix.build.include]]
+    platform = "hpc-atos-gnu"
+    cc = "gcc"
+    [[matrix.build.include]]
+    platform = "hpc-atos-intel"
+    cc = "icx"
+    [matrix.build]
+    execution = "hpc"
+    job-script = "./.ci/hpc/build.sh.j2"
+    triggers = ["rebuild-request"]
+    needs = []
+"""
+
+
+def test_hpc_step_forwards_the_matrix_leg(tmp_path: Path) -> None:
+    """A `.j2` recipe needs the leg to render against, and the leg travels as a
+    `with:` VALUE — never spliced into a run: body."""
+    write_repo(tmp_path, "pkg", _TEMPLATED_MANIFEST)
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"pkg": m}, lane=EXECUTION_HPC)
+    assert yaml is not None
+    assert "matrix-leg: ${{ toJSON(matrix) }}" in yaml
+
+
+def test_templated_recipe_reading_only_declared_keys_validates(tmp_path: Path) -> None:
+    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ cc }}\n")
+    validate_job_templates(parse_manifest(m))  # does not raise
+
+
+def test_templated_recipe_reading_an_undeclared_key_is_rejected(tmp_path: Path) -> None:
+    """The whole point: the recipe cannot quietly need something the leg never says."""
+    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\nexport FC={{ fortran }}\n")
+    with pytest.raises(SchemaError, match="fortran"):
+        validate_job_templates(parse_manifest(m))
+
+
+def test_missing_templated_recipe_is_rejected(tmp_path: Path) -> None:
+    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST)
+    with pytest.raises(SchemaError, match="does not exist"):
+        validate_job_templates(parse_manifest(m))
+
+
+def test_templated_recipe_syntax_error_names_its_line(tmp_path: Path) -> None:
+    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\n{% for x in %}\n")
+    with pytest.raises(SchemaError, match=r"build\.sh\.j2:2"):
+        validate_job_templates(parse_manifest(m))
+
+
+def test_a_plain_sh_job_script_is_never_read_from_disk(tmp_path: Path) -> None:
+    """`.j2` is the whole of the opt-in for validation too. Every other fixture in
+    this file names a build.sh that does not exist; that must keep working."""
+    m = write_repo(
+        tmp_path,
+        "pkg",
+        """
+        [[matrix.build.include]]
+        platform = "hpc-atos-gnu"
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/nowhere.sh"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    validate_job_templates(parse_manifest(m))  # does not raise
+
+
+def test_toolchain_keys_do_not_become_the_job_display_name(tmp_path: Path) -> None:
+    """`cc` sorts before `cxx-compiler`, so under the old denylist a repo adding it
+    for a templated recipe would silently rename every check run and break branch
+    protection pinned to the old name. Only artifact-name fields may be the title."""
+    write_repo(
+        tmp_path,
+        "pkg",
+        """
+        [package]
+        name = "pkg"
+        prefix = "pkg"
+        repo = "org/pkg"
+        compiler-inputs = ["cxx-compiler"]
+
+        [[matrix.build.include]]
+        platform = "hpc-atos-gnu"
+        cxx-compiler = "g++-8"
+        cc = "gcc"
+        modules = ["load prgenv/gnu"]
+        [[matrix.build.include]]
+        platform = "hpc-atos-intel"
+        cxx-compiler = "icpx"
+        cc = "icx"
+        modules = ["load prgenv/intel-llvm"]
+        [matrix.build]
+        execution = "hpc"
+        job-script = "./.ci/hpc/build.sh.j2"
+        triggers = ["rebuild-request"]
+        needs = []
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    yaml = render_workflow(m, {"pkg": m}, lane=EXECUTION_HPC)
+    assert yaml is not None
+    assert "matrix['cxx-compiler']" in yaml
+    assert "matrix.cc" not in yaml
+    assert "matrix.modules" not in yaml

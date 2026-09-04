@@ -2669,3 +2669,147 @@ def test_downstream_gate_label_never_becomes_shell_syntax(tmp_path: Path) -> Non
 
     gate = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
     assert gate["with"]["label"] == "it's-needed"
+
+
+# === Artifact identity is the artifact-NAME projection =====================
+# The check used to be "every leg field except runs-on/container/site", which is
+# not a weaker version of the name but a different, non-conservative predicate:
+# more fields means more legs look distinct, so fewer real collisions are caught.
+# Templated recipes make that acute — four legs can differ only in `modules`.
+
+
+def _pkg(compiler_inputs: str, legs: str) -> str:
+    return f"""
+        [package]
+        name = "a"
+        repo = "org/a"
+        compiler-inputs = {compiler_inputs}
+
+        [matrix.build]
+        action = "./.github/actions/build"
+        {legs}
+        """
+
+
+def test_legs_differing_only_in_toolchain_keys_collide(tmp_path: Path) -> None:
+    """The hole templating would otherwise open: two legs the store cannot tell
+    apart, each building a different binary, published under one name."""
+    write_repo(
+        tmp_path,
+        "a",
+        _pkg(
+            '["cxx-compiler"]',
+            """
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        modules = ["load gcc/old"]
+        cc = "gcc"
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        modules = ["load gcc/11"]
+        cc = "gcc"
+        """,
+        ),
+    )
+    with pytest.raises(SchemaError, match="same artifact identity") as exc:
+        validate_graph(parse_all(tmp_path))
+    assert "modules" in str(exc.value)  # names what actually differs
+
+
+def test_legs_differing_only_in_job_script_collide(tmp_path: Path) -> None:
+    """`job-script` is a path, not identity. It used to prop the check up."""
+    write_repo(
+        tmp_path,
+        "a",
+        _pkg(
+            "[]",
+            """
+        [[matrix.build.include]]
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        job-script = "./.ci/hpc/build-gnu.sh"
+
+        [[matrix.build.include]]
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        job-script = "./.ci/hpc/build-geo.sh"
+        """,
+        ),
+    )
+    with pytest.raises(SchemaError, match="same artifact identity"):
+        validate_graph(parse_all(tmp_path))
+
+
+def test_toolchain_legs_distinguished_by_platform_are_accepted(tmp_path: Path) -> None:
+    """The shape every real HPC lane already uses, and ecbuild's empty
+    compiler-inputs: the platform slug alone carries the ABI class."""
+    write_repo(
+        tmp_path,
+        "a",
+        _pkg(
+            "[]",
+            """
+        [[matrix.build.include]]
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        modules = ["load prgenv/gnu"]
+
+        [[matrix.build.include]]
+        build-type = "Release"
+        platform = "hpc-atos-intel"
+        modules = ["load prgenv/intel-llvm"]
+        """,
+        ),
+    )
+    validate_graph(parse_all(tmp_path))  # does not raise
+
+
+def test_options_alone_distinguishes_two_legs(tmp_path: Path) -> None:
+    """eccodes' real shape: same toolchain and platform, different build options."""
+    write_repo(
+        tmp_path,
+        "a",
+        _pkg(
+            '["cxx-compiler"]',
+            """
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+
+        [[matrix.build.include]]
+        cxx-compiler = "g++-8"
+        build-type = "Release"
+        platform = "hpc-atos-gnu"
+        options = "eckit-geo"
+        """,
+        ),
+    )
+    validate_graph(parse_all(tmp_path))  # does not raise
+
+
+def test_absent_build_type_folds_onto_the_release_default(tmp_path: Path) -> None:
+    """resolve_leg defaults build-type to Release, so absence and "Release" are one
+    identity — they would produce one artifact name."""
+    write_repo(
+        tmp_path,
+        "a",
+        _pkg(
+            "[]",
+            """
+        [[matrix.build.include]]
+        platform = "ubuntu-24.04"
+
+        [[matrix.build.include]]
+        build-type = "Release"
+        platform = "ubuntu-24.04"
+        """,
+        ),
+    )
+    with pytest.raises(SchemaError, match="same artifact identity"):
+        validate_graph(parse_all(tmp_path))

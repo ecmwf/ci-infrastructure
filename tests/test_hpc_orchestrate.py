@@ -972,7 +972,7 @@ def test_remove_tree_refuses_top_level_path(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_every_cli_command_dispatches_through_the_group() -> None:
-    """`python -m ci_infrastructure.hpc <cmd>` must resolve for all six commands.
+    """`python -m ci_infrastructure.hpc <cmd>` must resolve for all seven commands.
 
     Every other CLI test here invokes a command *function* directly, which never
     touches the group — so a command renamed or not registered would be invisible
@@ -981,7 +981,7 @@ def test_every_cli_command_dispatches_through_the_group() -> None:
     actions/{push,fetch,remove}-hpc-tree and build-on-hpc), so the set is a
     contract, not an implementation detail.
     """
-    expected = {"submit-wait", "cancel", "gc", "fetch-tree", "push-tree", "remove-tree"}
+    expected = {"submit-wait", "cancel", "gc", "fetch-tree", "push-tree", "remove-tree", "render"}
     assert set(orch.main.commands) == expected
 
     # Registration is not enough: each name must actually dispatch. `--help`

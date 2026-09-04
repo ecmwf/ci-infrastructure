@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+{% raw %}
+# Sample TEMPLATED HPC build recipe: copy to a package's .ci/hpc/build.sh.j2 and
+# adapt. The `.j2` suffix is the whole of the opt-in -- a plain .sh next to it is
+# still read verbatim (see build-gnu.sh in this directory).
+#
+# One template serves every toolchain, which is why it is called build.sh.j2 and
+# not build-gnu.sh.j2: it hardcodes no toolchain. A plain recipe is named for the
+# one it does hardcode.
+#
+# ci-infrastructure renders this against the [[matrix.<kind>.include]] leg that
+# selected it, BEFORE wrapping it the same way it wraps a plain recipe. Every
+# {{ name }} below is a key the leg must declare; one it does not is an error at
+# `ci-infrastructure-generate` time and again at submit time, never an empty
+# string. That is the point: the compiler and build type the artifact NAME is
+# built from are the same values the script runs with.
+#
+# Available names:
+#   * every leg key, hyphens as underscores  -- {{ cxx_compiler }}, {{ build_type }}
+#   * leg['...']                             -- the raw mapping, for a key you want
+#                                               spelled exactly as the manifest does.
+#                                               Costs the generate-time check.
+#   * artifact_name                          -- this build's identity
+#   * the `sh` filter (shlex.quote) for a value used as ONE shell word. Do not
+#     apply it to a list of flags or a `module` sub-command -- it would make each
+#     one argument and break it.
+#
+# NOT available, deliberately: $CI_INSTALL_PREFIX, $CMAKE_PREFIX_PATH,
+# $CI_SOURCE_DIR, $CI_INSTALL_ARCHIVE. Those are resolved ON THE CLUSTER (the work
+# dir may be "$SCRATCH/...", and dependency prefixes are re-shipped there), so they
+# stay environment variables the wrapper exports. Write "$CI_INSTALL_PREFIX", never
+# a template expression.
+#
+# This whole comment block is wrapped in a raw block precisely because it quotes
+# template syntax: inside one, braces are emitted literally rather than evaluated.
+# (Note you cannot name the closing tag inside the block it closes.)
+{% endraw %}
+
+#SBATCH --qos=nf
+#SBATCH --gres=ssdtmp:30G
+#SBATCH --time={{ time }}
+#SBATCH --nodes=1
+#SBATCH --ntasks=8
+
+# Ordered `module` SUB-COMMANDS, not module names: a real toolchain block
+# interleaves an unload between two loads (`unload gcc` then `load gcc/old`), which
+# a list of names cannot express.
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+
+echo "Using: $(command -v {{ cxx }}) ($($(command -v {{ cxx }}) --version | head -1))"
+
+# Build out of tree on the node-local SSD: $CI_SOURCE_DIR is there already, but a
+# build dir inside the source tree would be tarred up by a later fetch.
+cmake -S "$CI_SOURCE_DIR" -B "${TMPDIR:-/tmp}/build" \
+  -DCMAKE_BUILD_TYPE={{ build_type }} \
+  -DCMAKE_C_COMPILER="$(command -v {{ cc }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx }})" \
+{% if options == "with-geo" %}
+  -DENABLE_GEOGRAPHY=1 \
+{% endif %}
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+  -DCMAKE_INSTALL_PREFIX="$CI_INSTALL_PREFIX"
+cmake --build "${TMPDIR:-/tmp}/build" --parallel "${SLURM_NTASKS:-8}"
+ctest --test-dir "${TMPDIR:-/tmp}/build" --output-on-failure -j "${SLURM_NTASKS:-8}"
+cmake --install "${TMPDIR:-/tmp}/build"
+
+# The fetcher takes the artifact from CI_INSTALL_ARCHIVE, not from the install
+# tree; .part + mv so it only ever appears complete.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$CI_INSTALL_PREFIX" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"

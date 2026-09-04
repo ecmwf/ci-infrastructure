@@ -97,6 +97,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ._errors import CIError
 from ._github_api import ManifestSchemaError, fetch_manifests_layer, resolve_reuse_matrix, select_token
+from .hpc import jobscript
 
 GENERATED_HEADER: Final = (
     "# GENERATED FILE - DO NOT EDIT.\n"
@@ -302,6 +303,7 @@ class Manifest:
     repo_root: Path  # the repo directory (manifest.path.parents[1])
     package_name: str
     repo: str  # owner/repo
+    compiler_inputs: tuple[str, ...] = ()  # [package].compiler-inputs; see _artifact_identity
     visibility: Visibility = VISIBILITY_PRIVATE
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
@@ -349,6 +351,10 @@ class _PackageRaw(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: str
     repo: str
+    # Read solely so _check_leg_identity_uniqueness can model the artifact name
+    # exactly (see _artifact_identity). Not re-validation of [package] — resolve_deps
+    # still owns that, and a bad value is its error to report.
+    compiler_inputs: tuple[str, ...] = Field(default=(), alias="compiler-inputs")
     # Absent -> "private" (fail closed: an unlabelled repo is treated as private
     # so a public upstream never exposes its logs; mark "public" to opt in to
     # the native reusable-workflow path). The Literal rejects any other value.
@@ -593,6 +599,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         repo_root=path.parents[1],
         package_name=raw.package.name,
         repo=raw.package.repo,
+        compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
@@ -758,35 +765,111 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
 _SCHEDULING_FIELDS: Final = frozenset({"runs-on", "container", "site"})
 
 
-def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
-    """No two legs of the same publishing kind may share an artifact identity.
+# The leg fields make_artifact_name is actually a function of (resolve_deps.py:701,
+# _github_api.make_artifact_name), beyond these the per-package compiler-inputs.
+# Everything else on a leg — runs-on, container, site, job-script, and any toolchain
+# key a .j2 recipe reads — is invisible to the store.
+_FIXED_NAME_FIELDS: Final = ("build-type", "platform", "python-version", "options")
 
-    The artifact name is built from `platform` + the compiler fields +
-    `build-type` + `python-version` — every leg field EXCEPT the scheduling ones
-    (see _SCHEDULING_FIELDS). So two publishing legs that are identical once
-    those are dropped resolve to the same artifact name; built in different
-    environments (a host runner vs a container, or two images) they publish
-    different bytes under one name and a by-name fetch picks one
-    non-deterministically. Non-publishing kinds (test) are exempt — they upload
-    nothing.
+
+def _artifact_identity(leg: Mapping[str, Any], compiler_inputs: Sequence[str]) -> tuple[str, ...]:
+    """The projection of a leg that the artifact name is a function of.
+
+    Mirrors resolve_deps' defaults so absence and the default spell one identity: an
+    absent `build-type` is "Release" (resolve_leg), an absent platform /
+    python-version / options is "". Deliberately total and non-raising — that
+    `platform` is required and `options` is a restricted token are resolve_deps'
+    rules to enforce, with its own messages.
+    """
+    parts = [str(leg.get(f, "Release" if f == "build-type" else "")).strip() for f in _FIXED_NAME_FIELDS]
+    parts.extend(str(leg.get(f, "")).strip() for f in sorted(compiler_inputs))
+    return tuple(parts)
+
+
+def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
+    """No two legs of the same publishing kind may resolve to one artifact name.
+
+    Identity is the artifact-name projection (_artifact_identity) and nothing else.
+    It was previously "every field except runs-on/container/site", which is not a
+    weaker version of the name but a DIFFERENT, non-conservative predicate: more
+    fields means more legs look distinct, so fewer real collisions are caught. That
+    denylist also had to be extended every time a manifest grew a key, and forgetting
+    to extend it failed silently — it only weakened the guard. Templated recipes make
+    that acute: four legs differing only in `modules` would each build a different
+    binary and publish it under one name, which a by-name fetch then resolves
+    non-deterministically.
+
+    Non-publishing kinds (test) are exempt — they upload nothing.
     """
     for m in manifests:
         for kind, mk in m.matrices.items():
             if not mk.publishes:
                 continue
-            seen: set[frozenset[tuple[str, str]]] = set()
+            seen: dict[tuple[str, ...], dict[str, Any]] = {}
             for leg in mk.legs:
-                identity = frozenset((k, str(v)) for k, v in leg.items() if k not in _SCHEDULING_FIELDS)
-                if identity in seen:
-                    shared = dict(sorted(identity))
+                identity = _artifact_identity(leg, m.compiler_inputs)
+                twin = seen.get(identity)
+                if twin is not None:
+                    shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(m.compiler_inputs)), identity))
+                    differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
                     raise SchemaError(
                         f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
-                        f"{shared} — they differ only in runs-on/container, which are not part of "
+                        f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
                         f"the artifact name, so they would publish different builds under one name. "
-                        f"Give them distinct platform/compiler/build-type/python-version (e.g. a "
-                        f"separate platform like 'gh-ubuntu-24.04' for the host leg), or drop one."
+                        f"The name is built from platform + "
+                        f"{sorted(m.compiler_inputs) or '(no compiler fields)'} + build-type + "
+                        f"python-version + options; give them distinct values there. For a different "
+                        f"module set or compiler that means a distinct `platform` slug (e.g. "
+                        f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
                     )
-                seen.add(identity)
+                seen[identity] = leg
+
+
+def validate_job_templates(m: Manifest) -> None:
+    """Check every `.j2` job-script in `m` against the legs that select it.
+
+    All leg data is known here, so a recipe reading a key no leg declares is caught
+    on a laptop rather than half an hour into a SLURM queue. That is the whole
+    manifest/recipe agreement, checked statically:
+
+      * the file exists,
+      * it parses as a template (a syntax error with a line number),
+      * every top-level name it reads is one the leg supplies.
+
+    Static, so a name used only inside a branch that is never taken must still be
+    declared — the right side to err on when the point is that the manifest says
+    what a leg is. `leg['x']` is invisible to it, which is the documented cost of
+    that escape hatch.
+
+    Only `.j2` paths are read from disk, so a plain `.sh` named by a manifest whose
+    checkout we do not have (and every test fixture that names one) is untouched.
+    Callers pass the LOCAL manifest only: siblings arrive as GraphQL blobs with a
+    synthetic repo_root and no recipes behind them.
+    """
+    if not m.path.is_file():
+        return
+    for kind, mk in m.matrices.items():
+        if mk.execution != EXECUTION_HPC:
+            continue
+        for leg in mk.legs:
+            spec = str(leg.get("job-script") or mk.job_script or "")
+            if not jobscript.is_job_template(spec):
+                continue
+            path = m.repo_root / spec.removeprefix("./")
+            if not path.is_file():
+                raise SchemaError(f"{m.path}: [matrix.{kind}] job-script '{spec}' does not exist at {path}")
+            try:
+                missing = jobscript.undeclared_template_names(path.read_text(), leg, template_name=str(path))
+            except jobscript.JobTemplateError as exc:
+                raise SchemaError(f"{m.path}: [matrix.{kind}] {exc}") from exc
+            if missing:
+                declared = sorted(k for k in leg if k != "_resolved")
+                raise SchemaError(
+                    f"{m.path}: [matrix.{kind}] recipe '{spec}' reads {sorted(missing)}, which this "
+                    f"leg does not declare. The leg has {declared}; a template may read those "
+                    f"(hyphens as underscores), plus `leg` and `artifact_name`. Add the key to the "
+                    f"leg, or drop it from the recipe — they are meant to say the same thing."
+                )
 
 
 def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str, Manifest]) -> None:
@@ -1372,6 +1455,10 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
     with_block: dict[str, str] = {
         "site": "${{ matrix.site }}",
         "job-script": f"${{{{ matrix.job-script || '{mk.job_script}' }}}}",
+        # The render context for a `.j2` recipe; inert for a plain `.sh`. A `with:`
+        # VALUE, so GitHub substitutes it as an action input and never as script
+        # text — the rule _decode_step's comment states, satisfied by construction.
+        "matrix-leg": "${{ toJSON(matrix) }}",
         "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
         "work-dir": "${{ vars.HPC_CI_WORK_DIR }}",
@@ -1505,7 +1592,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
 
     cond = _render_kind_filter(cross, mk.triggers)
-    distinguishing = _first_distinguishing_field(mk.legs) or "runs-on"
+    distinguishing = _first_distinguishing_field(mk.legs, m.compiler_inputs) or "runs-on"
     # Build the display slots left-to-right, general to detailed: the platform
     # first (which lane and which ABI this is), then the distinguishing leg field
     # — normally the compiler — then a py<version> slot whenever the legs carry a
@@ -1630,28 +1717,36 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     return job
 
 
-_DEFER_DISPLAY: Final = frozenset({"container", "runs-on", "site"})
-
-
-def _first_distinguishing_field(legs: Sequence[dict[str, Any]]) -> str | None:
+def _first_distinguishing_field(legs: Sequence[dict[str, Any]], compiler_inputs: Sequence[str] = ()) -> str | None:
     """Pick a matrix field whose values vary across legs; used in the job display name.
 
-    Compiler / python-version fields are preferred — they make the most useful
-    primary label. `platform` is the next-best fallback (it already appears in
-    the name suffix, but a short distro string beats a long image tag). Finally
-    `container` and `runs-on` are deprioritised hardest: a full image string
-    makes a noisy primary label.
+    Rank 0 is exactly the artifact-name fields other than `platform` — the compiler,
+    build-type, python-version, options — because those are what a reader is looking
+    for in a job title. `platform` is rank 1: it already appears in the name suffix,
+    though a short distro string still beats anything below. **Everything else is
+    rank 2**, and that is a deliberate allowlist rather than the denylist this used
+    to be.
+
+    A denylist was wrong in both directions. It let a path become the title —
+    ecbuild's HPC legs were rendering as `(hpc-atos-gnu, ./.ci/hpc/build-intel.sh)`
+    because `job-script` varied and nothing excluded it. And it silently reopened
+    every time a manifest grew a key: a repo adding `cc` for a templated recipe
+    would have found every check run renamed (`"cc" < "cxx-compiler"`), breaking any
+    branch protection pinned to the old name, with no error anywhere. A leg field
+    invented by a repo for its own template is not identity and must never be a
+    title; with an allowlist, that is true of keys nobody has thought of yet.
     """
     if not legs:
         return None
     keys = set(legs[0].keys())
+    preferred = {*compiler_inputs, "build-type", "python-version", "options"}
 
     def sort_key(k: str) -> tuple[int, str]:
-        if k in _DEFER_DISPLAY:
-            return (2, k)
+        if k in preferred:
+            return (0, k)
         if k == "platform":
             return (1, k)
-        return (0, k)
+        return (2, k)
 
     for k in sorted(keys, key=sort_key):
         # A leg value may be a list (e.g. runs-on = ["self-hosted", "linux", "hpc"]),
@@ -1659,7 +1754,7 @@ def _first_distinguishing_field(legs: Sequence[dict[str, Any]]) -> str | None:
         vals = {tuple(v) if isinstance(v, list) else v for v in (leg.get(k) for leg in legs)}
         if len(vals) > 1:
             return k
-    # All legs identical: pick anything but still respect the deferral.
+    # All legs identical: pick anything but still respect the ranking.
     return next(iter(sorted(keys, key=sort_key)), None)
 
 
@@ -2488,6 +2583,9 @@ def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> N
 
     try:
         local = parse_manifest(local_manifest_path)
+        # Only the local manifest: siblings are GraphQL blobs with no recipes behind
+        # them. Here rather than in _resolve_matrices for exactly that reason.
+        validate_job_templates(local)
     except SchemaError as e:
         raise CIError(str(e)) from e
 

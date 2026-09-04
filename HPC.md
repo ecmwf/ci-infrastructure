@@ -115,11 +115,108 @@ not a class passes through verbatim, so a literal label still works. There is
 deliberately no environment or `vars.*` override — one source of truth means one
 place to look.
 
-Name the recipe after its toolchain (`build-gnu.sh`, `build-intel.sh`, …) even
-when a repo has only one: `[matrix.<kind>] job-script` is a default, and a file
-called `build.sh` that loads `prgenv/gnu` is a generic name doing specific work.
+Name a **plain** recipe after its toolchain (`build-gnu.sh`, `build-intel.sh`, …)
+even when a repo has only one: `[matrix.<kind>] job-script` is a default, and a
+file called `build.sh` that loads `prgenv/gnu` is a generic name doing specific
+work. A **templated** recipe is the opposite case and is named `build.sh.j2`
+precisely because it hardcodes no toolchain — see below.
 
-See `samples/hpc/build-gnu.sh` for a template recipe.
+See `samples/hpc/build-gnu.sh` for a plain recipe, `samples/hpc/build.sh.j2` for a
+templated one.
+
+## Templated recipes
+
+A recipe whose path ends in **`.j2`** is rendered as a [Jinja][jinja] template
+against the matrix leg that selected it, and the result is then wrapped exactly as
+a plain recipe is. The suffix is the whole of the opt-in: any other path is read
+verbatim, so every existing `build-gnu.sh` keeps working untouched.
+
+[jinja]: https://jinja.palletsprojects.com/
+
+This exists to close a real gap. A leg declares `cxx-compiler = "g++-8"` and
+`build-type = "Release"` — the values the **artifact name** is built from — while
+the recipe independently runs `module load gcc/old` and `-DCMAKE_BUILD_TYPE=Release`.
+Nothing kept the two in agreement, so a module bump changed the binary without
+changing the name, and the store then served an ABI-mismatched tree to every
+consumer. With a template the leg is the only statement of the fact:
+
+```toml
+[[matrix.build-hpc.include]]
+cxx-compiler = "g++-8"          # artifact-name label
+build-type   = "Release"
+platform     = "hpc-atos-gnu"   # ABI class -> the artifact name
+# Ordered `module` SUB-COMMANDS, not names: a toolchain block interleaves an
+# unload between two loads, which a list of names cannot express.
+modules = ["load prgenv/gnu", "unload gcc", "load gcc/old", "load cmake"]
+cc = "gcc"
+cxx = "g++"
+
+[matrix.build-hpc]
+execution  = "hpc"
+job-script = "./.ci/hpc/build.sh.j2"   # one recipe for every leg
+```
+
+```jinja
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+cmake -S "$CI_SOURCE_DIR" -B "${TMPDIR:-/tmp}/build" \
+  -DCMAKE_BUILD_TYPE={{ build_type }} \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx }})" \
+  -DCMAKE_INSTALL_PREFIX="$CI_INSTALL_PREFIX"
+```
+
+### What a template may reference
+
+| name | is |
+|---|---|
+| `cxx_compiler`, `build_type`, `modules`, … | every leg key, **hyphens as underscores** (Jinja reads `{{ cxx-compiler }}` as a subtraction) |
+| `leg['cxx-compiler']` | the raw mapping, for a key spelled exactly as the manifest does. Costs the generate-time check below |
+| `artifact_name` | this build's identity |
+| the `sh` filter | `shlex.quote`, for a value used as **one shell word** |
+
+**Anything else is an error, never an empty string.** The environment uses
+`StrictUndefined`, so a recipe reading `{{ fortran }}` on a leg that does not
+declare it fails and says so. That is the enforcement — rendering it empty is
+exactly the silent disagreement this feature removes. The same check runs
+statically at `ci-infrastructure-generate` time, so it usually fails on a laptop
+rather than half an hour into a SLURM queue. Being static, a name used only inside
+a branch that is never taken must still be declared; `leg['x']` is invisible to it.
+
+`| sh` is the only quoting tool a template has (autoescape is off — this is shell,
+not markup). Do **not** apply it to a list of flags (`ctest-args`) or to a `module`
+sub-command: quoting makes each one argument and breaks it.
+
+`$CMAKE_PREFIX_PATH`, `$CI_INSTALL_PREFIX`, `$CI_INSTALL_ARCHIVE` and
+`$CI_SOURCE_DIR` are **not** template names and `_resolved` is not in the context.
+They are resolved on the cluster — the work dir may be `$SCRATCH/…`, and dependency
+prefixes are re-shipped there and repointed *after* the leg is read. A template that
+baked the runner-local value in would send the job at directories no compute node
+can see. Keep writing `"$CI_INSTALL_PREFIX"`.
+
+### Rendering one locally
+
+`submit-wait --dryrun` is not an offline check — it still expands the remote work
+dir over ssh. To see what a leg produces, with no cluster:
+
+```bash
+python -m ci_infrastructure.hpc render \
+  --job-script .ci/hpc/build.sh.j2 \
+  --matrix-leg '{"cc":"gcc","cxx":"g++","build-type":"Release","modules":["load prgenv/gnu"]}'
+```
+
+Diffing that against the recipe a template replaces is the check that a conversion
+kept the build the same.
+
+### The invariant a template does not enforce
+
+The generator stops two *legs* colliding on one artifact name. It cannot stop a
+*single* leg's `modules` changing from `gcc/old` to `gcc/11` while `platform` stays
+`hpc-atos-gnu`: the name is unchanged, and the old artifact is still served from
+cache. **Bump the `platform` slug when you change the toolchain** — that is what
+invalidates the cache. The gain here is that the module set now lives in the same
+four-line TOML table as `platform`, so this is a local, reviewable invariant on one
+diff instead of a cross-file one nobody can see in a PR.
 
 ## Org-level configuration
 

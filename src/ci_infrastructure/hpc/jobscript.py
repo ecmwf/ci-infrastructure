@@ -20,13 +20,24 @@ body with only the orchestration bits it must control:
 
 The repo's leading directive block is preserved verbatim at the top so its
 ``#SBATCH`` header stays where SLURM requires it (before any command).
+
+A recipe named ``.j2`` is first rendered as a Jinja template against the matrix
+leg that selected it (``render_job_template``), and the result is wrapped exactly
+as a hand-written ``.sh`` would be. That is what stops the manifest and the recipe
+disagreeing: the compiler, the module set and the build type the artifact name is
+built from become the same values the script runs with, instead of two independent
+statements of the same fact.
 """
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping
-from pathlib import PurePosixPath
-from typing import Final
+from pathlib import Path, PurePosixPath
+from typing import Any, Final
+
+import jinja2
+import jinja2.meta
 
 SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
 SENTINEL_FAILURE: Final = "Finished: FAILURE"
@@ -81,6 +92,158 @@ def job_name_for(artifact_name: str) -> str:
     return f"ci-{artifact_name}"
 
 
+#: Suffix that opts a recipe into Jinja rendering. Anything else is read and
+#: wrapped verbatim, exactly as before this existed -- so `.j2` is the whole of
+#: the opt-in and a plain `.sh` stays a file you can run by hand on a login node.
+JOB_TEMPLATE_SUFFIX: Final = ".j2"
+
+#: Names the context supplies on top of the leg's own fields.
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name")
+
+
+class JobTemplateError(Exception):
+    """A `.j2` recipe that cannot be rendered for the leg that selected it."""
+
+
+def is_job_template(path: str | Path) -> bool:
+    """Whether this job-script is rendered rather than read verbatim."""
+    return str(path).endswith(JOB_TEMPLATE_SUFFIX)
+
+
+def template_var(field: str) -> str:
+    """``cxx-compiler`` -> ``cxx_compiler``: a leg key as a Jinja name.
+
+    Jinja parses ``{{ cxx-compiler }}`` as a subtraction, so hyphenated manifest
+    keys need a normalised spelling. Same transformation as
+    ``generate_downstream_ci._field_to_var`` applies for the Decode step, so one
+    manifest key is spelled one way wherever a human reads it.
+    """
+    return field.replace("-", "_")
+
+
+def job_template_environment(search_path: Path | None = None) -> jinja2.Environment:
+    """The Jinja environment a `.j2` recipe is rendered in."""
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(search_path)) if search_path else jinja2.BaseLoader(),
+        # THE point of the feature. A template reading {{ modules }} on a leg that
+        # declares none fails here, naming the leg -- instead of rendering an empty
+        # `module load` line and building a different binary under an artifact name
+        # that still claims the old toolchain.
+        undefined=jinja2.StrictUndefined,
+        # Off, deliberately, and not via select_autoescape: this is shell, not
+        # markup. Escaping would turn every `&&`, `>` and `'` in a recipe body into
+        # an entity. The shell analogue is the `sh` filter below, which cannot be
+        # global -- a #SBATCH directive is not shell, and `#SBATCH --time='00:40:00'`
+        # is not a valid one -- so the template author applies it per site.
+        autoescape=False,
+        # Together these make a `{% ... %}`-only line vanish rather than leave a
+        # blank, which is what keeps a templated #SBATCH block the contiguous run of
+        # `#`-lines _split_header needs.
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+        newline_sequence="\n",
+    )
+    # The ONLY quoting tool a template has, since autoescape is off. Apply it to a
+    # leg value used as a single shell WORD. Do not apply it to a value that is a
+    # list of flags (ecflow's ctest-args) or a `module` sub-command -- quoting those
+    # makes them one argument and breaks them. That call is the recipe author's.
+    env.filters["sh"] = shlex.quote
+    return env
+
+
+def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -> dict[str, Any]:
+    """The names a `.j2` recipe may reference.
+
+      * every leg key under its normalised name (``cxx-compiler`` -> ``cxx_compiler``)
+        -- the idiom, and the only form the generate-time check can see;
+      * ``leg``, the raw mapping, for a key whose manifest spelling must be used
+        verbatim. It costs the generate-time check, because jinja2.meta cannot see
+        through a subscript;
+      * ``artifact_name``, the identity this job is building.
+
+    `_resolved` is deliberately absent. It carries runner-local install paths and
+    an un-rewritten `cmake-prefix-path`; the deps are re-shipped to the cluster and
+    that value is recomputed there (orchestrate.plan_remote_prefixes) AFTER the leg
+    is read. A template that baked it in would point the job at directories no
+    compute node can see -- a silently wrong build rather than a crash. For the
+    same reason CI_INSTALL_PREFIX / CMAKE_PREFIX_PATH / CI_SOURCE_DIR /
+    CI_INSTALL_ARCHIVE are not names here: they are not knowable at render time, and
+    a recipe keeps writing "$CI_INSTALL_PREFIX" exactly as it does today.
+    """
+    context: dict[str, Any] = {}
+    origin: dict[str, str] = {}
+    for key, value in leg.items():
+        if key == "_resolved":
+            continue
+        name = template_var(key)
+        if name in _CONTEXT_EXTRAS:
+            raise JobTemplateError(
+                f"matrix leg field {key!r} normalises to {name!r}, which is a name the template "
+                f"context already defines. Rename the manifest key."
+            )
+        if name in context:
+            raise JobTemplateError(
+                f"matrix leg fields {origin[name]!r} and {key!r} both normalise to {name!r}; one "
+                f"would silently shadow the other. Rename one of the manifest keys."
+            )
+        origin[name] = key
+        context[name] = value
+    context["leg"] = dict(leg)
+    context["artifact_name"] = artifact_name
+    return context
+
+
+def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
+    """Every top-level name a template may reference for this leg."""
+    return {template_var(k) for k in leg if k != "_resolved"} | set(_CONTEXT_EXTRAS)
+
+
+def undeclared_template_names(template_source: str, leg: Mapping[str, Any], *, template_name: str) -> set[str]:
+    """Names the template reads that this leg does not supply.
+
+    Static: it sees names inside a branch that is never taken, which is the right
+    side to err on when the whole point is that the manifest declares what a leg
+    is. It cannot see through `leg['x']` -- the documented price of that escape
+    hatch. Raises JobTemplateError if the template does not parse at all.
+    """
+    env = job_template_environment()
+    try:
+        ast = env.parse(template_source, filename=template_name)
+    except jinja2.TemplateSyntaxError as exc:
+        raise JobTemplateError(f"{template_name}:{exc.lineno}: {exc.message}") from exc
+    return jinja2.meta.find_undeclared_variables(ast) - declared_template_names(leg)
+
+
+def render_job_template(
+    *,
+    template_source: str,
+    template_name: str,
+    leg: Mapping[str, Any],
+    artifact_name: str = "",
+    search_path: Path | None = None,
+) -> str:
+    """Render a `.j2` recipe into the plain shell recipe render_job_script wraps.
+
+    The output is exactly what a hand-written `.sh` would have been, so the two
+    kinds of recipe converge before anything else looks at them.
+    """
+    env = job_template_environment(search_path)
+    try:
+        template = env.from_string(template_source)
+        return template.render(build_template_context(leg, artifact_name=artifact_name))
+    except jinja2.TemplateSyntaxError as exc:
+        raise JobTemplateError(f"{template_name}:{exc.lineno}: {exc.message}") from exc
+    except jinja2.UndefinedError as exc:
+        declared = sorted(k for k in leg if k != "_resolved")
+        raise JobTemplateError(
+            f"{template_name}: {exc.message}. The matrix leg declares {declared or '(nothing)'}; "
+            f"a template may only read those (hyphens as underscores), plus `leg` and "
+            f"`artifact_name`. Add the key to the leg in .ci/manifest.toml, or drop it from the "
+            f"recipe -- the two are meant to say the same thing."
+        ) from exc
+
+
 def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:
     """Split a build.sh into (shebang, leading-directive/comment block, body).
 
@@ -88,13 +251,21 @@ def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:
     (shebang, comments, ``#SBATCH`` / ``#TROIKA`` directives) — i.e. everything
     up to the first executable line. ``#SBATCH`` must precede any command, so
     appending our own directives at the end of this block keeps them valid.
+
+    Leading blank lines are skipped before looking for the shebang: a rendered
+    template can open with the blank a leading ``{% set %}`` left behind, and the
+    shebang is still the first real line. Without this it would be demoted into the
+    comment block and the wrapper would inject a second one above it, leaving the
+    real shebang inert.
     """
     lines = repo_script.splitlines()
     shebang = ""
     start = 0
-    if lines and lines[0].startswith("#!"):
-        shebang = lines[0]
-        start = 1
+    while start < len(lines) and lines[start].strip() == "":
+        start += 1
+    if start < len(lines) and lines[start].startswith("#!"):
+        shebang = lines[start]
+        start += 1
     header: list[str] = []
     body_start = len(lines)
     for i in range(start, len(lines)):

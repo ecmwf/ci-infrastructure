@@ -225,7 +225,7 @@ runs:
             fi
             echo "ensure-infrastructure-present: no venv at $venv — creating one now."
             echo "  This pip-installs ci-infrastructure from $repo_root, pulling its deps"
-            echo "  (pydantic, boto3, click, PyYAML) from PyPI and troika from GitHub over git; if this"
+            echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
             # Strip the consumer's setup-python bin from PATH for the probe. If
