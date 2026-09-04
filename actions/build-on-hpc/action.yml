@@ -10,7 +10,7 @@ description: >
   resulting install tree to the S3 artifact store under its artifact name.
 
   Drop-in replacement for the per-repo `action` step in a generated job: it
-  consumes the dependency prefix produced by the preceding fetch-and-publish
+  consumes the dependency prefix produced by the preceding fetch-deps
   (download-only) step and exposes `install-path` exactly like the runner build
   composite, so the surrounding job wiring is unchanged.
 
@@ -217,9 +217,8 @@ runs:
       # Skipped in test-only mode (publish: false): the job produced no install
       # tree and submit-wait emitted no install-path.
       if: ${{ inputs.publish != 'false' }}
-      uses: ecmwf/ci-infrastructure/actions/fetch-and-publish@main
+      uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
       with:
-        mode: publish
         install-path: ${{ steps.submit.outputs.install-path }}
         artifact-name: ${{ inputs.artifact-name }}
         found: ${{ steps.submit.outputs.cache-hit }}

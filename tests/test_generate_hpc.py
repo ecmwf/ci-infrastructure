@@ -65,7 +65,7 @@ def test_hpc_job_uses_build_on_hpc_action(hpc_yaml: str) -> None:
     assert "site: ${{ matrix.site }}" in yaml
     # Deps still flow through the shared fetch step exactly like the runner path.
     assert "Fetch resolved deps" in yaml
-    assert "mode: download-only" in yaml
+    assert "actions/fetch-deps@main" in yaml
     assert "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}" in yaml
 
 
@@ -153,7 +153,7 @@ def test_hpc_step_uses_hpc_ci_ssh_user_secret(hpc_yaml: str) -> None:
 def test_hpc_fetch_step_stages_python_wheels_without_installing(hpc_yaml: str) -> None:
     yaml = hpc_yaml
     # No setup-python runs on an HPC leg, so there is no consumer interpreter to
-    # install needs-python wheels into; fetch-and-publish must be told to stage
+    # install needs-python wheels into; fetch-deps must be told to stage
     # them instead of failing the preflight that demands --consumer-python.
     assert "install-python-deps: 'false'" in yaml
     assert "actions/setup-python" not in yaml
@@ -202,7 +202,7 @@ def test_hpc_job_has_no_separate_publish_step(hpc_yaml: str) -> None:
     """build-on-hpc publishes internally (gated on cache-hit), so the generator
     must not also emit the runner-path publish step."""
     yaml = hpc_yaml
-    assert "mode: publish" not in yaml
+    assert "actions/publish-artifact@main" not in yaml
 
 
 def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:

@@ -4,219 +4,100 @@
 
 name: Fetch deps and publish package
 description: >
-  Two modes, controlled by `mode`:
+  DEPRECATED, and kept only so call sites that predate the split keep working.
+  Use `actions/fetch-deps` instead of `mode: download-only`, and
+  `actions/publish-artifact` instead of `mode: publish`. This shim delegates to
+  exactly those two and will be deleted once every consumer has migrated.
 
-    - download-only: takes the resolved deps JSON from resolve-deps and
-      downloads each dep into its install path from the S3 artifact store,
-      keyed by artifact name.
-
-    - publish: tars the install-path produced by the local build step and
-      uploads it to the S3 artifact store under its artifact name. Skips
-      redundant work when the artifact was already in the store.
-
-  Use one invocation in download-only mode at the start of build/test/clang-tidy
-  jobs, and a second invocation in publish mode after a successful build.
-
-  Requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment
-  (the same credentials used for sccache).
+  It exists because actions are referenced @main: a generated workflow already
+  committed on a consumer's default branch still names this action, and would
+  break the moment it disappeared.
 
 inputs:
   mode:
     description: '"download-only" or "publish"'
     required: true
   deps-json:
-    description: >
-      JSON array of resolved deps (the `_resolved.deps` field from a matrix
-      entry produced by resolve-deps). Required in download-only mode.
+    description: 'JSON array of resolved deps. download-only mode.'
     required: false
     default: '[]'
   install-path:
-    description: 'Absolute path of the freshly-built package install (publish mode only)'
+    description: 'Absolute path of the freshly-built package install. publish mode.'
     required: false
     default: ''
   artifact-name:
-    description: 'Canonical artifact name for the freshly-built package (publish mode only)'
+    description: 'Canonical artifact name for the freshly-built package. publish mode.'
     required: false
     default: ''
   found:
-    description: '"true" if package was already found in the upstream store (publish mode only)'
+    description: '"true" if package was already found in the upstream store. publish mode.'
     required: false
     default: 'false'
   token:
-    description: 'GitHub token (App token preferred for higher rate limits)'
+    description: 'GitHub token (App token preferred for higher rate limits). download-only mode.'
     required: false
     default: ''
   install-python-deps:
-    description: >
-      Whether to pip-install needs-python deps' wheels into the consumer
-      interpreter set up by actions/setup-python. Set this to "false" on legs
-      that install the wheels somewhere else — an HPC leg only stages them on
-      the runner for shipment, and its job script installs them into a
-      module-loaded interpreter on the compute node.
+    description: 'Whether to pip-install needs-python wheels into the consumer interpreter. download-only mode.'
     required: false
     default: 'true'
   s3-bucket:
-    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    description: 'Artifact S3 bucket name. publish mode.'
     required: false
     default: ''
   s3-region:
-    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    description: 'Artifact S3 region. publish mode.'
     required: false
     default: ''
   s3-endpoint:
-    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    description: 'Artifact S3 endpoint URL. publish mode.'
     required: false
     default: ''
   s3-use-ssl:
-    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    description: 'Whether to use SSL for S3 connections. publish mode.'
     required: false
     default: ''
   s3-key-prefix:
-    description: 'Key prefix for artifact objects. Empty stores them at the bucket root.'
+    description: 'Key prefix for artifact objects. publish mode.'
     required: false
     default: ''
   s3-ca-bundle:
-    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    description: 'Path to a CA bundle for S3 TLS verification. publish mode.'
     required: false
     default: ''
 
 outputs:
   cmake-prefix-path:
     description: 'Semicolon-separated CMAKE_PREFIX_PATH covering all downloaded deps (download-only mode)'
-    value: ${{ steps.compose-cmake.outputs.cmake-prefix-path }}
+    value: ${{ steps.fetch.outputs.cmake-prefix-path }}
   updated-deps-json:
     description: 'The resolved deps JSON array with each source updated to "store" (download-only mode)'
-    value: ${{ steps.fetch-deps.outputs.updated-deps-json }}
+    value: ${{ steps.fetch.outputs.updated-deps-json }}
 
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
-
-    - name: Configure S3 artifact store
-      shell: bash
-      env:
-        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
-        S3_REGION_INPUT: ${{ inputs.s3-region }}
-        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
-        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
-        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
-        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
-      run: |
-        set -euo pipefail
-        # Only non-empty inputs are exported; an empty input lets the org
-        # default baked into ci_infrastructure.s3_store apply.
-        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
-        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
-        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
-        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
-        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
-        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
-        echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
-
-    # ----- download-only branch -----
+    # No ensure-infrastructure-present here on purpose: this shim runs nothing
+    # itself, and both actions it delegates to bootstrap themselves.
     - name: Fetch resolved deps
-      id: fetch-deps
+      id: fetch
       if: inputs.mode == 'download-only'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token || github.token }}
-        DEPS_JSON: ${{ inputs.deps-json }}
-        INSTALL_PYTHON_DEPS: ${{ inputs.install-python-deps }}
-      run: |
-        # $pythonLocation is exported by actions/setup-python and points at the
-        # consumer's interpreter install root. fetch_deps installs needs-python
-        # wheels into THAT interpreter — never into $CI_INFRASTRUCTURE_PYTHON.
-        # If a leg has no needs-python deps, the flag can be absent; fetch_deps
-        # only requires it when at least one dep declares needs-python=true.
-        # install-python-deps=false means this leg installs the wheels elsewhere
-        # (HPC: on the compute node), so we stage them and pass no interpreter —
-        # any $pythonLocation here would be the wrong one to install into.
-        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
-          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run or its env did not propagate to this step." >&2
-          exit 1
-        fi
-        args=(--deps-json "$DEPS_JSON")
-        if [ "${INSTALL_PYTHON_DEPS:-true}" = "false" ]; then
-          args+=(--no-python-install)
-        elif [ -n "${pythonLocation:-}" ]; then
-          args+=(--consumer-python "${pythonLocation}/bin/python")
-        fi
-        echo "fetch-and-publish: invoking fetch_deps via $CI_INFRASTRUCTURE_PYTHON"
-        # -u: unbuffered, so fetch_deps' progress can't be hidden behind block
-        # buffering when stdout isn't a TTY (it never is under the runner).
-        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.fetch_deps "${args[@]}"
+      uses: ecmwf/ci-infrastructure/actions/fetch-deps@main
+      with:
+        deps-json: ${{ inputs.deps-json }}
+        token: ${{ inputs.token }}
+        install-python-deps: ${{ inputs.install-python-deps }}
 
-    - name: Compose CMAKE_PREFIX_PATH from deps-json
-      id: compose-cmake
-      if: inputs.mode == 'download-only'
-      shell: bash
-      run: |
-        "$CI_INFRASTRUCTURE_PYTHON" - <<'PY' >> "$GITHUB_OUTPUT"
-        import json, os
-        deps = json.loads(os.environ["DEPS_JSON"])
-        # install-path is a `$RUNNER_TEMP/install/<name>` template emitted by
-        # the resolver; expand against THIS job's RUNNER_TEMP. The resolver
-        # may have run in a different runner (ARC container vs host) where
-        # RUNNER_TEMP points elsewhere.
-        paths = [os.path.expandvars(d["install-path"]) for d in deps]
-        print(f"cmake-prefix-path={';'.join(paths)}")
-        PY
-      env:
-        DEPS_JSON: ${{ inputs.deps-json }}
-
-    # ----- publish branch -----
-    - name: Validate publish inputs
+    - name: Publish
       if: inputs.mode == 'publish'
-      shell: bash
-      run: |
-        # Empty artifact-name or install-path here means an upstream step (usually
-        # a `jq -r` decode that silently swallowed `jq: command not found` inside
-        # $()) returned empty. Fail fast instead of tarring '$RUNNER_TEMP/.tar.gz'
-        # and uploading an unnamed artifact that downstream pollers will never find.
-        missing=()
-        [ -z "${ARTIFACT_NAME}" ] && missing+=("artifact-name")
-        [ -z "${INSTALL_PATH}" ] && missing+=("install-path")
-        if [ "${#missing[@]}" -gt 0 ]; then
-          echo "::error::fetch-and-publish (publish mode): required input(s) empty: ${missing[*]}." >&2
-          echo "::error::Most often this means an upstream composite step's matrix-leg decode (jq) returned empty." >&2
-          exit 1
-        fi
-      env:
-        ARTIFACT_NAME: ${{ inputs.artifact-name }}
-        INSTALL_PATH: ${{ inputs.install-path }}
-
-    # Deliberately no actions/cache here: artifacts are distributed via the
-    # object store and read back by fetch_deps.py, so a per-SHA cache has no
-    # consumer, and concurrent runs at the same SHA race for the key ("Unable to
-    # reserve cache with key …") and then silently continue. If you do
-    # re-introduce it, wrap the call in a post-step that greps the action's
-    # stderr for "Unable to reserve" / "Failed to save" and `exit 1`s — this
-    # action carries no cache, so any warning of that shape is a regression.
-
-    - name: Create artifact tar
-      if: inputs.mode == 'publish' && inputs.found != 'true'
-      shell: bash
-      env:
-        ARTIFACT_NAME_INPUT: ${{ inputs.artifact-name }}
-        INSTALL_PATH_INPUT: ${{ inputs.install-path }}
-      run: |
-        set -euo pipefail
-        tar -czf "$RUNNER_TEMP/$ARTIFACT_NAME_INPUT.tar.gz" \
-          -C "$INSTALL_PATH_INPUT" .
-
-    - name: Upload artifact to S3 store
-      # Mirror the `found != 'true'` gate on `Create artifact tar`: when the
-      # artifact already exists in the store the tar file isn't produced, so
-      # the upload would fail on a missing path. The S3 key is derived purely
-      # from the artifact name, so the object lands in the same place no matter
-      # which repo's run publishes it.
-      if: inputs.mode == 'publish' && inputs.found != 'true'
-      shell: bash
-      env:
-        ARTIFACT_NAME: ${{ inputs.artifact-name }}
-      run: |
-        set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.s3_store upload \
-          --name "$ARTIFACT_NAME" \
-          --file "$RUNNER_TEMP/${ARTIFACT_NAME}.tar.gz"
+      uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
+      with:
+        install-path: ${{ inputs.install-path }}
+        artifact-name: ${{ inputs.artifact-name }}
+        found: ${{ inputs.found }}
+        s3-bucket: ${{ inputs.s3-bucket }}
+        s3-region: ${{ inputs.s3-region }}
+        s3-endpoint: ${{ inputs.s3-endpoint }}
+        s3-use-ssl: ${{ inputs.s3-use-ssl }}
+        s3-key-prefix: ${{ inputs.s3-key-prefix }}
+        s3-ca-bundle: ${{ inputs.s3-ca-bundle }}

@@ -341,7 +341,7 @@ def fetch_one(
     default=None,
     help=(
         "Absolute path to the consumer's Python interpreter (the one running pytest). "
-        "Required when any dep has needs-python=true; ignored otherwise. The fetch-and-publish "
+        "Required when any dep has needs-python=true; ignored otherwise. The fetch-deps "
         "action populates this from $pythonLocation/bin/python (set by actions/setup-python)."
     ),
 )
@@ -404,10 +404,10 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
             raise CIError(
                 "fetch_deps was asked to install needs-python wheels "
                 f"({', '.join(needs_python_deps)}) but no --consumer-python was provided. "
-                "Run actions/setup-python before fetch-and-publish so $pythonLocation is set, "
+                "Run actions/setup-python before fetch-deps so $pythonLocation is set, "
                 "or pass --consumer-python explicitly. On a leg that installs the wheels "
                 "elsewhere (e.g. an HPC job script on the compute node), pass "
-                "install-python-deps: 'false' to fetch-and-publish instead."
+                "install-python-deps: 'false' to fetch-deps instead."
             )
         consumer_python = Path(consumer_python_arg)
         if not consumer_python.is_file():

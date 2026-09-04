@@ -255,8 +255,8 @@ class MatrixKind:
     # into the action's `with:` block. Each entry must be a key that appears in
     # at least one matrix leg (typo guard).
     forwarded_inputs: tuple[str, ...]
-    # Outputs of the fetch-and-publish (download-only) step to forward into the
-    # action's `with:` block. Today the only meaningful value is
+    # Outputs of the fetch-deps step to forward into the action's `with:`
+    # block. Today the only meaningful value is
     # "cmake-prefix-path"; leaf producers (ecbuild, stack-deps) leave this empty.
     forwarded_deps_outputs: tuple[str, ...]
     # Whether this kind produces an artifact to upload. Build kinds typically
@@ -333,7 +333,7 @@ _RESERVED_MATRIX_KEYS: Final = frozenset(
     }
 )
 # Valid entries for `forwarded-deps-outputs` — must correspond to real outputs
-# of `actions/fetch-and-publish` in `mode: download-only`.
+# of `actions/fetch-deps`.
 _VALID_DEPS_OUTPUTS: Final = frozenset({"cmake-prefix-path"})
 _ACTION_PATH_RE: Final = re.compile(r"^\./\.github/actions/[A-Za-z0-9_-]+$")
 # Constrained to the same character class artifact-name parts use; rejects
@@ -1562,7 +1562,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         if setup_py is not None:
             steps.append(setup_py)
     fetch_with = {
-        "mode": "download-only",
         "deps-json": "${{ steps.m.outputs.deps-json }}",
         "token": "${{ steps.mint.outputs.token }}",
     }
@@ -1576,7 +1575,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         {
             "name": "Fetch resolved deps",
             "id": "deps",
-            "uses": "ecmwf/ci-infrastructure/actions/fetch-and-publish@main",
+            "uses": "ecmwf/ci-infrastructure/actions/fetch-deps@main",
             "with": fetch_with,
         }
     )
@@ -1595,9 +1594,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
             steps.append(
                 {
                     "name": "Publish",
-                    "uses": "ecmwf/ci-infrastructure/actions/fetch-and-publish@main",
+                    "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
                     "with": {
-                        "mode": "publish",
                         "install-path": "${{ steps.build.outputs.install-path }}",
                         "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
                     },

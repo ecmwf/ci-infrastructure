@@ -723,7 +723,7 @@ def _install_base() -> Path:
     in a different one (e.g. ubuntu-latest host with RUNNER_TEMP=/home/
     runner/work/_temp) — baking the resolver's RUNNER_TEMP into the
     matrix output makes the install path invalid on the consumer side.
-    Consumers (fetch_deps, fetch-and-publish's compose-cmake) call
+    Consumers (fetch_deps, fetch-deps' compose-cmake step) call
     os.path.expandvars at runtime to get a real absolute path.
     """
     return Path("$RUNNER_TEMP") / "install"

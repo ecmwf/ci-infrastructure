@@ -1,0 +1,135 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish package artifact
+description: >
+  Tars the install-path produced by the local build step and uploads it to the
+  S3 artifact store under its artifact name. Skips the tar and the upload when
+  `found` says the artifact was already in the store.
+
+  Use it after a successful build; fetch-deps is the counterpart that runs at
+  the start of the job.
+
+  Requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment
+  (the same credentials used for sccache).
+
+inputs:
+  install-path:
+    description: 'Absolute path of the freshly-built package install'
+    required: true
+    default: ''
+  artifact-name:
+    description: 'Canonical artifact name for the freshly-built package'
+    required: true
+    default: ''
+  found:
+    description: '"true" if the package was already found in the upstream store'
+    required: false
+    default: 'false'
+  s3-bucket:
+    description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
+    required: false
+    default: ''
+  s3-region:
+    description: 'Artifact S3 region. Empty keeps the org default (RegionOne).'
+    required: false
+    default: ''
+  s3-endpoint:
+    description: 'Artifact S3 endpoint URL. Empty leaves ARTIFACT_S3_ENDPOINT from the job environment in place.'
+    required: false
+    default: ''
+  s3-use-ssl:
+    description: 'Whether to use SSL for S3 connections. Empty keeps the default (true).'
+    required: false
+    default: ''
+  s3-key-prefix:
+    description: 'Key prefix for artifact objects. Empty stores them at the bucket root.'
+    required: false
+    default: ''
+  s3-ca-bundle:
+    description: 'Path to a CA bundle for S3 TLS verification. Empty uses the object-store root vendored with ci-infrastructure.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Configure S3 artifact store
+      shell: bash
+      env:
+        S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
+        S3_REGION_INPUT: ${{ inputs.s3-region }}
+        S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
+        S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
+        S3_KEY_PREFIX_INPUT: ${{ inputs.s3-key-prefix }}
+        S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
+      run: |
+        set -euo pipefail
+        # Only non-empty inputs are exported; an empty input lets the org
+        # default baked into ci_infrastructure.s3_store apply.
+        if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_USE_SSL_INPUT" ]; then echo "ARTIFACT_S3_USE_SSL=$S3_USE_SSL_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_KEY_PREFIX_INPUT" ]; then echo "ARTIFACT_S3_KEY_PREFIX=$S3_KEY_PREFIX_INPUT" >> "$GITHUB_ENV"; fi
+        if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
+        echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
+
+    - name: Validate publish inputs
+      shell: bash
+      run: |
+        # `required: true` above is documentation only -- GitHub does not enforce
+        # it for composite actions, and would not catch an input whose expression
+        # evaluated to empty anyway. That is the real failure: an upstream `jq -r`
+        # decode swallowing `jq: command not found` inside $(). Fail fast instead
+        # of tarring '$RUNNER_TEMP/.tar.gz' and uploading an unnamed artifact that
+        # downstream pollers will never find.
+        missing=()
+        [ -z "${ARTIFACT_NAME}" ] && missing+=("artifact-name")
+        [ -z "${INSTALL_PATH}" ] && missing+=("install-path")
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "::error::publish-artifact: required input(s) empty: ${missing[*]}." >&2
+          echo "::error::Most often this means an upstream composite step's matrix-leg decode (jq) returned empty." >&2
+          exit 1
+        fi
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INSTALL_PATH: ${{ inputs.install-path }}
+
+    # Deliberately no actions/cache here: artifacts are distributed via the
+    # object store and read back by fetch_deps.py, so a per-SHA cache has no
+    # consumer, and concurrent runs at the same SHA race for the key ("Unable to
+    # reserve cache with key …") and then silently continue. If you do
+    # re-introduce it, wrap the call in a post-step that greps the action's
+    # stderr for "Unable to reserve" / "Failed to save" and `exit 1`s — this
+    # action carries no cache, so any warning of that shape is a regression.
+
+    - name: Create artifact tar
+      if: inputs.found != 'true'
+      shell: bash
+      env:
+        ARTIFACT_NAME_INPUT: ${{ inputs.artifact-name }}
+        INSTALL_PATH_INPUT: ${{ inputs.install-path }}
+      run: |
+        set -euo pipefail
+        tar -czf "$RUNNER_TEMP/$ARTIFACT_NAME_INPUT.tar.gz" \
+          -C "$INSTALL_PATH_INPUT" .
+
+    - name: Upload artifact to S3 store
+      # Mirror the `found != 'true'` gate on `Create artifact tar`: when the
+      # artifact already exists in the store the tar file isn't produced, so
+      # the upload would fail on a missing path. The S3 key is derived purely
+      # from the artifact name, so the object lands in the same place no matter
+      # which repo's run publishes it.
+      if: inputs.found != 'true'
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.s3_store upload \
+          --name "$ARTIFACT_NAME" \
+          --file "$RUNNER_TEMP/${ARTIFACT_NAME}.tar.gz"

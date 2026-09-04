@@ -438,12 +438,12 @@ def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> Non
     assert yaml is not None
     assert "uses: ./.github/actions/build-thisrepo" in yaml
     assert "downstream-job" not in yaml  # the shim is gone
-    # decode + fetch-deps + publish scaffolding all present
+    # decode + fetch + publish scaffolding all present
     assert "Decode matrix-leg" in yaml
     assert "command -v jq" in yaml
     assert "Fetch resolved deps" in yaml
-    assert "mode: download-only" in yaml
-    assert "mode: publish" in yaml
+    assert "actions/fetch-deps@main" in yaml
+    assert "actions/publish-artifact@main" in yaml
     # forwarded values get threaded through
     assert "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}" in yaml
     assert "build-type: ${{ steps.m.outputs.build-type }}" in yaml
@@ -485,7 +485,7 @@ def test_ctest_step_emitted_before_publish(tmp_path: Path) -> None:
     """
     out = _render_a(tmp_path, "ctest = true")
     assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure' in out
-    assert out.index("ctest --test-dir") < out.index("mode: publish")
+    assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
 
 
 def test_ctest_args_appended_verbatim(tmp_path: Path) -> None:
