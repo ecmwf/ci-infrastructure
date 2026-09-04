@@ -13,6 +13,7 @@ contract — a plain `.sh` must still come through byte-for-byte.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ from ci_infrastructure._errors import CIError
 from ci_infrastructure.hpc import jobscript
 from ci_infrastructure.hpc.orchestrate import resolve_recipe
 
-LEG = {
+LEG: dict[str, Any] = {
     "cxx-compiler": "g++-8",
     "build-type": "Release",
     "platform": "hpc-atos-gnu",
@@ -31,9 +32,19 @@ LEG = {
 }
 
 
-def _render(source: str, leg: dict | None = None, **kw) -> str:
+def _render(
+    source: str,
+    leg: dict[str, Any] | None = None,
+    *,
+    artifact_name: str = "",
+    search_path: Path | None = None,
+) -> str:
     return jobscript.render_job_template(
-        template_source=source, template_name="build.sh.j2", leg=LEG if leg is None else leg, **kw
+        template_source=source,
+        template_name="build.sh.j2",
+        leg=LEG if leg is None else leg,
+        artifact_name=artifact_name,
+        search_path=search_path,
     )
 
 
