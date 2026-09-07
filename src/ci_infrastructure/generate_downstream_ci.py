@@ -1588,45 +1588,12 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
 
     cond = _render_kind_filter(cross, mk.triggers)
-    distinguishing = _first_distinguishing_field(mk.legs, m.compiler_inputs)
-    compiler_fields = _compiler_display_fields(m, mk)
 
-    # Build the display slots left-to-right, general to detailed: the platform
-    # first (which lane and which ABI this is), then the distinguishing leg field
-    # — normally the compiler — then a py<version> slot whenever the legs carry a
-    # python-version (so a job that varies python shows it even when another
-    # field is the primary distinguisher), then the build options. So:
-    # "build+test (ubuntu-24.04, clang++-18, py3.11)".
-    # platform, python-version and options get dedicated handling so none is
-    # duplicated when it is itself the distinguisher.
-    def _slot(field: str) -> str:
-        expr = f"matrix['{field}']" if "-" in field else f"matrix.{field}"
-        return f"${{{{ {expr} }}}}"
-
-    slots: list[str] = ["${{ matrix.platform }}"]
-    slots.extend(_slot(f) for f in compiler_fields)
-    # Only when it adds something: a field already given its own slot below would
-    # be duplicated, and one that does not vary is a constant in every title.
-    if distinguishing is not None and distinguishing not in {
-        "platform",
-        "python-version",
-        "options",
-        *compiler_fields,
-    }:
-        slots.append(_slot(distinguishing))
-    if any("python-version" in leg for leg in mk.legs):
-        slots.append("py${{ matrix.python-version }}")
-    # `options` is the one leg field that is routinely present on some legs and
-    # absent from others, and it is part of artifact identity — so two legs can
-    # differ ONLY by it and otherwise render an identical name. eccodes' plain
-    # and eckit-geo legs are exactly that: same compiler, same platform, two
-    # different artifacts. Without this slot both the Actions-tab job and the
-    # check run posted back to the dispatcher's commit are indistinguishable.
-    # `|| 'default'` (not an empty string) matches the hand-written ci.yml
-    # convention and keeps the optionless legs' names from trailing a blank.
-    if any("options" in leg for leg in mk.legs):
-        slots.append("${{ matrix.options || 'default' }}")
-    job_name = f"{display} ({', '.join(slots)})"
+    # The slots themselves are resolve_deps' job (ci_infrastructure.job_names),
+    # emitted per leg into `_resolved.job-name`, so this lane and the repo's own
+    # hand-written ci.yml cannot spell one rule two ways. Only the prefix differs:
+    # here a job must say which package it belongs to, there it need not.
+    job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
 
     steps: list[Step] = [
         _mint_step(),
@@ -1724,80 +1691,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     }
     job["steps"] = steps
     return job
-
-
-def _leg_values(legs: Sequence[dict[str, Any]], key: str) -> set[Any]:
-    """The distinct values legs give `key`. A list value (runs-on) is unhashable,
-    so normalise it to a tuple before the set sees it."""
-    return {tuple(v) if isinstance(v, list) else v for v in (leg.get(key) for leg in legs)}
-
-
-def _compiler_display_fields(m: Manifest, mk: MatrixKind) -> list[str]:
-    """Leg fields naming the toolchain, for the job title.
-
-    The compiler is what a human scans a job list for, so it gets a dedicated
-    slot like `python-version` and `options` do — emitted whenever the legs carry
-    it, NOT only when it happens to be the field that varies. Relying on variation
-    silently dropped it from three of the five HPC lanes: eccodes' two legs differ
-    only by `options` and eckit's kind has a single leg, so in both the compiler is
-    constant and was never picked.
-
-    `compiler-inputs` first: those are the fields the ARTIFACT NAME carries, so the
-    title matches the identity. A repo that declares none (ecbuild — its ABI class
-    rides entirely on the platform slug) falls back to a templated recipe's
-    `cxx`/`cc`, which is the only other place its toolchain is written down.
-
-    Among those, the ones that VARY win: eccodes declares both a cxx and a fortran
-    compiler but only ever varies the cxx one, and pinning a constant `gfortran-13`
-    into every title is noise. When none varies (a single-leg kind, or legs that
-    differ only by `options`) they are all shown — a constant compiler is still the
-    thing a reader wants, and it is better than an empty slot.
-    """
-    fields = [f for f in sorted(m.compiler_inputs) if any(f in leg for leg in mk.legs)]
-    if not fields:
-        fields = [f for f in ("cxx", "cc") if any(f in leg for leg in mk.legs)][:1]
-    varying = [f for f in fields if len(_leg_values(mk.legs, f)) > 1]
-    return varying or fields
-
-
-def _first_distinguishing_field(legs: Sequence[dict[str, Any]], compiler_inputs: Sequence[str] = ()) -> str | None:
-    """Pick a matrix field whose values vary across legs; used in the job display name.
-
-    Rank 0 is exactly the artifact-name fields other than `platform` — the compiler,
-    build-type, python-version, options — because those are what a reader is looking
-    for in a job title. `platform` is rank 1: it already appears in the name suffix,
-    though a short distro string still beats anything below. **Everything else is
-    rank 2**, and that is a deliberate allowlist rather than the denylist this used
-    to be.
-
-    A denylist was wrong in both directions. It let a path become the title —
-    ecbuild's HPC legs were rendering as `(hpc-atos-gnu, ./.ci/hpc/build-intel.sh)`
-    because `job-script` varied and nothing excluded it. And it silently reopened
-    every time a manifest grew a key: a repo adding `cc` for a templated recipe
-    would have found every check run renamed (`"cc" < "cxx-compiler"`), breaking any
-    branch protection pinned to the old name, with no error anywhere. A leg field
-    invented by a repo for its own template is not identity and must never be a
-    title; with an allowlist, that is true of keys nobody has thought of yet.
-    """
-    if not legs:
-        return None
-    keys = set(legs[0].keys())
-    preferred = {*compiler_inputs, "build-type", "python-version", "options"}
-
-    def sort_key(k: str) -> tuple[int, str]:
-        if k in preferred:
-            return (0, k)
-        if k == "platform":
-            return (1, k)
-        return (2, k)
-
-    for k in sorted(keys, key=sort_key):
-        if len(_leg_values(legs, k)) > 1:
-            return k
-    # Nothing varies (a single-leg kind, or legs that differ only in fields the
-    # ranking excludes). There is no distinguisher to show, and inventing one puts
-    # a constant in every job title — `eckit/build-hpc (hpc-atos-gnu, Release)`.
-    return None
 
 
 def compute_transitive_consumers(

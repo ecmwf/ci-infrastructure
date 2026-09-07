@@ -252,100 +252,11 @@ def test_setup_python_omitted_when_no_leg_has_python_version(tmp_path: Path) -> 
     assert "Set up Python" not in yaml
 
 
-def test_job_name_includes_python_version_when_legs_vary_it(tmp_path: Path) -> None:
-    """A kind whose legs vary python-version shows a py<version> slot in the job
-    name (and thus in the check runs reported back to the dispatcher), even when
-    another field — here cxx-compiler, which sorts first — is the primary
-    distinguisher. Otherwise legs on the same compiler/platform but different
-    python are indistinguishable in the Actions UI."""
-    write_repo(
-        tmp_path,
-        "a",
-        """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = ["cxx-compiler"]
-
-        [matrix.build]
-        triggers = ["rebuild-request"]
-        action = "./.github/actions/build-a"
-        forwarded-inputs = ["cxx-compiler", "python-version"]
-        needs = []
-
-        [[matrix.build.include]]
-        cxx-compiler = "clang++-18"
-        python-version = "3.10"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-
-        [[matrix.build.include]]
-        cxx-compiler = "g++-13"
-        python-version = "3.12"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-        """,
-    )
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
-    assert yaml is not None
-    assert (
-        "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }}, py${{ matrix.python-version }})" in yaml
-    )
-
-
-def test_job_name_includes_options_when_a_leg_carries_them(tmp_path: Path) -> None:
-    """Two legs that differ ONLY by `options` must not render the same job name.
-
-    `options` is part of artifact identity, so such legs publish different
-    artifacts — but compiler and platform, the fields the name is built from, are
-    identical. Without an options slot both the Actions-tab job and the check run
-    posted back to the dispatcher's commit are indistinguishable. The leg without
-    options shows `default` rather than a blank, matching the hand-written
-    ci.yml convention.
-    """
-    write_repo(
-        tmp_path,
-        "a",
-        """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = ["cxx-compiler"]
-
-        [matrix.build]
-        triggers = ["rebuild-request"]
-        action = "./.github/actions/build-a"
-        forwarded-inputs = ["cxx-compiler", "options"]
-        needs = []
-
-        [[matrix.build.include]]
-        cxx-compiler = "g++-13"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-
-        [[matrix.build.include]]
-        cxx-compiler = "g++-13"
-        options = "eckit-geo"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-        """,
-    )
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
-    assert yaml is not None
-    assert (
-        "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }}, "
-        "${{ matrix.options || 'default' }})" in yaml
-    )
-
-
-def test_job_name_omits_options_slot_when_no_leg_has_them(tmp_path: Path) -> None:
-    """The options slot is opt-in: a kind whose legs never set `options` keeps the
-    name it had before the slot existed, so unrelated repos' check-run names — and
-    any required-status-check configured on them — do not shift."""
+def test_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
+    """The title is `_resolved.job-name`, computed per leg by resolve_deps, so this
+    lane and the repo's hand-written ci.yml cannot spell one rule two ways. What
+    goes into the slot is ci_infrastructure.job_names' business (test_job_names);
+    all this lane owns is the `<package>/<kind>` prefix in front of it."""
     write_repo(
         tmp_path,
         "a",
@@ -376,40 +287,10 @@ def test_job_name_omits_options_slot_when_no_leg_has_them(tmp_path: Path) -> Non
     [m] = parse_all(tmp_path)
     yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
     assert yaml is not None
-    assert "name: a/build (${{ matrix.platform }}, ${{ matrix['cxx-compiler'] }})" in yaml
-    assert "matrix.options" not in yaml
-
-
-def test_job_name_python_version_not_duplicated_when_sole_distinguisher(tmp_path: Path) -> None:
-    """When python-version is itself the distinguishing field, it appears exactly
-    once (py-prefixed) — never as both the primary slot and a second py<version>
-    slot."""
-    write_repo(
-        tmp_path,
-        "a",
-        """
-        [matrix.test]
-        triggers = ["rebuild-request"]
-        action = "./.github/actions/test-a"
-        forwarded-inputs = ["python-version"]
-        publishes = false
-        needs = []
-
-        [[matrix.test.include]]
-        python-version = "3.10"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-
-        [[matrix.test.include]]
-        python-version = "3.12"
-        platform = "ubuntu-24.04"
-        runs-on = "ubuntu-latest"
-        """,
-    )
-    [m] = parse_all(tmp_path)
-    yaml = render_workflow(m, {"a": m}, lane=EXECUTION_RUNNER)
-    assert yaml is not None
-    assert "name: a/test (${{ matrix.platform }}, py${{ matrix.python-version }})" in yaml
+    assert "name: a/build (${{ matrix._resolved['job-name'] }})" in yaml
+    # The check run posted back to the dispatcher must carry the same title as the
+    # job, or a red tick on someone else's commit names a job they cannot find.
+    assert yaml.count("name: a/build (${{ matrix._resolved['job-name'] }})") == 3
 
 
 def test_workflow_inlines_build_action_not_downstream_job(tmp_path: Path) -> None:
