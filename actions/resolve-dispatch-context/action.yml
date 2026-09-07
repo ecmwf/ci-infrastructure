@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Resolve the commit an orchestrator run is about
+description: >
+  Answer "which commit, and did its CI pass?" for a downstream orchestrator,
+  whichever of its two triggers woke it.
+
+  `workflow_run` reads straight from the event: a CI run just completed, and the
+  commit and verdict are in the payload. `pull_request_target` has neither -- the
+  fan-out was asked for by a label, long after CI finished -- so the commit comes
+  from the pull request and the verdict from the most recent completed run of
+  `ci-workflow` for exactly that commit.
+
+  That second path is what stops a label costing a full CI rebuild. The old
+  chain had one entry point, `workflow_run`, so the only way to fan out with the
+  label present was to re-run the whole matrix and let the completion event find
+  it.
+
+  Reports the verdict; it never fails the job on one. `ci-conclusion` is the
+  empty string when no completed CI run exists for the commit (a pull request
+  whose diff CI's paths filter excluded, or one labelled before CI finished), so
+  a caller gating on `== 'success'` treats "never ran" like "failed" without a
+  special case. `ci-summary` says which of the two it was, for a commit status.
+
+inputs:
+  ci-workflow:
+    description: 'Display name of the upstream CI workflow to look for (its `name:`).'
+    required: false
+    default: 'CI'
+  token:
+    description: >
+      Token that can read Actions runs and pull requests on this repo. Defaults
+      to github.token; pass an App token where that does not suffice.
+    required: false
+    default: ''
+
+outputs:
+  head-sha:
+    description: 'The commit under test.'
+    value: ${{ steps.ctx.outputs.head-sha }}
+  head-branch:
+    description: 'The branch that commit is the head of, for consumer branch matching.'
+    value: ${{ steps.ctx.outputs.head-branch }}
+  ci-conclusion:
+    description: "That commit's CI conclusion, or '' when no completed run exists."
+    value: ${{ steps.ctx.outputs.ci-conclusion }}
+  ci-url:
+    description: 'Link to that CI run, for a status that points at the failure.'
+    value: ${{ steps.ctx.outputs.ci-url }}
+  ci-summary:
+    description: 'Why a non-success conclusion is what it is, as status-description prose.'
+    value: ${{ steps.ctx.outputs.ci-summary }}
+
+runs:
+  using: composite
+  steps:
+    - id: ctx
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        # Per this repo's convention (commit a48f078) no input is interpolated
+        # into the script body, and the event is read from $GITHUB_EVENT_PATH
+        # with jq rather than through `${{ }}` -- a branch name is attacker-chosen
+        # on a fork pull request and must never reach bash as syntax.
+        CI_WORKFLOW_INPUT: ${{ inputs.ci-workflow }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error title=Dispatch context::jq is not on PATH; run this job on a runner image that has it." >&2
+          exit 1
+        fi
+
+        summary=""
+        if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+          head_sha=$(jq -r '.workflow_run.head_sha // ""' "$GITHUB_EVENT_PATH")
+          head_branch=$(jq -r '.workflow_run.head_branch // ""' "$GITHUB_EVENT_PATH")
+          conclusion=$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")
+          url=$(jq -r '.workflow_run.html_url // ""' "$GITHUB_EVENT_PATH")
+          why="workflow_run: CI concluded '${conclusion}'"
+          [ "$conclusion" = success ] || summary="Upstream CI failed"
+        else
+          head_sha=$(jq -r '.pull_request.head.sha // ""' "$GITHUB_EVENT_PATH")
+          head_branch=$(jq -r '.pull_request.head.ref // ""' "$GITHUB_EVENT_PATH")
+          if [ -z "$head_sha" ]; then
+            echo "::error title=Dispatch context::${GITHUB_EVENT_NAME} carries no pull request head SHA." >&2
+            exit 1
+          fi
+
+          # Completed runs only: an in-flight CI has no verdict yet, and treating
+          # it as a failure would post a red status the finishing run never clears.
+          runs="${RUNNER_TEMP:-/tmp}/dispatch-context-runs.json"
+          gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+            -f "head_sha=${head_sha}" -f status=completed -f per_page=100 > "$runs"
+
+          # The API returns newest first, so the first match is the run whose
+          # verdict currently stands for this commit -- including a re-run.
+          match=$(jq -r --arg w "$CI_WORKFLOW_INPUT" \
+            'first(.workflow_runs[] | select(.name == $w)) // empty' "$runs")
+          if [ -n "$match" ]; then
+            conclusion=$(printf '%s' "$match" | jq -r '.conclusion // ""')
+            url=$(printf '%s' "$match" | jq -r '.html_url // ""')
+            why="${GITHUB_EVENT_NAME}: latest completed '${CI_WORKFLOW_INPUT}' for ${head_sha} concluded '${conclusion}'"
+            [ "$conclusion" = success ] || summary="Upstream CI failed"
+          else
+            conclusion=""
+            url=""
+            why="${GITHUB_EVENT_NAME}: no completed '${CI_WORKFLOW_INPUT}' run for ${head_sha}"
+            summary="No successful CI run for this commit"
+          fi
+        fi
+
+        {
+          echo "head-sha=$head_sha"
+          echo "head-branch=$head_branch"
+          echo "ci-conclusion=$conclusion"
+          echo "ci-url=$url"
+          echo "ci-summary=$summary"
+        } >> "$GITHUB_OUTPUT"
+        echo "Dispatch context: $why"

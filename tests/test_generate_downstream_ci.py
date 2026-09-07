@@ -1336,14 +1336,17 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "workflows:\n    - CI\n" in yaml
     assert "types:\n    - completed\n" in yaml
     # SHA/branch now come from the workflow_run event; the old ci.yml inputs are gone.
-    assert "${{ github.event.workflow_run.head_sha }}" in yaml
-    assert "${{ github.event.workflow_run.head_branch }}" in yaml
+    assert "${{ needs.context.outputs.head-sha }}" in yaml
+    assert "${{ needs.context.outputs.head-branch }}" in yaml
     assert "inputs.upstream-sha" not in yaml
     assert "inputs.upstream-branch" not in yaml
     # Root jobs gate on the upstream CI having succeeded.
-    assert "if: ${{ github.event.workflow_run.conclusion == 'success' }}" in yaml
+    assert "if: ${{ needs.context.outputs.ci-conclusion == 'success' }}" in yaml
     # Coalesce re-runs for the same tested commit, keyed by lane.
-    assert "group: trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}" in yaml
+    assert (
+        "group: trigger-downstream-runner-"
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in yaml
+    )
     assert "cancel-in-progress: true" in yaml
     # Both B and C are invoked as reusable workflows (flat fan-out, not chained),
     # each pinned to its [[trigger-downstream]].ref, with secrets: inherit.
@@ -1353,8 +1356,8 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "secrets: inherit" in yaml
     # The `with:` block carries the dispatcher metadata sourced from the event.
     assert "from-repo: ${{ github.repository }}" in yaml
-    assert "from-sha: ${{ github.event.workflow_run.head_sha }}" in yaml
-    assert "branch: ${{ github.event.workflow_run.head_branch }}" in yaml
+    assert "from-sha: ${{ needs.context.outputs.head-sha }}" in yaml
+    assert "branch: ${{ needs.context.outputs.head-branch }}" in yaml
     assert "fallback-ref: main" in yaml
     assert "fallback-ref: develop" in yaml
     # Each call passes the originator kinds as a JSON array via `from-jobs`; this is
@@ -1366,8 +1369,9 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "  validate:\n" in yaml
     assert "actions/validate-generated-workflows@main" in yaml
     # PyYAML emits sequences in block style by default.
-    assert "needs:\n    - validate\n" in yaml  # B has no cross-pkg deps; just validate.
-    assert "needs:\n    - validate\n    - b\n" in yaml  # C depends on B too.
+    # B has no cross-pkg deps: just the two jobs that front everything, then validate.
+    assert "needs:\n    - ci-approval\n    - context\n    - validate\n" in yaml
+    assert "needs:\n    - ci-approval\n    - context\n    - validate\n    - b\n" in yaml  # C depends on B too.
     # `validate` still mints its own App token; per-consumer dispatch mints are gone.
     assert "actions/create-github-app-token@v3" in yaml
     # Commit-status jobs post the required downstream/<lane> context back to the SHA.
@@ -1746,7 +1750,15 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     # validate + report-start + report-ci-failure + report-result bookkeeping jobs
     # flank the single consumer caller job. Both runner originator kinds reach b via
     # one call.
-    assert sorted(doc["jobs"]) == ["b", "report-ci-failure", "report-result", "report-start", "validate"]
+    assert sorted(doc["jobs"]) == [
+        "b",
+        "ci-approval",
+        "context",
+        "report-ci-failure",
+        "report-result",
+        "report-start",
+        "validate",
+    ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/test"]
     assert doc["jobs"]["b"]["name"] == "b"
 
@@ -1890,9 +1902,20 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
     orch = render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
     assert orch is not None
     doc = yaml.safe_load(orch)
-    assert sorted(doc["jobs"]) == ["b", "c", "report-ci-failure", "report-result", "report-start", "validate"]
-    assert doc["jobs"]["b"]["needs"] == ["validate"]
-    assert doc["jobs"]["c"]["needs"] == ["validate", "b"]
+    assert sorted(doc["jobs"]) == [
+        "b",
+        "c",
+        "ci-approval",
+        "context",
+        "report-ci-failure",
+        "report-result",
+        "report-start",
+        "validate",
+    ]
+    # ci-approval and context front every job (_require_context); the ordering this
+    # test is about is what follows them.
+    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "validate"]
+    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "validate", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
 
@@ -2035,7 +2058,7 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         assert "inputs" not in orch
         # Root bookkeeping jobs are gated on CI success; the consumer job cascades
         # off `validate` (a skipped gate skips the consumer).
-        gate = "${{ github.event.workflow_run.conclusion == 'success' }}"
+        gate = "${{ needs.context.outputs.ci-conclusion == 'success' }}"
         assert doc["jobs"]["validate"]["if"] == gate
         assert doc["jobs"]["report-start"]["if"] == gate
         # The consumer caller job references this lane's consumer file.
@@ -2059,15 +2082,15 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
     # Pending status posted up-front to the tested head SHA.
     start = doc["jobs"]["report-start"]["steps"][-1]["run"]
     assert "gh api -X POST" in start
-    assert "/repos/${{ github.repository }}/statuses/${{ github.event.workflow_run.head_sha }}" in start
+    assert "/repos/${{ github.repository }}/statuses/${{ needs.context.outputs.head-sha }}" in start
     assert "state=pending" in start
     assert "downstream/runner" in start
 
     # Final status runs always() (still gated on CI success) and depends on validate
     # plus the consumer caller job, mapping their results to success/failure.
     result = doc["jobs"]["report-result"]
-    assert result["needs"] == ["validate", "b"]
-    assert result["if"] == "${{ always() && github.event.workflow_run.conclusion == 'success' }}"
+    assert result["needs"] == ["ci-approval", "context", "validate", "b"]
+    assert result["if"] == "${{ always() && needs.context.outputs.ci-conclusion == 'success' }}"
     run = result["steps"][-1]["run"]
     assert "${{ needs.validate.result }}" in run
     assert "${{ needs.b.result }}" in run
@@ -2097,13 +2120,13 @@ def test_orchestrator_posts_ci_failure_status(tmp_path: Path) -> None:
         assert orch is not None
         job = yaml.safe_load(orch)["jobs"]["report-ci-failure"]
         # Non-success gate: fires on exactly the runs the success-gated jobs skip.
-        assert job["if"] == "${{ github.event.workflow_run.conclusion != 'success' }}"
+        assert job["if"] == "${{ needs.context.outputs.ci-conclusion != 'success' }}"
         run = job["steps"][-1]["run"]
         assert "gh api -X POST" in run
         assert "-f state=failure" in run
         assert f"-f context='{context}'" in run
         # Links to the failed CI run itself, not this (do-nothing) orchestrator run.
-        assert 'target_url="${{ github.event.workflow_run.html_url }}"' in run
+        assert 'target_url="${{ needs.context.outputs.ci-url }}"' in run
 
 
 def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
@@ -2459,7 +2482,9 @@ _GATE_CONSUMER: Final = """
 """
 
 
-def _render_gate(tmp_path: Path, upstream: str) -> dict[str, Any]:
+def _render_gate(tmp_path: Path, upstream: str) -> dict[Any, Any]:
+    """The rendered orchestrator, parsed. `dict[Any, Any]` because PyYAML reads the
+    bare key `on` as the bool True, so callers index it with one."""
     write_repo(tmp_path, "a", upstream)
     write_repo(tmp_path, "b", _GATE_CONSUMER)
     manifests = parse_all(tmp_path)
@@ -2469,7 +2494,7 @@ def _render_gate(tmp_path: Path, upstream: str) -> dict[str, Any]:
     by_repo = {m.repo: m for m in manifests}
     orch = render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
     assert orch is not None
-    doc: dict[str, Any] = yaml.safe_load(orch)
+    doc: dict[Any, Any] = yaml.safe_load(orch)
     return doc
 
 
@@ -2477,7 +2502,7 @@ def test_downstream_gate_absent_by_default(tmp_path: Path) -> None:
     doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', ""))
 
     assert "label-gate" not in doc["jobs"]
-    assert doc["jobs"]["validate"]["if"] == "${{ github.event.workflow_run.conclusion == 'success' }}"
+    assert doc["jobs"]["validate"]["if"] == "${{ needs.context.outputs.ci-conclusion == 'success' }}"
 
 
 def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
@@ -2494,7 +2519,11 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     for jid, job in doc["jobs"].items():
         if jid == "label-gate":
             continue
-        assert job["needs"][0] == "label-gate", jid
+        if jid in {"ci-approval", "context"}:
+            # In front of label-gate, not behind it: the gate looks its pull request
+            # up by the commit the context job resolves.
+            continue
+        assert "label-gate" in job["needs"], jid
         # Index syntax: `needs.label-gate` would parse the hyphen as minus.
         assert "needs['label-gate'].outputs.run == 'true'" in job["if"], jid
 
@@ -2508,10 +2537,10 @@ def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> Non
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     assert doc["jobs"]["validate"]["if"] == (
-        "${{ (github.event.workflow_run.conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
+        "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
     )
     assert doc["jobs"]["report-ci-failure"]["if"] == (
-        "${{ (github.event.workflow_run.conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
+        "${{ (needs.context.outputs.ci-conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
     )
     assert doc["jobs"]["report-result"]["if"].startswith("${{ (always() && ")
 
@@ -2538,7 +2567,7 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     gate = next(s for s in steps if s.get("id") == "gate")
     assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
     assert gate["with"]["label"] == "run-downstream-CI"
-    assert gate["with"]["sha"] == "${{ github.event.workflow_run.head_sha }}"
+    assert gate["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
 
 
 def test_downstream_gate_label_never_becomes_shell_syntax(tmp_path: Path) -> None:
@@ -2693,3 +2722,83 @@ def test_absent_build_type_folds_onto_the_release_default(tmp_path: Path) -> Non
     )
     with pytest.raises(SchemaError, match="same artifact identity"):
         validate_graph(parse_all(tmp_path))
+
+
+# === The label as a second entry point =====================================
+# `workflow_run` fires only when a CI run COMPLETES, so with it as the sole
+# trigger the only way to fan out with the gate label present was to re-run the
+# whole CI matrix and let the completion event find it.
+
+
+def test_label_is_a_second_entry_point(tmp_path: Path) -> None:
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    on = doc[True]  # PyYAML reads the bare key `on` as True
+    assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
+    assert on["pull_request_target"] == {"types": ["labeled"]}
+
+
+def test_no_label_trigger_without_a_gate_label(tmp_path: Path) -> None:
+    """Without a gate label there is no label that means "fan out", so the
+    trigger would wake this workflow on every label anyone applies."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', ""))
+
+    assert "pull_request_target" not in doc[True]
+
+
+def test_every_job_hangs_off_the_ci_approval_gate(tmp_path: Path) -> None:
+    """On the label path this workflow calls each consumer's cross-repo-trigger,
+    which builds the pull request's head SHA on our runners -- so an ungated label
+    is all an outside contributor would need. check_ci_approval.py will not demand
+    the gate here: every job in this file is ubuntu-slim, and the ARC builds happen
+    inside the workflows it calls."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    approval = doc["jobs"]["ci-approval"]
+    assert approval["steps"] == [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}]
+    assert approval["permissions"] == {"pull-requests": "write"}
+    for jid, job in doc["jobs"].items():
+        if jid == "ci-approval":
+            continue
+        assert "ci-approval" in job["needs"], jid
+
+
+def test_the_label_filter_sits_only_on_the_gate_job(tmp_path: Path) -> None:
+    """A job skipped by `if:` reports Success, so the filter must gate the gate --
+    where a skip skips everything behind it -- and never the work itself."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+
+    assert doc["jobs"]["ci-approval"]["if"] == (
+        "${{ github.event_name != 'pull_request_target' || github.event.label.name == 'run-downstream-CI' }}"
+    )
+    for jid, job in doc["jobs"].items():
+        if jid == "ci-approval":
+            continue
+        assert "github.event.label" not in (job.get("if") or ""), jid
+
+
+def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> None:
+    """`github.event.workflow_run.*` is empty on the label path, so nothing below
+    the context job may read it. The concurrency key is the one exception: it
+    cannot see `needs`, and an empty group would put every labelled pull request
+    into one group, cancelling each other's fan-out."""
+    write_repo(tmp_path, "a", _GATE_UPSTREAM)
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    manifests = parse_all(tmp_path)
+    closures = compute_transitive_consumers(manifests)
+    by_pkg = {m.package_name: m for m in manifests}
+    by_repo = {m.repo: m for m in manifests}
+    orch = render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
+    assert orch is not None
+
+    doc: dict[str, Any] = yaml.safe_load(orch)
+    assert doc["concurrency"]["group"] == (
+        "trigger-downstream-runner-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
+    )
+    assert orch.count("github.event.workflow_run") == 1
+
+    ctx = doc["jobs"]["context"]
+    assert ctx["needs"] == ["ci-approval"]
+    assert sorted(ctx["outputs"]) == ["ci-conclusion", "ci-summary", "ci-url", "head-branch", "head-sha"]
+    resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
+    assert resolve["uses"] == "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main"
