@@ -1588,45 +1588,12 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
 
     cond = _render_kind_filter(cross, mk.triggers)
-    distinguishing = _first_distinguishing_field(mk.legs, m.compiler_inputs)
-    compiler_fields = _compiler_display_fields(m, mk)
 
-    # Build the display slots left-to-right, general to detailed: the platform
-    # first (which lane and which ABI this is), then the distinguishing leg field
-    # — normally the compiler — then a py<version> slot whenever the legs carry a
-    # python-version (so a job that varies python shows it even when another
-    # field is the primary distinguisher), then the build options. So:
-    # "build+test (ubuntu-24.04, clang++-18, py3.11)".
-    # platform, python-version and options get dedicated handling so none is
-    # duplicated when it is itself the distinguisher.
-    def _slot(field: str) -> str:
-        expr = f"matrix['{field}']" if "-" in field else f"matrix.{field}"
-        return f"${{{{ {expr} }}}}"
-
-    slots: list[str] = ["${{ matrix.platform }}"]
-    slots.extend(_slot(f) for f in compiler_fields)
-    # Only when it adds something: a field already given its own slot below would
-    # be duplicated, and one that does not vary is a constant in every title.
-    if distinguishing is not None and distinguishing not in {
-        "platform",
-        "python-version",
-        "options",
-        *compiler_fields,
-    }:
-        slots.append(_slot(distinguishing))
-    if any("python-version" in leg for leg in mk.legs):
-        slots.append("py${{ matrix.python-version }}")
-    # `options` is the one leg field that is routinely present on some legs and
-    # absent from others, and it is part of artifact identity — so two legs can
-    # differ ONLY by it and otherwise render an identical name. eccodes' plain
-    # and eckit-geo legs are exactly that: same compiler, same platform, two
-    # different artifacts. Without this slot both the Actions-tab job and the
-    # check run posted back to the dispatcher's commit are indistinguishable.
-    # `|| 'default'` (not an empty string) matches the hand-written ci.yml
-    # convention and keeps the optionless legs' names from trailing a blank.
-    if any("options" in leg for leg in mk.legs):
-        slots.append("${{ matrix.options || 'default' }}")
-    job_name = f"{display} ({', '.join(slots)})"
+    # The slots themselves are resolve_deps' job (ci_infrastructure.job_names),
+    # emitted per leg into `_resolved.job-name`, so this lane and the repo's own
+    # hand-written ci.yml cannot spell one rule two ways. Only the prefix differs:
+    # here a job must say which package it belongs to, there it need not.
+    job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
 
     steps: list[Step] = [
         _mint_step(),
@@ -1724,80 +1691,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     }
     job["steps"] = steps
     return job
-
-
-def _leg_values(legs: Sequence[dict[str, Any]], key: str) -> set[Any]:
-    """The distinct values legs give `key`. A list value (runs-on) is unhashable,
-    so normalise it to a tuple before the set sees it."""
-    return {tuple(v) if isinstance(v, list) else v for v in (leg.get(key) for leg in legs)}
-
-
-def _compiler_display_fields(m: Manifest, mk: MatrixKind) -> list[str]:
-    """Leg fields naming the toolchain, for the job title.
-
-    The compiler is what a human scans a job list for, so it gets a dedicated
-    slot like `python-version` and `options` do — emitted whenever the legs carry
-    it, NOT only when it happens to be the field that varies. Relying on variation
-    silently dropped it from three of the five HPC lanes: eccodes' two legs differ
-    only by `options` and eckit's kind has a single leg, so in both the compiler is
-    constant and was never picked.
-
-    `compiler-inputs` first: those are the fields the ARTIFACT NAME carries, so the
-    title matches the identity. A repo that declares none (ecbuild — its ABI class
-    rides entirely on the platform slug) falls back to a templated recipe's
-    `cxx`/`cc`, which is the only other place its toolchain is written down.
-
-    Among those, the ones that VARY win: eccodes declares both a cxx and a fortran
-    compiler but only ever varies the cxx one, and pinning a constant `gfortran-13`
-    into every title is noise. When none varies (a single-leg kind, or legs that
-    differ only by `options`) they are all shown — a constant compiler is still the
-    thing a reader wants, and it is better than an empty slot.
-    """
-    fields = [f for f in sorted(m.compiler_inputs) if any(f in leg for leg in mk.legs)]
-    if not fields:
-        fields = [f for f in ("cxx", "cc") if any(f in leg for leg in mk.legs)][:1]
-    varying = [f for f in fields if len(_leg_values(mk.legs, f)) > 1]
-    return varying or fields
-
-
-def _first_distinguishing_field(legs: Sequence[dict[str, Any]], compiler_inputs: Sequence[str] = ()) -> str | None:
-    """Pick a matrix field whose values vary across legs; used in the job display name.
-
-    Rank 0 is exactly the artifact-name fields other than `platform` — the compiler,
-    build-type, python-version, options — because those are what a reader is looking
-    for in a job title. `platform` is rank 1: it already appears in the name suffix,
-    though a short distro string still beats anything below. **Everything else is
-    rank 2**, and that is a deliberate allowlist rather than the denylist this used
-    to be.
-
-    A denylist was wrong in both directions. It let a path become the title —
-    ecbuild's HPC legs were rendering as `(hpc-atos-gnu, ./.ci/hpc/build-intel.sh)`
-    because `job-script` varied and nothing excluded it. And it silently reopened
-    every time a manifest grew a key: a repo adding `cc` for a templated recipe
-    would have found every check run renamed (`"cc" < "cxx-compiler"`), breaking any
-    branch protection pinned to the old name, with no error anywhere. A leg field
-    invented by a repo for its own template is not identity and must never be a
-    title; with an allowlist, that is true of keys nobody has thought of yet.
-    """
-    if not legs:
-        return None
-    keys = set(legs[0].keys())
-    preferred = {*compiler_inputs, "build-type", "python-version", "options"}
-
-    def sort_key(k: str) -> tuple[int, str]:
-        if k in preferred:
-            return (0, k)
-        if k == "platform":
-            return (1, k)
-        return (2, k)
-
-    for k in sorted(keys, key=sort_key):
-        if len(_leg_values(legs, k)) > 1:
-            return k
-    # Nothing varies (a single-leg kind, or legs that differ only in fields the
-    # ranking excludes). There is no distinguisher to show, and inventing one puts
-    # a constant in every job title — `eckit/build-hpc (hpc-atos-gnu, Release)`.
-    return None
 
 
 def compute_transitive_consumers(
@@ -2040,8 +1933,26 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    if m.downstream_gate_label:
-        jobs = _apply_label_gate(jobs, m.downstream_gate_label)
+    label = m.downstream_gate_label
+    if label:
+        jobs = _apply_label_gate(jobs, label)
+    jobs = _require_context(jobs, label)
+
+    on: dict[str, Any] = {
+        "workflow_run": {
+            "workflows": ["CI"],
+            "types": ["completed"],
+        },
+    }
+    if label:
+        # Second entry point, so applying the gate label does not cost a full CI
+        # re-run. `workflow_run` fires only when a CI run COMPLETES, so with it as
+        # the sole trigger the only way to fan out with the label present was to
+        # rebuild the whole matrix and let the completion event find it. Here the
+        # context job reads the verdict of the run that already happened.
+        # Only when a gate label exists: without one there is no label that means
+        # "fan out", and this would wake on every label anyone applies.
+        on["pull_request_target"] = {"types": ["labeled"]}
 
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
@@ -2049,16 +1960,15 @@ def render_orchestrator_workflow(
         # named `CI`. Root jobs additionally gate on conclusion == 'success', so a
         # failed CI posts nothing and the required downstream/<lane> status stays
         # "Expected" — blocking the merge.
-        "on": {
-            "workflow_run": {
-                "workflows": ["CI"],
-                "types": ["completed"],
-            },
-        },
+        "on": on,
         # Coalesce re-runs for the same tested commit; a superseding run cancels the
         # in-flight one. Keyed by lane so the two lanes' runs never collide.
+        # Concurrency cannot see `needs`, so the commit is read from whichever event
+        # carries it rather than from the context job — an empty group key would put
+        # every labelled pull request in one group, cancelling each other's fan-out.
         "concurrency": {
-            "group": f"trigger-downstream-{lane}-" + "${{ github.event.workflow_run.head_sha }}",
+            "group": f"trigger-downstream-{lane}-"
+            + "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}",
             "cancel-in-progress": True,
         },
         "jobs": jobs,
@@ -2066,7 +1976,24 @@ def render_orchestrator_workflow(
     return GENERATED_HEADER + _dump_workflow(doc)
 
 
-_SUCCESS_GATE: Final = "${{ github.event.workflow_run.conclusion == 'success' }}"
+#: Gates every job that may reach fork code, and carries the opt-in label filter on
+#: its own `if:` — the pattern actions/require-ci-approval prescribes, since a job
+#: skipped by `if:` reports Success and gating the WORK that way makes an
+#: unapproved pull request green.
+_APPROVAL_JOB_ID: Final = "ci-approval"
+
+#: Resolves which commit this run is about, for both triggers. Everything below
+#: reads the commit from here rather than from `github.event.workflow_run.*`,
+#: which is empty on the label path.
+_CONTEXT_JOB_ID: Final = "context"
+
+_HEAD_SHA: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.head-sha }}}}"
+_HEAD_BRANCH: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.head-branch }}}}"
+_CI_URL: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.ci-url }}}}"
+_CI_SUMMARY: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.ci-summary }}}}"
+_CI_CONCLUSION: Final = f"needs.{_CONTEXT_JOB_ID}.outputs.ci-conclusion"
+
+_SUCCESS_GATE: Final = f"${{{{ {_CI_CONCLUSION} == 'success' }}}}"
 
 
 #: This orchestrator run — where report-start / report-result point their status.
@@ -2081,7 +2008,7 @@ def _post_status_script(*, state: str, context: str, target_url: str, descriptio
     """
     return (
         preamble + "gh api -X POST \\\n"
-        '  "/repos/${{ github.repository }}/statuses/${{ github.event.workflow_run.head_sha }}" \\\n'
+        '  "/repos/${{ github.repository }}/statuses/' + _HEAD_SHA + '" \\\n'
         f"  -f state={state} \\\n"
         f"  -f context='{context}' \\\n"
         f'  -f target_url="{target_url}" \\\n'
@@ -2132,15 +2059,19 @@ def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
     CI would post nothing and a required check would hang at "Expected" rather
     than going red. `target_url` points at the failed CI run, since this
     orchestrator run did no downstream work worth linking to.
+
+    The reason comes from the context job because there are now two: CI ran and
+    failed, or -- reachable only from the label path -- CI never ran for this
+    commit at all, which the old single-trigger chain could not express.
     """
     return _status_job(
-        when="${{ github.event.workflow_run.conclusion != 'success' }}",
+        when=f"${{{{ {_CI_CONCLUSION} != 'success' }}}}",
         step_name="Post downstream failure status",
         script=_post_status_script(
             state="failure",
             context=_status_context(lane),
-            target_url="${{ github.event.workflow_run.html_url }}",
-            description=f"'Upstream CI failed; downstream {_lane_label(lane)} not run'",
+            target_url=_CI_URL,
+            description=f'"{_CI_SUMMARY}; downstream {_lane_label(lane)} not run"',
         ),
     )
 
@@ -2157,7 +2088,7 @@ def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict
     results = " ".join(f"${{{{ needs.{jid}.result }}}}" for jid in needs)
     return _status_job(
         needs=needs,
-        when="${{ always() && github.event.workflow_run.conclusion == 'success' }}",
+        when=f"${{{{ always() && {_CI_CONCLUSION} == 'success' }}}}",
         step_name="Post final downstream status",
         script=_post_status_script(
             preamble=(
@@ -2257,6 +2188,87 @@ def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
     return gated
 
 
+def _require_context(jobs: dict[str, Any], label: str | None) -> dict[str, Any]:
+    """Put `ci-approval` and `context` in front of every job in an orchestrator.
+
+    A post-pass, for the same reason _apply_label_gate is one: a job added later
+    is gated and gets its commit by construction rather than by remembering to.
+
+    Two things depend on this ordering. Every `if:` and every `with:` below now
+    reads the commit from `needs.context.outputs.*`, which is only in scope for a
+    job that needs it. And the approval gate must sit in front of the context job
+    too, not merely beside it -- on the label path this workflow calls each
+    consumer's cross-repo-trigger.yml, which checks out the pull request's head
+    SHA and builds it on our runners, so an ungated label would be all an outside
+    contributor needs.
+    """
+    ordered: dict[str, Any] = {
+        _APPROVAL_JOB_ID: _ci_approval_job(label),
+        _CONTEXT_JOB_ID: _context_job(),
+    }
+    for jid, job in jobs.items():
+        needs = job.get("needs", [])
+        job["needs"] = [_APPROVAL_JOB_ID, _CONTEXT_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
+        ordered[jid] = job
+    return ordered
+
+
+def _ci_approval_job(label: str | None) -> dict[str, Any]:
+    """`ci-approval`: the fork-code gate, and the workflow's only policy `if:`.
+
+    On `workflow_run` the action reports `not-a-pull-request` and passes, so this
+    is a no-op there -- that path already implies a completed CI run, which was
+    itself gated. It exists for the `pull_request_target` one.
+
+    The label filter belongs HERE and nowhere else. A skip skips everything behind
+    it, which is what an unrelated label should do; putting the same `if:` on the
+    gated jobs instead would report Success for a pull request that never ran.
+    Note that check_ci_approval.py will not demand this gate for us: it only
+    requires one when a job names one of our runners, and every job here is
+    `ubuntu-slim` -- the ARC builds happen inside the consumer workflows this one
+    calls.
+    """
+    job: dict[str, Any] = {}
+    if label:
+        job["if"] = f"${{{{ github.event_name != 'pull_request_target' || github.event.label.name == '{label}' }}}}"
+    job["runs-on"] = SLIM_RUNNER
+    # require-ci-approval revokes the approval label on a push; inert on `labeled`,
+    # but the action defaults revoke-on-push and would fail without the scope.
+    job["permissions"] = {"pull-requests": "write"}
+    job["steps"] = [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}]
+    return job
+
+
+def _context_job() -> dict[str, Any]:
+    """`context`: which commit this run is about, and whether its CI passed.
+
+    One job so the two triggers converge immediately and nothing below has to know
+    which one fired. The lookup itself lives in actions/resolve-dispatch-context
+    for the reason the label verdict lives in check-pr-label: a copy rendered into
+    every orchestrator in every repo is a copy that drifts and cannot be tested.
+    """
+    return {
+        "needs": [_APPROVAL_JOB_ID],
+        "runs-on": SLIM_RUNNER,
+        "outputs": {
+            "head-sha": "${{ steps.ctx.outputs.head-sha }}",
+            "head-branch": "${{ steps.ctx.outputs.head-branch }}",
+            "ci-conclusion": "${{ steps.ctx.outputs.ci-conclusion }}",
+            "ci-url": "${{ steps.ctx.outputs.ci-url }}",
+            "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
+        },
+        "steps": [
+            _mint_step(),
+            {
+                "name": "Resolve the commit under test",
+                "id": "ctx",
+                "uses": "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main",
+                "with": {"token": "${{ steps.mint.outputs.token }}"},
+            },
+        ],
+    }
+
+
 def _label_gate_job(label: str) -> dict[str, Any]:
     """`label-gate`: does the commit under test want its downstream fan-out run?
 
@@ -2286,7 +2298,7 @@ def _label_gate_job(label: str) -> dict[str, Any]:
                 "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
                 "with": {
                     "label": label,
-                    "sha": "${{ github.event.workflow_run.head_sha }}",
+                    "sha": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
                 },
             },
@@ -2312,7 +2324,7 @@ def _validate_job() -> dict[str, Any]:
             {
                 "uses": "actions/checkout@v6",
                 "with": {
-                    "ref": "${{ github.event.workflow_run.head_sha }}",
+                    "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
                 },
             },
@@ -2358,9 +2370,9 @@ def _orchestrator_job(
         "uses": f"{cowner}/{cname}/.github/workflows/cross-repo-trigger{suffix}.yml@{cref}",
         "with": {
             "from-repo": "${{ github.repository }}",
-            "from-sha": "${{ github.event.workflow_run.head_sha }}",
+            "from-sha": _HEAD_SHA,
             "from-jobs": _from_jobs_input(from_jobs),
-            "branch": "${{ github.event.workflow_run.head_branch }}",
+            "branch": _HEAD_BRANCH,
             "fallback-ref": cref,
         },
         "secrets": "inherit",
@@ -2395,9 +2407,9 @@ def _orchestrator_dispatch_job(
         {
             "ref": cref,
             "from-repo": "${{ github.repository }}",
-            "from-sha": "${{ github.event.workflow_run.head_sha }}",
+            "from-sha": _HEAD_SHA,
             "from-jobs": _from_jobs_input(from_jobs),
-            "branch": "${{ github.event.workflow_run.head_branch }}",
+            "branch": _HEAD_BRANCH,
             "fallback-ref": cref,
             "token": "${{ steps.mint.outputs.token }}",
             # No artifact to wait for (upstream consumes nothing back); gate on the

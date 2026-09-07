@@ -85,8 +85,20 @@ Outputs (key=value to $GITHUB_OUTPUT, or stdout for debug):
                                                    source, needs-python, install-path}
           _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
           _resolved.ctest-args            this kind's [matrix.<kind>].ctest-args ("" if unset)
+          _resolved.job-name              this leg's job title, WITHOUT the prefix:
+                                          "ubuntu-24.04, clang++-18, default"
 
-        The last two let a hand-written push/PR workflow run the SAME ctest
+        job-name is the parenthesised part only, because the prefix differs by
+        lane on purpose -- a repo's own workflow says `build+test`, the generated
+        cross-repo one says `eccodes/build`. Both write:
+
+            name: build+test (${{ matrix._resolved['job-name'] }})
+
+        so the naming rule (ci_infrastructure.job_names) exists once instead of
+        being spelled out in `${{ }}` in every workflow, which is how the two
+        lanes drifted apart in all four repos.
+
+        ctest/ctest-args let a hand-written push/PR workflow run the SAME ctest
         invocation the generated cross-repo-trigger.yml runs, without restating
         the arguments:
 
@@ -123,7 +135,7 @@ from typing import Any, Final, Literal, NewType
 
 import click
 
-from . import s3_store
+from . import job_names, s3_store
 from ._errors import CIError
 from ._github_api import (
     EXECUTION_HPC,
@@ -1290,6 +1302,10 @@ def _run(
                 # rather than a second copy of it that can drift.
                 "ctest": ctest.enabled,
                 "ctest-args": ctest.args,
+                # The parenthesised part of this leg's job title, so a repo's own
+                # ci.yml and the generated cross-repo-trigger.yml name a leg
+                # identically instead of each spelling the rule in `${{ }}`.
+                "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }
             merged = {**entry, "_resolved": resolved_block}
             # Substitute runner classes LAST, after the leg has been used for
