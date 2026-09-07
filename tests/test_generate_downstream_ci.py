@@ -25,9 +25,8 @@ import pytest
 import yaml
 from conftest import parse_all, write_repo
 
+from ci_infrastructure._github_api import EXECUTION_HPC, EXECUTION_RUNNER
 from ci_infrastructure.generate_downstream_ci import (
-    EXECUTION_HPC,
-    EXECUTION_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     SLIM_RUNNER,

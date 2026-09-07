@@ -126,10 +126,14 @@ import click
 from . import s3_store
 from ._errors import CIError
 from ._github_api import (
+    EXECUTION_HPC,
+    EXECUTION_RUNNER,
+    Execution,
     ManifestSchemaError,
     compute_deps_hash8,
     compute_platform_slug,
     fetch_manifests_layer,
+    lane_suffix,
     probe_workflow_runs,
     resolve_reuse_matrix,
     select_token,
@@ -282,6 +286,12 @@ class Manifest:
     # on an HPC kind, no ctest-args without ctest, no ctest without a build
     # tree); here we only type-check and pass through.
     ctest_by_kind: dict[str, CtestSpec] = field(default_factory=dict)
+    # Per-kind `execution` ("runner" or "hpc"), defaulting to "runner" when unset —
+    # the same default the generator applies. Needed to pick WHICH of a producer's
+    # two cross-repo-trigger files a recovery rebuild should fire: the hpc lane
+    # publishes only hpc artifacts, so dispatching the runner lane for a missing
+    # hpc artifact rebuilds something that can never satisfy the pin.
+    execution_by_kind: dict[str, Execution] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -351,11 +361,20 @@ class ResolvedOwn:
 
 @dataclass(frozen=True)
 class DispatchPlan:
-    """A producer that needs its cross-repo-trigger.yml fired before fetch_deps runs."""
+    """A producer whose cross-repo-trigger{,-hpc}.yml must fire before fetch_deps runs.
+
+    `lane` picks WHICH of the two files. It is the lane of the consumer kind whose
+    artifact is missing: the orchestrators only ever wire a lane to the same lane,
+    so consumer lane == producer lane. Getting it wrong is not a cosmetic error —
+    the runner lane never publishes an hpc artifact, so a mis-aimed rebuild can
+    never satisfy the pin that triggered it, and the consumer waits out its poll
+    and fails with a diagnostic pointing at the wrong thing.
+    """
 
     repo: Repo
     ref: Ref
     sha: Sha
+    lane: Execution
 
 
 def _parse_compiler_inputs(raw: object, context: str, allow_empty: bool) -> list[str]:
@@ -469,7 +488,7 @@ def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
 
 def _parse_matrix(
     data: Mapping[str, Any],
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], dict[str, CtestSpec]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], dict[str, CtestSpec], dict[str, Execution]]:
     # Two passes: collect the raw blocks, then expand reuse-matrix against them.
     # The expansion is shared with the generator (resolve_reuse_matrix) because a
     # kind whose legs differed between the two would look up artifact names
@@ -483,6 +502,7 @@ def _parse_matrix(
     matrix: dict[str, list[dict[str, Any]]] = {}
     artifact_prefix_by_kind: dict[str, str] = {}
     ctest_by_kind: dict[str, CtestSpec] = {}
+    execution_by_kind: dict[str, Execution] = {}
     for job_name, job_block in raw_matrix.items():
         try:
             legs = resolve_reuse_matrix(job_name, job_block.get("include"), job_block.get("reuse-matrix"), raw_matrix)
@@ -495,8 +515,19 @@ def _parse_matrix(
                 raise ValueError(f"[matrix.{job_name}].artifact-prefix must be a non-empty string")
             artifact_prefix_by_kind[str(job_name)] = prefix_override.strip()
         ctest_by_kind[str(job_name)] = _parse_ctest(job_block, job_name)
+        # Type-check only; the generator owns the semantics of the value. Spelled as
+        # a two-branch match rather than a membership test so the Literal narrows.
+        execution = job_block.get("execution", EXECUTION_RUNNER)
+        if execution == EXECUTION_HPC:
+            execution_by_kind[str(job_name)] = EXECUTION_HPC
+        elif execution == EXECUTION_RUNNER:
+            execution_by_kind[str(job_name)] = EXECUTION_RUNNER
+        else:
+            raise ValueError(
+                f"[matrix.{job_name}].execution must be {EXECUTION_RUNNER!r} or {EXECUTION_HPC!r}, got {execution!r}"
+            )
 
-    return matrix, artifact_prefix_by_kind, ctest_by_kind
+    return matrix, artifact_prefix_by_kind, ctest_by_kind, execution_by_kind
 
 
 def _parse_ctest(job_block: Mapping[str, Any], job_name: str) -> CtestSpec:
@@ -524,13 +555,14 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     data = tomllib.loads(text)
     package = _parse_package(data, default_repo)
     deps = _parse_deps(data)
-    matrix, artifact_prefix_by_kind, ctest_by_kind = _parse_matrix(data)
+    matrix, artifact_prefix_by_kind, ctest_by_kind, execution_by_kind = _parse_matrix(data)
     return Manifest(
         package=package,
         deps=deps,
         matrix=matrix,
         artifact_prefix_by_kind=artifact_prefix_by_kind,
         ctest_by_kind=ctest_by_kind,
+        execution_by_kind=execution_by_kind,
     )
 
 
@@ -630,8 +662,9 @@ def dispatch_producer_workflow(
     fallback_ref: str,
     token: str,
 ) -> None:
-    """Fire a workflow_dispatch into the producer's cross-repo-trigger.yml,
-    then poll the producer's recent runs for ~60s until the new run appears.
+    """Fire a workflow_dispatch into the producer's cross-repo-trigger{,-hpc}.yml —
+    the file for `plan.lane` — then poll the producer's recent runs for ~60s until
+    the new run appears.
 
     The appearance wait is load-bearing: without it, fetch_deps.py's
     poll_for_artifact would query upstream_run_status and possibly see "none"
@@ -646,11 +679,12 @@ def dispatch_producer_workflow(
         f"resolve-{os.environ.get('GITHUB_RUN_ID', '0')}-"
         f"{os.environ.get('GITHUB_RUN_ATTEMPT', '0')}-{secrets.token_hex(4)}"
     )
+    workflow_file = f"cross-repo-trigger{lane_suffix(plan.lane)}.yml"
     cmd = [
         "gh",
         "workflow",
         "run",
-        "cross-repo-trigger.yml",
+        workflow_file,
         "--repo",
         plan.repo,
         "--ref",
@@ -674,16 +708,18 @@ def dispatch_producer_workflow(
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if result.returncode != 0:
         raise ResolveError(
-            f"Failed to dispatch cross-repo-trigger.yml in {plan.repo}@{plan.ref} "
+            f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "
             f"(dispatcher {dispatcher_repo}@{dispatcher_sha[:8]}): {result.stderr.strip()}"
         )
 
     print(
-        f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.ref} (sha={plan.sha[:8]}): its "
-        "artifact was missing, so it will recompile. Downstream build jobs will WAIT for it to finish."
+        f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.ref} (sha={plan.sha[:8]}, "
+        f"lane={plan.lane}): its artifact was missing, so it will recompile. Downstream build jobs "
+        "will WAIT for it to finish."
     )
     print(
-        f"  dispatched {plan.repo}@{plan.ref} (sha={plan.sha[:8]}, dispatch-id={dispatch_id}); "
+        f"  dispatched {workflow_file} in {plan.repo}@{plan.ref} (sha={plan.sha[:8]}, "
+        f"dispatch-id={dispatch_id}); "
         "waiting for run to appear"
     )
     deadline = time.monotonic() + 60
@@ -769,7 +805,8 @@ def _classify_orphan_pin(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
     can_dispatch: bool,
-    dispatch_plans: dict[tuple[Repo, Ref], DispatchPlan],
+    lane: Execution,
+    dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
 ) -> Literal["triggered rebuild"]:
     """Triage an orphan pin: artifact missing AND no producer CI in flight.
 
@@ -783,7 +820,7 @@ def _classify_orphan_pin(
          under that ref (and the consumer probably means it). Hard fail.
       3. Timing skew — same ref, supported combo, just no current build.
          Record a DispatchPlan so _run can dispatch the producer's
-         cross-repo-trigger.yml after all legs resolve. The dep's source becomes
+         cross-repo-trigger{,-hpc}.yml after all legs resolve. The dep's source becomes
          "triggered rebuild"; once the dispatch fires, fetch_deps' poll path
          takes over.
 
@@ -829,7 +866,18 @@ def _classify_orphan_pin(
             "auto-recovery via consumer-driven dispatch."
         )
 
-    dispatch_plans.setdefault((spec.repo, ref), DispatchPlan(repo=spec.repo, ref=ref, sha=sha))
+    if producer_manifest is not None and lane not in producer_manifest.execution_by_kind.values():
+        raise ResolveError(
+            f"dep '{spec.package}' from {spec.repo}@{ref} is missing its {lane} artifact "
+            f"'{artifact_name}', but the producer's manifest declares no [matrix.<kind>] with "
+            f"execution = '{lane}', so it has no cross-repo-trigger{lane_suffix(lane)}.yml to rebuild "
+            "it. Add the lane to the producer, or drop the dep from this consumer's "
+            f"{lane} kinds."
+        )
+
+    # Keyed by lane as well as (repo, ref): a producer needed by BOTH lanes needs two
+    # dispatches, and collapsing them would silently leave one lane's artifact missing.
+    dispatch_plans.setdefault((spec.repo, ref, lane), DispatchPlan(repo=spec.repo, ref=ref, sha=sha, lane=lane))
     return "triggered rebuild"
 
 
@@ -846,7 +894,8 @@ def resolve_leg(
     run_state_cache: dict[tuple[Repo, Sha], bool],
     token: str | None,
     can_dispatch: bool,
-    dispatch_plans: dict[tuple[Repo, Ref], DispatchPlan],
+    lane: Execution,
+    dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     own_prefix_override: str | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Resolve the full transitive dep set for one matrix entry.
@@ -964,6 +1013,7 @@ def resolve_leg(
                     sync_branch=sync_branch,
                     sync_exists_by_repo=sync_exists_by_repo,
                     can_dispatch=can_dispatch,
+                    lane=lane,
                     dispatch_plans=dispatch_plans,
                 )
 
@@ -1177,7 +1227,7 @@ def _run(
     # pins hard-fail.
     dispatch_token = os.environ.get("DISPATCH_TOKEN", "").strip()
     can_dispatch = bool(dispatch_token)
-    dispatch_plans: dict[tuple[Repo, Ref], DispatchPlan] = {}
+    dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan] = {}
 
     matrix_names = [m.strip() for m in matrix.split(",") if m.strip()]
 
@@ -1192,6 +1242,8 @@ def _run(
         # Per-kind, so hoisted out of the per-leg loop; copied onto each leg
         # below because a workflow step can only read `matrix.*`.
         ctest = local_manifest.ctest_by_kind.get(mname, CtestSpec())
+        # Which of the producer's two trigger workflows a recovery rebuild fires.
+        lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         for entry in include:
             deps_resolved, own = resolve_leg(
                 own=local_manifest.package,
@@ -1206,6 +1258,7 @@ def _run(
                 run_state_cache=run_state_cache,
                 token=token,
                 can_dispatch=can_dispatch,
+                lane=lane,
                 dispatch_plans=dispatch_plans,
                 own_prefix_override=own_prefix_override,
             )

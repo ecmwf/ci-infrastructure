@@ -18,8 +18,8 @@ from typing import Final
 import pytest
 from conftest import parse_all, write_repo
 
+from ci_infrastructure._github_api import EXECUTION_HPC
 from ci_infrastructure.generate_downstream_ci import (
-    EXECUTION_HPC,
     SchemaError,
     parse_manifest,
     render_workflow,

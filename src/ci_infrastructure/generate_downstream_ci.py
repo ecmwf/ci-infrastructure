@@ -96,7 +96,16 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ._errors import CIError
-from ._github_api import ManifestSchemaError, fetch_manifests_layer, resolve_reuse_matrix, select_token
+from ._github_api import (
+    EXECUTION_HPC,
+    EXECUTION_RUNNER,
+    Execution,
+    ManifestSchemaError,
+    fetch_manifests_layer,
+    lane_suffix,
+    resolve_reuse_matrix,
+    select_token,
+)
 from .hpc import jobscript
 
 GENERATED_HEADER: Final = (
@@ -189,27 +198,14 @@ TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"  # upstream's trigger-downstr
 TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"  # a consumer dispatched us to rebuild our artifact
 _VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQUEST})
 
-# How a kind's build runs. "runner" is the default GitHub-runner path; "hpc"
-# submits the kind's job_script as a SLURM job via the build-on-hpc action.
-Execution: TypeAlias = Literal["runner", "hpc"]
-EXECUTION_RUNNER: Final[Execution] = "runner"
-EXECUTION_HPC: Final[Execution] = "hpc"
-
 # A repo's [package].visibility; see _edge_needs_dispatch for what it gates.
 Visibility: TypeAlias = Literal["public", "private"]
 VISIBILITY_PUBLIC: Final[Visibility] = "public"
 VISIBILITY_PRIVATE: Final[Visibility] = "private"
 
 
-def _lane_suffix(lane: Execution) -> str:
-    """Filename suffix distinguishing the two lanes' generated workflow files.
-
-    The runner lane uses the unsuffixed names (cross-repo-trigger.yml,
-    trigger-downstream.yml); the hpc lane gets a `-hpc` sibling. Splitting the flow
-    into two files per side (rather than one file gated by a `lane` input) keeps the
-    concurrency groups distinct and avoids skipped jobs on the unused lane.
-    """
-    return "" if lane == EXECUTION_RUNNER else "-hpc"
+#: Re-exported under the module-local name the call sites below already use.
+_lane_suffix = lane_suffix
 
 
 def _lane_label(lane: Execution) -> str:

@@ -35,6 +35,29 @@ from ._errors import CIError
 
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
+# How a kind's build runs. "runner" is the default GitHub-runner path; "hpc"
+# submits the kind's job_script as a SLURM job via the build-on-hpc action.
+#
+# Lives here, in the module both generate_downstream_ci and resolve_deps already
+# import, because both need it and neither should import the other: the generator
+# names the per-lane workflow FILES, and the resolver has to pick the same file
+# when it dispatches a recovery rebuild.
+Execution: TypeAlias = Literal["runner", "hpc"]
+EXECUTION_RUNNER: Final[Execution] = "runner"
+EXECUTION_HPC: Final[Execution] = "hpc"
+
+
+def lane_suffix(lane: Execution) -> str:
+    """Filename suffix distinguishing the two lanes' generated workflow files.
+
+    The runner lane uses the unsuffixed names (cross-repo-trigger.yml,
+    trigger-downstream.yml); the hpc lane gets a `-hpc` sibling. Splitting the flow
+    into two files per side (rather than one file gated by a `lane` input) keeps the
+    concurrency groups distinct and avoids skipped jobs on the unused lane.
+    """
+    return "" if lane == EXECUTION_RUNNER else "-hpc"
+
+
 # Restrict to GitHub's allowed alias chars.
 _ALIAS_SAFE_RE: Final = re.compile(r"[^A-Za-z0-9_]")
 

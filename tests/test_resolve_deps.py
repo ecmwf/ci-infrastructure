@@ -24,12 +24,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final, Literal, TypedDict, Unpack
 
 import pytest
 
 from ci_infrastructure import resolve_deps
-from ci_infrastructure._github_api import canonical_option_segment
+from ci_infrastructure._github_api import (
+    EXECUTION_HPC,
+    EXECUTION_RUNNER,
+    Execution,
+    canonical_option_segment,
+)
 from ci_infrastructure.resolve_deps import (
     ArtifactName,
     DepSpec,
@@ -302,6 +308,7 @@ def test_options_do_not_propagate_and_ripple_via_deps_hash(monkeypatch: pytest.M
             run_state_cache={},
             token=None,
             can_dispatch=False,
+            lane="runner",
             dispatch_plans={},
         )
 
@@ -417,6 +424,7 @@ def test_when_scopes_dep_out_of_identity_of_nonmatching_legs(monkeypatch: pytest
             run_state_cache={},
             token=None,
             can_dispatch=False,
+            lane="runner",
             dispatch_plans={},
         )
 
@@ -525,3 +533,82 @@ platform = "ubuntu-24.04"
 
     with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args must be a string"):
         resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
+
+
+# --- recovery dispatch picks the producer's LANE ----------------------------
+# The bug this pins: the dispatch hardcoded `cross-repo-trigger.yml`, so a missing
+# HPC artifact re-triggered the producer's RUNNER lane — which never publishes an
+# hpc artifact, so the rebuild could not satisfy the pin that asked for it, and the
+# consumer waited out its poll and failed pointing at the wrong thing.
+
+
+def _orphan_spec(repo: str = "o/up") -> DepSpec:
+    return DepSpec(
+        repo=Repo(repo),
+        package=PackageName("up"),
+        ref=Ref("main"),
+        compiler_inputs=["cxx-compiler"],
+        build_type_input="build-type",
+        platform_input="platform",
+        needs_python=False,
+        python_version_input="python-version",
+    )
+
+
+@pytest.mark.parametrize(
+    ("lane", "expected"),
+    [(EXECUTION_RUNNER, "cross-repo-trigger.yml"), (EXECUTION_HPC, "cross-repo-trigger-hpc.yml")],
+)
+def test_dispatch_targets_the_lane_s_workflow_file(
+    lane: Execution, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> _Result:
+        seen.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr("ci_infrastructure.resolve_deps.subprocess.run", _fake_run)
+    # The appearance wait polls until the dispatched run shows up; report it at once.
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda *a, **k: SimpleNamespace(in_flight=True))
+
+    resolve_deps.dispatch_producer_workflow(
+        plan=resolve_deps.DispatchPlan(repo=Repo("o/up"), ref=Ref("main"), sha=Sha(BRANCH_HEAD), lane=lane),
+        dispatcher_repo="o/down",
+        dispatcher_sha=BRANCH_HEAD,
+        branch="main",
+        fallback_ref="main",
+        token="t",
+    )
+
+    assert seen, "no dispatch was attempted"
+    assert seen[0][:3] == ["gh", "workflow", "run"]
+    assert seen[0][3] == expected
+
+
+def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
+    """A producer whose artifact is missing for BOTH lanes needs two dispatches.
+    Keyed by (repo, ref) alone, the second lane was silently dropped."""
+    plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
+    spec = _orphan_spec()
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+        resolve_deps._classify_orphan_pin(
+            spec=spec,
+            ref=Ref("main"),
+            sha=Sha(BRANCH_HEAD),
+            artifact_name=ArtifactName(f"up-{BRANCH_HEAD}-{lane}"),
+            matrix_entry={},
+            manifest_cache={},
+            sync_branch=None,
+            sync_exists_by_repo={},
+            can_dispatch=True,
+            lane=lane,
+            dispatch_plans=plans,
+        )
+
+    assert sorted(p.lane for p in plans.values()) == ["hpc", "runner"]
