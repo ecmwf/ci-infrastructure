@@ -9,6 +9,32 @@ FROM debian:11
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Bullseye is END OF LIFE: LTS ended 2026-08-31, and its security archive is
+# being torn down. The bullseye-security INDEX is still served while the pool
+# behind it is emptied, so a plain `apt-get update && apt-get install` reads a
+# stale index and 404s on packages that no longer exist -- which is exactly how
+# this image started failing. archive.debian.org is not an answer either: it
+# carries original bullseye main, which conflicts with the security-updated
+# libraries already in the debian:11 base layer (git, gnupg and build-essential
+# all come out unsatisfiable).
+#
+# snapshot.debian.org serves every suite as it stood at one instant, so main,
+# updates and security stay mutually consistent. Check-Valid-Until must be off:
+# a snapshot's Release file is deliberately old, and bullseye-security's last
+# one expired on 2026-09-07.
+#
+# This freezes the image's packages. That is the point -- there are no further
+# bullseye security updates to miss. Bump SNAPSHOT only to move to a different
+# frozen instant; the real fix is retiring debian11.
+ARG DEBIAN_SNAPSHOT=20260815T000000Z
+RUN printf '%s\n' \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bullseye main" \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bullseye-updates main" \
+      "deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bullseye-security main" \
+      > /etc/apt/sources.list \
+ && echo 'Acquire::Check-Valid-Until "false";' \
+      > /etc/apt/apt.conf.d/99no-check-valid-until
+
 # The debian11 counterpart of public-images/ubuntu24.04/base. That file explains
 # why each package belongs in the BASE rather than a variant; this one records
 # only where bullseye forces a different answer.
