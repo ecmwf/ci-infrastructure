@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     cmake \
+    ninja-build \
     jq \
     unzip \
     zstd \
