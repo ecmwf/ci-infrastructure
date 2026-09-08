@@ -175,12 +175,12 @@ has read the diff and applied `approved-for-ci`.
 ```yaml
 jobs:
   ci-approval:
-    # bash, jq, and gh only for revocation — no checkout, no Python, no network
-    # to reach a verdict, so the cheapest runner is the right one. The action
-    # says which tool is missing if an image turns out not to carry one.
+    # bash, jq, and gh only to spend the label — no checkout, no Python, no
+    # network to reach a verdict, so the cheapest runner is the right one. The
+    # action says which tool is missing if an image turns out not to carry one.
     runs-on: ubuntu-slim
     permissions:
-      pull-requests: write   # only so the label can be revoked again
+      pull-requests: write   # only so the label can be deleted
     steps:
       - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
 
@@ -199,10 +199,20 @@ easy to lose by rewriting this into something that looks equivalent:
   conditional reports *Success* to the merge box. An unapproved pull request
   would show a row of green ticks meaning "these never ran", and a required
   status check on them would enforce nothing.
-- **Approval is per-push.** A `synchronize` or `reopened` event deletes the
-  label and fails, so a contributor cannot earn approval on a harmless diff and
-  then push the payload into the same pull request. The caller must therefore
-  listen for `synchronize`; without it the gate is decorative.
+- **The label is a single-use token.** It is deleted the moment it is honoured,
+  so one approval buys one run and a contributor cannot earn approval on a
+  harmless diff and then replay it. Deleting it *then*, rather than on the next
+  push, is the whole point: consumers set `cancel-in-progress`, so a revocation
+  that waits for one particular run to reach its own gate step is one a
+  superseding run can cancel away. A `synchronize` or `reopened` still fails —
+  and still deletes — as the backstop for exactly that case, so the caller must
+  listen for `synchronize`.
+
+  The cost is that approval covers a run, not a commit: a GitHub *re-run* replays
+  the frozen event payload and still sees the label, but any new event needs a
+  fresh one. On a fork pull request that also wants the downstream fan-out, apply
+  `approved-for-ci` and `run-downstream-CI` together — the second label
+  re-triggers CI, and that run needs an approval of its own.
 
 It answers "may this contributor's code run on our hardware?", never "is this
 job worth running on this pull request?". Opt-in labels, paths filters and

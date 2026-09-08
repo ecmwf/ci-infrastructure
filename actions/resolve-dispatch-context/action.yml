@@ -5,24 +5,20 @@
 name: Resolve the commit an orchestrator run is about
 description: >
   Answer "which commit, and did its CI pass?" for a downstream orchestrator,
-  whichever of its two triggers woke it.
+  whichever trigger woke it, so nothing below has to read the event payload.
 
-  `workflow_run` reads straight from the event: a CI run just completed, and the
-  commit and verdict are in the payload. `pull_request_target` has neither -- the
-  fan-out was asked for by a label, long after CI finished -- so the commit comes
-  from the pull request and the verdict from the most recent completed run of
-  `ci-workflow` for exactly that commit.
-
-  That second path is what stops a label costing a full CI rebuild. The old
-  chain had one entry point, `workflow_run`, so the only way to fan out with the
-  label present was to re-run the whole matrix and let the completion event find
-  it.
+  `workflow_run` -- what the generated orchestrators use -- reads straight from
+  the event: a CI run just completed, and the commit and verdict are in the
+  payload. `pull_request_target` has neither, so the commit comes from the pull
+  request and the verdict from the most recent completed run of `ci-workflow`
+  for exactly that commit. No orchestrator takes that path today; it is kept
+  because it is the only way to answer the question for a caller that has a pull
+  request and no run.
 
   Reports the verdict; it never fails the job on one. `ci-conclusion` is the
-  empty string when no completed CI run exists for the commit (a pull request
-  whose diff CI's paths filter excluded, or one labelled before CI finished), so
-  a caller gating on `== 'success'` treats "never ran" like "failed" without a
-  special case. `ci-summary` says which of the two it was, for a commit status.
+  empty string when no completed CI run exists for the commit, so a caller
+  gating on `== 'success'` treats "never ran" like "failed" without a special
+  case. `ci-summary` says which of the two it was, for a commit status.
 
 inputs:
   ci-workflow:
@@ -32,7 +28,11 @@ inputs:
   token:
     description: >
       Token that can read Actions runs and pull requests on this repo. Defaults
-      to github.token; pass an App token where that does not suffice.
+      to github.token, which is the right answer here -- everything it reads is
+      on the repo running the job, so give that job `actions: read` and it works
+      whatever the repo's visibility. An App token is a downgrade: it carries
+      only what its installation grants, so on a private or internal repo it
+      403s where github.token would not.
     required: false
     default: ''
 

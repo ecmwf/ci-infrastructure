@@ -13,31 +13,39 @@ description: >
   repository, since pushing to it already needed write access; or a fork
   carrying `label`. Otherwise the step fails.
 
+  The label is a single-use token: it is deleted the moment it is honoured, so
+  one approval buys one run and cannot be replayed by a later event on a commit
+  nobody re-read. Deleting it then rather than on the next push is the whole
+  point -- callers cancel in-flight runs, so a revocation that depends on one
+  particular run surviving to its own gate step is not a revocation. A
+  `synchronize` or `reopened` still fails outright, and still deletes, as the
+  backstop for the run that was cancelled before it could.
+
   Hang the gated jobs off it with `needs:` and nothing else -- the step succeeds
   exactly when they may run. Two invariants are easy to lose by "simplifying"
   this. It FAILS rather than skipping, because a job skipped by an `if:` reports
   Success, so gating on the label directly would show green ticks meaning "never
-  ran" and a required check on them would enforce nothing. And
-  `synchronize`/`reopened` revokes the label, so approval never outlives the
-  commit it was given for -- which means the caller MUST listen for
-  `synchronize`, or the gate is decorative.
+  ran" and a required check on them would enforce nothing. And the caller MUST
+  listen for `synchronize`, or the backstop never fires.
 
   Repository policy (opt-in labels, paths filters) belongs on the gate job's own
   `if:`, where a skip skips everything behind it -- not in here, and never on
   the gated jobs. Applying a label needs only triage permission, so treat "who
-  may label" as "who may approve". Needs bash and jq, plus gh only to revoke:
-  run it on the cheapest label. See the README for the rest.
+  may label" as "who may approve". Needs bash, jq and gh, plus
+  `pull-requests: write`: run it on the cheapest label. See the README for the
+  rest.
 
 inputs:
   label:
-    description: 'Label that grants approval. Applied by a maintainer, deleted again on every push.'
+    description: 'Label that grants approval. Applied by a maintainer, spent by the run that honours it.'
     required: false
     default: 'approved-for-ci'
-  revoke-on-push:
+  consume-label:
     description: >
-      'true' (default): on `synchronize`/`reopened` of a fork pull request,
-      delete the label and fail. Needs `pull-requests: write`. Turning it off
-      means one approval covers every future push to that branch.
+      'true' (default): delete the label as soon as it is honoured, and fail
+      `synchronize`/`reopened` of a fork pull request. Needs
+      `pull-requests: write`. Turning it off makes one approval cover every
+      future event on that branch, pushes included.
     required: false
     default: 'true'
   trust-same-repo:
@@ -47,7 +55,7 @@ inputs:
     required: false
     default: 'true'
   token:
-    description: 'Token with pull-requests:write, used only to revoke. Defaults to github.token.'
+    description: 'Token with pull-requests:write, used only to delete the label. Defaults to github.token.'
     required: false
     default: ''
 
@@ -69,7 +77,7 @@ runs:
         # either: it is read from $GITHUB_EVENT_PATH with jq, so a label or a
         # repository name can never reach the shell as syntax.
         LABEL_INPUT: ${{ inputs.label }}
-        REVOKE_INPUT: ${{ inputs.revoke-on-push }}
+        CONSUME_INPUT: ${{ inputs.consume-label }}
         TRUST_SAME_REPO_INPUT: ${{ inputs.trust-same-repo }}
       run: |
         set -euo pipefail
@@ -88,7 +96,7 @@ runs:
               ;;
           esac
         }
-        revoke="$(parse_bool revoke-on-push "${REVOKE_INPUT:-}")"
+        consume="$(parse_bool consume-label "${CONSUME_INPUT:-}")"
         trust_same_repo="$(parse_bool trust-same-repo "${TRUST_SAME_REPO_INPUT:-}")"
 
         # Only ever called on the passing paths: the output exists for logs and
@@ -97,6 +105,21 @@ runs:
           echo "reason=$1" >> "$GITHUB_OUTPUT"
           echo "CI approval: $1"
           exit 0
+        }
+
+        # Fails loudly. A deletion that silently did not happen leaves a live
+        # approval on a pull request whose next event nobody will re-read, which
+        # is the exact hole this action exists to close.
+        spend_label() {
+          # @uri, not the raw name: labels may contain spaces and slashes.
+          local encoded
+          encoded="$(printf '%s' "$label" | jq -sRr @uri)"
+          if ! gh api -X DELETE \
+               "repos/$GITHUB_REPOSITORY/issues/$pr_number/labels/$encoded" >/dev/null 2>&1; then
+            echo "::error title=CI approval::could not remove the approval label from #$pr_number. Grant this job 'pull-requests: write', or set consume-label: 'false' if that is really what you want." >&2
+            exit 1
+          fi
+          echo "$1"
         }
 
         event="${GITHUB_EVENT_PATH:-}"
@@ -130,21 +153,12 @@ runs:
           pass same-repo
         fi
 
-        # Approval is spent by the push that follows it. Revoke first, so the
-        # label is gone even if the failure message below is never read.
-        if [ "$revoke" = "true" ] && { [ "$action" = "synchronize" ] || [ "$action" = "reopened" ]; }; then
+        # Reaching this with the label still applied means the run that should
+        # have spent it never got to its gate step. Delete first, so the label is
+        # gone even if the failure message below is never read.
+        if [ "$consume" = "true" ] && { [ "$action" = "synchronize" ] || [ "$action" = "reopened" ]; }; then
           if [ "$has_label" = "yes" ]; then
-            # @uri, not the raw name: labels may contain spaces and slashes.
-            encoded="$(printf '%s' "$label" | jq -sRr @uri)"
-            if ! gh api -X DELETE \
-                 "repos/$GITHUB_REPOSITORY/issues/$pr_number/labels/$encoded" >/dev/null 2>&1; then
-              # Fail loudly. A revocation that silently did not happen leaves a
-              # stale approval on a branch that has since changed, which is the
-              # exact hole this action exists to close.
-              echo "::error title=CI approval::could not remove the approval label from #$pr_number. Grant this job 'pull-requests: write', or set revoke-on-push: 'false' if that is really what you want." >&2
-              exit 1
-            fi
-            echo "Removed the approval label from #$pr_number: the head commit changed since it was applied."
+            spend_label "Removed a leftover approval label from #$pr_number: the head commit changed before it was spent."
           fi
           {
             echo "### CI approval required"
@@ -157,6 +171,9 @@ runs:
         fi
 
         if [ "$has_label" = "yes" ]; then
+          if [ "$consume" = "true" ]; then
+            spend_label "Spent the approval label on #$pr_number: it covers this run only."
+          fi
           pass approved
         fi
 

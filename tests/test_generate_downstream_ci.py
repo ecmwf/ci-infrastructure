@@ -1343,10 +1343,7 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     # Root jobs gate on the upstream CI having succeeded.
     assert "if: ${{ needs.context.outputs.ci-conclusion == 'success' }}" in yaml
     # Coalesce re-runs for the same tested commit, keyed by lane.
-    assert (
-        "group: trigger-downstream-runner-"
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in yaml
-    )
+    assert "group: trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}" in yaml
     assert "cancel-in-progress: true" in yaml
     # Both B and C are invoked as reusable workflows (flat fan-out, not chained),
     # each pinned to its [[trigger-downstream]].ref, with secrets: inherit.
@@ -1370,8 +1367,8 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "actions/validate-generated-workflows@main" in yaml
     # PyYAML emits sequences in block style by default.
     # B has no cross-pkg deps: just the two jobs that front everything, then validate.
-    assert "needs:\n    - ci-approval\n    - context\n    - validate\n" in yaml
-    assert "needs:\n    - ci-approval\n    - context\n    - validate\n    - b\n" in yaml  # C depends on B too.
+    assert "needs:\n    - context\n    - validate\n" in yaml
+    assert "needs:\n    - context\n    - validate\n    - b\n" in yaml  # C depends on B too.
     # `validate` still mints its own App token; per-consumer dispatch mints are gone.
     assert "actions/create-github-app-token@v3" in yaml
     # Commit-status jobs post the required downstream/<lane> context back to the SHA.
@@ -1752,7 +1749,6 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     # one call.
     assert sorted(doc["jobs"]) == [
         "b",
-        "ci-approval",
         "context",
         "report-ci-failure",
         "report-result",
@@ -1905,17 +1901,16 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
     assert sorted(doc["jobs"]) == [
         "b",
         "c",
-        "ci-approval",
         "context",
         "report-ci-failure",
         "report-result",
         "report-start",
         "validate",
     ]
-    # ci-approval and context front every job (_require_context); the ordering this
+    # context fronts every job (_require_context); the ordering this
     # test is about is what follows them.
-    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "validate"]
-    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "validate", "b"]
+    assert doc["jobs"]["b"]["needs"] == ["context", "validate"]
+    assert doc["jobs"]["c"]["needs"] == ["context", "validate", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
 
@@ -2089,7 +2084,7 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
     # Final status runs always() (still gated on CI success) and depends on validate
     # plus the consumer caller job, mapping their results to success/failure.
     result = doc["jobs"]["report-result"]
-    assert result["needs"] == ["ci-approval", "context", "validate", "b"]
+    assert result["needs"] == ["context", "validate", "b"]
     assert result["if"] == "${{ always() && needs.context.outputs.ci-conclusion == 'success' }}"
     run = result["steps"][-1]["run"]
     assert "${{ needs.validate.result }}" in run
@@ -2519,7 +2514,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     for jid, job in doc["jobs"].items():
         if jid == "label-gate":
             continue
-        if jid in {"ci-approval", "context"}:
+        if jid == "context":
             # In front of label-gate, not behind it: the gate looks its pull request
             # up by the commit the context job resolves.
             continue
@@ -2568,6 +2563,64 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
     assert gate["with"]["label"] == "run-downstream-CI"
     assert gate["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
+
+
+def test_downstream_gate_reads_its_own_repo_with_the_plain_token(tmp_path: Path) -> None:
+    """No App token: the pull request being looked up is on the repo running the job.
+
+    An App token carries only what its installation was granted, so it 403s on a
+    repo that is not public -- which is what took down every stack-dependencies
+    fan-out while the identical job passed on the public repos, where pull request
+    data is readable by any token. The `permissions` block is what lets the plain
+    token be relied on: it grants the one scope the lookup needs whatever the
+    repo's default is, and nothing else.
+    """
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+    job = doc["jobs"]["label-gate"]
+
+    assert job["permissions"] == {"pull-requests": "read"}
+    assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
+    gate = next(s for s in job["steps"] if s.get("id") == "gate")
+    assert "token" not in gate["with"]
+
+
+def test_the_context_job_reads_its_own_actions_runs_with_the_plain_token(tmp_path: Path) -> None:
+    """resolve-dispatch-context lists this repo's own Actions runs and nothing else,
+    so the same reasoning as label-gate applies: an App token grants only what its
+    installation was given, where `actions: read` on the plain token is granted by
+    the repo itself."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+    job = doc["jobs"]["context"]
+
+    assert job["permissions"] == {"actions": "read"}
+    assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
+    ctx = next(s for s in job["steps"] if s.get("id") == "ctx")
+    assert "with" not in ctx
+
+
+@pytest.mark.parametrize("jid", ["report-start", "report-ci-failure", "report-result"])
+def test_status_jobs_post_to_their_own_repo_with_the_plain_token(tmp_path: Path, jid: str) -> None:
+    """The status goes to `github.repository`. Nothing in these repos is triggered by
+    `on: status`, so GITHUB_TOKEN's no-cascade rule costs nothing, and a required check
+    is matched by its context string rather than by who posted it."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+    job = doc["jobs"][jid]
+
+    assert job["permissions"] == {"statuses": "write"}
+    assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
+    (step,) = job["steps"]
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+
+
+def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
+    """The counterweight to the two tests above: `validate` re-renders this repo's
+    workflows from sibling manifests, which needs contents:read on repos this one's
+    token knows nothing about. Own-repo simplification must not creep into it."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+    job = doc["jobs"]["validate"]
+
+    assert any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
+    assert "permissions" not in job
 
 
 def test_downstream_gate_label_never_becomes_shell_syntax(tmp_path: Path) -> None:
@@ -2724,64 +2777,57 @@ def test_absent_build_type_folds_onto_the_release_default(tmp_path: Path) -> Non
         validate_graph(parse_all(tmp_path))
 
 
-# === The label as a second entry point =====================================
-# `workflow_run` fires only when a CI run COMPLETES, so with it as the sole
-# trigger the only way to fan out with the gate label present was to re-run the
-# whole CI matrix and let the completion event find it.
+# === One entry point: a completed CI run ===================================
+# The gate label decides whether to fan out, never whether to wake up. A
+# `pull_request_target: [labeled]` entry point used to exist so a label did not
+# cost a full CI re-run; it was dropped because the approval gate it needed was
+# strictly weaker than the `ci-conclusion == 'success'` check beside it.
 
 
-def test_label_is_a_second_entry_point(tmp_path: Path) -> None:
+def test_a_completed_ci_run_is_the_only_entry_point(tmp_path: Path) -> None:
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     on = doc[True]  # PyYAML reads the bare key `on` as True
-    assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"]}
-    assert on["pull_request_target"] == {"types": ["labeled"]}
+    assert on == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
 
 
-def test_no_label_trigger_without_a_gate_label(tmp_path: Path) -> None:
-    """Without a gate label there is no label that means "fan out", so the
-    trigger would wake this workflow on every label anyone applies."""
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', ""))
+def test_a_gate_label_adds_no_trigger(tmp_path: Path) -> None:
+    """The label is read by label-gate against the head SHA, not by an `on:` filter,
+    so declaring one must not change how this workflow is woken."""
+    without = _render_gate(tmp_path, _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', ""))
 
-    assert "pull_request_target" not in doc[True]
+    assert without[True] == _render_gate(tmp_path, _GATE_UPSTREAM)[True]
 
 
-def test_every_job_hangs_off_the_ci_approval_gate(tmp_path: Path) -> None:
-    """On the label path this workflow calls each consumer's cross-repo-trigger,
-    which builds the pull request's head SHA on our runners -- so an ungated label
-    is all an outside contributor would need. check_ci_approval.py will not demand
-    the gate here: every job in this file is ubuntu-slim, and the ARC builds happen
-    inside the workflows it calls."""
+def test_no_ci_approval_gate(tmp_path: Path) -> None:
+    """`workflow_run` is the only trigger, so require-ci-approval would report
+    `not-a-pull-request` and pass every time -- a gate that cannot gate, implying
+    protection that is not there. What keeps fork code off our runners is that the
+    work jobs demand a green CI for the head SHA, and CI can only have gone green
+    on that SHA by passing its own approval gate."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    approval = doc["jobs"]["ci-approval"]
-    assert approval["steps"] == [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}]
-    assert approval["permissions"] == {"pull-requests": "write"}
+    assert "ci-approval" not in doc["jobs"]
+    assert "require-ci-approval" not in yaml.dump(doc)
     for jid, job in doc["jobs"].items():
-        if jid == "ci-approval":
+        if jid == "context":
             continue
-        assert "ci-approval" in job["needs"], jid
+        assert "context" in job["needs"], jid
 
 
-def test_the_label_filter_sits_only_on_the_gate_job(tmp_path: Path) -> None:
-    """A job skipped by `if:` reports Success, so the filter must gate the gate --
-    where a skip skips everything behind it -- and never the work itself."""
+def test_the_label_filter_sits_only_on_the_label_gate_job(tmp_path: Path) -> None:
+    """A job skipped by `if:` reports Success, so the work must never carry the
+    label decision in its own `if:`; it reads label-gate's output instead."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    assert doc["jobs"]["ci-approval"]["if"] == (
-        "${{ github.event_name != 'pull_request_target' || github.event.label.name == 'run-downstream-CI' }}"
-    )
-    for jid, job in doc["jobs"].items():
-        if jid == "ci-approval":
-            continue
-        assert "github.event.label" not in (job.get("if") or ""), jid
+    for job in doc["jobs"].values():
+        assert "github.event.label" not in (job.get("if") or "")
 
 
 def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> None:
-    """`github.event.workflow_run.*` is empty on the label path, so nothing below
-    the context job may read it. The concurrency key is the one exception: it
-    cannot see `needs`, and an empty group would put every labelled pull request
-    into one group, cancelling each other's fan-out."""
+    """Nothing below the context job may read `github.event.workflow_run.*`; one
+    job owns the lookup. The concurrency key is the one exception -- it cannot see
+    `needs`."""
     write_repo(tmp_path, "a", _GATE_UPSTREAM)
     write_repo(tmp_path, "b", _GATE_CONSUMER)
     manifests = parse_all(tmp_path)
@@ -2792,13 +2838,11 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     assert orch is not None
 
     doc: dict[str, Any] = yaml.safe_load(orch)
-    assert doc["concurrency"]["group"] == (
-        "trigger-downstream-runner-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
-    )
+    assert doc["concurrency"]["group"] == "trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}"
     assert orch.count("github.event.workflow_run") == 1
 
     ctx = doc["jobs"]["context"]
-    assert ctx["needs"] == ["ci-approval"]
+    assert "needs" not in ctx
     assert sorted(ctx["outputs"]) == ["ci-conclusion", "ci-summary", "ci-url", "head-branch", "head-sha"]
     resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
     assert resolve["uses"] == "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main"

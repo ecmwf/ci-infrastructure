@@ -31,7 +31,11 @@ inputs:
   token:
     description: >
       Token that can read pull requests on this repo. Defaults to github.token,
-      which suffices for a public repo; pass an App token where it does not.
+      which is the right answer whenever the pull request is on the repo running
+      the job -- give the job `pull-requests: read` and it works whatever the
+      repo's visibility. An App token is for reading some OTHER repo, and is a
+      downgrade here: it carries only what its installation grants, so on a
+      private or internal repo it 403s where github.token would not.
     required: false
     default: ''
 
