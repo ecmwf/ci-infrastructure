@@ -46,6 +46,7 @@ RUN dnf -y install dnf-plugins-core \
     ca-certificates \
     gnupg2 \
     cmake \
+    ninja-build \
     jq \
     unzip \
     zstd \

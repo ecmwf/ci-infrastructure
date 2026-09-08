@@ -53,6 +53,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     ca-certificates \
     gnupg \
     cmake \
+    ninja \
     jq \
     unzip \
     zstd \
