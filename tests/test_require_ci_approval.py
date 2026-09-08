@@ -35,9 +35,10 @@ FORK: Final = "outsider/eckit"
 
 def _script() -> str:
     """The composite step's `run:` body, so the test cannot drift from the action."""
-    doc = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
     (step,) = doc["runs"]["steps"]
-    return step["run"]
+    body: str = step["run"]
+    return body
 
 
 def _payload(*, action: str, head_repo: str | None, labels: list[str]) -> dict[str, Any]:
