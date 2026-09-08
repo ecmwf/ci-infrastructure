@@ -228,11 +228,12 @@ def test_submit_when_no_active_job(tmp_path: Path) -> None:
     assert site.submitted
 
 
-def test_output_file_is_created_before_submit(tmp_path: Path) -> None:
-    """The tailed output must exist before the job can write to it.
+def test_output_file_is_emptied_before_submit(tmp_path: Path) -> None:
+    """The tailed output must exist, and be empty, before the job can write to it.
 
     An unwritable output path has to fail here, not after a job has burned an
-    allocation with nowhere to report its result.
+    allocation with nowhere to report its result. Emptying it is what stops a
+    re-run reading the previous attempt's sentinel as this job's verdict.
     """
     site = FakeSlurmSite(next_jid=500)
     submit_or_reattach(
@@ -249,7 +250,7 @@ def test_output_file_is_created_before_submit(tmp_path: Path) -> None:
     assert site._connection.executed[0][0] == "squeue"
     assert site._connection.executed[1:3] == [
         ["mkdir", "-p", "/scratch/jobs"],
-        ["touch", "/scratch/jobs/art.out"],
+        ["sh", "-c", ": > /scratch/jobs/art.out"],
     ]
 
 
@@ -411,7 +412,7 @@ def test_sentinel_waiter_does_not_report_success_for_a_missing_output(tmp_path: 
     sed see empty input and exit 0, which the waiter would map to SUCCESS —
     reporting a build finished before it ever ran.
     """
-    wait = _remote_sentinel_waiter(LocalShellSite(), str(tmp_path / "not-created-yet.out"))
+    wait = _remote_sentinel_waiter(LocalShellSite(), str(tmp_path / "not-created-yet.out"), 4242)
     assert wait(1.0) != "SUCCESS"
 
 
@@ -419,7 +420,7 @@ def test_sentinel_waiter_keeps_waiting_on_an_empty_output(tmp_path: Path) -> Non
     """The output exists (we pre-touch it) but holds no sentinel yet -> keep waiting."""
     output = tmp_path / "job.out"
     output.touch()
-    wait = _remote_sentinel_waiter(LocalShellSite(), str(output))
+    wait = _remote_sentinel_waiter(LocalShellSite(), str(output), 4242)
     assert wait(1.0) is None
 
 
@@ -429,9 +430,22 @@ def test_sentinel_waiter_keeps_waiting_on_an_empty_output(tmp_path: Path) -> Non
 )
 def test_sentinel_waiter_reads_the_verdict_from_the_output(tmp_path: Path, sentinel: str, expected: str) -> None:
     output = tmp_path / "job.out"
-    output.write_text(f"configuring...\nbuilding...\n{sentinel}\n")
-    wait = _remote_sentinel_waiter(LocalShellSite(), str(output))
+    output.write_text(f"configuring...\nbuilding...\n{sentinel} 4242\n")
+    wait = _remote_sentinel_waiter(LocalShellSite(), str(output), 4242)
     assert wait(5.0) == expected
+
+
+def test_sentinel_waiter_ignores_a_sentinel_from_another_job(tmp_path: Path) -> None:
+    """The regression test for the re-run that inherited the last attempt's verdict.
+
+    Every attempt at an artifact writes to the same output path, so a re-run used
+    to match the previous job's sentinel seconds after submitting -- reporting a
+    verdict for a job that was still queued.
+    """
+    output = tmp_path / "job.out"
+    output.write_text(f"{jobscript.SENTINEL_FAILURE} 1111\n")
+    wait = _remote_sentinel_waiter(LocalShellSite(), str(output), 2222)
+    assert wait(1.0) is None
 
 
 # === job-script rendering ===
@@ -497,7 +511,7 @@ def test_render_injects_env_and_sentinels() -> None:
     assert 'export OMP_NUM_THREADS="8"' in script
     assert "trap _ci_on_err ERR" in script
     # success sentinel is the very last executable line
-    assert script.rstrip().endswith(f'echo "{jobscript.SENTINEL_SUCCESS}"')
+    assert script.rstrip().endswith(f'echo "{jobscript.SENTINEL_SUCCESS} {jobscript.SENTINEL_JOB_ID}"')
     assert jobscript.SENTINEL_FAILURE in script
 
 
@@ -518,7 +532,7 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
     assert '_ci_marker="/scratch/staging/art/TRANSFER_COMPLETED"' in script
     assert "TRANSFER_COMPLETED_99-1" not in script
     assert "$(date +%s) + 1200" in script
-    assert f'echo "{jobscript.SENTINEL_FAILURE}"' in script  # marker-never-arrives branch
+    assert f'echo "{jobscript.SENTINEL_FAILURE} {jobscript.SENTINEL_JOB_ID}"' in script  # marker-never-arrives branch
     # Unpacks the shipped tarball into node-local $TMPDIR and cds there.
     assert 'export CI_SOURCE_DIR="${TMPDIR:-/tmp}/ci-src-99-1"' in script
     assert 'tar -xzf "/scratch/staging/art/source.tgz" -C "$CI_SOURCE_DIR"' in script
@@ -634,15 +648,14 @@ def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[s
 def test_stream_job_output_tails_live_and_quits_at_a_sentinel() -> None:
     """The streamer tails the output and stops the remote pipeline at the sentinel."""
     conn = RecordingConnection()
-    _stream_job_output(conn, "/scratch/ci/hpc-jobs/pkg.out")
+    _stream_job_output(conn, "/scratch/ci/hpc-jobs/pkg.out", 4242)
     argv = conn.executed[-1]
     assert argv[:2] == ["bash", "-c"]
     pipeline = argv[2]
     assert "tail -F -n +1" in pipeline
     assert "/scratch/ci/hpc-jobs/pkg.out" in pipeline
-    # Prints every line but quits the pipeline once either sentinel is seen.
-    assert f"/^{jobscript.SENTINEL_SUCCESS}$/q" in pipeline
-    assert f"/^{jobscript.SENTINEL_FAILURE}$/q" in pipeline
+    # Prints every line but quits the pipeline once this job's sentinel is seen.
+    assert f"/{jobscript.sentinel_regex(4242)}/q" in pipeline
 
 
 # === submit-wait: publish vs. --no-publish (test-only) mode ===
@@ -714,7 +727,7 @@ def _invoke_submit_wait(
         return answers.pop(0) if len(answers) > 1 else answers[0]
 
     monkeypatch.setattr(transfer, "marker_exists", _marker_exists)
-    monkeypatch.setattr(transfer, "touch_remote_file", lambda *a, **k: None)
+    monkeypatch.setattr(transfer, "truncate_remote_file", lambda *a, **k: None)
     monkeypatch.setattr(transfer, "fetch_install", _fetch_install)
     monkeypatch.setattr(orch, "_install_cancel_handler", lambda *a, **k: None)
     monkeypatch.setattr(orch, "_stream_job_output", lambda *a, **k: None)

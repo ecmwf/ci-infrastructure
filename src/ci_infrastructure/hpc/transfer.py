@@ -69,11 +69,17 @@ def _probe_remote(conn: Connection, argv: list[str]) -> int:
     return int(proc.returncode)
 
 
-def touch_remote_file(conn: Connection, *, path: str) -> None:
-    """Create ``path`` (and its parent) on the remote if it does not exist."""
+def truncate_remote_file(conn: Connection, *, path: str) -> None:
+    """Create ``path`` (and its parent) on the remote, emptying it if it exists.
+
+    Emptying matters as much as creating: the job output path is per-artifact, so
+    a re-run of the same commit and leg reuses the file the previous attempt
+    wrote, and the waiter would read that attempt's sentinel as this job's
+    verdict.
+    """
     parent = str(PurePosixPath(path).parent)
     _run_remote(conn, ["mkdir", "-p", parent], what=f"Remote mkdir of {parent}")
-    _run_remote(conn, ["touch", path], what=f"Remote touch of {path}")
+    _run_remote(conn, ["sh", "-c", f": > {shlex.quote(path)}"], what=f"Remote truncate of {path}")
 
 
 def _marker_path(staging_dir: str) -> str:

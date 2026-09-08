@@ -234,6 +234,41 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
+# === truncate_remote_file ===
+def test_truncate_remote_file_empties_a_previous_attempts_output(tmp_path: Path) -> None:
+    """The job output path is per-artifact, so a re-run must not find the last
+    attempt's log -- the waiter would read its sentinel as this job's verdict."""
+    output = tmp_path / "hpc-jobs" / "art.out"
+    output.parent.mkdir(parents=True)
+    output.write_text(f"building...\n{jobscript.SENTINEL_FAILURE} 1111\n")
+
+    class RealExecConnection(FakeConnection):
+        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+            proc = super().execute(command, stdout, stderr, dryrun)
+            argv = [str(c) for c in command]
+            subprocess.run(argv, check=True)
+            return proc
+
+    transfer.truncate_remote_file(RealExecConnection(), path=str(output))
+
+    assert output.is_file()
+    assert output.read_text() == ""
+
+
+def test_truncate_remote_file_creates_the_output_and_its_parent(tmp_path: Path) -> None:
+    output = tmp_path / "hpc-jobs" / "art.out"
+
+    class RealExecConnection(FakeConnection):
+        def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+            proc = super().execute(command, stdout, stderr, dryrun)
+            subprocess.run([str(c) for c in command], check=True)
+            return proc
+
+    transfer.truncate_remote_file(RealExecConnection(), path=str(output))
+
+    assert output.is_file()
+
+
 # === marker_exists ===
 def test_marker_exists_probes_the_staging_dir_alone() -> None:
     conn = FakeConnection(exec_returncode=0)

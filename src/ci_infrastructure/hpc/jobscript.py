@@ -42,6 +42,26 @@ import jinja2.meta
 SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
 SENTINEL_FAILURE: Final = "Finished: FAILURE"
 
+#: Appended to every sentinel so a verdict can be attributed to the job that
+#: wrote it. A shell expansion rather than a rendered-in value: the id only
+#: exists once SLURM has accepted the job, which is after this script is written.
+SENTINEL_JOB_ID: Final = "${SLURM_JOB_ID:-unknown}"
+
+
+def sentinel_echo(sentinel: str) -> str:
+    """The shell command a job runs to publish ``sentinel`` as its verdict."""
+    return f'echo "{sentinel} {SENTINEL_JOB_ID}"'
+
+
+def sentinel_regex(jid: int | str) -> str:
+    """Anchored ERE matching either sentinel, but only as written by job ``jid``.
+
+    The waiter tails a path shared by every attempt at this artifact, so a
+    sentinel is only a verdict once it names the job being waited on.
+    """
+    return f"^({SENTINEL_SUCCESS}|{SENTINEL_FAILURE}) {jid}$"
+
+
 #: Default seconds the job waits for the source-transfer marker before giving up.
 DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
@@ -302,7 +322,7 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
         'until [ -f "$_ci_marker" ]; do',
         '  if [ "$(date +%s)" -ge "$_ci_deadline" ]; then',
         f'    echo "ci: source-transfer marker never arrived within {marker_wait_timeout}s" >&2',
-        f'    echo "{SENTINEL_FAILURE}"',
+        f"    {sentinel_echo(SENTINEL_FAILURE)}",
         "    exit 1",
         "  fi",
         "  sleep 5",
@@ -366,7 +386,7 @@ def render_job_script(
     # A failure anywhere below (set -e trips ERR) prints the failure sentinel
     # before the job exits non-zero, so the trap must be armed before the
     # marker-wait/unpack and the body run.
-    out.append(f'_ci_on_err() {{ echo "{SENTINEL_FAILURE}"; }}')
+    out.append(f"_ci_on_err() {{ {sentinel_echo(SENTINEL_FAILURE)}; }}")
     out.append("trap _ci_on_err ERR")
     out.append("")
     if staging_dir is not None and run_id is not None:
@@ -374,5 +394,5 @@ def render_job_script(
         out.append("")
     out.extend(body)
     out.append("")
-    out.append(f'echo "{SENTINEL_SUCCESS}"')
+    out.append(sentinel_echo(SENTINEL_SUCCESS))
     return "\n".join(out) + "\n"
