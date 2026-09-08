@@ -1936,7 +1936,7 @@ def render_orchestrator_workflow(
     label = m.downstream_gate_label
     if label:
         jobs = _apply_label_gate(jobs, label)
-    jobs = _require_context(jobs, label)
+    jobs = _require_context(jobs)
 
     on: dict[str, Any] = {
         "workflow_run": {
@@ -1944,16 +1944,6 @@ def render_orchestrator_workflow(
             "types": ["completed"],
         },
     }
-    if label:
-        # Second entry point, so applying the gate label does not cost a full CI
-        # re-run. `workflow_run` fires only when a CI run COMPLETES, so with it as
-        # the sole trigger the only way to fan out with the label present was to
-        # rebuild the whole matrix and let the completion event find it. Here the
-        # context job reads the verdict of the run that already happened.
-        # Only when a gate label exists: without one there is no label that means
-        # "fan out", and this would wake on every label anyone applies.
-        on["pull_request_target"] = {"types": ["labeled"]}
-
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
         # Top-level workflow_run: fires when this repo's CI completes. All ci.yml are
@@ -1963,12 +1953,10 @@ def render_orchestrator_workflow(
         "on": on,
         # Coalesce re-runs for the same tested commit; a superseding run cancels the
         # in-flight one. Keyed by lane so the two lanes' runs never collide.
-        # Concurrency cannot see `needs`, so the commit is read from whichever event
-        # carries it rather than from the context job — an empty group key would put
-        # every labelled pull request in one group, cancelling each other's fan-out.
+        # Concurrency cannot see `needs`, so the commit is read from the event rather
+        # than from the context job.
         "concurrency": {
-            "group": f"trigger-downstream-{lane}-"
-            + "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}",
+            "group": f"trigger-downstream-{lane}-" + "${{ github.event.workflow_run.head_sha }}",
             "cancel-in-progress": True,
         },
         "jobs": jobs,
@@ -1976,15 +1964,9 @@ def render_orchestrator_workflow(
     return GENERATED_HEADER + _dump_workflow(doc)
 
 
-#: Gates every job that may reach fork code, and carries the opt-in label filter on
-#: its own `if:` — the pattern actions/require-ci-approval prescribes, since a job
-#: skipped by `if:` reports Success and gating the WORK that way makes an
-#: unapproved pull request green.
-_APPROVAL_JOB_ID: Final = "ci-approval"
-
-#: Resolves which commit this run is about, for both triggers. Everything below
-#: reads the commit from here rather than from `github.event.workflow_run.*`,
-#: which is empty on the label path.
+#: Resolves which commit this run is about. Everything below reads the commit from
+#: here rather than from `github.event.workflow_run.*` directly, so one job owns the
+#: lookup.
 _CONTEXT_JOB_ID: Final = "context"
 
 _HEAD_SHA: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.head-sha }}}}"
@@ -2024,15 +2006,23 @@ def _status_job(*, when: str, step_name: str, script: str, needs: Sequence[str] 
     is posted per completed CI run — report-result on the success path,
     report-ci-failure on anything else — so a required check is never left
     hanging at "Expected".
+
+    Writes to its own repo, so it takes github.token and no App token, for the
+    reason spelled out on _label_gate_job: an App token carries only what its
+    installation was granted and 403s on a repo that is not public, where the
+    plain token plus an explicit `permissions` block is granted by the repo
+    itself. Nothing here listens on `on: status`, so GITHUB_TOKEN's no-cascade
+    rule costs nothing, and branch protection matches a required check by its
+    context string, not by who posted it.
     """
     job: dict[str, Any] = {}
     if needs:
         job["needs"] = list(needs)
     job["if"] = when
     job["runs-on"] = SLIM_RUNNER
+    job["permissions"] = {"statuses": "write"}
     job["steps"] = [
-        _mint_step(),
-        {"name": step_name, "env": {"GH_TOKEN": "${{ steps.mint.outputs.token }}"}, "run": _BlockScalar(script)},
+        {"name": step_name, "env": {"GH_TOKEN": "${{ github.token }}"}, "run": _BlockScalar(script)},
     ]
     return job
 
@@ -2060,9 +2050,9 @@ def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
     than going red. `target_url` points at the failed CI run, since this
     orchestrator run did no downstream work worth linking to.
 
-    The reason comes from the context job because there are now two: CI ran and
-    failed, or -- reachable only from the label path -- CI never ran for this
-    commit at all, which the old single-trigger chain could not express.
+    The reason comes from the context job rather than the event payload, so this
+    job says the same thing as every other status and does not have to know where
+    the verdict was read from.
     """
     return _status_job(
         when=f"${{{{ {_CI_CONCLUSION} != 'success' }}}}",
@@ -2188,68 +2178,43 @@ def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
     return gated
 
 
-def _require_context(jobs: dict[str, Any], label: str | None) -> dict[str, Any]:
-    """Put `ci-approval` and `context` in front of every job in an orchestrator.
+def _require_context(jobs: dict[str, Any]) -> dict[str, Any]:
+    """Put `context` in front of every job in an orchestrator.
 
     A post-pass, for the same reason _apply_label_gate is one: a job added later
-    is gated and gets its commit by construction rather than by remembering to.
+    gets its commit by construction rather than by remembering to. Every `if:` and
+    every `with:` below reads the commit from `needs.context.outputs.*`, which is
+    only in scope for a job that needs it.
 
-    Two things depend on this ordering. Every `if:` and every `with:` below now
-    reads the commit from `needs.context.outputs.*`, which is only in scope for a
-    job that needs it. And the approval gate must sit in front of the context job
-    too, not merely beside it -- on the label path this workflow calls each
-    consumer's cross-repo-trigger.yml, which checks out the pull request's head
-    SHA and builds it on our runners, so an ungated label would be all an outside
-    contributor needs.
+    There is no approval gate here. `workflow_run` is the only trigger, so
+    require-ci-approval would report `not-a-pull-request` and pass every time --
+    a gate that cannot gate. What actually keeps fork code off our runners is
+    that the work jobs demand `ci-conclusion == 'success'` for the head SHA, and
+    CI can only have gone green on that SHA by passing its own approval gate.
     """
-    ordered: dict[str, Any] = {
-        _APPROVAL_JOB_ID: _ci_approval_job(label),
-        _CONTEXT_JOB_ID: _context_job(),
-    }
+    ordered: dict[str, Any] = {_CONTEXT_JOB_ID: _context_job()}
     for jid, job in jobs.items():
         needs = job.get("needs", [])
-        job["needs"] = [_APPROVAL_JOB_ID, _CONTEXT_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
+        job["needs"] = [_CONTEXT_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
         ordered[jid] = job
     return ordered
-
-
-def _ci_approval_job(label: str | None) -> dict[str, Any]:
-    """`ci-approval`: the fork-code gate, and the workflow's only policy `if:`.
-
-    On `workflow_run` the action reports `not-a-pull-request` and passes, so this
-    is a no-op there -- that path already implies a completed CI run, which was
-    itself gated. It exists for the `pull_request_target` one.
-
-    The label filter belongs HERE and nowhere else. A skip skips everything behind
-    it, which is what an unrelated label should do; putting the same `if:` on the
-    gated jobs instead would report Success for a pull request that never ran.
-    Note that check_ci_approval.py will not demand this gate for us: it only
-    requires one when a job names one of our runners, and every job here is
-    `ubuntu-slim` -- the ARC builds happen inside the consumer workflows this one
-    calls.
-    """
-    job: dict[str, Any] = {}
-    if label:
-        job["if"] = f"${{{{ github.event_name != 'pull_request_target' || github.event.label.name == '{label}' }}}}"
-    job["runs-on"] = SLIM_RUNNER
-    # require-ci-approval revokes the approval label on a push; inert on `labeled`,
-    # but the action defaults revoke-on-push and would fail without the scope.
-    job["permissions"] = {"pull-requests": "write"}
-    job["steps"] = [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}]
-    return job
 
 
 def _context_job() -> dict[str, Any]:
     """`context`: which commit this run is about, and whether its CI passed.
 
-    One job so the two triggers converge immediately and nothing below has to know
-    which one fired. The lookup itself lives in actions/resolve-dispatch-context
-    for the reason the label verdict lives in check-pr-label: a copy rendered into
-    every orchestrator in every repo is a copy that drifts and cannot be tested.
+    One job, so nothing below has to read the event payload itself. The lookup
+    lives in actions/resolve-dispatch-context for the reason the label verdict
+    lives in check-pr-label: a copy rendered into every orchestrator in every repo
+    is a copy that drifts and cannot be tested.
+
+    Lists this repo's own Actions runs, so like label-gate it takes github.token
+    and `actions: read` rather than an App token, which on a repo that is not
+    public grants only what its installation was given.
     """
     return {
-        "needs": [_APPROVAL_JOB_ID],
         "runs-on": SLIM_RUNNER,
+        "permissions": {"actions": "read"},
         "outputs": {
             "head-sha": "${{ steps.ctx.outputs.head-sha }}",
             "head-branch": "${{ steps.ctx.outputs.head-branch }}",
@@ -2258,12 +2223,10 @@ def _context_job() -> dict[str, Any]:
             "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
         },
         "steps": [
-            _mint_step(),
             {
                 "name": "Resolve the commit under test",
                 "id": "ctx",
                 "uses": "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main",
-                "with": {"token": "${{ steps.mint.outputs.token }}"},
             },
         ],
     }
@@ -2286,12 +2249,21 @@ def _label_gate_job(label: str) -> dict[str, Any]:
     rule (and the "a push has nothing to label" carve-out) is one behaviour, and
     a copy rendered into every orchestrator in every repo is a copy that drifts
     and cannot be unit-tested.
+
+    Reads its own repo, so it takes github.token and no App token: the lookup is
+    what an App adds nothing to, and on a repo that is not public an App token is
+    strictly worse -- it carries only what its installation was granted, which is
+    how this job came to 403 on every stack-dependencies run while passing on the
+    public repos, where pull request data is readable by any token. The explicit
+    `permissions` block is what makes the plain token dependable: it grants the
+    one scope the lookup needs regardless of the repo's default, and drops the
+    rest.
     """
     return {
         "runs-on": SLIM_RUNNER,
+        "permissions": {"pull-requests": "read"},
         "outputs": {"run": "${{ steps.gate.outputs.run }}"},
         "steps": [
-            _mint_step(),
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
@@ -2299,7 +2271,6 @@ def _label_gate_job(label: str) -> dict[str, Any]:
                 "with": {
                     "label": label,
                     "sha": _HEAD_SHA,
-                    "token": "${{ steps.mint.outputs.token }}",
                 },
             },
         ],
