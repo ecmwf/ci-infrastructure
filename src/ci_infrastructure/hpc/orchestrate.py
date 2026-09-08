@@ -284,9 +284,12 @@ def submit_or_reattach(
     site.create_output_dir(output, dryrun=dryrun)
     # Create the file the waiter tails, so an output path we cannot write is a
     # failure here rather than a job that runs to completion with nowhere to
-    # report it. SLURM truncates it when the job starts; `tail -F` follows that.
+    # report it. Emptied, not just touched: the path is per-artifact, so a re-run
+    # of this commit and leg would otherwise inherit the previous attempt's
+    # sentinel as its own verdict. Only on the submit path -- a reattach returns
+    # above, leaving the live job's output alone.
     if not dryrun:
-        transfer.touch_remote_file(site._connection, path=output)
+        transfer.truncate_remote_file(site._connection, path=output)
 
     jid = site.submit(str(script_path), user, output, dryrun=dryrun)
     if dryrun:
@@ -404,7 +407,7 @@ def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str,
     signal.signal(signal.SIGINT, handler)
 
 
-def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict | None]:
+def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float], Verdict | None]:
     """Build a sentinel waiter that tails the job output over troika's connection.
 
     Holds a single ``tail -F | grep -m1`` on the remote output. ``grep`` exits at
@@ -417,6 +420,11 @@ def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict
     yields ``None``, so the waiter fails closed and the caller re-checks
     liveness and re-establishes the tail.
 
+    The pattern names ``jid``. Every attempt at an artifact writes to one output
+    path, so an unqualified sentinel there could belong to a previous run — which
+    is how a re-run used to report the last attempt's verdict for a job that was
+    still queued.
+
     ``tail -F`` (rather than ``-f``) keeps retrying a path that does not exist
     yet and survives the truncation SLURM does when the job starts writing.
 
@@ -426,7 +434,7 @@ def _remote_sentinel_waiter(conn: Any, output: str) -> Callable[[float], Verdict
     it spawned would survive holding the pipe open, and reading their output
     would then block forever.
     """
-    pattern = f"^({jobscript.SENTINEL_SUCCESS}|{jobscript.SENTINEL_FAILURE})$"
+    pattern = jobscript.sentinel_regex(jid)
     quoted_output = shlex.quote(output)
     quoted_pattern = shlex.quote(pattern)
 
@@ -476,7 +484,7 @@ def _echo_remote_output(conn: Any, output: str) -> None:
     print("----- end HPC job output -----")
 
 
-def _stream_job_output(conn: Any, output: str) -> Any:
+def _stream_job_output(conn: Any, output: str, jid: int) -> Any:
     """Live-stream the job's output to the runner console; return the streamer process.
 
     Display only — the verdict still comes from ``wait_for_job``'s sentinel +
@@ -492,8 +500,10 @@ def _stream_job_output(conn: Any, output: str) -> Any:
     """
     ceiling = int(_DEFAULT_WAIT_TIMEOUT + _WAITER_GRACE_SECONDS)
     quoted_output = shlex.quote(output)
-    sed_quit = f"/^{jobscript.SENTINEL_SUCCESS}$/q; /^{jobscript.SENTINEL_FAILURE}$/q"
-    pipeline = f"timeout {ceiling} tail -F -n +1 {quoted_output} 2>/dev/null | sed '{sed_quit}'"
+    sed_quit = f"/{jobscript.sentinel_regex(jid)}/q"
+    # -E because the sentinel pattern alternates; in sed's default BRE the
+    # `(`, `|` and `)` would all be literals and nothing would ever match.
+    pipeline = f"timeout {ceiling} tail -F -n +1 {quoted_output} 2>/dev/null | sed -E '{sed_quit}'"
     sys.stdout.flush()
     return conn.execute(["bash", "-c", pipeline], stdout=sys.stdout)
 
@@ -835,10 +845,10 @@ def submit_wait(
     # produced; the sentinel waiter greps past them, so without this the step
     # would surface none of the actual build. Verdict logic is unchanged.
     print(f"submit-wait: --- live job output ({output}) ---")
-    streamer = _stream_job_output(site._connection, output)
+    streamer = _stream_job_output(site._connection, output, jid)
     try:
         verdict = wait_for_job(
-            sentinel_waiter=_remote_sentinel_waiter(site._connection, output),
+            sentinel_waiter=_remote_sentinel_waiter(site._connection, output, jid),
             state_getter=lambda: site._get_state(jid, strict=False),
         )
     finally:
