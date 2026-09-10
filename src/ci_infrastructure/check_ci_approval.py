@@ -15,6 +15,12 @@ stealing, and both are checked:
     code on whatever runner the job names. On this org's ARC and self-hosted
     builders that is our hardware.
 
+A third shape is checked on top of those two: any step opting in to
+`allow-unsafe-pr-checkout` must sit in a gated job, whatever the workflow's
+runners look like. That input is what lets actions/checkout fetch a FORK's code
+into this trusted context, so it is the one line that must never be reachable
+without someone having read the diff.
+
 The gate is `actions/require-ci-approval`, and its contract is `needs:` and
 nothing else: a job skipped by an `if:` reports Success, so gating that way makes
 a required check green for a pull request that never ran. Hence this checks
@@ -44,6 +50,11 @@ GATE_ACTIONS = (
     "./actions/require-ci-approval",
 )
 OPEN_TO_OUTSIDERS = frozenset({"public", ""})
+# actions/checkout refuses a fork's ref under pull_request_target / workflow_run
+# unless a step opts in with this. It is the single most consequential input a
+# workflow can set -- it runs a contributor's code with this repository's token,
+# secrets, cache scope and runners -- so it may only appear behind the gate.
+UNSAFE_CHECKOUT_INPUT = "allow-unsafe-pr-checkout"
 
 # Runner labels GitHub itself provides, including `ubuntu-slim` -- despite the
 # name that is a GitHub-hosted larger runner, not an ARC one. Anything else -- an
@@ -105,6 +116,24 @@ def _gate_job_names(jobs: dict[str, Any]) -> set[str]:
     for name, job in jobs.items():
         for step in job.get("steps") or []:
             if isinstance(step, dict) and str(step.get("uses", "")).startswith(GATE_ACTIONS):
+                found.add(name)
+    return found
+
+
+def _unsafe_checkout_jobs(jobs: dict[str, Any]) -> set[str]:
+    """Jobs with a step that opts in to checking out a fork's code."""
+    found = set()
+    for name, job in jobs.items():
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            with_block = step.get("with")
+            if not isinstance(with_block, dict):
+                continue
+            value = with_block.get(UNSAFE_CHECKOUT_INPUT)
+            # YAML hands back a bool for `true` and a str for `'true'`; both are
+            # the same opt-in, and consumers write it both ways.
+            if value is True or (isinstance(value, str) and value.strip().lower() == "true"):
                 found.add(name)
     return found
 
@@ -171,28 +200,68 @@ def check(workflow: Path) -> list[str]:
     if not _open_to_outsiders(workflow):
         return []
 
-    reason = _gate_reason(doc, jobs)
-    if reason is None:
-        return []
-
     whole, pairs = _load_allowlist(workflow)
     if workflow.name in whole:
         return []
 
     gates = _gate_job_names(jobs)
+    problems = _unsafe_checkout_problems(doc, jobs, gates, workflow, pairs)
+
+    reason = _gate_reason(doc, jobs)
+    if reason is None:
+        return problems
+
     if not gates:
-        return [
+        problems.append(
             f"{workflow}: {reason}, but no job uses {GATE_ACTIONS[0]}. "
             f"Add a gate job, or exempt this workflow in .github/{ALLOWLIST_NAME}."
-        ]
+        )
+        return problems
 
-    problems = []
     for name, job in sorted(jobs.items()):
         if name in gates or (workflow.name, name) in pairs:
             continue
         if not (_needs(job) & gates):
             gate = sorted(gates)[0]
             problems.append(f"{workflow}: job {name!r} must list {gate!r} in `needs:` ({reason})")
+    return problems
+
+
+def _unsafe_checkout_problems(
+    doc: dict[Any, Any],
+    jobs: dict[str, Any],
+    gates: set[str],
+    workflow: Path,
+    pairs: set[tuple[str, str]],
+) -> list[str]:
+    """Every job checking out a fork's code must reach the gate via `needs:`.
+
+    Checked separately from _gate_reason, and regardless of what it decides: a
+    `pull_request` workflow entirely on GitHub-hosted runners needs no gate for
+    its own sake, but a step there that opts in to a fork checkout still does.
+
+    Only where a pull request trigger makes the gate BINDABLE. Under
+    `workflow_run` require-ci-approval reports `not-a-pull-request` and passes
+    every time -- demanding it there is demanding an inert gate, which is the
+    mistake this module exists to prevent. The generated trigger-downstream
+    orchestrators are exactly that case: they set the flag on a read-only
+    checkout and are gated instead by their upstream CI having gone green, which
+    could only happen through the gate.
+    """
+    if not (_triggers(doc) & {"pull_request", "pull_request_target"}):
+        return []
+    problems = []
+    for name in sorted(_unsafe_checkout_jobs(jobs)):
+        if name in gates or (workflow.name, name) in pairs:
+            continue
+        if _needs(jobs[name]) & gates:
+            continue
+        problems.append(
+            f"{workflow}: job {name!r} sets {UNSAFE_CHECKOUT_INPUT}, running a fork's code with "
+            f"this repository's token, secrets and runners, but does not reach "
+            f"{GATE_ACTIONS[0]} via `needs:`. Gate the job, or exempt it in "
+            f".github/{ALLOWLIST_NAME}."
+        )
     return problems
 
 
