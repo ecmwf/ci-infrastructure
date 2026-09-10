@@ -9,6 +9,11 @@ description = "Shared CI orchestration scripts and actions"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# Still the full set, deliberately, for one more step. The extras below exist so
+# every install site can start saying `[all]`; only once that has landed on main
+# can these move out of the base set, because the actions reference
+# ensure-infrastructure-present at @main and a pull request cannot change the
+# copy of the action that runs against it.
 dependencies = [
     "click>=8.1",
     "pydantic>=2",
@@ -34,7 +39,18 @@ ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:main"
 
 [project.optional-dependencies]
-test = ["pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
+# One extra per heavy dependency, named for the capability it buys. Each is needed
+# by exactly one module today, named beside it so a future reader can check.
+#
+# These duplicate the base set for now; the follow-up that slims the base set is
+# what makes them load-bearing. The point of landing them first is that
+# `pip install <path>[all]` then means the same thing before and after, so the
+# install sites can be updated without a flag day.
+s3 = ["boto3>=1.34"]                                              # s3_store
+schema = ["pydantic>=2"]                                          # generate_downstream_ci
+hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
+all = ["ci-infrastructure[s3,schema,hpc]"]
+test = ["ci-infrastructure[all]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
 
 [build-system]
 requires = ["setuptools>=77"]
