@@ -74,8 +74,13 @@ API (no clones, ≤2-3 batched queries per BFS layer). Auth: GH_TOKEN env, or
 the gh CLI's keychain auth if no env token is set.
 
 Without --check, regenerated YAML is written in place under
-.github/workflows/. With --check, the step exits 1 and points the developer
-at the regen command if any file is out of date.
+.github/workflows/. With --check, nothing is written and any file that is out of
+date is reported, pointing the developer at the regen command -- as a WARNING by
+default, or as a failure under --fail-on-drift. Warning is the default because an
+orchestrator gates its whole fan-out on this check, and one repo regenerated
+without its sibling is not a reason to withhold downstream CI from every consumer.
+A schema or graph violation still fails outright either way: it renders a workflow
+that cannot run.
 
 The two modes compare differently on purpose. A write compares the text, so
 regenerating always restores the one canonical spelling. --check compares the
@@ -2733,7 +2738,13 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
 @click.option(
     "--check",
     is_flag=True,
-    help="Don't write; exit 1 if any generated file is stale.",
+    help="Don't write; report any generated file that is stale.",
+)
+@click.option(
+    "--fail-on-drift",
+    "fail_on_drift",
+    is_flag=True,
+    help="With --check, exit 1 on drift instead of only warning.",
 )
 @click.option(
     "--sibling-root",
@@ -2746,11 +2757,23 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     "and a consumer that has not landed is indistinguishable from one that does not "
     "exist, so orchestrator jobs are silently dropped.",
 )
-def main(manifest_path: str, check: bool, sibling_root: Path | None) -> None:
-    _run(manifest_path, check, sibling_root)
+def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None) -> None:
+    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
 
 
-def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> None:
+def _run(
+    manifest_path: str,
+    check: bool,
+    sibling_root: Path | None = None,
+    *,
+    fail_on_drift: bool = False,
+) -> None:
+    # Inert rather than harmless: without --check the drift is being written away,
+    # so a caller asking to fail on it has misunderstood which mode they are in.
+    if fail_on_drift and not check:
+        raise CIError(
+            "--fail-on-drift only applies with --check; without it, drift is written away rather than reported"
+        )
     local_manifest_path = Path(manifest_path)
     if not local_manifest_path.is_file():
         raise CIError(f"no manifest found at {local_manifest_path}")
@@ -2786,7 +2809,7 @@ def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> N
     except SchemaError as e:
         raise CIError(str(e)) from e
 
-    _report(changed, check, manifest_path)
+    _report(changed, check, manifest_path, fail_on_drift=fail_on_drift)
 
 
 def _render_one_repo(
@@ -2834,29 +2857,65 @@ def _regen_command(manifest_path: str) -> str:
     return shlex.join(parts)
 
 
-def _report(changed: Sequence[Change], check: bool, manifest_path: str) -> None:
-    if check and changed:
-        stale = "\n".join(c.render() for c in changed)
-        # gh keychain auth is a prerequisite when GH_TOKEN isn't set.
-        # `gh auth login` is idempotent if you're already logged in, so the
-        # hint is harmless either way. Only the first line carries the ::error::
-        # annotation; GitHub renders the rest as plain log.
-        raise CIError(
-            "generated files are out of date:\n"
-            f"{stale}\n"
-            "\n"
-            "To regenerate, run from this repo (drops --check, writes in place):\n"
-            "\n"
-            "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
-            f"  {_regen_command(manifest_path)}\n"
-            "\n"
-            "ci-infrastructure-generate is installed by `pip install ci-infrastructure`\n"
-            "(https://github.com/ecmwf/ci-infrastructure); inside a job the composite\n"
-            'actions expose it as "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci.\n'
-            "Then commit the regenerated files alongside your manifest changes."
-        )
-    for c in changed:
-        print(f"{c.action} {c.path}")
+def _drift_message(changed: Sequence[Change], manifest_path: str, *, fatal: bool) -> str:
+    """The out-of-date report, headline first.
+
+    Whoever reads this is going to run one command, so the message is mostly that
+    command. `gh auth login` is a prerequisite when GH_TOKEN isn\'t set and is
+    idempotent when it is, so the hint is harmless either way.
+    """
+    stale = "\n".join(c.render() for c in changed)
+    tail = (
+        ""
+        if fatal
+        else "\nThis is a warning. Set fail-on-drift on the validate-generated-workflows\n"
+        "action (or pass --fail-on-drift) to make it a failure.\n"
+    )
+    return (
+        "generated files are out of date:\n"
+        f"{stale}\n"
+        "\n"
+        "To regenerate, run from this repo (drops --check, writes in place):\n"
+        "\n"
+        "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
+        f"  {_regen_command(manifest_path)}\n"
+        "\n"
+        "ci-infrastructure-generate is installed by `pip install ci-infrastructure`\n"
+        "(https://github.com/ecmwf/ci-infrastructure); inside a job the composite\n"
+        'actions expose it as "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci.\n'
+        "Then commit the regenerated files alongside your manifest changes.\n" + tail
+    )
+
+
+def _report(changed: Sequence[Change], check: bool, manifest_path: str, *, fail_on_drift: bool) -> None:
+    """Say what --check found, and decide whether that is a failure.
+
+    Drift defaults to a warning: an orchestrator gates its whole fan-out on this
+    job, and "someone regenerated one repo and not its sibling" is not a reason to
+    withhold downstream CI from every consumer. It IS a reason to say so loudly on
+    every run until a human or a bot regenerates. `fail_on_drift` restores the
+    hard gate for a caller that wants one.
+
+    A schema or graph violation is a different animal and still raises out of
+    _run before we get here: a trigger cycle or an unresolvable `needs` renders a
+    workflow that cannot run, so there is nothing to warn about.
+    """
+    if not check:
+        for c in changed:
+            print(f"{c.action} {c.path}")
+        return
+    if not changed:
+        return
+    message = _drift_message(changed, manifest_path, fatal=fail_on_drift)
+    if fail_on_drift:
+        raise CIError(message)
+    # GitHub parses the workflow command on the first line only, so the headline
+    # is annotated and the rest shows as plain log -- exactly how CIError renders
+    # the fatal case, and one annotation rather than fifteen.
+    head, _, rest = message.partition("\n")
+    print(f"::warning::{head}", file=sys.stderr)
+    if rest:
+        print(rest, file=sys.stderr)
 
 
 if __name__ == "__main__":

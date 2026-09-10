@@ -25,6 +25,7 @@ import pytest
 import yaml
 from conftest import parse_all, write_repo
 
+from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC, EXECUTION_RUNNER
 from ci_infrastructure.generate_downstream_ci import (
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
@@ -34,6 +35,7 @@ from ci_infrastructure.generate_downstream_ci import (
     _cross_package_deps,
     _fetch_sibling_manifests,
     _local_sibling_layer,
+    _run,
     _write_or_check_path,
     compute_transitive_consumers,
     parse_manifest_text,
@@ -2372,6 +2374,59 @@ def test_generated_header_must_be_comments(tmp_path: Path) -> None:
     )
     with pytest.raises(SchemaError, match=r"\[generated\].header.*must be YAML comments"):
         parse_all(tmp_path)
+
+
+def _drift_repo(tmp_path: Path) -> Path:
+    """A repo whose checked-in workflow is semantically stale."""
+    write_repo(tmp_path, "a", _HEADER_MANIFEST)
+    wf = tmp_path / "a" / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "cross-repo-trigger.yml").write_text("name: stale\non:\n  workflow_call: {}\njobs: {}\n")
+    return tmp_path / "a"
+
+
+def test_check_warns_on_drift_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    """An orchestrator gates its fan-out on this; drift alone must not close it."""
+    monkeypatch.chdir(_drift_repo(tmp_path))
+    _run(".ci/manifest.toml", check=True, sibling_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "::warning::generated files are out of date:" in err
+    # One annotation, not one per line — the rest is plain log.
+    assert err.count("::warning::") == 1
+    assert "cross-repo-trigger.yml" in err
+    assert "This is a warning." in err
+
+
+def test_check_fails_on_drift_when_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(_drift_repo(tmp_path))
+    with pytest.raises(CIError, match="generated files are out of date"):
+        _run(".ci/manifest.toml", check=True, sibling_root=tmp_path, fail_on_drift=True)
+
+
+def test_fail_on_drift_without_check_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inert rather than harmless: without --check the drift is written away."""
+    monkeypatch.chdir(_drift_repo(tmp_path))
+    with pytest.raises(CIError, match="only applies with --check"):
+        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path, fail_on_drift=True)
+
+
+def test_schema_violations_still_fail_in_warn_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A manifest that cannot render a runnable workflow is not drift."""
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [matrix.build]
+        triggers = ["upstream-change"]
+        action = "./.github/actions/build"
+        needs = ["nonexistent-kind"]
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    monkeypatch.chdir(tmp_path / "a")
+    with pytest.raises(CIError, match="nonexistent-kind"):
+        _run(".ci/manifest.toml", check=True, sibling_root=tmp_path)
 
 
 def test_write_or_check_path_modes(tmp_path: Path) -> None:
