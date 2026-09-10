@@ -132,7 +132,11 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      # Fork code in a trusted context, which every job here hangs off
+      # ci-approval to make payable.
       - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+        with:
+          allow-unsafe-pr-checkout: 'true'
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
@@ -251,7 +255,11 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      # Fork code in a trusted context, which every job here hangs off
+      # ci-approval to make payable.
       - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+        with:
+          allow-unsafe-pr-checkout: 'true'
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
