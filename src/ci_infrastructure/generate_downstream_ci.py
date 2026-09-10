@@ -2366,6 +2366,16 @@ def _validate_job() -> dict[str, Any]:
 
     Under `on: workflow_run` a bare checkout would land on the default branch, so we
     pin `ref` to the tested head SHA. Gated on CI success like every other root job.
+
+    That pin is also why the checkout has to opt in to `allow-unsafe-pr-checkout`.
+    From a `workflow_run` whose upstream event was a pull request, actions/checkout
+    refuses a ref that resolves to a FORK's head sha -- which is exactly what
+    `head-sha` is on a fork pull request -- because such a job holds the base
+    repository's token, secrets and runners. Defensible here, and only here:
+    nothing from this checkout is executed. `ensure-infrastructure-present`
+    installs the generator from its own pinned ref, and the generator only READS
+    the tree (manifest TOML, workflow YAML, and .j2 recipes it parses without
+    rendering). Do not copy the flag to a job that builds or runs what it checks out.
     """
     return {
         "if": _SUCCESS_GATE,
@@ -2377,6 +2387,7 @@ def _validate_job() -> dict[str, Any]:
                 "with": {
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
+                    "allow-unsafe-pr-checkout": True,
                 },
             },
             {

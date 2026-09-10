@@ -2376,6 +2376,38 @@ def test_generated_header_must_be_comments(tmp_path: Path) -> None:
         parse_all(tmp_path)
 
 
+def test_validate_job_opts_into_the_fork_checkout(tmp_path: Path) -> None:
+    """`ref: head-sha` IS the fork's head sha on a fork pull request.
+
+    actions/checkout refuses that from a workflow_run whose upstream event was a
+    pull request, and the refusal would skip every consumer job behind `validate`.
+    """
+    _make_chain_abc(tmp_path)
+    manifests = parse_all(tmp_path)
+    validate_graph(manifests)
+    by_pkg = {m.package_name: m for m in manifests}
+    by_repo = {m.repo: m for m in manifests}
+    rendered = render_orchestrator_workflow(
+        by_pkg["a"], by_pkg, by_repo, compute_transitive_consumers(manifests), lane=EXECUTION_RUNNER
+    )
+    assert rendered is not None
+    checkout = next(
+        s
+        for s in yaml.safe_load(rendered)["jobs"]["validate"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/checkout")
+    )
+    assert checkout["with"]["allow-unsafe-pr-checkout"] is True
+
+    # NOT on the consumer-side checkouts: those resolve to a branch in the
+    # consumer's own repo, which the guard does not object to.
+    consumer = render_workflow(by_pkg["b"], by_pkg, lane=EXECUTION_RUNNER)
+    assert consumer is not None
+    for job in yaml.safe_load(consumer)["jobs"].values():
+        for step in job.get("steps", []):
+            if str(step.get("uses", "")).startswith("actions/checkout"):
+                assert "allow-unsafe-pr-checkout" not in (step.get("with") or {})
+
+
 def _drift_repo(tmp_path: Path) -> Path:
     """A repo whose checked-in workflow is semantically stale."""
     write_repo(tmp_path, "a", _HEADER_MANIFEST)
