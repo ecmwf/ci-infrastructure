@@ -7,13 +7,13 @@ name: Smoke test HPC
 on:
   push:
     branches: [main]
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
 
 jobs:
-  # Pinned remote rather than ./actions/...: a fork's pull_request runs its own
-  # copy of this repo, so a local path would let the gate rewrite itself.
+  # Pinned remote rather than ./actions/...: a local path resolves only after a
+  # checkout, and this job deliberately has none.
   ci-approval:
     runs-on: ubuntu-slim
     permissions:
@@ -132,7 +132,7 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
@@ -251,7 +251,7 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:

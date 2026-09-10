@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Check out the commit under test
+description: >
+  actions/checkout aimed at the commit the run is about: a pull request's merge
+  commit when the event carries one, and checkout's own default when it does not.
+
+  Under pull_request_target the default checkout is the BASE branch, so a job that
+  means to test the pull request has to say so; under pull_request the same
+  expression resolves to the merge commit checkout would have picked anyway. That
+  is the point -- a workflow moves between the two triggers without touching its
+  checkouts, and no job is left quietly testing the wrong tree.
+
+  This repository only: reading ANOTHER repo at a pull request's merge ref is not
+  a thing this can mean, and the cross-repo branch matching lives in
+  actions/pick-ref.
+
+inputs:
+  ref:
+    description: 'Check out this instead — e.g. a workflow_run orchestrator passing the tested head sha.'
+    required: false
+    default: ''
+  token:
+    description: 'Token for the checkout. Defaults to github.token.'
+    required: false
+    default: ''
+  path:
+    description: 'Relative path under $GITHUB_WORKSPACE to check out into.'
+    required: false
+    default: ''
+  fetch-depth:
+    description: 'Commits to fetch; 0 for all history.'
+    required: false
+    default: '1'
+  submodules:
+    description: "'true', 'recursive', or 'false'."
+    required: false
+    default: 'false'
+  persist-credentials:
+    description: 'Leave the token in the local git config for later git commands.'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # Pinned to a commit per the Codex audit guidance. Pinning it here once is the
+    # other half of the point: consumers stop carrying their own.
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        ref: ${{ inputs.ref || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '') }}
+        token: ${{ inputs.token || github.token }}
+        path: ${{ inputs.path }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: ${{ inputs.persist-credentials }}
