@@ -12,6 +12,7 @@ rule that is enforced independently of all of the above.
 
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 
@@ -413,3 +414,34 @@ def test_both_rules_fire_independently(tmp_path: Path) -> None:
     assert len(problems) == 2, problems
     assert any("allow-unsafe-pr-checkout" in p for p in problems)
     assert any("must list 'ci-approval' in `needs:`" in p for p in problems)
+
+
+# --- the light-install contract ----------------------------------------------
+
+#: Everything pyproject.toml keeps out of the base dependency set. This module is
+#: exported as a pre-commit hook, so pre-commit builds a venv from the base set on
+#: every developer machine and in every consuming repo; boto3 alone is a ~50MB
+#: download and troika is a git clone, to lint YAML.
+_OPTIONAL_DEPS = {"boto3", "botocore", "pydantic", "jinja2", "troika"}
+
+
+def test_the_linter_imports_nothing_optional() -> None:
+    """check_ci_approval must stay installable from the base dependency set alone.
+
+    Asserted on the source rather than by importing, so it holds even on a machine
+    that happens to have the optional packages available.
+    """
+    src = Path(check.__globals__["__file__"]).read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+
+    assert not (imported & _OPTIONAL_DEPS), (
+        f"check_ci_approval imports {sorted(imported & _OPTIONAL_DEPS)}, which pyproject.toml "
+        "keeps in an extra. Either drop the import or the pre-commit hook gets heavy again."
+    )
+    # It also must not reach them indirectly through a sibling module.
+    assert not (imported & {"ci_infrastructure"}), imported

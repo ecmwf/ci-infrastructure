@@ -269,7 +269,10 @@ runs:
             # prompts; --timeout/--retries bound network waits so a blocked PyPI
             # egress fails fast with a clear error rather than hanging for minutes.
             echo "  pip install ci-infrastructure from $repo_root ..."
-            "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root"
+            # [all] because the base dependency set is deliberately just PyYAML + click
+            # (see pyproject.toml): the actions need boto3, pydantic, jinja2 and troika,
+            # and only the pre-commit hook wants the light install.
+            "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[all]"
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
           # mtime is the venv's last-used time, not its build time, so the sweep

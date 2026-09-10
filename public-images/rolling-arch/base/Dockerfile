@@ -70,7 +70,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
 # reasoning, which applies verbatim here.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN pip install --no-cache-dir /opt/ci-infrastructure \
+RUN pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
 
 # Advertise the interpreter ci-infrastructure was baked into.

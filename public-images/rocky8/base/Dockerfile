@@ -84,7 +84,7 @@ RUN dnf -y install 'dnf-command(config-manager)' \
 # working copy only).
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN python3.12 -m pip install --no-cache-dir /opt/ci-infrastructure \
+RUN python3.12 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
 
 # Advertise the interpreter ci-infrastructure was baked into, so

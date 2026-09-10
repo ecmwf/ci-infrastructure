@@ -97,7 +97,7 @@ RUN mkdir -p /etc/apt/keyrings \
 # `docker history`, which is fine — this is a public repo.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN pip install /opt/ci-infrastructure \
+RUN pip install "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
 
 # Advertise the interpreter ci-infrastructure was baked into, so
