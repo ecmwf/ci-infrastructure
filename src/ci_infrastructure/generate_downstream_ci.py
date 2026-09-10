@@ -74,8 +74,22 @@ API (no clones, ≤2-3 batched queries per BFS layer). Auth: GH_TOKEN env, or
 the gh CLI's keychain auth if no env token is set.
 
 Without --check, regenerated YAML is written in place under
-.github/workflows/. With --check, the step exits 1 and points the developer
-at the regen command if any file is out of date.
+.github/workflows/. With --check, nothing is written and any file that is out of
+date is reported, pointing the developer at the regen command -- as a WARNING by
+default, or as a failure under --fail-on-drift. Warning is the default because an
+orchestrator gates its whole fan-out on this check, and one repo regenerated
+without its sibling is not a reason to withhold downstream CI from every consumer.
+A schema or graph violation still fails outright either way: it renders a workflow
+that cannot run.
+
+The two modes compare differently on purpose. A write compares the text, so
+regenerating always restores the one canonical spelling. --check compares the
+PARSED documents, so a comment or a blank line added by hand never fails an
+orchestrator run -- only a difference GitHub Actions would act on does -- and it
+names where they disagree (`.jobs.eccodes.with.branch: ...`) rather than only
+which file. A repo that needs a licence header in every file declares it once as
+[generated].header, because a regeneration rewrites the file wholesale and a
+header kept anywhere else is a header the next run deletes.
 """
 
 from __future__ import annotations
@@ -113,6 +127,20 @@ GENERATED_HEADER: Final = (
     "# Regenerate via the ci-infrastructure-generate CLI.\n"
     "# Source of truth: each repo's .ci/manifest.toml.\n"
 )
+
+
+def _normalise_header(header: str) -> str:
+    """A [generated].header ready to concatenate: stripped, then one trailing newline.
+
+    TOML multi-line strings pick up leading and trailing blank lines from however
+    the block was indented, so the spacing cannot be left to however the author
+    happened to write the block. A header gets one blank line after it, which is
+    what keeps a licence block from reading as part of the DO-NOT-EDIT banner
+    below it; no header means no leading blank line at all.
+    """
+    stripped = header.strip("\n")
+    return f"{stripped}\n\n" if stripped else ""
+
 
 # Runner for the jobs that only talk to APIs and shuffle YAML — resolve,
 # validate, and the dispatch-and-wait jobs that idle for a whole downstream run.
@@ -163,6 +191,33 @@ _WorkflowDumper.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-i
     re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
     list("tTfF"),
 )
+
+
+class _WorkflowLoader(yaml.SafeLoader):
+    """SafeLoader that reads GA-friendly YAML 1.2 booleans.
+
+    The mirror of _WorkflowDumper, and needed for the same reason: under YAML 1.1
+    a bare `on:` key loads as the boolean True, which would have --check's
+    difference locations talk about `.True` instead of `.on`. Both sides are read
+    through this loader, so the comparison itself is unaffected either way — this
+    is purely so the message names the key the file actually spells.
+    """
+
+
+_WorkflowLoader.yaml_implicit_resolvers = {
+    k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
+    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_WorkflowLoader.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+
+
+def _parse_workflow(text: str) -> Any:
+    """Parse workflow YAML for comparison. Raises yaml.YAMLError on bad input."""
+    return yaml.load(text, Loader=_WorkflowLoader)
 
 
 def _block_scalar_representer(dumper: _WorkflowDumper, data: _BlockScalar) -> yaml.ScalarNode:
@@ -310,6 +365,12 @@ class Manifest:
     # Opt-in, because turning it on silently would stop every unlabelled repo's
     # downstream CI.
     downstream_gate_label: str | None = None
+    # [generated].header: comment lines emitted above GENERATED_HEADER in every
+    # file this repo generates. For a repo whose licensing check wants an SPDX
+    # block in each file (ecflow's reuse.yml), the manifest is where that belongs:
+    # a regeneration rewrites the file wholesale, so a header kept anywhere else
+    # is a header the next run deletes.
+    generated_header: str = ""
 
 
 _RESERVED_MATRIX_KEYS: Final = frozenset(
@@ -475,6 +536,22 @@ class _MatrixKindRaw(BaseModel):
         return stripped
 
 
+class _GeneratedRaw(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    header: str = ""
+
+    @field_validator("header")
+    @classmethod
+    def _comment_lines_only(cls, v: str) -> str:
+        for line in v.splitlines():
+            if line.strip() and not line.lstrip().startswith("#"):
+                raise ValueError(
+                    f"header lines must be YAML comments starting with '#'; got {line!r}. "
+                    "Anything else would land above the workflow document and corrupt it."
+                )
+        return v
+
+
 class _DownstreamGateRaw(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str = Field(min_length=1)
@@ -486,6 +563,7 @@ class _ManifestRaw(BaseModel):
     deps: tuple[_DepRefRaw, ...] = ()
     trigger_downstream: tuple[_TriggerDownstreamRaw, ...] = Field(default=(), alias="trigger-downstream")
     downstream_gate: _DownstreamGateRaw | None = Field(default=None, alias="downstream-gate")
+    generated: _GeneratedRaw | None = None
     matrix: dict[str, _MatrixKindRaw] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -525,6 +603,7 @@ _LOC_HEADS: Final = {
     "deps": "array",
     "matrix": "subtable",
     "package": "table",
+    "generated": "table",
 }
 
 
@@ -601,6 +680,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
         downstream_gate_label=raw.downstream_gate.label if raw.downstream_gate else None,
+        generated_header=_normalise_header(raw.generated.header if raw.generated else ""),
     )
 
 
@@ -1139,7 +1219,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
         },
         "jobs": jobs,
     }
-    return GENERATED_HEADER + _dump_workflow(doc)
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
 def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
@@ -1961,7 +2041,7 @@ def render_orchestrator_workflow(
         },
         "jobs": jobs,
     }
-    return GENERATED_HEADER + _dump_workflow(doc)
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
 #: Resolves which commit this run is about. Everything below reads the commit from
@@ -2286,6 +2366,16 @@ def _validate_job() -> dict[str, Any]:
 
     Under `on: workflow_run` a bare checkout would land on the default branch, so we
     pin `ref` to the tested head SHA. Gated on CI success like every other root job.
+
+    That pin is also why the checkout has to opt in to `allow-unsafe-pr-checkout`.
+    From a `workflow_run` whose upstream event was a pull request, actions/checkout
+    refuses a ref that resolves to a FORK's head sha -- which is exactly what
+    `head-sha` is on a fork pull request -- because such a job holds the base
+    repository's token, secrets and runners. Defensible here, and only here:
+    nothing from this checkout is executed. `ensure-infrastructure-present`
+    installs the generator from its own pinned ref, and the generator only READS
+    the tree (manifest TOML, workflow YAML, and .j2 recipes it parses without
+    rendering). Do not copy the flag to a job that builds or runs what it checks out.
     """
     return {
         "if": _SUCCESS_GATE,
@@ -2297,6 +2387,7 @@ def _validate_job() -> dict[str, Any]:
                 "with": {
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
+                    "allow-unsafe-pr-checkout": True,
                 },
             },
             {
@@ -2549,28 +2640,102 @@ def _fetch_sibling_manifests(
     return [local] + sorted((m for m in seen.values() if m.repo != local.repo), key=lambda m: m.repo)
 
 
-def _write_or_check_path(out: Path, content: str | None, check: bool) -> bool:
+@dataclass(frozen=True)
+class Change:
+    """One generated file that is not what the manifest says it should be."""
+
+    action: Literal["delete", "update", "create"]
+    path: Path
+    #: Where the parsed documents disagree; empty unless a --check found semantic
+    #: drift in a file that exists on both sides.
+    where: Sequence[str] = ()
+
+    def render(self) -> str:
+        lines = [f"  - [{self.action}] {self.path}"]
+        lines += [f"      {w}" for w in self.where]
+        return "\n".join(lines)
+
+
+#: How many differing locations _yaml_diff_locations reports before it stops. Enough
+#: to recognise WHICH drift this is; the regen command is the fix either way.
+_MAX_DIFF_LOCATIONS: Final = 6
+
+
+def _yaml_diff_locations(rendered: Any, checked_in: Any, path: str = "") -> list[str]:
+    """Where two parsed workflow documents disagree, in dotted-path notation.
+
+    `.jobs.eccodes.with.branch` beats "the file is out of date": the point of
+    --check failing is that the reader can tell a stale generator apart from an
+    edited-by-hand file without diffing two 150-line YAMLs by eye.
+    """
+    label = path or "<root>"
+    if type(rendered) is not type(checked_in):
+        return [f"{label}: {type(rendered).__name__} vs {type(checked_in).__name__}"]
+    out: list[str] = []
+    if isinstance(rendered, dict):
+        for key in sorted(set(rendered) | set(checked_in), key=str):
+            if key not in checked_in:
+                out.append(f"{path}.{key}: only in the rendered output")
+            elif key not in rendered:
+                out.append(f"{path}.{key}: only in the checked-in file")
+            else:
+                out += _yaml_diff_locations(rendered[key], checked_in[key], f"{path}.{key}")
+            if len(out) >= _MAX_DIFF_LOCATIONS:
+                break
+    elif isinstance(rendered, list):
+        if len(rendered) != len(checked_in):
+            out.append(f"{label}: {len(rendered)} entries rendered, {len(checked_in)} checked in")
+        for i, (a, b) in enumerate(zip(rendered, checked_in)):
+            out += _yaml_diff_locations(a, b, f"{path}[{i}]")
+            if len(out) >= _MAX_DIFF_LOCATIONS:
+                break
+    elif rendered != checked_in:
+        out.append(f"{label}: {rendered!r} rendered, {checked_in!r} checked in")
+    return out[:_MAX_DIFF_LOCATIONS]
+
+
+def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[bool, list[str]]:
     """Reconcile a single file with its desired content.
 
     `content=None` means "this file should not exist"; if it does we delete it
     (or report stale) — the manifest is the source of truth, so a workflow for a
     lane the manifest no longer uses must not linger.
 
-    Returns True iff a change was needed.
+    The two modes compare differently, on purpose. `--check` compares the PARSED
+    documents, so a comment or a blank line someone added by hand never fails an
+    orchestrator run; only a difference GitHub Actions would act on does. A write
+    compares the text, so regenerating restores the one canonical spelling —
+    [generated].header included — and tidies that comment away. The asymmetry is
+    the whole design: the generator owns the file's form, the check only owns its
+    meaning.
+
+    Returns (changed, where-it-differs); the locations are empty unless a --check
+    found a semantic drift in a file that exists on both sides.
     """
     existing = out.read_text() if out.exists() else None
     if content is None:
         if existing is None:
-            return False
+            return False, []
         if not check:
             out.unlink()
-        return True
+        return True, []
     if existing == content:
-        return False
-    if not check:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(content)
-    return True
+        return False, []
+    if check:
+        if existing is None:
+            return True, []
+        try:
+            rendered_doc, existing_doc = _parse_workflow(content), _parse_workflow(existing)
+        except yaml.YAMLError as exc:
+            # Only the checked-in side can be unparseable — we just rendered the
+            # other one — so say so rather than reporting a phantom drift.
+            return True, [f"cannot parse the checked-in file: {str(exc).splitlines()[0]}"]
+        if rendered_doc == existing_doc:
+            return False, []
+        return True, _yaml_diff_locations(rendered_doc, existing_doc)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(content)
+    return True, []
 
 
 @click.command(help=__doc__)
@@ -2584,7 +2749,13 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> bool:
 @click.option(
     "--check",
     is_flag=True,
-    help="Don't write; exit 1 if any generated file is stale.",
+    help="Don't write; report any generated file that is stale.",
+)
+@click.option(
+    "--fail-on-drift",
+    "fail_on_drift",
+    is_flag=True,
+    help="With --check, exit 1 on drift instead of only warning.",
 )
 @click.option(
     "--sibling-root",
@@ -2597,11 +2768,23 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> bool:
     "and a consumer that has not landed is indistinguishable from one that does not "
     "exist, so orchestrator jobs are silently dropped.",
 )
-def main(manifest_path: str, check: bool, sibling_root: Path | None) -> None:
-    _run(manifest_path, check, sibling_root)
+def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None) -> None:
+    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
 
 
-def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> None:
+def _run(
+    manifest_path: str,
+    check: bool,
+    sibling_root: Path | None = None,
+    *,
+    fail_on_drift: bool = False,
+) -> None:
+    # Inert rather than harmless: without --check the drift is being written away,
+    # so a caller asking to fail on it has misunderstood which mode they are in.
+    if fail_on_drift and not check:
+        raise CIError(
+            "--fail-on-drift only applies with --check; without it, drift is written away rather than reported"
+        )
     local_manifest_path = Path(manifest_path)
     if not local_manifest_path.is_file():
         raise CIError(f"no manifest found at {local_manifest_path}")
@@ -2637,7 +2820,7 @@ def _run(manifest_path: str, check: bool, sibling_root: Path | None = None) -> N
     except SchemaError as e:
         raise CIError(str(e)) from e
 
-    _report(changed, check, manifest_path)
+    _report(changed, check, manifest_path, fail_on_drift=fail_on_drift)
 
 
 def _render_one_repo(
@@ -2646,8 +2829,8 @@ def _render_one_repo(
     by_repo: Mapping[str, Manifest],
     closures: Mapping[str, dict[str, dict[str, list[str]]]],
     check: bool,
-) -> list[tuple[Literal["delete", "update", "create"], Path]]:
-    changed: list[tuple[Literal["delete", "update", "create"], Path]] = []
+) -> list[Change]:
+    changed: list[Change] = []
     wf_dir = m.repo_root / ".github" / "workflows"
 
     # Two lanes, two files per side. A lane with no runnable/consumer content
@@ -2664,11 +2847,12 @@ def _render_one_repo(
         ):
             path = wf_dir / basename
             existed = path.exists()
-            if _write_or_check_path(path, content, check):
+            needed, where = _write_or_check_path(path, content, check)
+            if needed:
                 if content is None:
-                    changed.append(("delete", path))
+                    changed.append(Change("delete", path, where))
                 else:
-                    changed.append(("update" if existed else "create", path))
+                    changed.append(Change("update" if existed else "create", path, where))
 
     return changed
 
@@ -2684,33 +2868,65 @@ def _regen_command(manifest_path: str) -> str:
     return shlex.join(parts)
 
 
-def _report(
-    changed: Sequence[tuple[Literal["delete", "update", "create"], Path]],
-    check: bool,
-    manifest_path: str,
-) -> None:
-    if check and changed:
-        stale = "\n".join(f"  - [{action}] {p}" for action, p in changed)
-        # gh keychain auth is a prerequisite when GH_TOKEN isn't set.
-        # `gh auth login` is idempotent if you're already logged in, so the
-        # hint is harmless either way. Only the first line carries the ::error::
-        # annotation; GitHub renders the rest as plain log.
-        raise CIError(
-            "generated files are out of date:\n"
-            f"{stale}\n"
-            "\n"
-            "To regenerate, run from this repo (drops --check, writes in place):\n"
-            "\n"
-            "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
-            f"  {_regen_command(manifest_path)}\n"
-            "\n"
-            "ci-infrastructure-generate is installed by `pip install ci-infrastructure`\n"
-            "(https://github.com/ecmwf/ci-infrastructure); inside a job the composite\n"
-            'actions expose it as "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci.\n'
-            "Then commit the regenerated files alongside your manifest changes."
-        )
-    for action, p in changed:
-        print(f"{action} {p}")
+def _drift_message(changed: Sequence[Change], manifest_path: str, *, fatal: bool) -> str:
+    """The out-of-date report, headline first.
+
+    Whoever reads this is going to run one command, so the message is mostly that
+    command. `gh auth login` is a prerequisite when GH_TOKEN isn\'t set and is
+    idempotent when it is, so the hint is harmless either way.
+    """
+    stale = "\n".join(c.render() for c in changed)
+    tail = (
+        ""
+        if fatal
+        else "\nThis is a warning. Set fail-on-drift on the validate-generated-workflows\n"
+        "action (or pass --fail-on-drift) to make it a failure.\n"
+    )
+    return (
+        "generated files are out of date:\n"
+        f"{stale}\n"
+        "\n"
+        "To regenerate, run from this repo (drops --check, writes in place):\n"
+        "\n"
+        "  gh auth login        # only needed if 'gh' isn't already authenticated\n"
+        f"  {_regen_command(manifest_path)}\n"
+        "\n"
+        "ci-infrastructure-generate is installed by `pip install ci-infrastructure`\n"
+        "(https://github.com/ecmwf/ci-infrastructure); inside a job the composite\n"
+        'actions expose it as "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci.\n'
+        "Then commit the regenerated files alongside your manifest changes.\n" + tail
+    )
+
+
+def _report(changed: Sequence[Change], check: bool, manifest_path: str, *, fail_on_drift: bool) -> None:
+    """Say what --check found, and decide whether that is a failure.
+
+    Drift defaults to a warning: an orchestrator gates its whole fan-out on this
+    job, and "someone regenerated one repo and not its sibling" is not a reason to
+    withhold downstream CI from every consumer. It IS a reason to say so loudly on
+    every run until a human or a bot regenerates. `fail_on_drift` restores the
+    hard gate for a caller that wants one.
+
+    A schema or graph violation is a different animal and still raises out of
+    _run before we get here: a trigger cycle or an unresolvable `needs` renders a
+    workflow that cannot run, so there is nothing to warn about.
+    """
+    if not check:
+        for c in changed:
+            print(f"{c.action} {c.path}")
+        return
+    if not changed:
+        return
+    message = _drift_message(changed, manifest_path, fatal=fail_on_drift)
+    if fail_on_drift:
+        raise CIError(message)
+    # GitHub parses the workflow command on the first line only, so the headline
+    # is annotated and the rest shows as plain log -- exactly how CIError renders
+    # the fatal case, and one annotation rather than fifteen.
+    head, _, rest = message.partition("\n")
+    print(f"::warning::{head}", file=sys.stderr)
+    if rest:
+        print(rest, file=sys.stderr)
 
 
 if __name__ == "__main__":

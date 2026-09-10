@@ -15,54 +15,27 @@ description: >
   Columns: Package | Ref | SHA | Deps hash | Platform | Compiler | Python | Build type | Source
 
 inputs:
-  deps-json:
-    description: 'JSON array of resolved dep dicts (matrix._resolved.deps)'
-    required: false
-    default: '[]'
-  own-name:
-    description: 'OWN package name (omit to skip the OWN row)'
-    required: false
-    default: ''
+  resolved:
+    description: >
+      The matrix leg's `_resolved` block as JSON, i.e. toJSON of matrix._resolved
+      (spelled out here without the expression braces on purpose: a description is
+      evaluated, and a `matrix` reference in one fails every caller at workflow load).
+      Every column but the two below is read out of it, so a workflow never restates
+      a field name. Rejected when empty: an input this action does not declare arrives
+      as the empty string (GitHub only warns about an unknown input), and a blank table
+      reads as "no dependencies" rather than as a broken call.
+    required: true
   own-repo:
-    description: 'OWN package repo as owner/name'
+    description: 'owner/repo of the OWN package. Not in _resolved — it is the calling workflow.'
     required: false
     default: ${{ github.repository }}
-  own-sha:
-    description: 'OWN package commit SHA'
-    required: false
-    default: ${{ github.sha }}
-  own-artifact-name:
-    description: 'OWN package artifact name (matrix._resolved.own-artifact-name)'
-    required: false
-    default: ''
   own-source:
-    description: 'OWN package source label (built / artifact / triggered rebuild)'
+    description: >
+      How this job got the OWN artifact. Not in _resolved either: it describes what the
+      JOB did, not what the resolver decided. 'built' is right wherever the build step is
+      unconditional; a cache-gated build should pass 'artifact' when it skipped.
     required: false
     default: 'built'
-  own-ref:
-    description: 'OWN package branch/tag (matrix._resolved.own-ref); blank if a SHA was pinned'
-    required: false
-    default: ''
-  own-platform:
-    description: 'OWN package platform slug (matrix._resolved.own-platform)'
-    required: false
-    default: ''
-  own-compiler:
-    description: 'OWN package compiler (matrix._resolved.own-compiler)'
-    required: false
-    default: ''
-  own-python:
-    description: 'OWN package python version (matrix._resolved.own-python)'
-    required: false
-    default: ''
-  own-build-type:
-    description: 'OWN package build type (matrix._resolved.own-build-type)'
-    required: false
-    default: ''
-  own-deps-hash:
-    description: 'OWN package deps hash (matrix._resolved.own-deps-hash)'
-    required: false
-    default: ''
   title:
     description: 'Heading for the Markdown table section'
     required: false
@@ -76,40 +49,14 @@ runs:
     - name: Print dependency table to step summary
       shell: bash
       env:
-        OWN_NAME: ${{ inputs.own-name }}
-        OWN_REPO: ${{ inputs.own-repo }}
-        OWN_SHA: ${{ inputs.own-sha }}
-        OWN_ARTIFACT: ${{ inputs.own-artifact-name }}
-        OWN_SOURCE: ${{ inputs.own-source }}
-        OWN_REF: ${{ inputs.own-ref }}
-        OWN_PLATFORM: ${{ inputs.own-platform }}
-        OWN_COMPILER: ${{ inputs.own-compiler }}
-        OWN_PYTHON: ${{ inputs.own-python }}
-        OWN_BUILD_TYPE: ${{ inputs.own-build-type }}
-        OWN_DEPS_HASH: ${{ inputs.own-deps-hash }}
-        DEPS_JSON_INPUT: ${{ inputs.deps-json }}
+        RESOLVED_INPUT: ${{ inputs.resolved }}
+        OWN_REPO_INPUT: ${{ inputs.own-repo }}
+        OWN_SOURCE_INPUT: ${{ inputs.own-source }}
         TITLE_INPUT: ${{ inputs.title }}
       run: |
-        own_arg=()
-        if [ -n "$OWN_NAME" ] && [ -n "$OWN_ARTIFACT" ]; then
-          own_json=$("$CI_INFRASTRUCTURE_PYTHON" -c '
-        import json, os
-        print(json.dumps({
-            "name": os.environ["OWN_NAME"],
-            "repo": os.environ["OWN_REPO"],
-            "ref": os.environ["OWN_REF"],
-            "sha": os.environ["OWN_SHA"],
-            "artifact-name": os.environ["OWN_ARTIFACT"],
-            "source": os.environ["OWN_SOURCE"],
-            "platform": os.environ["OWN_PLATFORM"],
-            "compiler": os.environ["OWN_COMPILER"],
-            "python-version": os.environ["OWN_PYTHON"],
-            "build-type": os.environ["OWN_BUILD_TYPE"],
-            "deps-hash": os.environ["OWN_DEPS_HASH"],
-        }))')
-          own_arg=(--own "$own_json")
-        fi
+        set -euo pipefail
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.print_dep_table \
-          --deps-json "$DEPS_JSON_INPUT" \
-          --title "$TITLE_INPUT" \
-          "${own_arg[@]}"
+          --resolved "$RESOLVED_INPUT" \
+          --own-repo "$OWN_REPO_INPUT" \
+          --own-source "$OWN_SOURCE_INPUT" \
+          --title "$TITLE_INPUT"

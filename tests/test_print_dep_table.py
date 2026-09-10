@@ -15,12 +15,14 @@ shows a branch but blanks a pinned SHA.
 from __future__ import annotations
 
 import json
-from typing import Final
+from collections.abc import Mapping, Sequence
+from typing import Any, Final
 
 import pytest
 from click.testing import CliRunner
 
 from ci_infrastructure import print_dep_table
+from ci_infrastructure._errors import CIError
 from ci_infrastructure.print_dep_table import _looks_like_sha, _md_table, _row_from_dep
 
 SHA: Final = "a" * 40
@@ -86,10 +88,27 @@ def test_md_table_has_ref_as_second_column() -> None:
     assert "Release" in table
 
 
+def _resolved(deps: Sequence[Mapping[str, Any]], **own: object) -> str:
+    """A `_resolved` block as the resolver emits it, ready for --resolved."""
+    block: dict[str, Any] = {
+        "own-name": "eckit",
+        "own-ref": "develop",
+        "own-sha": "0123456789abcdef0123456789abcdef01234567",
+        "own-platform": "ubuntu-24.04",
+        "own-compiler": "g++-13",
+        "own-build-type": "Release",
+        "own-python": "",
+        "own-deps-hash": "abcd1234",
+        "deps": deps,
+    }
+    block.update(own)
+    return json.dumps(block)
+
+
 def test_main_renders_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     deps = [_dep(name="ecbuild", repo="owner/ecbuild", compiler="")]
-    result = CliRunner().invoke(print_dep_table.main, ["--deps-json", json.dumps(deps)])
+    result = CliRunner().invoke(print_dep_table.main, ["--resolved", _resolved(deps)])
     assert result.exit_code == 0
     out = result.output
     assert "| Package" in out and "| Ref" in out and "| Build type" in out
@@ -97,14 +116,50 @@ def test_main_renders_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "ubuntu-24.04-Release" not in out
 
 
+def test_own_row_is_projected_out_of_the_resolved_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole point: no workflow restates a field, so every own-* must land."""
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    result = CliRunner().invoke(
+        print_dep_table.main,
+        ["--resolved", _resolved([]), "--own-repo", "ecmwf/eckit", "--own-source", "built"],
+    )
+    assert result.exit_code == 0
+    own_line = next(line for line in result.output.splitlines() if "[eckit]" in line)
+    assert "https://github.com/ecmwf/eckit" in own_line
+    assert "develop" in own_line
+    assert "01234567" in own_line  # short sha, linked to the commit
+    for value in ("abcd1234", "ubuntu-24.04", "g++-13", "Release", "built"):
+        assert value in own_line, value
+
+
 def test_main_orders_own_first_then_deps_downstream_to_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
-    # deps-json arrives upstream→downstream (the build's link order).
+    # _resolved.deps arrives upstream→downstream (the build's link order).
     deps = [_dep(name="A"), _dep(name="B"), _dep(name="E")]
-    own = _dep(name="D")
-    result = CliRunner().invoke(print_dep_table.main, ["--deps-json", json.dumps(deps), "--own", json.dumps(own)])
+    result = CliRunner().invoke(
+        print_dep_table.main,
+        ["--resolved", _resolved(deps, **{"own-name": "D"}), "--own-repo", "owner/D"],
+    )
     assert result.exit_code == 0
     out = result.output
     # OWN on top, then deps reversed to downstream→upstream: D, E, B, A.
     positions = [out.index(f"[{name}]") for name in ("D", "E", "B", "A")]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize(
+    ("resolved_json", "match"),
+    [
+        ("", "required and was empty"),
+        ("   ", "required and was empty"),
+        ("{not json", "not valid JSON"),
+        ("[]", "must be a JSON object"),
+        ('{"own-name": "eckit"}', "no 'deps' key"),
+        ('{"own-name": "eckit", "deps": {}}', "deps must be an array"),
+        ('{"deps": []}', "no 'own-name'"),
+    ],
+)
+def test_resolved_is_vetted_rather_than_rendered_blank(resolved_json: str, match: str) -> None:
+    """Each of these used to produce an empty table that read as "no dependencies"."""
+    with pytest.raises(CIError, match=match):
+        print_dep_table.parse_resolved(resolved_json)

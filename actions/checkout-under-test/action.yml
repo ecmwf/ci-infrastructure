@@ -42,6 +42,17 @@ inputs:
     description: 'Leave the token in the local git config for later git commands.'
     required: false
     default: 'true'
+  allow-unsafe-pr-checkout:
+    description: >
+      'true' to run a FORK's code in this trusted context. actions/checkout refuses
+      by default under pull_request_target and workflow_run, because the job holds
+      the base repository's token, secrets, cache scope and runners — the "pwn
+      request" shape. Deliberately not defaulted on here, even though this action
+      exists to check out pull request code: what makes it payable is that the job
+      hangs off actions/require-ci-approval, so a human with write access has read
+      the diff. Set it where that gate is in place, and nowhere else.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -56,3 +67,4 @@ runs:
         fetch-depth: ${{ inputs.fetch-depth }}
         submodules: ${{ inputs.submodules }}
         persist-credentials: ${{ inputs.persist-credentials }}
+        allow-unsafe-pr-checkout: ${{ inputs.allow-unsafe-pr-checkout }}

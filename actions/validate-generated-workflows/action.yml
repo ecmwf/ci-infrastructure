@@ -6,9 +6,11 @@ name: Validate generated downstream-CI workflows
 description: >
   Re-renders this repo's .github/workflows/{cross-repo-trigger,trigger-downstream}{,-hpc}.yml
   from .ci/manifest.toml plus sibling manifests fetched via the GitHub API, and fails
-  the step if the locally checked-in files have drifted. Pulls only manifest blobs over
-  GraphQL (no clones), so the cost is one batched query per BFS layer regardless of repo
-  size.
+  reports any locally checked-in file that has drifted. The comparison is on the
+  PARSED YAML, so comments and blank lines never count, and the report names where
+  the documents disagree. Drift is a WARNING unless fail-on-drift is set; a schema
+  or graph violation always fails. Pulls only manifest blobs over GraphQL (no
+  clones), so the cost is one batched query per BFS layer regardless of repo size.
 
 inputs:
   token:
@@ -26,6 +28,15 @@ inputs:
     description: 'Path to the manifest within each repo.'
     required: false
     default: '.ci/manifest.toml'
+  fail-on-drift:
+    description: >
+      'true' to fail the step when the checked-in workflows have drifted from what
+      the manifests render. Default 'false': the drift is reported as a warning and
+      the step passes, because an orchestrator gates its whole fan-out on this job
+      and one repo regenerated without its sibling should not withhold downstream CI
+      from every consumer. Set it 'true' where the drift itself must block.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -38,7 +49,15 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         MANIFEST_PATH_INPUT: ${{ inputs.manifest-path }}
+        FAIL_ON_DRIFT_INPUT: ${{ inputs.fail-on-drift }}
       run: |
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci \
-          --manifest-path "$MANIFEST_PATH_INPUT" \
-          --check
+        set -euo pipefail
+        args=( --manifest-path "$MANIFEST_PATH_INPUT" --check )
+        case "$FAIL_ON_DRIFT_INPUT" in
+          true) args+=( --fail-on-drift ) ;;
+          false) ;;
+          # Anything else is a typo, and silently reading it as 'false' would turn
+          # a gate someone meant to close back into a warning.
+          *) echo "::error title=Validate generated workflows::fail-on-drift must be 'true' or 'false', got '$FAIL_ON_DRIFT_INPUT'." >&2; exit 1 ;;
+        esac
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci "${args[@]}"
