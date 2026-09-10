@@ -16,11 +16,13 @@ description: >
 
 inputs:
   deps-json:
-    description: 'JSON array of resolved dep dicts (matrix._resolved.deps)'
-    required: false
-    default: '[]'
+    description: >
+      JSON array of resolved dep dicts (matrix._resolved.deps). Rejected when
+      empty: '[]' is what a package with no deps passes, and the difference
+      between that and "the caller wired nothing up" is the whole point.
+    required: true
   own-name:
-    description: 'OWN package name (omit to skip the OWN row)'
+    description: 'OWN package name. Omit to skip the OWN row; supply it and own-artifact-name is required too.'
     required: false
     default: ''
   own-repo:
@@ -90,8 +92,24 @@ runs:
         DEPS_JSON_INPUT: ${{ inputs.deps-json }}
         TITLE_INPUT: ${{ inputs.title }}
       run: |
+        set -euo pipefail
+
+        # `required:` is documentation only -- the runner does not enforce it for a
+        # composite action, and an unknown input (a misremembered name) is a
+        # warning, not an error. Either way the input arrives empty and the table
+        # renders blank, which reads as "no dependencies" rather than as a broken
+        # call. So reject empty here, where it can actually be rejected.
+        if [ -z "$DEPS_JSON_INPUT" ]; then
+          echo "::error title=Dependency table::input 'deps-json' is required and was empty. Pass matrix._resolved.deps; '[]' is the right value for a package with no dependencies." >&2
+          exit 1
+        fi
+        if [ -n "$OWN_NAME" ] && [ -z "$OWN_ARTIFACT" ]; then
+          echo "::error title=Dependency table::own-name is set but 'own-artifact-name' is empty, so the OWN row would be dropped in silence. Pass matrix._resolved.own-artifact-name, or drop own-name to skip the row deliberately." >&2
+          exit 1
+        fi
+
         own_arg=()
-        if [ -n "$OWN_NAME" ] && [ -n "$OWN_ARTIFACT" ]; then
+        if [ -n "$OWN_NAME" ]; then
           own_json=$("$CI_INFRASTRUCTURE_PYTHON" -c '
         import json, os
         print(json.dumps({
@@ -109,7 +127,10 @@ runs:
         }))')
           own_arg=(--own "$own_json")
         fi
+        # ${a[@]:+...} rather than "${a[@]}": under `set -u` an empty array is an
+        # unbound variable, and the OWN row is legitimately absent for a caller
+        # that passes no own-name.
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.print_dep_table \
           --deps-json "$DEPS_JSON_INPUT" \
           --title "$TITLE_INPUT" \
-          "${own_arg[@]}"
+          ${own_arg[@]:+"${own_arg[@]}"}
