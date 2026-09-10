@@ -80,7 +80,15 @@ Outputs (key=value to $GITHUB_OUTPUT, or stdout for debug):
         per-leg dep tree:
           _resolved.cmake-prefix-path     semicolon-separated install paths
           _resolved.all-artifact-names    space-separated transitive artifact names
-          _resolved.own-artifact-name     this package's own artifact name for this leg
+          _resolved.own-*                 this package's own identity for this leg:
+                                          own-name (the manifest's [package].name),
+                                          own-artifact-name, own-tar-name, own-sha,
+                                          own-ref, own-platform, own-compiler,
+                                          own-build-type, own-python, own-deps-hash.
+                                          The same projection the artifact name is a
+                                          function of, which is why print-dep-table
+                                          takes the whole block rather than a field
+                                          list a workflow has to keep in step.
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
           _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
@@ -1280,6 +1288,7 @@ def _run(
                 "cmake-prefix-path": ";".join(cmake_paths),
                 "all-artifact-names": " ".join(all_artifact_names),
                 "all-artifact-sources": " ".join(d.source for d in deps_resolved),
+                "own-name": local_manifest.package.name,
                 "own-artifact-name": own.artifact_name,
                 "own-sha": own_sha,
                 "own-ref": current_branch,
