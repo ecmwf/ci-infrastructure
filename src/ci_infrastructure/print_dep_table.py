@@ -8,12 +8,17 @@
 $GITHUB_STEP_SUMMARY so CI job logs show a human-readable dependency
 overview with clickable links to each upstream repo and commit.
 
-Inputs are the JSON the resolver already produces:
+The input is the resolver's `_resolved` block for one matrix leg, whole:
 
-  --deps-json '[{name, repo, ref, sha, artifact-name, platform, compiler,
-                 build-type, python-version, deps-hash, source, ...}, ...]'
-  --own       '{name, repo, ref, sha, artifact-name, platform, compiler,
-                 build-type, python-version, deps-hash, source}'   (optional)
+  --resolved '{own-name, own-ref, own-sha, own-platform, own-compiler,
+               own-build-type, own-python, own-deps-hash,
+               deps: [{name, repo, ref, sha, platform, compiler, build-type,
+                       python-version, deps-hash, source, ...}, ...], ...}'
+
+Whole, rather than a field list, because a workflow spelling out
+`own-sha: ${{ matrix._resolved.own-sha }}` ten times is ten chances to mistype a
+key into a silently blank column -- which is how three repos came to render an
+empty table for months. The key mapping lives here, once, where it is tested.
 
 The resolver carries the structured fields (platform / compiler / python /
 build-type / deps-hash) explicitly, so each column is read straight from the
@@ -22,7 +27,8 @@ upstream repo, the SHA column links to the upstream commit, and the Ref column
 shows the resolved branch/tag (blank when a literal SHA was pinned).
 
 Usage:
-    print_dep_table.py --deps-json '<JSON>' [--own '<JSON>'] [--title "..."]
+    print_dep_table.py --resolved '<JSON>' [--own-repo o/r] [--own-source built]
+                       [--title "..."]
 """
 
 from __future__ import annotations
@@ -111,30 +117,77 @@ def _md_table(rows: Sequence[Row], show_source: bool) -> str:
     return "\n".join(lines)
 
 
+#: `_resolved` own-* key -> the un-prefixed key `_row_from_dep` reads. Only
+#: own-python needs saying twice; the rest are the same word without the prefix.
+_OWN_COLUMNS: Final = {
+    "own-name": "name",
+    "own-ref": "ref",
+    "own-sha": "sha",
+    "own-platform": "platform",
+    "own-compiler": "compiler",
+    "own-build-type": "build-type",
+    "own-python": "python-version",
+    "own-deps-hash": "deps-hash",
+}
+
+
+def own_row_from_resolved(resolved: Mapping[str, Any], repo: str, source: str) -> dict[str, Any]:
+    """The OWN row, projected out of `_resolved`'s own-* fields.
+
+    `repo` and `source` are not in `_resolved` and cannot be: the first is the
+    workflow's own repository, the second is what the JOB did (built it, or found
+    it already published) rather than what the resolver decided.
+    """
+    row = {column: resolved.get(key, "") for key, column in _OWN_COLUMNS.items()}
+    row["repo"] = repo
+    row["source"] = source
+    return row
+
+
+def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
+    """Parse and vet `--resolved`, failing loudly rather than rendering blank.
+
+    Every check here is a shape a caller can actually produce: an input name the
+    action does not declare arrives as the empty string (GitHub only warns about
+    an unknown input), and a hand-rolled JSON blob is the other way in.
+    """
+    if not resolved_json.strip():
+        raise CIError("--resolved is required and was empty; pass the leg's `matrix._resolved` as JSON")
+    try:
+        resolved = json.loads(resolved_json)
+    except json.JSONDecodeError as exc:
+        raise CIError(f"--resolved is not valid JSON: {exc}") from exc
+    if not isinstance(resolved, dict):
+        raise CIError(f"--resolved must be a JSON object (the _resolved block), got {type(resolved).__name__}")
+    if "deps" not in resolved:
+        raise CIError("--resolved has no 'deps' key; this is not a _resolved block")
+    if not isinstance(resolved["deps"], list):
+        raise CIError(f"--resolved.deps must be an array, got {type(resolved['deps']).__name__}")
+    if not resolved.get("own-name"):
+        # resolve-deps and this action are both pinned @main and run in the same
+        # job graph, so they cannot legitimately disagree about the schema.
+        raise CIError(
+            "--resolved has no 'own-name'; the matrix was produced by a resolve-deps "
+            "older than this action. Re-run the workflow so both come from the same ref."
+        )
+    return resolved
+
+
 @click.command(help="Print artifact dependency table to step summary.")
 @click.option(
-    "--deps-json",
-    "deps_json",
-    default="[]",
-    help='JSON array of resolved dep dicts (resolver _resolved.deps), default "[]"',
-)
-@click.option(
-    "--own",
+    "--resolved",
+    "resolved_json",
     default="",
-    help="JSON object with the OWN package row {name, repo, sha, artifact-name, source}",
+    help="The leg's _resolved block as JSON (matrix._resolved)",
 )
+@click.option("--own-repo", default="", help="owner/repo of the OWN package; empty renders its name unlinked")
+@click.option("--own-source", default="built", help="How this job got the OWN artifact: built / artifact")
 @click.option("--title", default="Resolved dependencies", help="Table heading")
-def main(deps_json: str, own: str, title: str) -> None:
-    deps = json.loads(deps_json)
-    if not isinstance(deps, list):
-        raise CIError("--deps-json must be a JSON array")
+def main(resolved_json: str, own_repo: str, own_source: str, title: str) -> None:
+    resolved = parse_resolved(resolved_json)
+    deps = resolved["deps"]
 
-    rows: list[Row] = []
-
-    if own.strip():
-        own_row = json.loads(own)
-        if isinstance(own_row, dict):
-            rows.append(_row_from_dep(own_row))
+    rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
 
     # The deps array is ordered upstream→downstream (the link order the build
     # needs). The table reads top-down from the OWN package, so list deps

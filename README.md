@@ -84,8 +84,7 @@ ci-infrastructure-check-declaration
 Resolve the dependency graph for a package and print it as a table:
 
 ```bash
-ci-infrastructure-resolve --config deps.yml --output resolved.json
-ci-infrastructure-print-dep-table resolved.json
+ci-infrastructure-print-dep-table --resolved "$(jq -c '.include[0]._resolved' matrix.json)"
 ```
 
 In a workflow, the same functionality is typically consumed through the
