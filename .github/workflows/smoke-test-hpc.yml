@@ -4,10 +4,25 @@
 
 name: Smoke test HPC
 
+# pull_request_target, NOT pull_request: this is the dogfood of the trigger the
+# consumer repos are moving to, and it is the right one to try it on -- the gate
+# below is what makes the trade payable, and these jobs reach the actual HPC and
+# ARC hardware the gate exists to protect. Under pull_request a fork gets no
+# secrets at all, so this smoke test cannot work for an outside contributor;
+# under pull_request_target it can, once someone with write access has read the
+# diff and applied approved-for-ci.
+#
+# Two consequences, both deliberate. Every job must hang off ci-approval via
+# `needs:` (check_ci_approval enforces exactly that for this trigger). And the
+# base branch's copy of this file is what runs, so a pull request editing THIS
+# workflow cannot test its own edit -- use workflow_dispatch on the branch, which
+# is why that trigger stays.
 on:
   push:
     branches: [main]
-  pull_request:
+  pull_request_target:
+    # labeled is what lets an approval start a run; synchronize is what
+    # require-ci-approval needs to revoke one. Neither is optional.
     types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
 
@@ -132,7 +147,12 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      # pull_request_target checks out the BASE branch by default, which would
+      # leave this smoke test proving nothing about the pull request. Name the
+      # merge ref explicitly, exactly as the consumer ci.yml files do.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
@@ -251,7 +271,12 @@ jobs:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      # pull_request_target checks out the BASE branch by default, which would
+      # leave this smoke test proving nothing about the pull request. Name the
+      # merge ref explicitly, exactly as the consumer ci.yml files do.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
