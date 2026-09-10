@@ -2304,24 +2304,151 @@ def test_orchestrator_caps_reusable_workflows(tmp_path: Path) -> None:
         render_orchestrator_workflow(by_pkg["a"], by_pkg, by_repo, closures, lane=EXECUTION_RUNNER)
 
 
+def _without_leading_comments(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    body = [i for i, line in enumerate(lines) if line.strip() and not line.lstrip().startswith("#")]
+    return "".join(lines[body[0] :])
+
+
+_HEADER_MANIFEST: Final = """
+    [generated]
+    header = '''
+    # SPDX-FileCopyrightText: 2026 ECMWF
+    # SPDX-License-Identifier: Apache-2.0
+    '''
+
+    [matrix.build]
+    triggers = ["upstream-change"]
+    action = "./.github/actions/build"
+    [[matrix.build.include]]
+    runs-on = "ubuntu-latest"
+    platform = "linux"
+    """
+
+
+def test_generated_header_precedes_the_do_not_edit_banner(tmp_path: Path) -> None:
+    """A repo whose licence check wants an SPDX block in every file declares it once.
+
+    It has to come from the manifest: a regeneration rewrites the file wholesale,
+    so a header kept anywhere else is a header the next run deletes.
+    """
+    write_repo(tmp_path, "a", _HEADER_MANIFEST)
+    manifests = parse_all(tmp_path)
+    by_pkg = {m.package_name: m for m in manifests}
+    rendered = render_workflow(by_pkg["a"], by_pkg, lane=EXECUTION_RUNNER)
+    assert rendered is not None
+    # One blank line between the two, so the licence block does not read as part
+    # of the DO-NOT-EDIT banner.
+    assert rendered.startswith(
+        "# SPDX-FileCopyrightText: 2026 ECMWF\n# SPDX-License-Identifier: Apache-2.0\n\n# GENERATED FILE"
+    )
+    # The header is a comment, so it is invisible to the check that matters.
+    assert yaml.safe_load(rendered) == yaml.safe_load(_without_leading_comments(rendered))
+
+
+def test_generated_header_round_trips_through_check(tmp_path: Path) -> None:
+    write_repo(tmp_path, "a", _HEADER_MANIFEST)
+    manifests = parse_all(tmp_path)
+    by_pkg = {m.package_name: m for m in manifests}
+    rendered = render_workflow(by_pkg["a"], by_pkg, lane=EXECUTION_RUNNER)
+    assert rendered is not None
+    out = tmp_path / "wf.yml"
+    out.write_text(rendered)
+    assert _write_or_check_path(out, rendered, check=True) == (False, [])
+    # …and dropping every comment is still semantically identical, so --check passes.
+    out.write_text(_without_leading_comments(rendered))
+    assert _write_or_check_path(out, rendered, check=True) == (False, [])
+
+
+def test_generated_header_must_be_comments(tmp_path: Path) -> None:
+    """Anything but a comment would land above the document and corrupt it."""
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [generated]
+        header = "name: not-a-comment"
+        """,
+    )
+    with pytest.raises(SchemaError, match=r"\[generated\].header.*must be YAML comments"):
+        parse_all(tmp_path)
+
+
 def test_write_or_check_path_modes(tmp_path: Path) -> None:
     out = tmp_path / ".github/workflows/cross-repo-trigger.yml"
     # First write creates the parent directory too.
-    assert _write_or_check_path(out, "hello\n", check=False) is True
+    assert _write_or_check_path(out, "hello\n", check=False)[0] is True
     assert out.read_text() == "hello\n"
     # Idempotent
-    assert _write_or_check_path(out, "hello\n", check=False) is False
+    assert _write_or_check_path(out, "hello\n", check=False)[0] is False
     # Drift detected by --check
-    assert _write_or_check_path(out, "different\n", check=True) is True
+    assert _write_or_check_path(out, "different\n", check=True)[0] is True
     # Check didn't actually write
     assert out.read_text() == "hello\n"
     # content=None deletes an existing workflow: the manifest is the source
     # of truth, so a kind that no longer opts into cross-repo dispatch must
     # not leave a dangling workflow behind.
-    assert _write_or_check_path(out, None, check=False) is True
+    assert _write_or_check_path(out, None, check=False)[0] is True
     assert not out.exists()
     # …and a second None call is a no-op once the file is gone.
-    assert _write_or_check_path(out, None, check=False) is False
+    assert _write_or_check_path(out, None, check=False)[0] is False
+
+
+_RENDERED = "# GENERATED FILE - DO NOT EDIT.\nname: CI\non:\n  push: {}\njobs:\n  a:\n    runs-on: x\n"
+
+
+def test_check_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
+    """A hand-added comment must not fail an orchestrator run.
+
+    --check answers "would GitHub Actions do something different", and a comment
+    is the one edit that provably cannot change that.
+    """
+    out = tmp_path / "wf.yml"
+    out.write_text(_RENDERED.replace("name: CI\n", "# someone explained something here\n\nname: CI\n"))
+    assert _write_or_check_path(out, _RENDERED, check=True) == (False, [])
+
+
+def test_check_ignores_mapping_order(tmp_path: Path) -> None:
+    """Key order is presentation; GitHub reads a mapping, so --check does too."""
+    out = tmp_path / "wf.yml"
+    out.write_text("jobs:\n  a:\n    runs-on: x\non:\n  push: {}\nname: CI\n")
+    assert _write_or_check_path(out, _RENDERED, check=True) == (False, [])
+
+
+def test_check_reports_where_the_documents_differ(tmp_path: Path) -> None:
+    out = tmp_path / "wf.yml"
+    out.write_text(_RENDERED.replace("runs-on: x", "runs-on: y"))
+    changed, where = _write_or_check_path(out, _RENDERED, check=True)
+    assert changed is True
+    assert where == [".jobs.a.runs-on: 'x' rendered, 'y' checked in"]
+
+
+def test_check_names_the_on_key_not_the_yaml_1_1_boolean(tmp_path: Path) -> None:
+    """`on:` must be reported as `.on`, not as the boolean SafeLoader would make it."""
+    out = tmp_path / "wf.yml"
+    out.write_text(_RENDERED.replace("push: {}", "pull_request: {}"))
+    _, where = _write_or_check_path(out, _RENDERED, check=True)
+    assert where and all(w.startswith(".on.") for w in where), where
+
+
+def test_check_reports_an_unparseable_checked_in_file(tmp_path: Path) -> None:
+    out = tmp_path / "wf.yml"
+    out.write_text("jobs: [unclosed\n")
+    changed, where = _write_or_check_path(out, _RENDERED, check=True)
+    assert changed is True
+    assert where and where[0].startswith("cannot parse the checked-in file:")
+
+
+def test_write_restores_the_canonical_form(tmp_path: Path) -> None:
+    """The write path owns the file's form: a semantic no-op still gets tidied.
+
+    The mirror of test_check_ignores_comments_and_blank_lines — the check tolerates
+    the stray comment, regenerating removes it, and that asymmetry is deliberate.
+    """
+    out = tmp_path / "wf.yml"
+    out.write_text(_RENDERED.replace("name: CI\n", "# stray\nname: CI\n"))
+    assert _write_or_check_path(out, _RENDERED, check=False) == (True, [])
+    assert out.read_text() == _RENDERED
 
 
 def test_local_sibling_layer_reads_clones_and_skips_missing(tmp_path: Path) -> None:
