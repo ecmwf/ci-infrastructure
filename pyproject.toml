@@ -9,13 +9,19 @@ description = "Shared CI orchestration scripts and actions"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# What EVERY entry point needs, and nothing else: PyYAML, and click for the CLIs.
+#
+# Not tidiness. `check-ci-approval` is exported as a pre-commit hook, so pre-commit
+# builds an isolated venv from this list on every developer's machine and in every
+# consuming repo. With boto3 and a git-cloned troika here, that hook cost a ~50MB
+# download and a clone to lint YAML, and failed outright offline. It needs PyYAML
+# and the standard library, so that is what it installs.
+#
+# Everything running the actions installs `[all]` -- see
+# actions/ensure-infrastructure-present and public-images/*/base/Dockerfile.
 dependencies = [
     "click>=8.1",
-    "pydantic>=2",
     "PyYAML>=6",
-    "boto3>=1.34",
-    "jinja2>=3.1",
-    "troika @ git+https://github.com/ecmwf/troika.git",
 ]
 
 
@@ -34,7 +40,14 @@ ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:main"
 
 [project.optional-dependencies]
-test = ["pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
+# One extra per heavy dependency, named for the capability it buys. Each is needed
+# by exactly one module today, named beside it so a future reader can check.
+#
+s3 = ["boto3>=1.34"]                                              # s3_store
+schema = ["pydantic>=2"]                                          # generate_downstream_ci
+hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
+all = ["ci-infrastructure[s3,schema,hpc]"]
+test = ["ci-infrastructure[all]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
 
 [build-system]
 requires = ["setuptools>=77"]
