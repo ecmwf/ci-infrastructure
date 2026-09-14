@@ -1947,7 +1947,7 @@ def render_orchestrator_workflow(
     completed CI run, so the context is never left hanging and can be a required check
     that blocks the merge.
 
-    Branch matching is delegated to the called workflow's `pick-ref` step at runtime;
+    Branch matching (sync branches only) is delegated to the called workflow's `pick-ref` step at runtime;
     the orchestrator passes `branch` (the upstream's head branch) and `fallback-ref`
     (the manifest-declared consumer ref). The `uses:@<ref>` itself is pinned to the
     static manifest ref (GHA forbids expressions there), which only selects the workflow
