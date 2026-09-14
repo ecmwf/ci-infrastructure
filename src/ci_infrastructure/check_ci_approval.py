@@ -219,7 +219,9 @@ def check(workflow: Path) -> list[str]:
         return problems
 
     for name, job in sorted(jobs.items()):
-        if name in gates or (workflow.name, name) in pairs:
+        if (workflow.name, name) in pairs:
+            continue
+        if name in gates and _is_github_hosted(job.get("runs-on")):
             continue
         if not (_needs(job) & gates):
             gate = sorted(gates)[0]
