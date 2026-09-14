@@ -162,6 +162,7 @@ from ._github_api import (
 from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 from .runners import resolve_runner
+from .sync_branch import is_sync_branch
 
 # Discriminating fields that identify a buildable leg — the inputs to the
 # artifact name. `platform` is the binary-compatibility class; `runs-on` and
@@ -181,7 +182,6 @@ _MATRIX_DISCRIMINATORS: Final = frozenset(
 )
 
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{40}$")
-_SYNC_BRANCH_RE: Final = re.compile(r"^(?:sync-branch-|feature-sync-)")
 _OPTION_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -1223,7 +1223,7 @@ def _run(
         )
 
     sync_branch: Ref | None = None
-    if current_branch and _SYNC_BRANCH_RE.match(current_branch):
+    if current_branch and is_sync_branch(current_branch):
         sync_branch = Ref(current_branch)
 
     token = select_token()
