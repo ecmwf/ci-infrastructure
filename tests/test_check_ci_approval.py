@@ -138,6 +138,28 @@ def test_gated_workflow_passes(tmp_path: Path) -> None:
     assert check(wf) == []
 
 
+def test_gate_on_self_hosted_is_not_exempt(tmp_path: Path) -> None:
+    for trigger in ("pull_request", "pull_request_target"):
+        wf = write_wf(
+            tmp_path,
+            f"{trigger}.yml",
+            f"""
+            on: {trigger}
+            jobs:
+              ci-approval:
+                runs-on: arc-runner-normal
+                steps:
+                  - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+              build:
+                needs: [ci-approval]
+                runs-on: arc-runner-normal
+                steps: [{{run: make}}]
+            """,
+        )
+        (problem,) = check(wf)
+        assert "job 'ci-approval' must list 'ci-approval'" in problem
+
+
 def test_transitive_needs_is_rejected(tmp_path: Path) -> None:
     """`build` waits on `resolve` which waits on the gate. Not good enough: one
     edge moved later silently ungates build."""
