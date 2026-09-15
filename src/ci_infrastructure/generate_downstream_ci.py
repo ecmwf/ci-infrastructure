@@ -935,7 +935,9 @@ def validate_job_templates(m: Manifest) -> None:
             if not path.is_file():
                 raise SchemaError(f"{m.path}: [matrix.{kind}] job-script '{spec}' does not exist at {path}")
             try:
-                missing = jobscript.undeclared_template_names(path.read_text(), leg, template_name=str(path))
+                missing = jobscript.undeclared_template_names(
+                    path.read_text(), leg, template_name=str(path), search_path=path.parent
+                )
             except jobscript.JobTemplateError as exc:
                 raise SchemaError(f"{m.path}: [matrix.{kind}] {exc}") from exc
             if missing:
@@ -943,7 +945,8 @@ def validate_job_templates(m: Manifest) -> None:
                 raise SchemaError(
                     f"{m.path}: [matrix.{kind}] recipe '{spec}' reads {sorted(missing)}, which this "
                     f"leg does not declare. The leg has {declared}; a template may read those "
-                    f"(hyphens as underscores), plus `leg` and `artifact_name`. Add the key to the "
+                    f"(hyphens as underscores), plus `leg`, `artifact_name` and the defaults "
+                    f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
                     f"leg, or drop it from the recipe — they are meant to say the same thing."
                 )
 

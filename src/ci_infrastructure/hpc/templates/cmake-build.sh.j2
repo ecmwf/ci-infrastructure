@@ -1,0 +1,72 @@
+#!/bin/bash
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   Shared recipe for a single CMake project. A repo's .ci/hpc/build.sh.j2 extends it
+   and overrides only the blocks it needs (see HPC.md). Any change here must bump
+   _github_api.HPC_TEMPLATE_VERSION. #}
+{% block sbatch %}
+#SBATCH --qos=nf
+#SBATCH --nodes=1
+#SBATCH --ntasks={{ ntasks }}
+#SBATCH --gres=ssdtmp:{{ ssdtmp }}
+#SBATCH --time={{ time }}
+{% endblock %}
+
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+
+build="${TMPDIR:-/tmp}/build"
+jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-{{ ntasks }}}}"
+install_root="$CI_INSTALL_PREFIX"
+gen_flag=""
+if command -v ninja >/dev/null 2>&1; then gen_flag="-GNinja"; fi
+
+{% block preflight %}
+echo "Using: $(command -v {{ cc | sh }}) ($({{ cc | sh }} --version | head -1))"
+echo "Using: $(command -v {{ cxx | sh }}) ($({{ cxx | sh }} --version | head -1))"
+{% if fc %}
+echo "Using: $(command -v {{ fc | sh }}) ($({{ fc | sh }} --version | head -1))"
+{% endif %}
+echo "Using: $(command -v cmake) ($(cmake --version | head -1))"
+{% endblock %}
+
+{% block configure %}
+# shellcheck disable=SC2086
+cmake --preset {{ (options or "ci") | sh }} -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \
+  -DCMAKE_BUILD_TYPE={{ build_type | sh }} \
+  -DCMAKE_C_COMPILER="$(command -v {{ cc | sh }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx | sh }})" \
+{% if fc %}
+  -DCMAKE_Fortran_COMPILER="$(command -v {{ fc | sh }})" \
+{% endif %}
+{% block cmake_args %}{% endblock %}
+  -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+  -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+  -DCMAKE_INSTALL_PREFIX="$CI_INSTALL_PREFIX"
+{% endblock %}
+
+{% block build %}
+cmake --build "$build" --parallel "$jobs"
+{% endblock %}
+
+{% if tests %}
+{% block test %}
+{% if ctest_args %}
+ctest --test-dir "$build" --output-on-failure {{ ctest_args }}
+{% else %}
+ctest --test-dir "$build" --output-on-failure -j "$jobs"
+{% endif %}
+{% endblock %}
+
+{% endif %}
+{% block install %}
+cmake --install "$build"
+{% endblock %}
+
+# The fetcher takes the artifact from CI_INSTALL_ARCHIVE, not from the install
+# tree; .part + mv so it only ever appears complete.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"

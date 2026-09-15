@@ -26,6 +26,7 @@ from ci_infrastructure._github_api import (
     make_artifact_name,
     probe_workflow_runs,
     resolve_reuse_matrix,
+    template_version_for_lane,
 )
 from ci_infrastructure.generate_downstream_ci import parse_manifest as generator_parse
 from ci_infrastructure.resolve_deps import parse_manifest as resolver_parse
@@ -131,6 +132,22 @@ def test_absent_segments_are_dropped_not_blanked(
     """Every optional segment vanishes rather than leaving an empty one — a
     doubled hyphen would be a different (and permanently unresolvable) key."""
     assert make_artifact_name("pkg", SHA, deps_hash8, "ubuntu-24.04", compiler, "Release", python_version) == expected
+
+
+def test_template_version_follows_the_build_type() -> None:
+    assert (
+        make_artifact_name("pkg", SHA, None, "hpc-atos-gnu", "g++-8", "Release", None, "moments", template_version=2)
+        == f"pkg-{SHA}-hpc-atos-gnu-g++-8-Release-hpcv2-opts.moments"
+    )
+    assert make_artifact_name("pkg", SHA, None, "hpc-atos-gnu", None, "Release", None, template_version=0) == (
+        f"pkg-{SHA}-hpc-atos-gnu-Release"
+    )
+
+
+def test_only_the_hpc_lane_carries_the_template_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_github_api, "HPC_TEMPLATE_VERSION", 3)
+    assert template_version_for_lane("hpc") == 3
+    assert template_version_for_lane("runner") == 0
 
 
 # === resolve_reuse_matrix — the generator and the resolver must agree on legs ===

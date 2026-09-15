@@ -57,7 +57,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"ci_infrastructure.hpc" = ["troika-config.yml"]
+"ci_infrastructure.hpc" = ["troika-config.yml", "templates/*.j2"]
 "ci_infrastructure" = ["certs/*.pem"]
 
 [tool.pytest.ini_options]

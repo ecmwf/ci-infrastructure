@@ -325,6 +325,52 @@ def test_options_do_not_propagate_and_ripple_via_deps_hash(monkeypatch: pytest.M
     assert plain_own.artifact_name != moments_own.artifact_name
 
 
+@pytest.mark.parametrize(("lane", "tail"), [("hpc", "-Release-hpcv3"), ("runner", "-Release")])
+def test_template_version_marks_hpc_lane_names_only(monkeypatch: pytest.MonkeyPatch, lane: str, tail: str) -> None:
+    """The consumer derives a dep's segment from its own lane, which is the producer's
+    lane too, so the name it looks up is the name the producer publishes."""
+    monkeypatch.setattr("ci_infrastructure._github_api.HPC_TEMPLATE_VERSION", 3)
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+
+    own = PackageSpec(
+        name="cxxmath-python",
+        prefix=PackageName("cxxmath-python"),
+        repo=Repo("o/cxxpy"),
+        compiler_inputs=["cxx-compiler"],
+    )
+    dep = DepSpec(
+        repo=Repo("o/cxx"),
+        package=PackageName("cxxmath"),
+        ref=Ref("main"),
+        compiler_inputs=["cxx-compiler"],
+        build_type_input="build-type",
+        platform_input="platform",
+        needs_python=False,
+        python_version_input="python-version",
+        options_input="cxxmath-options",
+    )
+    deps, resolved_own = resolve_leg(
+        own=own,
+        own_deps=[dep],
+        own_sha=Sha("d" * 40),
+        matrix_entry={"cxx-compiler": "g++-8", "build-type": "Release", "platform": "hpc-atos-gnu"},
+        manifest_cache={},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={},
+        artifact_cache={},
+        run_state_cache={},
+        token=None,
+        can_dispatch=False,
+        lane="hpc" if lane == "hpc" else "runner",
+        dispatch_plans={},
+    )
+
+    assert deps[0].artifact_name.endswith(tail)
+    assert resolved_own.artifact_name.endswith(tail)
+
+
 def test_parse_deps_when_predicate() -> None:
     """`when` accepts a scalar or a list, and defaults to None (applies to every leg)."""
     base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}

@@ -436,6 +436,40 @@ def test_a_plain_sh_job_script_is_never_read_from_disk(tmp_path: Path) -> None:
     validate_job_templates(parse_manifest(m))  # does not raise
 
 
+_BASE_MANIFEST = """
+    [[matrix.build.include]]
+    platform = "hpc-atos-gnu"
+    build-type = "RelWithDebInfo"
+    modules = ["load cmake"]
+    cc = "gcc"
+    cxx = "g++"
+    [matrix.build]
+    execution = "hpc"
+    job-script = "./.ci/hpc/build.sh.j2"
+    triggers = ["rebuild-request"]
+    needs = []
+"""
+_EXTENDS = '{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n'
+
+
+def test_recipe_extending_the_base_validates_on_defaults(tmp_path: Path) -> None:
+    m = _hpc_repo(tmp_path, _BASE_MANIFEST, _EXTENDS)
+    validate_job_templates(parse_manifest(m))  # does not raise
+
+
+def test_child_block_reading_an_undeclared_key_is_rejected(tmp_path: Path) -> None:
+    m = _hpc_repo(tmp_path, _BASE_MANIFEST, _EXTENDS + "{% block preflight %}{{ boost_root }}{% endblock %}\n")
+    with pytest.raises(SchemaError, match="boost_root"):
+        validate_job_templates(parse_manifest(m))
+
+
+def test_key_the_base_reads_is_still_required_of_the_leg(tmp_path: Path) -> None:
+    """Only the listed defaults are optional: the toolchain must still come from the leg."""
+    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, _EXTENDS)
+    with pytest.raises(SchemaError, match="modules"):
+        validate_job_templates(parse_manifest(m))
+
+
 def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
     """Same slot as the runner lane. Which toolchain field an HPC leg is titled by
     -- `cxx-compiler` when the artifact identity carries one, the recipe's `cxx`
