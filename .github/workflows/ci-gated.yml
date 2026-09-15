@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placeholder: one central ci-approval gate for several workflow files.
+#
+# This is the only file with pull request triggers. The lanes it runs
+# (placeholder-ci.yml, try-integration-test-gating.yml) only have
+# `on: workflow_call`, so every lane hangs off the same gate and one
+# 'approved-for-ci' label is spent exactly once, for all of them. A gate in each
+# file would not work: every gate fires on the same label event, the first one
+# deletes the label and the others fail as "not approved".
+#
+#   ci-approval --+--> unit-tests         (placeholder-ci.yml)
+#                 |
+#                 +--> integration-tests  (try-integration-test-gating.yml,
+#                                          only with 'run-expensive-tests')
+#
+# Keep pull request triggers out of the lane files, and call them from nowhere
+# else: the check-ci-approval hook does not see who calls a reusable workflow.
+
+name: Gated CI (placeholder)
+
+on:
+  # Pushes. A branch in this repository passes the gate as same-repo; a fork
+  # fails it with "new commits need a fresh approval".
+  pull_request:
+    types: [synchronize]
+  # Label events, the only way a fork gets approved.
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Same-repo pull requests and non-PR events pass; a fork needs
+  # 'approved-for-ci', which this spends. Label events only count for the two
+  # labels that matter, so adding e.g. 'documentation' starts nothing.
+  ci-approval:
+    if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "approved-for-ci"]'), github.event.label.name) }}
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: write   # only so the label can be spent or revoked
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+        with:
+          label: approved-for-ci
+
+  unit-tests:
+    needs: ci-approval
+    uses: ./.github/workflows/placeholder-ci.yml
+    secrets: inherit
+
+  integration-tests:
+    needs: ci-approval
+    # Opt-in on top of the approval: a skip here skips the whole called workflow.
+    if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') }}
+    uses: ./.github/workflows/try-integration-test-gating.yml
+    secrets: inherit
