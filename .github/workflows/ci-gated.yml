@@ -7,7 +7,7 @@
 # This is the only file with pull request triggers. The lanes it runs
 # (placeholder-ci.yml, try-integration-test-gating.yml) only have
 # `on: workflow_call`, so every lane hangs off the same gate and one
-# 'approved-for-ci' label is spent exactly once, for all of them. A gate in each
+# 'test-approved-for-ci' label is spent exactly once, for all of them. A gate in each
 # file would not work: every gate fires on the same label event, the first one
 # deletes the label and the others fail as "not approved".
 #
@@ -35,18 +35,23 @@ permissions:
   contents: read
 
 jobs:
+  # A separate 'test-approved-for-ci' label while trying this out: smoke-test-hpc.yml
+  # has its own gate on 'approved-for-ci', and two gates spending the same label on
+  # the same label event race -- one deletes it, the other fails with "could not
+  # remove the approval label".
+  #
   # Same-repo pull requests and non-PR events pass; a fork needs
-  # 'approved-for-ci', which this spends. Label events only count for the two
+  # 'test-approved-for-ci', which this spends. Label events only count for the two
   # labels that matter, so adding e.g. 'documentation' starts nothing.
   ci-approval:
-    if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "approved-for-ci"]'), github.event.label.name) }}
+    if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "test-approved-for-ci"]'), github.event.label.name) }}
     runs-on: ubuntu-slim
     permissions:
       pull-requests: write   # only so the label can be spent or revoked
     steps:
       - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
         with:
-          label: approved-for-ci
+          label: test-approved-for-ci
 
   unit-tests:
     needs: ci-approval
