@@ -14,28 +14,28 @@ permissions:
   contents: read
 
 jobs:
-  has-ci-label:
-    if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') || contains(github.event.pull_request.labels.*.name, 'approved-for-ci') }}
-    runs-on: ubuntu-slim
-    steps:
-      - name: Report
-        env:
-          EVENT: ${{ github.event_name }}
-          ACTION: ${{ github.event.action }}
-          LABEL: ${{ github.event.label.name }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          echo "has-ci-label passed: event=$EVENT action=$ACTION label=$LABEL labels=$LABELS"
+  # has-ci-label:
+  #   if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') || contains(github.event.pull_request.labels.*.name, 'approved-for-ci') }}
+  #   runs-on: ubuntu-slim
+  #   steps:
+  #     - name: Report
+  #       env:
+  #         EVENT: ${{ github.event_name }}
+  #         ACTION: ${{ github.event.action }}
+  #         LABEL: ${{ github.event.label.name }}
+  #         LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+  #       run: |
+  #         echo "has-ci-label passed: event=$EVENT action=$ACTION label=$LABEL labels=$LABELS"
 
-  relevant-event:
-    needs: has-ci-label
-    if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "approved-for-ci"]'), github.event.label.name) }}
-    runs-on: ubuntu-slim
-    steps:
-      - run: echo "relevant-event passed"
+  # relevant-event:
+  #   needs: has-ci-label
+  #   if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "approved-for-ci"]'), github.event.label.name) }}
+  #   runs-on: ubuntu-slim
+  #   steps:
+  #     - run: echo "relevant-event passed"
 
   ci-approval:
-    needs: relevant-event
+    # needs: relevant-event
     runs-on: ubuntu-slim
     permissions:
       pull-requests: write   # only so the label can be spent or revoked
@@ -44,14 +44,15 @@ jobs:
         with:
           label: approved-for-ci
 
-  expensive-tests-requested:
-    if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') }}
-    runs-on: ubuntu-slim
-    steps:
-      - run: echo "expensive-tests-requested passed"
+  # expensive-tests-requested:
+  #   if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') }}
+  #   runs-on: ubuntu-slim
+  #   steps:
+  #     - run: echo "expensive-tests-requested passed"
 
   build-env:
-    needs: [ci-approval, expensive-tests-requested]
+    # needs: [ci-approval, expensive-tests-requested]
+    needs: [ci-approval]
     runs-on: ubuntu-slim
     steps:
       - name: Placeholder for building the environment on HPC
@@ -66,9 +67,9 @@ jobs:
       - run: echo "would run the expensive integration tests"
 
   cleanup-env:
-    needs: [ci-approval, build-env, test]
+    needs: [ci-approval, test]
     # As in anemoi-core: always clean up once an environment was built.
-    if: ${{ always() && needs.build-env.result != 'skipped' }}
+    if: ${{ always() }}
     runs-on: ubuntu-slim
     steps:
       - run: echo "would remove the environment from HPC"
