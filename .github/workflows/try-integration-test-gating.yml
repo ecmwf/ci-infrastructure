@@ -34,8 +34,16 @@ jobs:
   #   steps:
   #     - run: echo "relevant-event passed"
 
+  run-requested:
+    if: ${{ !github.event.pull_request
+             || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests')
+          }}
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "expensive-tests-requested passed"
+
   ci-approval:
-    # needs: relevant-event
+    needs: run-requested
     runs-on: ubuntu-slim
     permissions:
       pull-requests: write   # only so the label can be spent or revoked
@@ -43,12 +51,6 @@ jobs:
       - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
         with:
           label: approved-for-ci
-
-  # expensive-tests-requested:
-  #   if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') }}
-  #   runs-on: ubuntu-slim
-  #   steps:
-  #     - run: echo "expensive-tests-requested passed"
 
   build-env:
     # needs: [ci-approval, expensive-tests-requested]
