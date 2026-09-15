@@ -27,6 +27,9 @@ as a hand-written ``.sh`` would be. That is what stops the manifest and the reci
 disagreeing: the compiler, the module set and the build type the artifact name is
 built from become the same values the script runs with, instead of two independent
 statements of the same fact.
+
+A recipe may extend the shared base ``ci-infrastructure/cmake-build.sh.j2`` (shipped in
+``templates/``) and override only the blocks it needs.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, Final
 
 import jinja2
@@ -120,6 +124,24 @@ JOB_TEMPLATE_SUFFIX: Final = ".j2"
 #: Names the context supplies on top of the leg's own fields.
 _CONTEXT_EXTRAS: Final = ("leg", "artifact_name")
 
+#: Prefix under which ci-infrastructure's own recipes load, e.g.
+#: ``{% extends "ci-infrastructure/cmake-build.sh.j2" %}``.
+BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
+
+#: Names a recipe may read without its leg declaring them: the optional knobs of the
+#: shared base template. A leg's own value always wins.
+JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
+    {
+        "time": "01:00:00",
+        "ntasks": 8,
+        "ssdtmp": "20G",
+        "tests": True,
+        "ctest_args": "",
+        "fc": "",
+        "options": "",
+    }
+)
+
 
 class JobTemplateError(Exception):
     """A `.j2` recipe that cannot be rendered for the leg that selected it."""
@@ -143,8 +165,14 @@ def template_var(field: str) -> str:
 
 def job_template_environment(search_path: Path | None = None) -> jinja2.Environment:
     """The Jinja environment a `.j2` recipe is rendered in."""
+    # The shared templates come first, so a repo file cannot shadow them.
+    loaders: list[jinja2.BaseLoader] = [
+        jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: jinja2.PackageLoader("ci_infrastructure.hpc", "templates")})
+    ]
+    if search_path:
+        loaders.append(jinja2.FileSystemLoader(str(search_path)))
     env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(search_path)) if search_path else jinja2.BaseLoader(),
+        loader=jinja2.ChoiceLoader(loaders),
         # THE point of the feature. A template reading {{ modules }} on a leg that
         # declares none fails here, naming the leg -- instead of rendering an empty
         # `module load` line and building a different binary under an artifact name
@@ -209,6 +237,8 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
             )
         origin[name] = key
         context[name] = value
+    for name, value in JOB_TEMPLATE_DEFAULTS.items():
+        context.setdefault(name, value)
     context["leg"] = dict(leg)
     context["artifact_name"] = artifact_name
     return context
@@ -216,23 +246,47 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
 
 def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
     """Every top-level name a template may reference for this leg."""
-    return {template_var(k) for k in leg if k != "_resolved"} | set(_CONTEXT_EXTRAS)
+    return {template_var(k) for k in leg if k != "_resolved"} | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
 
-def undeclared_template_names(template_source: str, leg: Mapping[str, Any], *, template_name: str) -> set[str]:
-    """Names the template reads that this leg does not supply.
+def undeclared_template_names(
+    template_source: str, leg: Mapping[str, Any], *, template_name: str, search_path: Path | None = None
+) -> set[str]:
+    """Names the template, or any template it extends or includes, reads that this leg does not supply.
 
     Static: it sees names inside a branch that is never taken, which is the right
     side to err on when the whole point is that the manifest declares what a leg
     is. It cannot see through `leg['x']` -- the documented price of that escape
-    hatch. Raises JobTemplateError if the template does not parse at all.
+    hatch. Raises JobTemplateError if a template in the chain does not parse, cannot
+    be found, or is named by an expression rather than a literal.
     """
-    env = job_template_environment()
-    try:
-        ast = env.parse(template_source, filename=template_name)
-    except jinja2.TemplateSyntaxError as exc:
-        raise JobTemplateError(f"{template_name}:{exc.lineno}: {exc.message}") from exc
-    return jinja2.meta.find_undeclared_variables(ast) - declared_template_names(leg)
+    env = job_template_environment(search_path)
+    assert env.loader is not None
+    names: set[str] = set()
+    seen = {template_name}
+    pending = [(template_source, template_name)]
+    while pending:
+        source, name = pending.pop()
+        try:
+            ast = env.parse(source, filename=name)
+        except jinja2.TemplateSyntaxError as exc:
+            raise JobTemplateError(f"{name}:{exc.lineno}: {exc.message}") from exc
+        names |= jinja2.meta.find_undeclared_variables(ast)
+        for ref in jinja2.meta.find_referenced_templates(ast):
+            if ref is None:
+                raise JobTemplateError(
+                    f"{name}: extends/include names a template by a computed expression, which cannot be "
+                    f"checked; name it literally"
+                )
+            if ref in seen:
+                continue
+            seen.add(ref)
+            try:
+                ref_source, _, _ = env.loader.get_source(env, ref)
+            except jinja2.TemplateNotFound as exc:
+                raise JobTemplateError(f"{name}: template {ref!r} not found") from exc
+            pending.append((ref_source, ref))
+    return names - declared_template_names(leg)
 
 
 def render_job_template(
@@ -253,14 +307,17 @@ def render_job_template(
         template = env.from_string(template_source)
         return template.render(build_template_context(leg, artifact_name=artifact_name))
     except jinja2.TemplateSyntaxError as exc:
-        raise JobTemplateError(f"{template_name}:{exc.lineno}: {exc.message}") from exc
+        raise JobTemplateError(f"{exc.name or template_name}:{exc.lineno}: {exc.message}") from exc
+    except jinja2.TemplateNotFound as exc:
+        raise JobTemplateError(f"{template_name}: template {exc.name!r} not found") from exc
     except jinja2.UndefinedError as exc:
         declared = sorted(k for k in leg if k != "_resolved")
         raise JobTemplateError(
             f"{template_name}: {exc.message}. The matrix leg declares {declared or '(nothing)'}; "
-            f"a template may only read those (hyphens as underscores), plus `leg` and "
-            f"`artifact_name`. Add the key to the leg in .ci/manifest.toml, or drop it from the "
-            f"recipe -- the two are meant to say the same thing."
+            f"a template may only read those (hyphens as underscores), plus `leg`, "
+            f"`artifact_name` and the defaults {sorted(JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
+            f"leg in .ci/manifest.toml, or drop it from the recipe -- the two are meant to say the "
+            f"same thing."
         ) from exc
 
 

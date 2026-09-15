@@ -157,11 +157,13 @@ from ._github_api import (
     probe_workflow_runs,
     resolve_reuse_matrix,
     select_token,
+    template_version_for_lane,
     write_outputs,
 )
 from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 from .runners import resolve_runner
+from .sync_branch import is_sync_branch
 
 # Discriminating fields that identify a buildable leg — the inputs to the
 # artifact name. `platform` is the binary-compatibility class; `runs-on` and
@@ -181,7 +183,6 @@ _MATRIX_DISCRIMINATORS: Final = frozenset(
 )
 
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{40}$")
-_SYNC_BRANCH_RE: Final = re.compile(r"^(?:sync-branch-|feature-sync-)")
 _OPTION_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -763,10 +764,22 @@ def make_artifact_name(
     build_type: str,
     python_version: str | None,
     option: str = "",
+    *,
+    template_version: int = 0,
 ) -> ArtifactName:
     """`_github_api.make_artifact_name` in this module's NewType vocabulary."""
     return ArtifactName(
-        _make_artifact_name(prefix, sha, deps_hash8, platform_slug, compiler, build_type, python_version, option)
+        _make_artifact_name(
+            prefix,
+            sha,
+            deps_hash8,
+            platform_slug,
+            compiler,
+            build_type,
+            python_version,
+            option,
+            template_version=template_version,
+        )
     )
 
 
@@ -987,6 +1000,7 @@ def resolve_leg(
             build_type=build_type,
             python_version=python_version,
             option=dep_option,
+            template_version=template_version_for_lane(lane),
         )
 
         # Look up artifact (cache by name). The store is keyed purely by
@@ -1098,6 +1112,7 @@ def resolve_leg(
         build_type=own_build_type,
         python_version=own_python,
         option=own_option,
+        template_version=template_version_for_lane(lane),
     )
 
     return deps_resolved, ResolvedOwn(
@@ -1223,7 +1238,7 @@ def _run(
         )
 
     sync_branch: Ref | None = None
-    if current_branch and _SYNC_BRANCH_RE.match(current_branch):
+    if current_branch and is_sync_branch(current_branch):
         sync_branch = Ref(current_branch)
 
     token = select_token()

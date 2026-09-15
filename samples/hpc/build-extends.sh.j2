@@ -1,0 +1,10 @@
+{% extends "ci-infrastructure/cmake-build.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   Sample recipe extending the shared base template (HPC.md, "Shared base template").
+   Most packages need only the first line; feature flags belong in CMakePresets.json.
+   Override a block only for what the base cannot express, e.g. a toolchain path: #}
+{% block cmake_args %}
+  -DBoost_ROOT={{ boost_root | sh }} \
+{% endblock %}

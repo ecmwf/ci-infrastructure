@@ -37,7 +37,7 @@ BOOTSTRAP = "ensure-infrastructure-present"
 # pydantic/boto3/troika would make a text comparison depend on network egress.
 # See actions/check-pr-declaration/action.yml and the [project.scripts] comment in
 # pyproject.toml. Listed here so dropping the exemption is a deliberate edit.
-STDLIB_ONLY = {"check-pr-declaration"}
+STDLIB_ONLY = {"check-pr-declaration", "pick-ref"}
 
 
 def _console_scripts() -> list[str]:

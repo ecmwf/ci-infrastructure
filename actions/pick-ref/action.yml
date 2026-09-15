@@ -5,11 +5,15 @@
 name: Pick downstream ref
 description: >
   Probe the consumer repo for a branch matching the upstream's ref and emit
-  the chosen ref. Returns `try-branch` when it exists in `repo`, otherwise
-  `fallback-ref`. Used by cross-repo-trigger workflows to support
-  coordinated cross-repo PRs: when an upstream PR is opened on branch X,
-  consumers with a same-named branch run against X; consumers without one
-  fall back to their manifest-declared ref (typically main / master / develop).
+  the chosen ref. Returns `try-branch` when it is a sync branch
+  (sync-branch/* / feature-sync/*, see ci_infrastructure/sync_branch.py) that
+  exists in `repo`, otherwise `fallback-ref`. Used by cross-repo-trigger
+  workflows to support coordinated cross-repo PRs: when an upstream PR is opened
+  on sync branch X, consumers with a same-named branch run against X; every other
+  case uses the manifest-declared ref (typically main / master / develop).
+
+  Stdlib-only python, no bootstrap -- the same arrangement as
+  actions/check-pr-declaration.
 
 inputs:
   repo:
@@ -19,7 +23,7 @@ inputs:
     description: 'Branch name to probe; usually the upstream-side branch we were called from.'
     required: true
   fallback-ref:
-    description: 'Ref to use if try-branch does not exist in `repo` (typically the manifest ref).'
+    description: 'Ref to use unless try-branch is a sync branch that exists in `repo` (typically the manifest ref).'
     required: true
   token:
     description: 'Token with contents:read on `repo`. Defaults to github.token.'
@@ -28,7 +32,7 @@ inputs:
 
 outputs:
   ref:
-    description: 'The chosen ref: try-branch if it exists in `repo`, otherwise fallback-ref.'
+    description: 'The chosen ref: try-branch if it is a sync branch that exists in `repo`, otherwise fallback-ref.'
     value: ${{ steps.pick.outputs.ref }}
 
 runs:
@@ -43,9 +47,49 @@ runs:
         FALLBACK_REF: ${{ inputs.fallback-ref }}
       run: |
         set -euo pipefail
-        if [ -z "$TRY_BRANCH" ]; then
+
+        rel="src/ci_infrastructure/sync_branch.py"
+
+        # Probe for the module rather than trusting github.action_path, which is
+        # wrong inside ARC's container mode -- see actions/check-pr-declaration.
+        cands=( "${GITHUB_ACTION_PATH:-}/../.." )
+        case "${GITHUB_ACTION_PATH:-}" in
+          */_actions/*)
+            if [ -n "${RUNNER_WORKSPACE:-}" ]; then
+              cands+=( "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." )
+            fi
+            ;;
+        esac
+        root=""
+        for cand in "${cands[@]}"; do
+          if [ -f "$cand/$rel" ]; then
+            root="$(cd "$cand" && pwd -P)"
+            break
+          fi
+        done
+        if [ -z "$root" ]; then
+          echo "::error title=pick-ref::cannot locate $rel next to this action (probed: ${cands[*]}). This is a ci-infrastructure bug." >&2
+          exit 1
+        fi
+
+        python=""
+        for cand in python3 python; do
+          if path="$(command -v "$cand" 2>/dev/null)"; then
+            if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'; then
+              python="$path"
+              break
+            fi
+          fi
+        done
+        if [ -z "$python" ]; then
+          echo "::error title=pick-ref::no python3 >= 3.8 on PATH." >&2
+          exit 1
+        fi
+
+        if ! PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" \
+            "$python" -m ci_infrastructure.sync_branch "$TRY_BRANCH"; then
           echo "ref=$FALLBACK_REF" >> "$GITHUB_OUTPUT"
-          echo "No try-branch given; using fallback '$FALLBACK_REF'."
+          echo "'$TRY_BRANCH' is not a sync branch; using '$FALLBACK_REF'."
           exit 0
         fi
         if gh api "repos/$REPO/branches/$TRY_BRANCH" >/dev/null 2>&1; then

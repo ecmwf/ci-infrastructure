@@ -935,7 +935,9 @@ def validate_job_templates(m: Manifest) -> None:
             if not path.is_file():
                 raise SchemaError(f"{m.path}: [matrix.{kind}] job-script '{spec}' does not exist at {path}")
             try:
-                missing = jobscript.undeclared_template_names(path.read_text(), leg, template_name=str(path))
+                missing = jobscript.undeclared_template_names(
+                    path.read_text(), leg, template_name=str(path), search_path=path.parent
+                )
             except jobscript.JobTemplateError as exc:
                 raise SchemaError(f"{m.path}: [matrix.{kind}] {exc}") from exc
             if missing:
@@ -943,7 +945,8 @@ def validate_job_templates(m: Manifest) -> None:
                 raise SchemaError(
                     f"{m.path}: [matrix.{kind}] recipe '{spec}' reads {sorted(missing)}, which this "
                     f"leg does not declare. The leg has {declared}; a template may read those "
-                    f"(hyphens as underscores), plus `leg` and `artifact_name`. Add the key to the "
+                    f"(hyphens as underscores), plus `leg`, `artifact_name` and the defaults "
+                    f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
                     f"leg, or drop it from the recipe — they are meant to say the same thing."
                 )
 
@@ -1947,7 +1950,7 @@ def render_orchestrator_workflow(
     completed CI run, so the context is never left hanging and can be a required check
     that blocks the merge.
 
-    Branch matching is delegated to the called workflow's `pick-ref` step at runtime;
+    Branch matching (sync branches only) is delegated to the called workflow's `pick-ref` step at runtime;
     the orchestrator passes `branch` (the upstream's head branch) and `fallback-ref`
     (the manifest-declared consumer ref). The `uses:@<ref>` itself is pinned to the
     static manifest ref (GHA forbids expressions there), which only selects the workflow

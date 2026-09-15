@@ -15,3 +15,5 @@ build/
 .reuse
 
 uv.lock
+
+.vscode/

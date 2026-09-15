@@ -220,6 +220,103 @@ invalidates the cache. The gain here is that the module set now lives in the sam
 four-line TOML table as `platform`, so this is a local, reviewable invariant on one
 diff instead of a cross-file one nobody can see in a PR.
 
+## Shared base template
+
+Most packages build one CMake project the same way: load modules, configure, build,
+test, install, archive. ci-infrastructure ships that recipe as
+`ci-infrastructure/cmake-build.sh.j2`, and a package's `.ci/hpc/build.sh.j2` extends
+it. This one line is a complete recipe:
+
+```jinja
+{% extends "ci-infrastructure/cmake-build.sh.j2" %}
+```
+
+A package that differs overrides only the blocks it needs; `{{ super() }}` keeps the
+base's content.
+
+| block | base content |
+|---|---|
+| `sbatch` | `--qos=nf`, `--nodes=1`, `--ntasks`, `--gres=ssdtmp:`, `--time` from the leg |
+| `preflight` | prints the compiler and cmake versions |
+| `configure` | `cmake --preset <options or ci> -S "$CI_SOURCE_DIR" -B "$build"`, plus build type, compilers, rpath, prefix path and install prefix |
+| `cmake_args` | empty, nested in `configure`; every line must end in ` \` |
+| `build` | `cmake --build "$build" --parallel "$jobs"` |
+| `test` | `ctest` with `ctest_args`, else `-j "$jobs"`; the whole block is skipped when `tests` is false |
+| `install` | `cmake --install "$build"` |
+
+After `install` the base tars `$install_root` into `$CI_INSTALL_ARCHIVE`. Blocks can
+use these shell variables:
+
+- `build`: the build directory on node-local disk.
+- `jobs`: `$SLURM_CPUS_PER_TASK`, else `$SLURM_NTASKS`.
+- `install_root`: `$CI_INSTALL_PREFIX` by default. A recipe that installs with
+  `DESTDIR` points it at the staged tree.
+- `gen_flag`: `-GNinja` when ninja is on `PATH`.
+
+```jinja
+{% extends "ci-infrastructure/cmake-build.sh.j2" %}
+{% block install %}
+DESTDIR="${TMPDIR:-/tmp}/stage" cmake --install "$build"
+install_root="${TMPDIR:-/tmp}/stage$CI_INSTALL_PREFIX"
+{% endblock %}
+```
+
+Text outside a block in a child is dropped. Put `{% extends %}` first and a licence
+header in a `{# #}` comment.
+
+### Defaults
+
+The base reads a few settings that a leg does not have to declare. A leg's own key
+wins. The defaults apply to every `.j2` recipe, not only to children of the base.
+
+| key | default |
+|---|---|
+| `time` | `01:00:00` |
+| `ntasks` | `8` |
+| `ssdtmp` | `20G` |
+| `tests` | `true` |
+| `ctest-args` | `""` |
+| `fc` | `""` (no Fortran compiler) |
+| `options` | `""` |
+
+### CMake presets
+
+The base configures with `cmake --preset <options>`, or `--preset ci` for a leg
+without `options`. The package's `CMakePresets.json` holds the feature flags, so the
+runner lane's build action can configure from the same preset and the two lanes
+cannot drift apart. Compilers, build type and paths stay on the command line. An
+option preset inherits `ci`:
+
+```json
+{
+  "version": 3,
+  "cmakeMinimumRequired": {"major": 3, "minor": 21, "patch": 0},
+  "configurePresets": [
+    {"name": "ci", "cacheVariables": {"ENABLE_TESTS": "ON"}},
+    {"name": "with-geo", "inherits": "ci", "cacheVariables": {"ENABLE_GEOGRAPHY": "ON"}}
+  ]
+}
+```
+
+Presets need CMake 3.21 or newer, so load a recent enough `cmake` module.
+
+### Template version
+
+Consumer workflows load ci-infrastructure `@main`. A change to the base template
+therefore reaches every package without moving any sha, and the store would keep
+serving artifacts built by the old recipe.
+
+To prevent that, every hpc artifact name carries `HPC_TEMPLATE_VERSION`
+(`_github_api.py`) as a `-hpcv<N>` segment after the build type. There is no
+segment while the version is 0.
+
+- **Enforcement:** changing the template fails a pinned test until the version is
+  bumped.
+- **Cost of a bump:** every hpc artifact rebuilds, including those of packages with
+  their own recipe.
+- **Just after a bump merges:** a consumer can look for the new name before its
+  producer has rebuilt. The usual rebuild request then fills the gap.
+
 ## Org-level configuration
 
 - **Troika sites** live in `src/ci_infrastructure/hpc/troika-config.yml` (shipped

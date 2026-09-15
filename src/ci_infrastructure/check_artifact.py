@@ -39,6 +39,7 @@ from ._github_api import (
     probe_workflow_runs,
     resolve_ref_to_sha,
     select_token,
+    template_version_for_lane,
     write_outputs,
 )
 
@@ -116,6 +117,13 @@ Outputs = TypedDict(
         "Leave empty for a plain build (name unchanged)."
     ),
 )
+@click.option(
+    "--lane",
+    "lane",
+    type=click.Choice(["runner", "hpc"]),
+    default="runner",
+    help="Execution lane of the build. hpc artifacts carry the HPC template version segment.",
+)
 def main(
     repo: str,
     ref: str,
@@ -126,6 +134,7 @@ def main(
     python_version: str,
     deps_artifact_names: str,
     options: str,
+    lane: str,
 ) -> None:
     # An empty value in any required slot would silently produce a malformed
     # artifact name (e.g. "ecbuild--Release") that downstream poll loops can
@@ -162,6 +171,7 @@ def main(
         build_type=build_type,
         python_version=python_version or None,
         option=options.strip(),
+        template_version=template_version_for_lane("hpc" if lane == "hpc" else "runner"),
     )
     tar_name = f"{artifact_name}.tar.gz"
     found = s3_store.object_exists(artifact_name)

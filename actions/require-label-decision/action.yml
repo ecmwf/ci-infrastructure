@@ -25,6 +25,17 @@ description: >
   request is executed — so it is safe under pull_request_target, which is what
   lets it post a status on a fork's pull request and react to `labeled`.
 
+  `exempt-authors` waves through pull requests nobody is there to decide on —
+  release bots, pre-commit.ci autoupdates — which would otherwise sit pending
+  forever behind a required check. Exemption only replaces "undecided": a label
+  on such a pull request is still honoured, so a maintainer can still ask for
+  the lane on one. Matched on the exact login and NOT restricted to
+  user.type == "Bot", unlike check-pr-declaration's list: release accounts are
+  often machine users, which report "User". That is safe only because the list
+  is the caller's and empty by default — there is no built-in list here — and
+  because this gate is process, not security: the worst a wrongly listed login
+  gets is a green status without a decision.
+
 inputs:
   label:
     description: 'Label meaning "run the expensive lane".'
@@ -43,6 +54,16 @@ inputs:
     description: 'Status description once decided.'
     required: false
     default: 'Decision recorded'
+  exempt-authors:
+    description: >
+      Comma-separated logins whose pull requests need no decision. Exact match,
+      any account type. Empty (default) exempts nobody.
+    required: false
+    default: ''
+  description-exempt:
+    description: 'Status description for an exempt author. Defaults to naming the login.'
+    required: false
+    default: ''
   token:
     description: 'Token with statuses:write. Defaults to github.token.'
     required: false
@@ -50,7 +71,7 @@ inputs:
 
 outputs:
   decision:
-    description: "'run', 'skip' or 'undecided' — for logs and for a caller that wants to branch on it."
+    description: "'run', 'skip', 'exempt' or 'undecided' — for logs and for a caller that wants to branch on it."
     value: ${{ steps.gate.outputs.decision }}
 
 runs:
@@ -69,6 +90,8 @@ runs:
         CONTEXT_INPUT: ${{ inputs.context }}
         DESC_PENDING_INPUT: ${{ inputs.description-pending }}
         DESC_DECIDED_INPUT: ${{ inputs.description-decided }}
+        EXEMPT_AUTHORS_INPUT: ${{ inputs.exempt-authors }}
+        DESC_EXEMPT_INPUT: ${{ inputs.description-exempt }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         set -euo pipefail
@@ -111,13 +134,29 @@ runs:
           decision=undecided
         fi
 
-        if [ "$decision" = "undecided" ]; then
-          state=pending
-          description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT' or '$OPT_OUT_INPUT' to merge}"
-        else
-          state=success
-          description="${DESC_DECIDED_INPUT:-Decision recorded}"
+        # Only ever turns "undecided" into "exempt": a label still wins. The list
+        # is split and compared in jq, so a login is never a shell glob.
+        author="$(jq -r '.pull_request.user.login // empty' "$event")"
+        if [ "$decision" = "undecided" ] && [ -n "$author" ] && [ -n "${EXEMPT_AUTHORS_INPUT:-}" ] &&
+           jq -en --arg list "$EXEMPT_AUTHORS_INPUT" --arg who "$author" \
+             '$list | split(",") | map(gsub("^\\s+|\\s+$"; "")) | any(. == $who)' >/dev/null; then
+          decision=exempt
         fi
+
+        case "$decision" in
+          undecided)
+            state=pending
+            description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT' or '$OPT_OUT_INPUT' to merge}"
+            ;;
+          exempt)
+            state=success
+            description="${DESC_EXEMPT_INPUT:-No decision needed from $author}"
+            ;;
+          *)
+            state=success
+            description="${DESC_DECIDED_INPUT:-Decision recorded}"
+            ;;
+        esac
 
         echo "decision=$decision" >> "$GITHUB_OUTPUT"
         echo "Label gate: $decision -> $CONTEXT_INPUT is $state"
