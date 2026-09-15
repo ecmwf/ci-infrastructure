@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+
+name: Try integration-test gating
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  has-ci-label:
+    if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') || contains(github.event.pull_request.labels.*.name, 'approved-for-ci') }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Report
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          echo "has-ci-label passed: event=$EVENT action=$ACTION label=$LABEL labels=$LABELS"
+
+  relevant-event:
+    needs: has-ci-label
+    if: ${{ github.event.action != 'labeled' || contains(fromJSON('["run-expensive-tests", "approved-for-ci"]'), github.event.label.name) }}
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "relevant-event passed"
+
+  ci-approval:
+    needs: relevant-event
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: write   # only so the label can be spent or revoked
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+        with:
+          label: approved-for-ci
+
+  expensive-tests-requested:
+    if: ${{ !github.event.pull_request || contains(github.event.pull_request.labels.*.name, 'run-expensive-tests') }}
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "expensive-tests-requested passed"
+
+  build-env:
+    needs: [ci-approval, expensive-tests-requested]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Placeholder for building the environment on HPC
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: echo "would check out ${HEAD_SHA:-the default branch} and build the environment"
+
+  test:
+    needs: [ci-approval, build-env]
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "would run the expensive integration tests"
+
+  cleanup-env:
+    needs: [ci-approval, build-env, test]
+    # As in anemoi-core: always clean up once an environment was built.
+    if: ${{ always() && needs.build-env.result != 'skipped' }}
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "would remove the environment from HPC"
