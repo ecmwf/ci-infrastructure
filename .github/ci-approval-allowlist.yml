@@ -10,6 +10,4 @@
 # An entry here is a claim that the job never executes pull request code.
 # Re-check that claim whenever one of these jobs gains a checkout step.
 
-# ci-gated.yml needs no entry: every job in it lists ci-approval in `needs:`,
-# and its lanes have no pull request triggers.
 exempt: []
