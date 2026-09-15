@@ -6,7 +6,7 @@ name: Pick downstream ref
 description: >
   Probe the consumer repo for a branch matching the upstream's ref and emit
   the chosen ref. Returns `try-branch` when it is a sync branch
-  (sync-branch-* / feature-sync-*, see ci_infrastructure/sync_branch.py) that
+  (sync-branch/* / feature-sync/*, see ci_infrastructure/sync_branch.py) that
   exists in `repo`, otherwise `fallback-ref`. Used by cross-repo-trigger
   workflows to support coordinated cross-repo PRs: when an upstream PR is opened
   on sync branch X, consumers with a same-named branch run against X; every other

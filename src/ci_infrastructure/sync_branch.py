@@ -19,7 +19,7 @@ import re
 import sys
 from typing import Final
 
-SYNC_BRANCH_RE: Final = re.compile(r"^(?:sync-branch-|feature-sync-)")
+SYNC_BRANCH_RE: Final = re.compile(r"^(?:sync-branch/|feature-sync/)")
 
 
 def is_sync_branch(branch: str) -> bool:
