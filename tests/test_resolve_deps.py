@@ -72,11 +72,11 @@ def test_own_sha_uses_branch_head_not_github_sha(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", fake_resolve)
 
-    own_sha = _resolve_own_sha("owner/repo", "feature-sync-foo", token=None)
+    own_sha = _resolve_own_sha("owner/repo", "feature-sync/foo", token=None)
 
     assert own_sha == BRANCH_HEAD
     assert own_sha != MERGE_COMMIT
-    assert calls == [("owner/repo", "feature-sync-foo")]
+    assert calls == [("owner/repo", "feature-sync/foo")]
 
 
 def test_own_sha_requires_branch(monkeypatch: pytest.MonkeyPatch) -> None:
