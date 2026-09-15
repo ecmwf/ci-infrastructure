@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ci",
+      "cacheVariables": {
+        "ENABLE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "with-geo",
+      "inherits": "ci",
+      "cacheVariables": {
+        "ENABLE_GEOGRAPHY": "ON"
+      }
+    }
+  ]
+}

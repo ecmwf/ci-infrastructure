@@ -157,6 +157,7 @@ from ._github_api import (
     probe_workflow_runs,
     resolve_reuse_matrix,
     select_token,
+    template_version_for_lane,
     write_outputs,
 )
 from ._github_api import make_artifact_name as _make_artifact_name
@@ -763,10 +764,22 @@ def make_artifact_name(
     build_type: str,
     python_version: str | None,
     option: str = "",
+    *,
+    template_version: int = 0,
 ) -> ArtifactName:
     """`_github_api.make_artifact_name` in this module's NewType vocabulary."""
     return ArtifactName(
-        _make_artifact_name(prefix, sha, deps_hash8, platform_slug, compiler, build_type, python_version, option)
+        _make_artifact_name(
+            prefix,
+            sha,
+            deps_hash8,
+            platform_slug,
+            compiler,
+            build_type,
+            python_version,
+            option,
+            template_version=template_version,
+        )
     )
 
 
@@ -987,6 +1000,7 @@ def resolve_leg(
             build_type=build_type,
             python_version=python_version,
             option=dep_option,
+            template_version=template_version_for_lane(lane),
         )
 
         # Look up artifact (cache by name). The store is keyed purely by
@@ -1098,6 +1112,7 @@ def resolve_leg(
         build_type=own_build_type,
         python_version=own_python,
         option=own_option,
+        template_version=template_version_for_lane(lane),
     )
 
     return deps_resolved, ResolvedOwn(

@@ -46,6 +46,16 @@ Execution: TypeAlias = Literal["runner", "hpc"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
 EXECUTION_HPC: Final[Execution] = "hpc"
 
+#: Version of the shared HPC base template (hpc/templates/cmake-build.sh.j2), carried
+#: in every hpc artifact name. Consumers load ci-infrastructure @main, so a template
+#: change reaches every repo without moving any sha and would otherwise be served
+#: from cache. 0 adds no segment.
+HPC_TEMPLATE_VERSION: Final = 0
+
+
+def template_version_for_lane(lane: Execution) -> int:
+    return HPC_TEMPLATE_VERSION if lane == EXECUTION_HPC else 0
+
 
 def lane_suffix(lane: Execution) -> str:
     """Filename suffix distinguishing the two lanes' generated workflow files.
@@ -289,16 +299,18 @@ def make_artifact_name(
     build_type: str,
     python_version: str | None,
     option: str = "",
+    *,
+    template_version: int = 0,
 ) -> str:
     """The single definition of an artifact's name.
 
-        <prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-opts.<name>]
+        <prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-hpcv<N>][-opts.<name>]
 
     Shared by resolve_deps (which mints names) and check_artifact (which re-derives
     them to look one up); the two must agree byte-for-byte or every cache lookup
     misses. None for deps_hash8 / compiler / python_version means "this segment
     does not apply" (no deps, no compilers declared, not a Python build) and the
-    segment is dropped. An empty `option` appends nothing.
+    segment is dropped. An empty `option` or a zero `template_version` appends nothing.
     """
     parts = [prefix, sha]
     if deps_hash8:
@@ -309,6 +321,8 @@ def make_artifact_name(
     if python_version:
         parts.append(f"py{python_version}")
     parts.append(build_type)
+    if template_version:
+        parts.append(f"hpcv{template_version}")
     opt_seg = canonical_option_segment(option)
     if opt_seg:
         parts.append(opt_seg)
