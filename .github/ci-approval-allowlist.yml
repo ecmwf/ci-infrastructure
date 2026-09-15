@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Exemptions from the check-ci-approval pre-commit hook, which fails any
+# workflow that can run fork code -- pull_request_target, or pull_request onto a
+# runner that is not GitHub-hosted -- unless every job hangs off the
+# require-ci-approval gate via `needs:`.
+#
+# An entry here is a claim that the job never executes pull request code.
+# Re-check that claim whenever one of these jobs gains a checkout step.
+
+exempt:
+  # Per job: the filters sit in front of the gate, so they cannot list it in
+  # `needs:`. Everything else in the workflow stays gated.
+  - workflow: try-integration-test-gating.yml
+    jobs: [has-ci-label, relevant-event, expensive-tests-requested]
+    reason: "label and event filters on GitHub-hosted runners; echo only, no checkout, read-only token"
