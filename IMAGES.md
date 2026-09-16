@@ -58,6 +58,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/fedora43/base` | `…/fedora43-base` |
 | `public-images/fedora43/gfortran15` | `…/fedora43-gfortran15` |
 | `public-images/fedora43/gfortran15-boost-qt6` | `…/fedora43-gfortran15-boost-qt6` |
+| `public-images/fedora44/base` | `…/fedora44-base` |
+| `public-images/fedora44/gfortran16` | `…/fedora44-gfortran16` |
+| `public-images/fedora44/gfortran16-boost-qt6` | `…/fedora44-gfortran16-boost-qt6` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
 | `public-images/rolling-arch/gfortran` | `…/rolling-arch-gfortran` |
 | `public-images/rolling-arch/gfortran-boost-qt6` | `…/rolling-arch-gfortran-boost-qt6` |
@@ -91,6 +94,7 @@ is in the *name*, so what you get is never a surprise:
 | `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/bin/python3` (3.11) |
 | `debian13` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.13) |
 | `fedora43` | 15 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.14) |
+| `fedora44` | 16 | 6 | 1.90 | 4.3 | `/usr/bin/python3` (3.14) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:

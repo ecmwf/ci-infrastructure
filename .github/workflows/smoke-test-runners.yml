@@ -152,6 +152,10 @@ jobs:
             declares: fedora43/gfortran15
           - image: fedora43-gfortran15-boost-qt6
             declares: fedora43/gfortran15-boost-qt6
+          - image: fedora44-gfortran16
+            declares: fedora44/gfortran16
+          - image: fedora44-gfortran16-boost-qt6
+            declares: fedora44/gfortran16-boost-qt6
     name: image (${{ matrix.image }})
     runs-on: arc-runner-normal
     container:
