@@ -132,6 +132,10 @@ jobs:
             declares: ubuntu24.04/gfortran13-boost-qt6
           - image: ubuntu24.04-clang18-gfortran13
             declares: ubuntu24.04/clang18-gfortran13
+          - image: ubuntu26.04-gfortran15
+            declares: ubuntu26.04/gfortran15
+          - image: ubuntu26.04-gfortran15-boost-qt6
+            declares: ubuntu26.04/gfortran15-boost-qt6
           - image: rocky8-gfortran8-boost-qt5
             declares: rocky8/gfortran8-boost-qt5
           - image: rocky9-gfortran11
