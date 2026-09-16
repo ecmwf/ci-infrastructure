@@ -40,6 +40,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/rocky8/base` | `…/rocky8-base` |
 | `public-images/rocky8/gfortran8` | `…/rocky8-gfortran8` |
 | `public-images/rocky8/gfortran8-boost-qt5` | `…/rocky8-gfortran8-boost-qt5` |
+| `public-images/rocky9/base` | `…/rocky9-base` |
+| `public-images/rocky9/gfortran11` | `…/rocky9-gfortran11` |
+| `public-images/rocky9/gfortran11-boost-qt5` | `…/rocky9-gfortran11-boost-qt5` |
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
@@ -76,6 +79,7 @@ is in the *name*, so what you get is never a surprise:
 |---|---|---|---|---|---|
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
+| `rocky9` | 11 | **5** | 1.75 | 3.31 | `/usr/bin/python3.12` |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
 | `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/bin/python3` (3.11) |
 | `debian13` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.13) |
@@ -83,10 +87,10 @@ is in the *name*, so what you get is never a surprise:
 
 Three consequences worth knowing before you pick one:
 
-**Qt5, not Qt6, on `rocky8` and `debian11`.** Neither distro has Qt6 at all —
-bullseye predates it, and rocky 8 has it in no repo. ecflow's
-`cmake/Dependencies.cmake` accepts either, so these are real substitutions, and
-the image name says which you get.
+**Qt5, not Qt6, on `rocky8`, `rocky9`, and `debian11`.** These platforms use
+their supported Qt5 packages rather than the Qt6 used by the other platforms.
+ecflow's `cmake/Dependencies.cmake` accepts either, so these are real
+substitutions, and the image name says which you get.
 
 **`rocky8` uses the distro's own gcc, 8.5.** Not a `gcc-toolset-N` SCL under
 `/opt/rh`: 8.5 is what the distro gives you by default and what the Atos HPC GNU

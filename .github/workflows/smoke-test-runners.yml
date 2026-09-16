@@ -130,6 +130,10 @@ jobs:
             declares: ubuntu24.04/clang18-gfortran13
           - image: rocky8-gfortran8-boost-qt5
             declares: rocky8/gfortran8-boost-qt5
+          - image: rocky9-gfortran11
+            declares: rocky9/gfortran11
+          - image: rocky9-gfortran11-boost-qt5
+            declares: rocky9/gfortran11-boost-qt5
           - image: debian11-gfortran10-boost-qt5
             declares: debian11/gfortran10-boost-qt5
           - image: debian12-gfortran12
