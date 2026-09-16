@@ -43,6 +43,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
+| `public-images/debian12/base` | `…/debian12-base` |
+| `public-images/debian12/gfortran12` | `…/debian12-gfortran12` |
+| `public-images/debian12/gfortran12-boost-qt6` | `…/debian12-gfortran12-boost-qt6` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
 | `public-images/rolling-arch/gfortran` | `…/rolling-arch-gfortran` |
 | `public-images/rolling-arch/gfortran-boost-qt6` | `…/rolling-arch-gfortran-boost-qt6` |
@@ -55,9 +58,10 @@ all dependents in one parallel matrix, so a chain would race on `:latest`.
 `scripts/build_image.py` refuses a deeper chain.
 
 Boost and Qt are deliberately not in the base: both are large and wanted by one
-package, so they live in `gfortran13-boost-qt6`, whose name then says exactly
-what it adds. Qt is there because ecflow builds ecFlowUI by default
-(`ENABLE_UI=ON`) and its configure step is a hard error without Qt6.
+package, so they live in the `gfortran<N>-boost-qt<M>` variant, whose name says
+which compiler and Qt major version it adds. Qt is there because ecflow builds
+ecFlowUI by default (`ENABLE_UI=ON`) and its configure step requires a supported
+Qt version. Most platforms provide Qt6; the exceptions below provide Qt5.
 
 ## Platforms
 
@@ -70,6 +74,7 @@ is in the *name*, so what you get is never a surprise:
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
+| `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/bin/python3` (3.11) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:

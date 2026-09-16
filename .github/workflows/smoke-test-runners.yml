@@ -132,6 +132,10 @@ jobs:
             declares: rocky8/gfortran8-boost-qt5
           - image: debian11-gfortran10-boost-qt5
             declares: debian11/gfortran10-boost-qt5
+          - image: debian12-gfortran12
+            declares: debian12/gfortran12
+          - image: debian12-gfortran12-boost-qt6
+            declares: debian12/gfortran12-boost-qt6
     name: image (${{ matrix.image }})
     runs-on: arc-runner-normal
     container:
