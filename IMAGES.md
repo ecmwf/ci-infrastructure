@@ -32,6 +32,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 
 | Directory | Image |
 |---|---|
+| `public-images/ubuntu22.04/base` | `…/ubuntu22.04-base` |
+| `public-images/ubuntu22.04/gfortran11` | `…/ubuntu22.04-gfortran11` |
+| `public-images/ubuntu22.04/gfortran11-boost-qt6` | `…/ubuntu22.04-gfortran11-boost-qt6` |
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
 | `public-images/ubuntu24.04/gfortran13` | `…/ubuntu24.04-gfortran13` |
 | `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
@@ -86,6 +89,7 @@ is in the *name*, so what you get is never a surprise:
 
 | Platform | gcc | Qt | boost | cmake | `CI_INFRASTRUCTURE_PYTHON` |
 |---|---|---|---|---|---|
+| `ubuntu22.04` | 11 | 6 | 1.74 | 3.31.6 | `/usr/local/bin/python3.11` (built from source) |
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `rocky9` | 11 | **5** | 1.75 | 3.31 | `/usr/bin/python3.12` |
@@ -113,17 +117,21 @@ every package here requires, is there. The variants symlink `gcc-8`/`g++-8`/
 `gfortran-8` into `/usr/local/bin`, because the rocky RPMs ship only unversioned
 names and every manifest asks CMake for a versioned one.
 
-**`debian11` builds its own Python.** `ci_infrastructure` needs >= 3.11
-(`pyproject.toml`) and bullseye's ceiling is 3.10, backports included. The base
-compiles a pinned, checksummed 3.11 with `--enable-shared` (for
+**`debian11` and `ubuntu22.04` build their own Python.** `ci_infrastructure`
+needs >= 3.11 (`pyproject.toml`), but bullseye provides Python 3.9 and Jammy's
+Python 3.11 package is only a release candidate. Both bases therefore compile a
+pinned, checksummed Python 3.11 from python.org with `--enable-shared` (for
 `find_package(Python3 COMPONENTS Development)`) and `make altinstall`, leaving
-the system 3.9 alone. It is the only image here that fetches anything from
-outside a distro archive.
+the system interpreter alone. These are the only images that fetch and build a
+CPython source tarball directly; both pin its checksum for provenance and
+repeatable builds.
 
-`rocky8` and `debian11` also take their pytest from pip rather than the distro,
-because in both cases the distro package targets an interpreter (3.6, 3.9) that
-is not the one those images run anything with. `ubuntu24.04` and `rolling-arch` use
-the distro package.
+`ubuntu22.04`, `rocky8`, `rocky9`, `rocky10`, and `debian11` take pytest from
+pip. On Ubuntu 22.04, Rocky 8, Rocky 9, and Debian 11, the selected CI Python is
+newer than the distro's default interpreter and its pytest package. Rocky 10
+also installs pytest with the selected system Python's pip. `ubuntu24.04`,
+`debian12`, `debian13`, `fedora43`, `fedora44`, and `rolling-arch` use their
+distro pytest package.
 
 ### `rolling-arch` — newest of everything, rebuilt nightly
 

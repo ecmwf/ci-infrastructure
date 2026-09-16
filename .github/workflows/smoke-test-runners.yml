@@ -124,6 +124,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - image: ubuntu22.04-gfortran11
+            declares: ubuntu22.04/gfortran11
+          - image: ubuntu22.04-gfortran11-boost-qt6
+            declares: ubuntu22.04/gfortran11-boost-qt6
           - image: ubuntu24.04-gfortran13-boost-qt6
             declares: ubuntu24.04/gfortran13-boost-qt6
           - image: ubuntu24.04-clang18-gfortran13
