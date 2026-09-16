@@ -134,6 +134,10 @@ jobs:
             declares: rocky9/gfortran11
           - image: rocky9-gfortran11-boost-qt5
             declares: rocky9/gfortran11-boost-qt5
+          - image: rocky10-gfortran14
+            declares: rocky10/gfortran14
+          - image: rocky10-gfortran14-boost-qt6
+            declares: rocky10/gfortran14-boost-qt6
           - image: debian11-gfortran10-boost-qt5
             declares: debian11/gfortran10-boost-qt5
           - image: debian12-gfortran12

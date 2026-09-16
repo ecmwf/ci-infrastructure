@@ -43,6 +43,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/rocky9/base` | `…/rocky9-base` |
 | `public-images/rocky9/gfortran11` | `…/rocky9-gfortran11` |
 | `public-images/rocky9/gfortran11-boost-qt5` | `…/rocky9-gfortran11-boost-qt5` |
+| `public-images/rocky10/base` | `…/rocky10-base` |
+| `public-images/rocky10/gfortran14` | `…/rocky10-gfortran14` |
+| `public-images/rocky10/gfortran14-boost-qt6` | `…/rocky10-gfortran14-boost-qt6` |
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
@@ -80,6 +83,7 @@ is in the *name*, so what you get is never a surprise:
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `rocky9` | 11 | **5** | 1.75 | 3.31 | `/usr/bin/python3.12` |
+| `rocky10` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.12) |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
 | `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/bin/python3` (3.11) |
 | `debian13` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.13) |
