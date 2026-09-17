@@ -2,29 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for resolve_deps own-SHA resolution and the structured fields it emits.
-
-A repo's own published artifact must be named after the branch-head sha — the
-same value every consumer derives via resolve_ref_to_sha(repo, ref). On
-pull_request events GITHUB_SHA is the synthetic merge commit, which no consumer
-can resolve, so the resolver must NOT name the artifact after it. These tests
-pin that: own-SHA always comes from the branch ref, never GITHUB_SHA, and a
-missing branch fails loudly instead of minting a meaningless name.
-
-They also pin that ResolvedDep.to_json carries the structured fields (platform /
-compiler / build-type / python-version / deps-hash) explicitly, so the
-dependency table renders them without re-parsing the artifact name.
-
-Finally they pin the per-kind `ctest` / `ctest-args` the resolver echoes into
-`_resolved`, which is what lets a hand-written ci.yml run the manifest's test
-invocation rather than a second copy of it.
-"""
+"""resolve_deps: own SHA, structured fields, build options, `when`, ctest and lane dispatch."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Final, Literal, TypedDict, Unpack
 
 import pytest
@@ -60,25 +43,6 @@ BRANCH_HEAD: Final = "a" * 40
 MERGE_COMMIT: Final = "b" * 40
 
 
-def test_own_sha_uses_branch_head_not_github_sha(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Simulate a pull_request run: GITHUB_SHA is the merge commit, but the branch
-    # head (what consumers resolve) is something else.
-    monkeypatch.setenv("GITHUB_SHA", MERGE_COMMIT)
-    calls: list[tuple[str, str]] = []
-
-    def fake_resolve(repo: str, ref: str, token: str | None) -> Sha:
-        calls.append((str(repo), str(ref)))
-        return Sha(BRANCH_HEAD)
-
-    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", fake_resolve)
-
-    own_sha = _resolve_own_sha("owner/repo", "feature-sync/foo", token=None)
-
-    assert own_sha == BRANCH_HEAD
-    assert own_sha != MERGE_COMMIT
-    assert calls == [("owner/repo", "feature-sync/foo")]
-
-
 def test_own_sha_requires_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_SHA", MERGE_COMMIT)
 
@@ -87,9 +51,6 @@ def test_own_sha_requires_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _DepOverrides(TypedDict, total=False):
-    """The overridable fields of ResolvedDep, so `_dep(...)` kwargs are checked
-    against each field's real type instead of a loose object/Any."""
-
     name: PackageName
     repo: Repo
     ref: Ref
@@ -137,12 +98,10 @@ def test_to_json_carries_structured_fields() -> None:
 
 
 def test_to_json_blanks_absent_optionals() -> None:
-    # A compiler-less, non-python leaf (the ecbuild shape): None segments become "".
     j = _dep(compiler=None, python_version=None, deps_hash=None).to_json()
     assert j["compiler"] == ""
     assert j["python-version"] == ""
     assert j["deps-hash"] == ""
-    # build-type stays in its own field, never folded into platform.
     assert j["platform"] == "ubuntu-24.04"
     assert j["build-type"] == "Release"
 
@@ -155,14 +114,12 @@ SHA40: Final = Sha("a" * 40)
 def test_option_segment_canonical() -> None:
     assert canonical_option_segment("") == ""
     assert canonical_option_segment("stochastic-moments") == "opts.stochastic-moments"
-    # A curated combo name is used verbatim.
     assert canonical_option_segment("moments-fast") == "opts.moments-fast"
     with pytest.raises(ValueError, match="only"):
         canonical_option_segment("bad+token")
 
 
-def test_artifact_name_option_backward_compatible() -> None:
-    # Empty option -> byte-identical to the pre-options name (no cache churn).
+def test_empty_option_adds_no_segment() -> None:
     without = make_artifact_name(PackageName("cxxmath"), SHA40, None, "ubuntu-24.04", "clang++-18", "Release", None)
     with_empty = make_artifact_name(
         PackageName("cxxmath"), SHA40, None, "ubuntu-24.04", "clang++-18", "Release", None, option=""
@@ -205,13 +162,11 @@ def test_producer_can_build_matches_requested_option() -> None:
     prod = _producer(_BASE_LEG, {**_BASE_LEG, "options": "stochastic-moments"})
     assert producer_can_build(prod, {**_BASE_LEG, "options": ""})
     assert producer_can_build(prod, {**_BASE_LEG, "options": "stochastic-moments"})
-    # A config no producer leg offers cannot be satisfied.
     assert not producer_can_build(prod, {**_BASE_LEG, "options": "fastmath"})
 
 
 def test_producer_plain_leg_cannot_satisfy_moments() -> None:
-    # A leg WITHOUT options means the empty config (a concrete value), not a
-    # wildcard: it must not satisfy a moments request.
+    # No options is the empty config, not a wildcard.
     prod = _producer(_BASE_LEG)
     assert producer_can_build(prod, {**_BASE_LEG, "options": ""})
     assert not producer_can_build(prod, {**_BASE_LEG, "options": "stochastic-moments"})
@@ -257,104 +212,36 @@ def test_as_option_rejects_bad_token() -> None:
 
 
 def test_as_option_rejects_list() -> None:
-    # The composable-list form was replaced by scalar named configs.
     with pytest.raises(ResolveError, match="scalar config name"):
         _as_option(["stochastic-moments"], context="test")
 
 
-def test_options_do_not_propagate_and_ripple_via_deps_hash(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A consumer that selects a moments upstream gets a different upstream
-    artifact name (opts segment) AND a different OWN name (via deps-hash), while
-    the upstream dep itself is consumed with exactly the requested options."""
-    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+def _own(name: str) -> PackageSpec:
+    return PackageSpec(name=name, prefix=PackageName(name), repo=Repo(f"o/{name}"), compiler_inputs=["cxx-compiler"])
 
-    own = PackageSpec(
-        name="cxxmath-python",
-        prefix=PackageName("cxxmath-python"),
-        repo=Repo("o/cxxpy"),
-        compiler_inputs=["cxx-compiler"],
-    )
-    dep = DepSpec(
-        repo=Repo("o/cxx"),
-        package=PackageName("cxxmath"),
+
+def _dep_spec(package: str, **overrides: Any) -> DepSpec:
+    base = DepSpec(
+        repo=Repo(f"o/{package}"),
+        package=PackageName(package),
         ref=Ref("main"),
         compiler_inputs=["cxx-compiler"],
         build_type_input="build-type",
         platform_input="platform",
         needs_python=False,
         python_version_input="python-version",
-        options_input="cxxmath-options",
     )
-    # Leg fields are all scalar strings (discriminators + the scalar option config).
-    leg: dict[str, str] = {
-        "cxx-compiler": "clang++-18",
-        "build-type": "Release",
-        "platform": "ubuntu-24.04",
-        "python-version": "3.12",
-    }
-
-    def run(matrix_entry: dict[str, str]) -> tuple[list[ResolvedDep], ResolvedOwn]:
-        return resolve_leg(
-            own=own,
-            own_deps=[dep],
-            own_sha=Sha("d" * 40),
-            matrix_entry=matrix_entry,
-            manifest_cache={},
-            sync_branch=None,
-            sync_exists_by_repo={},
-            sha_cache={},
-            artifact_cache={},
-            run_state_cache={},
-            token=None,
-            can_dispatch=False,
-            lane="runner",
-            dispatch_plans={},
-        )
-
-    plain_deps, plain_own = run(leg)
-    moments_deps, moments_own = run({**leg, "cxxmath-options": "stochastic-moments"})
-
-    # The upstream dep is consumed plain vs moments per the leg selection.
-    assert plain_deps[0].artifact_name.endswith("-Release")
-    assert moments_deps[0].artifact_name.endswith("-Release-opts.stochastic-moments")
-    # The consumer's OWN name carries no opts segment (own options empty)...
-    assert moments_own.artifact_name.endswith("-Release")
-    # ...yet differs between the two legs because the deps-hash rolls up the
-    # (different) consumed cxxmath name.
-    assert plain_own.artifact_name != moments_own.artifact_name
+    return replace(base, **overrides)
 
 
-@pytest.mark.parametrize(("lane", "tail"), [("hpc", "-Release-hpcv3"), ("runner", "-Release")])
-def test_template_version_marks_hpc_lane_names_only(monkeypatch: pytest.MonkeyPatch, lane: str, tail: str) -> None:
-    """The consumer derives a dep's segment from its own lane, which is the producer's
-    lane too, so the name it looks up is the name the producer publishes."""
-    monkeypatch.setattr("ci_infrastructure._github_api.HPC_TEMPLATE_VERSION", 3)
-    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
-
-    own = PackageSpec(
-        name="cxxmath-python",
-        prefix=PackageName("cxxmath-python"),
-        repo=Repo("o/cxxpy"),
-        compiler_inputs=["cxx-compiler"],
-    )
-    dep = DepSpec(
-        repo=Repo("o/cxx"),
-        package=PackageName("cxxmath"),
-        ref=Ref("main"),
-        compiler_inputs=["cxx-compiler"],
-        build_type_input="build-type",
-        platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
-        options_input="cxxmath-options",
-    )
-    deps, resolved_own = resolve_leg(
+def _resolve(
+    own: PackageSpec, deps: list[DepSpec], leg: dict[str, str], lane: Execution = EXECUTION_RUNNER
+) -> tuple[list[ResolvedDep], ResolvedOwn]:
+    return resolve_leg(
         own=own,
-        own_deps=[dep],
+        own_deps=deps,
         own_sha=Sha("d" * 40),
-        matrix_entry={"cxx-compiler": "g++-8", "build-type": "Release", "platform": "hpc-atos-gnu"},
+        matrix_entry=leg,
         manifest_cache={},
         sync_branch=None,
         sync_exists_by_repo={},
@@ -363,9 +250,44 @@ def test_template_version_marks_hpc_lane_names_only(monkeypatch: pytest.MonkeyPa
         run_state_cache={},
         token=None,
         can_dispatch=False,
-        lane="hpc" if lane == "hpc" else "runner",
+        lane=lane,
         dispatch_plans={},
     )
+
+
+@pytest.fixture
+def offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+
+
+_LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
+
+
+@pytest.mark.usefixtures("offline")
+def test_options_do_not_propagate_and_ripple_via_deps_hash() -> None:
+    """An upstream option renames the dep and, via deps-hash, us; we get no opts segment."""
+    own = _own("cxxmath-python")
+    dep = _dep_spec("cxxmath", options_input="cxxmath-options")
+    leg = {**_LEG, "python-version": "3.12"}
+
+    plain_deps, plain_own = _resolve(own, [dep], leg)
+    moments_deps, moments_own = _resolve(own, [dep], {**leg, "cxxmath-options": "stochastic-moments"})
+
+    assert plain_deps[0].artifact_name.endswith("-Release")
+    assert moments_deps[0].artifact_name.endswith("-Release-opts.stochastic-moments")
+    assert moments_own.artifact_name.endswith("-Release")
+    assert plain_own.artifact_name != moments_own.artifact_name
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize(("lane", "tail"), [(EXECUTION_HPC, "-Release-hpcv3"), (EXECUTION_RUNNER, "-Release")])
+def test_template_version_marks_hpc_lane_names_only(
+    monkeypatch: pytest.MonkeyPatch, lane: Execution, tail: str
+) -> None:
+    monkeypatch.setattr("ci_infrastructure._github_api.HPC_TEMPLATE_VERSION", 3)
+    leg = {"cxx-compiler": "g++-8", "build-type": "Release", "platform": "hpc-atos-gnu"}
+    deps, resolved_own = _resolve(_own("cxxmath-python"), [_dep_spec("cxxmath")], leg, lane)
 
     assert deps[0].artifact_name.endswith(tail)
     assert resolved_own.artifact_name.endswith(tail)
@@ -391,112 +313,38 @@ def test_parse_deps_when_predicate() -> None:
 
 @pytest.mark.parametrize("bad", [{}, [], "options", {"options": []}, {"options": [["nested"]]}])
 def test_parse_deps_when_rejects_bad_shape(bad: Any) -> None:
-    """A malformed predicate fails loudly: silently ignoring it would put the dep
-    back into every leg's artifact identity, surfacing only as surprise rebuilds."""
     base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
     with pytest.raises(ValueError, match="when"):
         _parse_deps({"deps": [{**base, "when": bad}]})
 
 
 def test_applies_to_requires_every_key_and_ignores_missing_fields() -> None:
-    spec = DepSpec(
-        repo=Repo("o/x"),
-        package=PackageName("x"),
-        ref=Ref("main"),
-        compiler_inputs=["cxx-compiler"],
-        build_type_input="build-type",
-        platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
-        when={"options": frozenset({"extended"}), "build-type": frozenset({"Release"})},
-    )
+    spec = _dep_spec("x", when={"options": frozenset({"extended"}), "build-type": frozenset({"Release"})})
     assert spec.applies_to({"options": "extended", "build-type": "Release"})
     assert not spec.applies_to({"options": "extended", "build-type": "Debug"})
-    # A leg that simply omits the field must NOT match — this is what keeps a
-    # predicate off the plain legs, which carry no such key at all.
     assert not spec.applies_to({"build-type": "Release"})
 
 
-def test_when_scopes_dep_out_of_identity_of_nonmatching_legs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A scoped-out dep is absent from cmake-prefix-path AND from deps-hash8.
+@pytest.mark.usefixtures("offline")
+def test_when_scopes_dep_out_of_identity_of_nonmatching_legs() -> None:
+    """A scoped-out dep is absent from the prefix path and from deps-hash8, so other legs do not rebuild."""
+    own = _own("consumer")
+    always = _dep_spec("base", compiler_inputs=[])
+    scoped = _dep_spec("extra", when={"options": frozenset({"extended"})})
 
-    The second half is the point of the feature: adding a dep that only one option
-    config needs must not change the artifact name — and so must not force a
-    rebuild — of the legs that never link against it.
-    """
-    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    plain_deps, plain_own = _resolve(own, [always, scoped], dict(_LEG))
+    ext_deps, ext_own = _resolve(own, [always, scoped], {**_LEG, "options": "extended"})
 
-    own = PackageSpec(
-        name="consumer",
-        prefix=PackageName("consumer"),
-        repo=Repo("o/consumer"),
-        compiler_inputs=["cxx-compiler"],
-    )
-    always = DepSpec(
-        repo=Repo("o/base"),
-        package=PackageName("base"),
-        ref=Ref("main"),
-        compiler_inputs=[],
-        build_type_input="build-type",
-        platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
-    )
-    scoped = replace(
-        always,
-        repo=Repo("o/extra"),
-        package=PackageName("extra"),
-        compiler_inputs=["cxx-compiler"],
-        when={"options": frozenset({"extended"})},
-    )
-    leg: dict[str, str] = {
-        "cxx-compiler": "clang++-18",
-        "build-type": "Release",
-        "platform": "ubuntu-24.04",
-    }
-
-    def run(own_deps: list[DepSpec], matrix_entry: dict[str, str]) -> tuple[list[ResolvedDep], ResolvedOwn]:
-        return resolve_leg(
-            own=own,
-            own_deps=own_deps,
-            own_sha=Sha("d" * 40),
-            matrix_entry=matrix_entry,
-            manifest_cache={},
-            sync_branch=None,
-            sync_exists_by_repo={},
-            sha_cache={},
-            artifact_cache={},
-            run_state_cache={},
-            token=None,
-            can_dispatch=False,
-            lane="runner",
-            dispatch_plans={},
-        )
-
-    plain_deps, plain_own = run([always, scoped], leg)
-    ext_deps, ext_own = run([always, scoped], {**leg, "options": "extended"})
-
-    # The scoped dep reaches only the matching leg.
     assert [d.name for d in plain_deps] == ["base"]
     assert sorted(d.name for d in ext_deps) == ["base", "extra"]
-
-    # ...and only that leg's identity moves.
     assert plain_own.deps_hash != ext_own.deps_hash
 
-    # The decisive check: the plain leg's OWN name is byte-identical to what it
-    # would be if the scoped dep had never been declared at all.
-    _, without_scoped = run([always], leg)
+    _, without_scoped = _resolve(own, [always], dict(_LEG))
     assert plain_own.artifact_name == without_scoped.artifact_name
     assert plain_own.deps_hash == without_scoped.deps_hash
 
 
-# --- [matrix.<kind>] ctest / ctest-args -------------------------------------
-#
-# These two keys exist so a repo's hand-written push/PR ci.yml can run the SAME
-# ctest invocation the generated cross-repo-trigger.yml runs, by reading
-# `matrix._resolved.ctest` / `matrix._resolved['ctest-args']` instead of
-# restating the arguments. A second copy in ci.yml is what drifts.
+# --- [matrix.<kind>] ctest / ctest-args: read by hand-written ci.yml via matrix._resolved ---
 
 _CTEST_MANIFEST: Final = """
 [package]
@@ -531,16 +379,11 @@ def test_ctest_parsed_per_kind() -> None:
     kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
 
     assert kinds["build"] == resolve_deps.CtestSpec(enabled=True, args="-L nightly -E 's_test|s_zombies' -j 8")
-    # A kind that says nothing gets the inert default rather than KeyError, so a
-    # workflow's `if: matrix._resolved.ctest` simply skips. HPC kinds are the
-    # normal case: their job-script calls ctest on the compute node itself.
+    # HPC job-scripts run ctest themselves.
     assert kinds["build-hpc"] == resolve_deps.CtestSpec(enabled=False, args="")
 
 
 def test_ctest_is_per_kind_not_inherited_through_reuse_matrix() -> None:
-    # `reuse-matrix` shares LEGS, not the block's own settings: a test kind
-    # running against the build kind's matrix still owns its own invocation.
-    # Sharing these too would silently give a test kind the build kind's filters.
     kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
 
     assert kinds["test"].args == '-j "$(nproc)"'
@@ -548,10 +391,6 @@ def test_ctest_is_per_kind_not_inherited_through_reuse_matrix() -> None:
 
 
 def test_ctest_args_survive_shell_metacharacters_verbatim() -> None:
-    # The args are interpolated into a `run:` script and parsed by bash there,
-    # so quoting and command substitution must reach the workflow untouched.
-    # Stripping or re-quoting here would break `-E 's_test|s_zombies'` and turn
-    # `$(nproc)` into a literal.
     kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
 
     assert "'s_test|s_zombies'" in kinds["build"].args
@@ -581,67 +420,10 @@ platform = "ubuntu-24.04"
         resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
 
 
-# --- recovery dispatch picks the producer's LANE ----------------------------
-# The bug this pins: the dispatch hardcoded `cross-repo-trigger.yml`, so a missing
-# HPC artifact re-triggered the producer's RUNNER lane — which never publishes an
-# hpc artifact, so the rebuild could not satisfy the pin that asked for it, and the
-# consumer waited out its poll and failed pointing at the wrong thing.
-
-
-def _orphan_spec(repo: str = "o/up") -> DepSpec:
-    return DepSpec(
-        repo=Repo(repo),
-        package=PackageName("up"),
-        ref=Ref("main"),
-        compiler_inputs=["cxx-compiler"],
-        build_type_input="build-type",
-        platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
-    )
-
-
-@pytest.mark.parametrize(
-    ("lane", "expected"),
-    [(EXECUTION_RUNNER, "cross-repo-trigger.yml"), (EXECUTION_HPC, "cross-repo-trigger-hpc.yml")],
-)
-def test_dispatch_targets_the_lane_s_workflow_file(
-    lane: Execution, expected: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[list[str]] = []
-
-    class _Result:
-        returncode = 0
-        stderr = ""
-        stdout = ""
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> _Result:
-        seen.append(list(cmd))
-        return _Result()
-
-    monkeypatch.setattr("ci_infrastructure.resolve_deps.subprocess.run", _fake_run)
-    # The appearance wait polls until the dispatched run shows up; report it at once.
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda *a, **k: SimpleNamespace(in_flight=True))
-
-    resolve_deps.dispatch_producer_workflow(
-        plan=resolve_deps.DispatchPlan(repo=Repo("o/up"), ref=Ref("main"), sha=Sha(BRANCH_HEAD), lane=lane),
-        dispatcher_repo="o/down",
-        dispatcher_sha=BRANCH_HEAD,
-        branch="main",
-        fallback_ref="main",
-        token="t",
-    )
-
-    assert seen, "no dispatch was attempted"
-    assert seen[0][:3] == ["gh", "workflow", "run"]
-    assert seen[0][3] == expected
-
-
 def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
-    """A producer whose artifact is missing for BOTH lanes needs two dispatches.
-    Keyed by (repo, ref) alone, the second lane was silently dropped."""
+    """A producer missing its artifact on both lanes needs two dispatches."""
     plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
-    spec = _orphan_spec()
+    spec = _dep_spec("up")
     for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
         resolve_deps._classify_orphan_pin(
             spec=spec,

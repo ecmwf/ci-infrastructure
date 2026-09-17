@@ -4,20 +4,14 @@
 
 name: Validate generated downstream-CI workflows
 description: >
-  Re-renders this repo's .github/workflows/{cross-repo-trigger,trigger-downstream}{,-hpc}.yml
-  from .ci/manifest.toml plus sibling manifests fetched via the GitHub API, and fails
-  reports any locally checked-in file that has drifted. The comparison is on the
-  PARSED YAML, so comments and blank lines never count, and the report names where
-  the documents disagree. Drift is a WARNING unless fail-on-drift is set; a schema
-  or graph violation always fails. Pulls only manifest blobs over GraphQL (no
-  clones), so the cost is one batched query per BFS layer regardless of repo size.
+  Re-render this repo's generated cross-repo-trigger / trigger-downstream
+  workflows from the manifests and report checked-in files that drifted
+  (compared as parsed YAML). Drift warns unless fail-on-drift; a schema or graph
+  violation always fails.
 
 inputs:
   token:
-    description: >
-      GitHub token with contents:read on every repo named in [[deps]] and
-      [[trigger-downstream]]. Use a GitHub App token (via actions/create-github-app-token)
-      for higher rate limits and least-privilege scoping.
+    description: 'Token with contents:read on every repo in [[deps]] and [[trigger-downstream]].'
     required: false
     default: ''
   self-path:
@@ -29,12 +23,7 @@ inputs:
     required: false
     default: '.ci/manifest.toml'
   fail-on-drift:
-    description: >
-      'true' to fail the step when the checked-in workflows have drifted from what
-      the manifests render. Default 'false': the drift is reported as a warning and
-      the step passes, because an orchestrator gates its whole fan-out on this job
-      and one repo regenerated without its sibling should not withhold downstream CI
-      from every consumer. Set it 'true' where the drift itself must block.
+    description: "'true' fails on drift; default 'false' only warns, so one unregenerated repo does not withhold downstream CI."
     required: false
     default: 'false'
 
@@ -56,8 +45,7 @@ runs:
         case "$FAIL_ON_DRIFT_INPUT" in
           true) args+=( --fail-on-drift ) ;;
           false) ;;
-          # Anything else is a typo, and silently reading it as 'false' would turn
-          # a gate someone meant to close back into a warning.
+          # A typo must not silently downgrade the gate to a warning.
           *) echo "::error title=Validate generated workflows::fail-on-drift must be 'true' or 'false', got '$FAIL_ON_DRIFT_INPUT'." >&2; exit 1 ;;
         esac
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci "${args[@]}"

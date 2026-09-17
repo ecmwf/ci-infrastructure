@@ -4,18 +4,9 @@
 
 name: Check out the commit under test
 description: >
-  actions/checkout aimed at the commit the run is about: a pull request's merge
-  commit when the event carries one, and checkout's own default when it does not.
-
-  Under pull_request_target the default checkout is the BASE branch, so a job that
-  means to test the pull request has to say so; under pull_request the same
-  expression resolves to the merge commit checkout would have picked anyway. That
-  is the point -- a workflow moves between the two triggers without touching its
-  checkouts, and no job is left quietly testing the wrong tree.
-
-  This repository only: reading ANOTHER repo at a pull request's merge ref is not
-  a thing this can mean, and the cross-repo branch matching lives in
-  actions/pick-ref.
+  actions/checkout of the PR merge commit when the event has one (also under
+  pull_request_target, whose default is the base branch), else the default.
+  This repository only; cross-repo matching is actions/pick-ref.
 
 inputs:
   ref:
@@ -44,21 +35,14 @@ inputs:
     default: 'true'
   allow-unsafe-pr-checkout:
     description: >
-      'true' to run a FORK's code in this trusted context. actions/checkout refuses
-      by default under pull_request_target and workflow_run, because the job holds
-      the base repository's token, secrets, cache scope and runners — the "pwn
-      request" shape. Deliberately not defaulted on here, even though this action
-      exists to check out pull request code: what makes it payable is that the job
-      hangs off actions/require-ci-approval, so a human with write access has read
-      the diff. Set it where that gate is in place, and nowhere else.
+      'true' allows checking out a fork under pull_request_target/workflow_run.
+      Set it only on jobs gated by actions/require-ci-approval.
     required: false
     default: 'false'
 
 runs:
   using: composite
   steps:
-    # Pinned to a commit per the Codex audit guidance. Pinning it here once is the
-    # other half of the point: consumers stop carrying their own.
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       with:
         ref: ${{ inputs.ref || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '') }}

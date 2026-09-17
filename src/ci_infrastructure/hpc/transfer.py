@@ -4,23 +4,8 @@
 
 """Moving trees between the runner and the cluster over troika's connection.
 
-The HPC backend treats the cluster as a stateless compute backend: nothing is
-assumed to be visible on both sides. The runner owns the checkout and the S3
-artifact store; the cluster only compiles. So two tree transfers bracket the
-job — both driven over the same troika connection troika already uses for
-submit/tail, so they need no extra transport:
-
-  * :func:`ship_source` (submit-then-poll) tars the runner's checkout, scp's the
-    tarball into the shared staging dir and finally ``touch``es the
-    ``TRANSFER_COMPLETED`` marker; the already-submitted job blocks on
-    that marker, then unpacks the tarball itself into node-local ``$TMPDIR``. The
-    marker is dropped **last** so the job never sees a half-copied tarball;
-  * :func:`fetch_install` tars the install tree the job produced on the cluster,
-    scp's it back and unpacks it into a local staging directory (which the
-    runner-side publish step then uploads to S3).
-
-Trees move as a single ``.tgz`` because troika's connection only transfers one
-file at a time; tar/untar on each side turns that into a directory copy.
+Trees move as a single tarball because the connection transfers one file at a
+time. None of this needs a scheduler, so it also works against ``direct`` sites.
 """
 
 from __future__ import annotations
@@ -59,11 +44,7 @@ def _run_remote(conn: Connection, argv: list[str], *, what: str, dryrun: bool = 
 
 
 def _probe_remote(conn: Connection, argv: list[str]) -> int:
-    """Run a command on the remote and return its exit code instead of raising.
-
-    For remote tests whose *failure* is an answer rather than an error — "is the
-    marker there?", "did the lock mkdir lose the race?".
-    """
+    """Run a command on the remote and return its exit code instead of raising."""
     proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.communicate()
     return int(proc.returncode)
@@ -72,10 +53,7 @@ def _probe_remote(conn: Connection, argv: list[str]) -> int:
 def truncate_remote_file(conn: Connection, *, path: str) -> None:
     """Create ``path`` (and its parent) on the remote, emptying it if it exists.
 
-    Emptying matters as much as creating: the job output path is per-artifact, so
-    a re-run of the same commit and leg reuses the file the previous attempt
-    wrote, and the waiter would read that attempt's sentinel as this job's
-    verdict.
+    The output path is per-artifact, so a re-run would otherwise read the previous attempt's sentinel.
     """
     parent = str(PurePosixPath(path).parent)
     _run_remote(conn, ["mkdir", "-p", parent], what=f"Remote mkdir of {parent}")
@@ -87,37 +65,16 @@ def _marker_path(staging_dir: str) -> str:
 
 
 def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
-    """Whether a completed source transfer is present in the artifact's staging dir.
-
-    Used on reattach: if a job was submitted but the runner died before the scp
-    or the marker, the still-waiting job needs the source (re-)shipped.
-
-    Keyed by the staging dir alone. That dir is already per-artifact, which is
-    exactly the scope of the question being asked ("did anyone finish shipping
-    for this job?"), so a reattaching runner does not need to know which run
-    submitted the job it adopted — and so never reads the scheduler's
-    ``Comment`` (see orchestrate.find_active_job_by_name).
-    """
-    probe = f"test -f {shlex.quote(_marker_path(staging_dir))}"
-    proc = conn.execute(["sh", "-c", probe], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    proc.communicate()
-    return bool(proc.returncode == 0)
+    """Whether a completed source transfer is present in the (per-artifact) staging dir."""
+    return _probe_remote(conn, ["test", "-f", _marker_path(staging_dir)]) == 0
 
 
-#: The ship lock is a SIBLING of the staging dir, never a child: ``ship_source``
-#: starts by renaming the whole staging tree aside, which would carry a lock
-#: living inside it away with the tree it is meant to protect.
+#: A sibling of the staging dir, never a child: the reset renames the staging tree aside.
 SHIP_LOCK_SUFFIX: Final = ".shiplock"
-#: How long a shipper waits for a peer's lock before giving up. Comfortably under
-#: the job's own ``DEFAULT_MARKER_WAIT_TIMEOUT`` (1800s), so a runner that cannot
-#: get the lock fails with a lock error rather than leaving the job to time out on
-#: a marker that is never coming.
+#: Under the job's ``DEFAULT_MARKER_WAIT_TIMEOUT``, so a lock timeout surfaces first.
 DEFAULT_SHIP_LOCK_TIMEOUT: Final = 900
-#: Poll interval while waiting for a peer to release.
 SHIP_LOCK_POLL_SECONDS: Final = 10
-#: A lock directory older than this is assumed abandoned (its runner died mid-ship)
-#: and is broken by the next shipper. Longer than any healthy ship, which is a tar
-#: + scp of a checkout and a handful of install trees.
+#: A lock older than this is assumed abandoned and broken by the next shipper.
 SHIP_LOCK_STALE_MINUTES: Final = 30
 
 
@@ -126,34 +83,16 @@ def _ship_lock_path(staging_dir: str) -> str:
 
 
 def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
-    """One attempt at claiming ``lock_dir``, breaking it if it is stale.
-
-    ``mkdir`` of a single directory is the atomic test-and-set: it succeeds for
-    exactly one caller and fails with ``EEXIST`` for the rest, on every filesystem
-    the cluster exports (unlike ``O_EXCL`` opens or flock over NFS/Lustre). The
-    owner file is written *inside* the new directory, so the directory's mtime is
-    the acquisition time and never gets refreshed — which is what makes the
-    staleness test below mean "held since", not "touched at".
-
-    The lock's own ``mkdir`` must stay non-``-p`` (``-p`` succeeds on an existing
-    directory, which is exactly the test being made), so its PARENT is created
-    separately first: on a fresh work dir nothing has made ``<work>/staging`` yet
-    — ``_reset_staging_dir`` does, but that runs *inside* this lock — and every
-    attempt would otherwise fail ``ENOENT`` until the wait timed out.
-    """
+    """One atomic non-``-p`` ``mkdir`` claim on ``lock_dir``, breaking it if older than ``stale_minutes``."""
     q_lock = shlex.quote(lock_dir)
     q_owner = shlex.quote(f"{lock_dir}/owner")
     q_parent = shlex.quote(str(PurePosixPath(lock_dir).parent))
     claim = f"mkdir {q_lock} 2>/dev/null && {{ echo {shlex.quote(run_id)} > {q_owner} 2>/dev/null || true; }}"
-    # Newline-joined, not "; "-joined: a multi-line `if ... then` needs real line
-    # breaks — `then; rm ...` is a bash syntax error, and one that only shows up
-    # when the script is actually run.
+    # Newline-joined: `then; rm ...` is a bash syntax error.
     script = "\n".join(
         [
             f"mkdir -p {q_parent} 2>/dev/null || true",
             f"if {claim}; then exit 0; fi",
-            # Not ours. Break it only if nobody can plausibly still be shipping
-            # under it, then race for it again like everyone else.
             f'if [ -n "$(find {q_lock} -maxdepth 0 -mmin +{stale_minutes} 2>/dev/null)" ]; then',
             f"  rm -rf {q_lock} 2>/dev/null || true",
             f"  if {claim}; then exit 0; fi",
@@ -175,28 +114,7 @@ def ship_lock(
     stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
     dryrun: bool = False,
 ) -> Iterator[None]:
-    """Hold an exclusive cluster-wide claim on an artifact's staging dir while shipping into it.
-
-    Staging is keyed on the artifact alone, so two runs that both want the same
-    artifact (a repo's own CI and a fan-out, or two fan-outs from sibling PRs)
-    ship into ONE directory. The marker check in the caller only rules out a peer
-    that already *finished*; two shippers that start together both find no marker
-    and both proceed, and then :func:`ship_source`'s reset — which renames the
-    staging tree aside — deletes the peer's already-staged files out from under
-    it. The peer's very next command is a remote untar of a tarball that no longer
-    exists, which is the observed::
-
-        Remote tree unpack failed (exit 2): tar (child): <staging>/deps/1.tgz:
-          Cannot open: No such file or directory
-
-    Serialising the shippers is what makes the reset safe: only one resets at a
-    time, and whoever gets the lock second re-checks the marker and finds the
-    first one's completed transfer, so it skips instead of overwriting it.
-
-    Held across the whole ship (reset -> source -> deps -> marker) and released in
-    a ``finally``, best-effort, so a failed release cannot mask the real error;
-    an abandoned lock is broken after ``stale_minutes`` by the next shipper.
-    """
+    """Cluster-wide lock on a staging dir while shipping, so only one shipper resets it at a time."""
     with remote_lock(
         conn,
         lock_dir=_ship_lock_path(staging_dir),
@@ -224,19 +142,9 @@ def remote_lock(
     stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
     dryrun: bool = False,
 ) -> Iterator[None]:
-    """Hold an exclusive cluster-wide claim on ``lock_dir`` for the duration of the block.
+    """Hold an exclusive lock on ``lock_dir`` on the shared cluster filesystem for the block.
 
-    The cluster filesystem is the only thing every runner shares, so it is the only
-    place a claim can mean anything: job-id dedup is runner-local, and two runners
-    that both want one artifact cannot see each other any other way.
-
-    `what` and `subject` appear only in the waiting/timeout messages, so "staging"
-    and "submit" contention read distinctly in a log.
-
-    Acquisition is a non-``-p`` ``mkdir`` (see :func:`_try_acquire_lock`); release is
-    best-effort in a ``finally``, so a failed release cannot replace an exception
-    already propagating out of the block. An abandoned lock is broken by the next
-    caller after ``stale_minutes``.
+    ``what`` and ``subject`` only label log messages.
     """
     if dryrun:
         yield
@@ -256,8 +164,7 @@ def remote_lock(
     try:
         yield
     finally:
-        # Best-effort and always exit 0: a release that failed must not replace
-        # the exception (if any) that is already propagating out of the block.
+        # Always exit 0: a failed release must not replace a propagating exception.
         _run_remote(
             conn,
             ["bash", "-c", f"rm -rf {shlex.quote(lock_dir)} 2>/dev/null || true"],
@@ -266,27 +173,9 @@ def remote_lock(
 
 
 def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> None:
-    """Reset the artifact's staging tree to empty, tolerating concurrent access.
+    """Empty the staging dir via rename-aside (no ``ENOTEMPTY`` races); call only under :func:`ship_lock`.
 
-    A bare ``rm -rf staging_dir`` is fragile here. Staging is shared per artifact,
-    but job-id dedup is runner-local, so two runs building the same artifact can
-    ship concurrently — and a still-running sibling job reads ``<staging>/deps``
-    for the whole of its build. Either can repopulate a directory mid-delete, and
-    on the parallel filesystem ``rm`` then fails its final ``rmdir`` with
-    ``ENOTEMPTY`` (the reported "cannot remove '<...>/deps': Directory not
-    empty"). Instead rename the old tree aside in a single metadata operation —
-    which cannot hit ``ENOTEMPTY`` — and delete the moved-aside copy best-effort,
-    so cleanup never fails the ship.
-
-    That makes the reset survivable, NOT concurrency-safe: renaming the tree aside
-    still takes a peer shipper's already-staged files with it, and the peer's next
-    remote untar then fails on a tarball that no longer exists. Callers must
-    therefore reset only while holding :func:`ship_lock`, which is what actually
-    makes "one resetter at a time" true.
-
-    The trailing ``mkdir -p`` is the script's last command, so its exit status is
-    the one ``_run_remote`` checks: a staging dir we genuinely cannot create
-    still fails loudly, while the best-effort rename/delete never do.
+    Only the final ``mkdir -p`` can fail the reset.
     """
     trash = f"{staging_dir.rstrip('/')}.trash.{run_id}"
     parent = str(PurePosixPath(staging_dir).parent)
@@ -313,16 +202,9 @@ def ship_source(
     remote_deps_dir: str | None = None,
     dryrun: bool = False,
 ) -> None:
-    """Tar the local checkout (and dep prefixes), scp them into ``staging_dir`` and drop the marker.
+    """Reset ``staging_dir``, ship the checkout and dep prefixes (to ``<remote_deps_dir>/<i>``), then the marker.
 
-    The job (already submitted) unpacks the source tarball itself. The dependency
-    install trees named in ``local_prefixes`` are runner-local — the compute node
-    cannot see them — so each is tarred, shipped and unpacked *here* into
-    ``<remote_deps_dir>/<i>`` on the shared filesystem, matching the cluster
-    ``CMAKE_PREFIX_PATH`` the orchestrator baked into the job. The staging dir is
-    cleared first so a prior attempt's tarball / stale ``TRANSFER_COMPLETED_*``
-    markers can't be mistaken for this one. The marker is dropped **last**, after
-    every input is fully staged, so the job never starts against a partial copy.
+    The job unpacks the source tarball itself; the marker comes last so it never sees a partial copy.
     """
     if dryrun:
         return
@@ -343,7 +225,6 @@ def ship_source(
                 tarball_suffix="",
                 local_tar_name=f"{run_id}.dep{index}.tgz",
             )
-    # Marker last: the job must never see it before every input is fully staged.
     _run_remote(conn, ["touch", _marker_path(staging_dir)], what="Transfer-complete marker")
 
 
@@ -356,14 +237,7 @@ def fetch_tree(
     tarball_suffix: str = "fetch",
     dryrun: bool = False,
 ) -> None:
-    """Tar a directory on the cluster and unpack it into ``local_dir`` on the runner.
-
-    The generic HPC->runner half of the two bracketing transfers, driven straight
-    over troika's connection (no scheduler, so it works against ``direct`` sites
-    too). The tree moves as a single ``<name>.<tarball_suffix>.tgz`` next to the
-    source on the cluster, because troika's connection transfers one file at a
-    time; tar/untar on each side turns that into a directory copy.
-    """
+    """Tar a directory on the cluster and unpack it into ``local_dir`` on the runner."""
     if dryrun:
         return
     remote = PurePosixPath(remote_dir)
@@ -393,20 +267,11 @@ def push_tree(
 ) -> None:
     """Tar ``local_dir`` on the runner and unpack it into ``remote_dir`` on the cluster.
 
-    The generic runner->HPC mirror of :func:`fetch_tree`: local tar -> ``sendfile``
-    -> remote ``mkdir -p`` + untar. Like ``fetch_tree`` it needs no scheduler, so
-    it works against ``direct`` sites too.
-
-    ``local_tar_name`` overrides the runner-side scratch tarball's name and an
-    empty ``tarball_suffix`` gives a bare ``<dir>.tgz`` on the cluster. The
-    source-shipping flow uses both: its per-dep tarballs are named after the run
-    (``<run_id>.dep<i>.tgz``) so concurrent runs sharing ``tar_dir`` cannot
-    overwrite each other's, and their cluster-side name has no suffix.
+    ``local_tar_name`` renames the runner-side tarball; an empty ``tarball_suffix`` gives ``<dir>.tgz``.
     """
     if dryrun:
         return
     name = PurePosixPath(remote_dir).name
-    # An empty suffix means a bare `<dir>.tgz` — no doubled separator.
     ext = f".{tarball_suffix}.tgz" if tarball_suffix else ".tgz"
     local_tgz = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
     remote_tgz = f"{remote_dir.rstrip('/')}{ext}"
@@ -423,14 +288,7 @@ def push_tree(
 
 
 def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> None:
-    """Remove a directory (and any leftover transfer tarballs) on the cluster.
-
-    The reclaim companion to :func:`push_tree` / :func:`fetch_tree`: a single
-    ``rm -rf`` of ``remote_dir`` plus its sibling ``<remote_dir>.push.tgz`` /
-    ``<remote_dir>.fetch.tgz`` transfer tarballs (harmless no-ops when absent). Like
-    the transfers it needs no scheduler. The caller is responsible for guarding
-    against a top-level ``remote_dir`` before calling.
-    """
+    """Remove a directory and its leftover transfer tarballs on the cluster; the caller guards top-level paths."""
     if dryrun:
         return
     base = remote_dir.rstrip("/")
@@ -442,12 +300,7 @@ def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> N
 
 
 def _unzstd_into(archive: Path, dest: Path) -> None:
-    """Stream a .tar.zst into ``dest``.
-
-    Piped through the zstd binary rather than `tar --zstd`/`tar -I`: those spell
-    the same thing differently in GNU tar and bsdtar, and this runs on both a
-    Linux runner and a developer's machine.
-    """
+    """Stream a .tar.zst into ``dest`` via the zstd binary (portable across GNU tar and bsdtar)."""
     dec = subprocess.Popen(["zstd", "-dc", str(archive)], stdout=subprocess.PIPE)
     try:
         untar = subprocess.run(["tar", "-xf", "-", "-C", str(dest)], stdin=dec.stdout)
@@ -467,18 +320,7 @@ def fetch_install(
     tar_dir: str,
     dryrun: bool = False,
 ) -> None:
-    """Fetch the install archive the job wrote and unpack it into ``local_install_dir``.
-
-    The job is REQUIRED to leave an archive at ``CI_INSTALL_ARCHIVE`` -- see
-    :func:`jobscript.install_archive_path`. It is not optional and there is no
-    fallback: taring here instead would mean the login node reading the whole
-    install tree back off the shared filesystem, which for a tree of many small
-    files can cost more than the build. Producing it on the compute node writes
-    one file to shared storage and compresses on the job's own cores.
-
-    A job that finishes without writing it fails here, on the missing file,
-    rather than silently publishing nothing.
-    """
+    """Fetch the archive the job must write at ``CI_INSTALL_ARCHIVE`` and unpack it into ``local_install_dir``."""
     if dryrun:
         return
     remote_tgz = jobscript.install_archive_path(remote_install_dir)

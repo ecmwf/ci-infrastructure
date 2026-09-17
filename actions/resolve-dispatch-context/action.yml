@@ -4,21 +4,10 @@
 
 name: Resolve the commit an orchestrator run is about
 description: >
-  Answer "which commit, and did its CI pass?" for a downstream orchestrator,
-  whichever trigger woke it, so nothing below has to read the event payload.
-
-  `workflow_run` -- what the generated orchestrators use -- reads straight from
-  the event: a CI run just completed, and the commit and verdict are in the
-  payload. `pull_request_target` has neither, so the commit comes from the pull
-  request and the verdict from the most recent completed run of `ci-workflow`
-  for exactly that commit. No orchestrator takes that path today; it is kept
-  because it is the only way to answer the question for a caller that has a pull
-  request and no run.
-
-  Reports the verdict; it never fails the job on one. `ci-conclusion` is the
-  empty string when no completed CI run exists for the commit, so a caller
-  gating on `== 'success'` treats "never ran" like "failed" without a special
-  case. `ci-summary` says which of the two it was, for a commit status.
+  Resolve the head sha/branch and CI verdict for a downstream orchestrator, from
+  a workflow_run payload or, under pull_request_target, from the latest
+  completed `ci-workflow` run for the PR head. Never fails on the verdict;
+  `ci-conclusion` is empty when no completed run exists.
 
 inputs:
   ci-workflow:
@@ -26,13 +15,7 @@ inputs:
     required: false
     default: 'CI'
   token:
-    description: >
-      Token that can read Actions runs and pull requests on this repo. Defaults
-      to github.token, which is the right answer here -- everything it reads is
-      on the repo running the job, so give that job `actions: read` and it works
-      whatever the repo's visibility. An App token is a downgrade: it carries
-      only what its installation grants, so on a private or internal repo it
-      403s where github.token would not.
+    description: 'Token with actions:read and pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
     required: false
     default: ''
 
@@ -60,10 +43,6 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
-        # Per this repo's convention (commit a48f078) no input is interpolated
-        # into the script body, and the event is read from $GITHUB_EVENT_PATH
-        # with jq rather than through `${{ }}` -- a branch name is attacker-chosen
-        # on a fork pull request and must never reach bash as syntax.
         CI_WORKFLOW_INPUT: ${{ inputs.ci-workflow }}
       run: |
         set -euo pipefail

@@ -12,12 +12,8 @@ keyed *purely by its artifact name*:
 
     s3://<bucket>/<key-prefix><artifact-name>.tar.gz
 
-The name is minted by ``_github_api.make_artifact_name``, which is the single
-definition of its format. It already encodes the full identity of a build and is
-independent of which repository or workflow run produced it — which is what lets
-any consumer resolve a dependency regardless of which run built it.
 
-Both a library (resolve_deps / check_artifact / fetch_deps) and a CLI:
+Library and CLI:
 
     python -m ci_infrastructure.s3_store upload   --name <artifact-name> --file <tar.gz>
     python -m ci_infrastructure.s3_store download --name <artifact-name> --dest <tar.gz>
@@ -34,13 +30,7 @@ are picked up by boto3 directly and are mandatory.
     ARTIFACT_S3_KEY_PREFIX  default: ''   (objects live at the bucket root)
     ARTIFACT_S3_CA_BUNDLE   default: the HARICA root vendored with this package
 
-TLS trust is deliberately narrow: this client only ever talks to the configured
-object store, whose chain is anchored by a single root (HARICA TLS RSA Root CA
-2021). Rather than trust the runner's whole OS trust store — which on some
-runners (notably the HPC login nodes) is too old to include that root — we verify
-against just the vendored root. That both fixes the stale-store failure and pins
-the object store to one CA, so a mis-issuance by any other public CA cannot be
-used to intercept it. Point ARTIFACT_S3_CA_BUNDLE at your own bundle to override.
+TLS is verified against the vendored root only (see ``_ca_bundle``).
 """
 
 from __future__ import annotations
@@ -64,20 +54,11 @@ class _S3Client(Protocol):
 
 
 _DEFAULT_REGION: Final = "RegionOne"
-# The single root that anchors the object-store certificate chain, vendored
-# as package data (see certs/harica_tls_rsa_root_ca_2021.pem). Both botocore's
-# bundled cacert.pem and some runners' OS trust stores lag this root, so we ship
-# it ourselves rather than depend on whatever the host happens to trust.
 _VENDORED_ROOT_CA: Final = Path(__file__).resolve().parent / "certs" / "harica_tls_rsa_root_ca_2021.pem"
 
 
 def _require_env(var: str) -> str:
-    """Return a required env var's value, or raise a clear CIError if unset/empty.
-
-    The object store's location has no baked-in default: the deployment supplies
-    it (e.g. via GitHub Actions repo/org variables). Failing loudly here beats
-    silently pointing boto3 at real AWS S3.
-    """
+    """A required env var; no default, so boto3 never silently points at AWS."""
     value = os.environ.get(var, "")
     if not value:
         raise CIError(
@@ -96,20 +77,13 @@ def _key_prefix() -> str:
 
 
 def _use_ssl() -> bool:
-    # Mirror the sccache action's string flag; anything but an explicit
-    # "false" (case-insensitive) keeps SSL on.
     return os.environ.get("ARTIFACT_S3_USE_SSL", "true").strip().lower() != "false"
 
 
 def _ca_bundle() -> Path:
-    """Path to the CA bundle used to verify the S3 endpoint's certificate.
+    """ARTIFACT_S3_CA_BUNDLE, else the vendored HARICA root; never the host trust store.
 
-    We never fall back to the host trust store and never disable verification:
-    an explicit ARTIFACT_S3_CA_BUNDLE wins, otherwise we verify against just the
-    vendored object-store root. This keeps the trust anchor set minimal (the one
-    CA that actually signs the endpoint) and makes verification independent of
-    however stale the runner's OS bundle is. If neither is a real file we fail
-    loudly rather than silently trusting something wider.
+    One root pins the endpoint to a single CA, and some runners' OS stores lack it.
     """
     explicit = os.environ.get("ARTIFACT_S3_CA_BUNDLE")
     if explicit:
@@ -127,20 +101,12 @@ def _ca_bundle() -> Path:
 
 
 def artifact_key(name: str) -> str:
-    """S3 object key for an artifact name: ``<key-prefix><name>.tar.gz``.
-
-    The key is derived solely from the artifact name, so the same build maps to
-    the same object no matter which repo or run uploads it.
-    """
+    """``<key-prefix><name>.tar.gz``, independent of the repo or run that uploads it."""
     return f"{_key_prefix()}{name}.tar.gz"
 
 
 def _client(client: _S3Client | None = None) -> _S3Client:
-    """Return the injected client, or build one from the env config.
-
-    Tests pass an in-memory fake; production code lets this construct a real
-    boto3 S3 client pointed at the object store's custom endpoint.
-    """
+    """The injected client, or a boto3 client built from the env config."""
     if client is not None:
         return client
     return boto3.client(
@@ -152,19 +118,17 @@ def _client(client: _S3Client | None = None) -> _S3Client:
     )
 
 
-def object_exists(name: str, client: _S3Client | None = None) -> bool:
-    """True if the artifact's object is present in the bucket.
+def _is_not_found(exc: ClientError) -> bool:
+    return exc.response.get("Error", {}).get("Code", "") in ("404", "NoSuchKey", "NotFound")
 
-    A 404 / NoSuchKey / NotFound is the expected "absent" answer and returns
-    False; any other ClientError is re-raised so genuine auth/endpoint problems
-    are not silently read as "missing artifact".
-    """
+
+def object_exists(name: str, client: _S3Client | None = None) -> bool:
+    """True if the object is present; errors other than not-found are raised."""
     s3 = _client(client)
     try:
         s3.head_object(Bucket=_bucket(), Key=artifact_key(name))
     except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("404", "NoSuchKey", "NotFound"):
+        if _is_not_found(exc):
             return False
         raise
     return True
@@ -184,19 +148,14 @@ def download(name: str, dest_tar: str | Path, client: _S3Client | None = None) -
     try:
         s3.download_file(_bucket(), artifact_key(name), str(dest))
     except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("404", "NoSuchKey", "NotFound"):
+        if _is_not_found(exc):
             return False
         raise
     return True
 
 
 def list_with_prefix(name_prefix: str, limit: int = 12, client: _S3Client | None = None) -> list[str]:
-    """Return up to ``limit`` artifact names whose name starts with ``name_prefix-``.
-
-    Used for the missing-artifact diagnostics; strips the key-prefix and the
-    ``.tar.gz`` suffix so callers get artifact names back, not raw keys.
-    """
+    """Up to ``limit`` artifact names starting with ``name_prefix-``."""
     s3 = _client(client)
     key_prefix = _key_prefix()
     resp = s3.list_objects_v2(Bucket=_bucket(), Prefix=f"{key_prefix}{name_prefix}-")
@@ -237,8 +196,6 @@ def _download(name: str, dest: str) -> None:
 @click.option("--name", required=True, help="Artifact name (without the .tar.gz suffix)")
 @click.pass_context
 def _exists(ctx: click.Context, name: str) -> None:
-    # The exit code is this command's output: a boolean predicate, like `grep -q`.
-    # Not error handling — a missing artifact is a legitimate "false", not a failure.
     found = object_exists(name)
     print("true" if found else "false")
     ctx.exit(0 if found else 1)

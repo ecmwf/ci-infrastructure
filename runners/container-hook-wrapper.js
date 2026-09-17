@@ -6,25 +6,12 @@
 // runner's own "Initialize containers" block, above every workflow step. See
 // runners/README.md.
 //
-// A GitHub-hosted runner prints the image and digest there. ARC's Kubernetes
-// mode prints three lines of boilerplate and nothing else, so today that block
-// is the one place a job does NOT say what it is running in.
-//
-// Pass-through, not a prepare_job handler: the runner allows no partial opt-in
-// (actions/runner, docs/adrs/1891-container-hooks.md -- the handler must
-// implement every command), so this prints and then delegates.
-//
-// JS rather than sh because the runner invokes a .js hook with its own bundled
-// node; `node` is not on PATH in the runner container, but process.execPath is
-// always the interpreter already running this file.
+// Prints, then delegates to the real hook (no partial opt-in exists). JS so the
+// runner's bundled node runs it; `node` is not on PATH.
 
 const payload = require('fs').readFileSync(0, 'utf8')
 
-// Only what the payload already carries. Hooks block job start and the runner
-// applies no timeout to them, so there is no registry lookup and no kubectl
-// here -- which also rules out the digest and CI_IMAGE_*: the pod does not
-// exist yet, and those are baked inside an image that has not started. The
-// image's own announcer covers that provenance once the job is running.
+// Payload only: hooks block job start with no timeout, so no lookups here.
 try {
   const msg = JSON.parse(payload)
   if (msg.command === 'prepare_job') {

@@ -4,16 +4,9 @@
 
 name: Pick downstream ref
 description: >
-  Probe the consumer repo for a branch matching the upstream's ref and emit
-  the chosen ref. Returns `try-branch` when it is a sync branch
-  (sync-branch/* / feature-sync/*, see ci_infrastructure/sync_branch.py) that
-  exists in `repo`, otherwise `fallback-ref`. Used by cross-repo-trigger
-  workflows to support coordinated cross-repo PRs: when an upstream PR is opened
-  on sync branch X, consumers with a same-named branch run against X; every other
-  case uses the manifest-declared ref (typically main / master / develop).
-
-  Stdlib-only python, no bootstrap -- the same arrangement as
-  actions/check-pr-declaration.
+  Emit `try-branch` when it is a sync branch (sync-branch/* / feature-sync/*)
+  that exists in `repo`, otherwise `fallback-ref`, so coordinated cross-repo PRs
+  build against each other. Stdlib-only python, no bootstrap.
 
 inputs:
   repo:
@@ -50,8 +43,7 @@ runs:
 
         rel="src/ci_infrastructure/sync_branch.py"
 
-        # Probe for the module rather than trusting github.action_path, which is
-        # wrong inside ARC's container mode -- see actions/check-pr-declaration.
+        # Probe for the module; see actions/check-pr-declaration.
         cands=( "${GITHUB_ACTION_PATH:-}/../.." )
         case "${GITHUB_ACTION_PATH:-}" in
           */_actions/*)

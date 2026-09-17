@@ -6,12 +6,8 @@
 
 """Build, test and push the CI images under public-images/.
 
-Single source of truth for image discovery, tagging and OCI labels, used by
-.github/workflows/images.yml AND by hand on a workstation, so the two produce
-byte-identical, identically-tagged images. Run it as ./build-image.sh.
-
-Stdlib only, and deliberately outside src/: src/ is in every image's tag paths,
-so an edit to this file there would rebuild every image.
+Image discovery, tagging and OCI labels for images.yml and for hand builds alike.
+Run it as ./build-image.sh. Stdlib only, and outside src/ (a tag path of every image).
 
 Usage:
   ./build-image.sh --discover [--mode validate|validate-bases|publish] [--rebuild "all|<names>"]
@@ -32,22 +28,10 @@ THERE IS EXACTLY ONE ANSWER TO "DOES THIS IMAGE NEED REBUILDING?"
   tag = short SHA of the last commit touching the image's build inputs
   rebuild <=> that tag is not in the registry
 
-ROLLING PLATFORMS bend the first line, never the second. An image under
-public-images/rolling-*/ tracks upstream continuously, so its content is NOT a
-function of our git history: the same commit yields a different image every
-night. Its tag therefore carries a UTC date as well -- <sha>-<YYYYMMDD> -- and
-the rule above then does the right thing on its own, because each night's tag
-is genuinely new and genuinely absent from the registry. Note what this is NOT:
-it is not a second answer to the rebuild question, and it is not a forced
-rebuild that republishes one tag with different content. Both would break the
-guarantee that a tag names fixed bytes.
+ROLLING PLATFORMS (public-images/rolling-*/) track upstream, so their tag also
+carries a UTC date, <sha>-<YYYYMMDD>; a tag still names fixed bytes.
 
---discover and the build path compute that tag through the same functions
-below, which is the whole point of this file. Do not reintroduce a second
-mechanism -- not a `git diff`, not a workflow `paths:` filter, not a
-hand-maintained list of images. A second answer drifts from this one, and when
-it does the build is skipped, a dependent's :latest keeps pointing at an image
-built on the previous base, and CI goes green on a stale image.
+--discover and build share compute_tag; keep it the only rebuild rule.
 
 Conventions (see IMAGES.md):
   - image ref  = <REGISTRY>/<PROJECT>/<platform>-<variant>:<tag>
@@ -57,15 +41,8 @@ Conventions (see IMAGES.md):
                  the FROM line referencing REGISTRY/PROJECT. They FROM :latest,
                  and their base's directory is part of their own identity.
 
-TAG PATHS. An image's identity is its own directory, its base's directory if it
-is a dependent, and every path outside its directory that a Dockerfile reads
-from the build context (src/, pyproject.toml, LICENSE, announce-image.sh).
-Edit EXTRA_TAG_PATHS when that set changes. actions/, runners/, scripts/ and
-tests/ are deliberately absent: none of them is baked into an image.
-
-This deliberately OVER-approximates: an image that installs no
-ci-infrastructure still retags on every src/ commit. Over-building is safe and
-under-building is not, so accept it rather than probing each Dockerfile.
+TAG PATHS. An image's own directory, its base's if a dependent, and every
+context path a Dockerfile reads (EXTRA_TAG_PATHS). Over-approximating is safe.
 
 Env overrides: REGISTRY, PROJECT, IMAGES_DIR, IMAGE_TAG, IMAGE_SOURCE_REPO,
   BUILDX_BUILDER, BASE_IMAGE, PUBLIC_ECCR_ROBOT_NAME, PUBLIC_ECCR_ROBOT_TOKEN
@@ -148,8 +125,7 @@ def first_from(name: str) -> str:
     if not lines:
         die(f"{name}: no FROM line in {dockerfile}")
     line = lines[0]
-    # Multi-stage would make the first FROM silently pick the builder stage, and
-    # base resolution would then be about the wrong image. Refuse instead.
+    # Multi-stage: the first FROM would be the builder stage.
     if re.search(r"\s[Aa][Ss]\s", line):
         die(f"{name}: multi-stage Dockerfiles are not supported (found '{line}')")
     if "$" in line:
@@ -165,9 +141,7 @@ def resolve_base(name: str) -> str:
             die(f"{name} FROMs {from_line}, which is on {REGISTRY} but not in project {PROJECT}")
         return ""
     flat = from_line.rsplit(":", 1)[0].removeprefix(f"{REPO_PREFIX}/")
-    # Reverse-map the flat registry name to a directory. The longest PLATFORM
-    # prefix wins, so 'ubuntu24.04' and 'ubuntu24.04-x' cannot both claim
-    # 'ubuntu24.04-x-base'.
+    # Reverse-map the flat name to a directory; the longest platform prefix wins.
     best = ""
     best_len = 0
     for pdir in sorted(p for p in (REPO_ROOT / IMAGES_DIR).glob("*") if p.is_dir()):
@@ -191,7 +165,6 @@ def tag_paths(name: str) -> list[str]:
     """Everything this image's tag is a function of."""
     paths = [f"{IMAGES_DIR}/{name}"]
     base = resolve_base(name)
-    # A base change changes a dependent's effective content.
     if base:
         paths.append(f"{IMAGES_DIR}/{base}")
     return [*paths, *EXTRA_TAG_PATHS]
@@ -280,7 +253,6 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
     require_buildx()
 
     images = enumerate_images()
-    # A run that quietly builds nothing would look green; say so if the tree is gone.
     if not images:
         die(f"no images found under {IMAGES_DIR}/*/*/Dockerfile")
 
@@ -304,15 +276,12 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
         if not base:
             bases.append(name)
             continue
-        # build-base then build-dependents in one parallel matrix cannot order a
-        # variant-on-variant chain.
         if resolve_base(base):
             die(
                 f"{name} FROMs {base}, which is itself a dependent; images.yml builds all dependents in one "
                 "parallel matrix, so chains deeper than base->variant are not supported"
             )
-        # A dependent whose base is rebuilt in this run builds on that base, handed
-        # over by images.yml as an artifact. validate-bases skips it instead.
+        # Otherwise it builds on the rebuilt base, handed over by images.yml.
         if mode == "validate-bases" and base in missing:
             note(f"skipping {name}: its base {base} is being rebuilt in this run (mode validate-bases)")
             continue
@@ -373,11 +342,8 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
 
 # --- build --------------------------------------------------------------------
 
-# Build args, each ALSO a label: a label can only be read from OUTSIDE the image,
-# and a job running inside it has neither registry nor daemon, so the same facts
-# are baked in as CI_IMAGE_* environment. Each is passed only to an image that
-# declares the ARG, so one that does not still builds without an "unused build
-# arg" warning. None of this is identity: identity is the tag paths alone.
+# The label facts again, as build args baked into CI_IMAGE_* for jobs inside the image.
+# Passed only to Dockerfiles that declare them; not identity.
 BUILD_ARGS: Final = ("SOURCE_REVISION", "IMAGE_NAME", "IMAGE_TAG", "IMAGE_CREATED", "IMAGE_DOCKERFILE_URL")
 
 
@@ -389,7 +355,6 @@ def declared_args(dockerfile: Path) -> list[str]:
 def source_repo() -> str:
     if repo := _env("IMAGE_SOURCE_REPO") or _env("GITHUB_REPOSITORY"):
         return repo
-    # A checkout with no origin is a normal workstation case.
     remote = _git("remote", "get-url", "origin")
     remote = re.sub(r"^git@[^:]+:", "", remote)
     remote = re.sub(r"^https?://[^/]+/", "", remote)

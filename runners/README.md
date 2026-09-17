@@ -30,11 +30,8 @@ the line.
 ### Wiring
 
 `ACTIONS_RUNNER_CONTAINER_HOOKS` names the executable the runner calls instead of
-doing container work itself. Under `containerMode.type: kubernetes` the ARC chart
-sets it to `/home/runner/k8s/index.js` — that is why "Initialize containers" reads
-`Run '/home/runner/k8s/index.js'`. Pointing it at the wrapper instead puts a line
-in that block; the wrapper then calls the same `index.js`, so nothing about how
-jobs run changes.
+doing container work itself. Point it at the wrapper; the wrapper then calls the
+chart's `index.js`, so nothing about how jobs run changes.
 
 **Overriding it is a supported path, not a fight with the chart.** The chart only
 injects its default when you have not set the variable yourself
@@ -134,7 +131,3 @@ opt-in (see [ADR 1891](https://github.com/actions/runner/blob/main/docs/adrs/189
 — the handler must implement every command), so it prints, then replays the
 payload to the real hook and exits with its status. `responseFile` is left
 entirely to the real hook.
-
-Tested by `tests/test_container_hook_wrapper.py`, which pins the pass-through
-properties: the real hook receives the payload byte-identically and its exit code
-survives, even when the payload is unparseable.

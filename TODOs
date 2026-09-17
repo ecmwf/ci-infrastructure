@@ -9,46 +9,19 @@
 - improve output of ctest, perhaps there is an available action?
 
 - document that fan-out changes cannot be tested on a branch. `on: workflow_run`
-  always executes the DEFAULT BRANCH's copy of trigger-downstream.yml, so a
-  branch that adds or removes a [[trigger-downstream]], reorders `needs`, edits
-  `triggers`, or repins a consumer `ref` gets none of it: the old graph runs and
-  the change first takes effect at merge. The `validate` job is only a partial
-  net -- it checks out the tested head SHA and runs --check, so it catches "you
-  edited the manifest and forgot to regenerate", but it cannot exercise a fan-out
-  the running orchestrator does not contain. The failure mode is a green
-  downstream/<lane> status computed from the previous job list, which reads as
-  proof and is not.
+  always runs the DEFAULT BRANCH's trigger-downstream.yml, so a branch that
+  changes [[trigger-downstream]], `needs`, `triggers` or a consumer `ref` runs the
+  old graph; the `validate` job only catches a missing regeneration. Fix, if the
+  graph starts changing often: one orchestrator job that reads the manifest at
+  workflow_run.head_sha and fans out through dispatch-and-wait (runtime ref).
 
-  Accepted for now: the cost scales with how often the dependency GRAPH changes,
-  not with how many repos are in it, and the graph is expected to change rarely
-  even as the repo count grows. Revisit if that stops being true.
-
-  The fix, when it is worth it, is a dynamic orchestrator: replace the generated
-  per-consumer `uses:` jobs with one job that reads the manifest at
-  workflow_run.head_sha and fans out through dispatch-and-wait, which unlike
-  `uses:` accepts a runtime ref. Both paths already exist -- dispatch-and-wait
-  drives every public->private edge today -- so this is a change of default, not
-  new machinery. It costs the native reusable-workflow nesting on public->public
-  edges: consumer jobs would render in the consumer's Actions tab rather than
-  inline in the caller's run, and gating would go back to polling run status.
-
-- adopt the zizmor pre-commit hook [SECURITY]. a48f078 took it from 14
-  template-injection findings to 0 but nothing keeps it there; the new
-  actionlint hook is next to where it belongs. Blocked on 78 pre-existing
-  findings: 40 github-env (setup-sccache, low confidence), 14 unpinned-uses
-  (the deliberate @main self-references -- needs a release tag first, see the
-  open-source audit), 13 excessive-permissions (no workflow here declares
-  permissions:), 7 artipacked, 3 unpinned-images, 1 github-app.
+- adopt the zizmor pre-commit hook [SECURITY]. Blocked on 78 pre-existing
+  findings (mostly github-env in setup-sccache and the @main self-references).
 
 - after troika is typed. drop the ignore missing imports
 
-- ensure-infrastructure-present's freshness check compares *.py only, so drift
-  confined to hpc/troika-config.yml or the bundled certs/*.pem is not detected.
-  Hashing everything is not an option: an installed tree legitimately differs
-  from src/ (the certs .license sidecar is outside the package-data glob, and
-  py.typed is not declared at all), so a full hash would false-positive on an
-  in-sync image. Declaring both data files in [tool.setuptools.package-data] and
-  widening the hash to match would close it.
+- ensure-infrastructure-present's freshness check hashes *.py only; declare
+  troika-config.yml and certs/*.pem as package-data and widen the hash.
 
 PR Contributor Declaration (checker landed, rollout pending):
 
@@ -62,11 +35,8 @@ keeps its old body.
    .github/workflows/contributor-declaration.yml, exactly the README snippet.
    It must reference
    ecmwf/ci-infrastructure/.github/workflows/check-pr-declaration.yml@main, so
-   it cannot be committed until the workflow is on main -- hence a follow-up
-   rather than part of the original commit. pr-declaration-dogfood.yml is not a
-   substitute: it runs on `pull_request` so that a PR is judged by its own
-   version of the checker, which is the right trade for developing the action
-   and the wrong one for enforcement.
+   pr-declaration-dogfood.yml is not a substitute: it runs on `pull_request`,
+   right for developing the checker, wrong for enforcement.
 
 2. measure the blast radius before requiring anything anywhere. Run the checker
    over every open pull request in the org
@@ -112,68 +82,16 @@ description. Neither is closable at pull_request_target time:
   `push: main` that re-reads the merged PR's body and opens an issue on
   mismatch.
 
-
 HPC:
 
-- SLURM execution path implemented: `execution = "hpc"` matrix kinds, the
-  build-on-hpc action, and the ci_infrastructure.hpc backend (troika as a
-  library). See HPC.md.
-
-- remaining: wire an HPC leg into a real playground repo, regenerate its
-  workflows, and run an end-to-end job on the cluster (needs cluster access);
-  validate reattach-after-cancel and cache-hit-after-success on the real site.
-
-- vars.HPC_CI_REMOTE_WORK_DIR = '$SCRATCH/github-ci' is the ONE setting the
-  HPC path needs, and it is now set. Single-quote it: the spec is expanded
-  on the cluster, in a login shell, not on the runner. It has no fallback by
-  design (build-on-hpc:177 and smoke-test-hpc.yml both hard-fail on it), since
-  a runner-local default would be invisible to compute nodes -- the classic
-  wrong-work-directory bug HPC.md warns about. An unset value is what produced
-  "mkdir: cannot create directory '/transfer-e2e-<run id>': Read-only file
-  system"; push-tree now refuses such a path instead.
-
-  Nothing else needs setting, contrary to what this entry used to claim:
-    * vars.HPC_CI_WORK_DIR is optional. build-on-hpc:182 does
-      work_dir="${WORK_DIR_INPUT:-$RUNNER_TEMP}", and nothing local has to
-      survive a re-run because reattach goes through the scheduler by job name.
-      Only worth setting if the runner volume runs out of disk.
-    * the troika user secret is HPC_CI_SSH_USER, not TROIKA_USER. TROIKA_USER is
-      only the env-var name inside the composite actions.
-
-- HPC job paths are keyed on the artifact name alone, so two runs building the
-  same artifact collide. RemotePaths.derive(work_dir, artifact_name) gives both
-  hpc-jobs/<artifact>.out (jobscript's #SBATCH --output) and staging/<artifact>/,
-  under which plan_remote_prefixes unpacks the deps as deps/<i>. submit-wait then
-  TAILS that .out live, so a concurrent run's job writes into the file this run is
-  reading and this run reports the other job's outcome.
-
-  Seen on ecmwf/ecflow run 32743760455, build-hpc (hpc-atos-nvidia): its own job
-  37369545 was memory-killed at 15:27:40, then at 15:28:15 job 37370645
-  (--comment=32744666086-1, i.e. a DIFFERENT github run) appeared in the same .out
-  and its "Could not find a package configuration file provided by ecbuild"
-  became this run's reported failure. The tell is right in the error text -- the
-  run blames a job id it never submitted. Hours went into the find_package red
-  herring before the job ids gave it away. The shared staging/<artifact>/deps is
-  very likely why that second job could not find ecbuild in the first place: the
-  two runs race on one deps dir.
-
-  The shipper-side half of that race is now closed: ship_source runs under
-  transfer.ship_lock (an atomic `mkdir <staging>.shiplock`) with the marker
-  re-checked inside it, so two runs can no longer reset the staging dir under each
-  other. That was the eckit `deps/1.tgz: Cannot open: No such file or directory`
-  unpack failure on an ecbuild fan-out. What remains below is the .out half — the
-  shared job output a concurrent run tails — plus the general per-run-path split.
-
-  Not a simple "add the run id" fix: the artifact-keyed name is load-bearing for
-  reattach (find_active_job_by_name is how a re-run adopts an in-flight job).
-  Needs a deliberate split -- reattach keyed on the SLURM job name, but per-run
-  output and deps paths -- plus a decision on what a reattaching run should tail.
-  Minimum viable improvement meanwhile: have submit-wait verify the job id in the
-  output it reports against the one it submitted, and say so loudly when they
-  differ, so this never again presents as a build error.
+- per-run HPC job paths. hpc-jobs/<artifact>.out and staging/<artifact>/deps
+  are keyed on the artifact name alone, so two runs of the same artifact share
+  them (the output is filtered by job id, but a concurrent run can still
+  overwrite it). Keep reattach keyed on the SLURM job name; split output and
+  deps paths per run, and decide what a reattaching run tails.
 
 - -DCMAKE_PREFIX_PATH in the HPC recipes is inert, and is a trap the day the
-  environment stops covering for it. jobscript.py:172 exports CMAKE_PREFIX_PATH
+  environment stops covering for it. jobscript.py exports CMAKE_PREFIX_PATH
   colon-joined (plan_remote_prefixes returns ":".join(...)), which is correct for
   an ENVIRONMENT variable. But ecflow's four recipes
   (.ci/hpc/build-{gnu,intel,aocc,nvidia}.sh) then pass
@@ -181,12 +99,8 @@ HPC:
   SEMICOLON-separated list -- so the colon-joined string arrives as one path that
   does not exist.
 
-  Verified against a real ecbuild install: -D colon + env set -> found (the env
-  var rescues it); -D semicolon + env empty -> found; -D colon + env EMPTY ->
-  "Could not find a package configuration file provided by ecbuild". So today the
-  flag does nothing, and any build whose env var is cleared or empty (a no-deps
-  build exports an empty value) fails with a message that points at the package
-  rather than at the separator.
+  Today the env var rescues it; with an empty env var (a no-deps build) the
+  -D path alone fails with "Could not find ... ecbuild".
 
   Fix either way: drop the -D from the recipes and let the env var do the work, or
   emit the value semicolon-joined for -D use. Do not leave both halves disagreeing.
@@ -200,13 +114,11 @@ HPC:
   tree, and ctest runs out of the build tree. Wants the module's libstdc++ on the
   runtime path for the test step (LD_LIBRARY_PATH, or a build-tree RPATH).
 
-
 - declare version for troika and pin to it
 
 - pin the sccache version in actions/setup-sccache: the install action resolves
   "latest" from the GitHub API when no version is given, so the toolchain drifts
   under us and the S3 config surface has changed between releases.
-
 
 Vault (investigated, not started):
 
@@ -234,24 +146,6 @@ Vault (investigated, not started):
 
 ## container images: pin dependents to the base digest
 
-The five variants under public-images/ FROM the base at :latest. That is safe
-today only because images.yml builds the base first and then all dependents in
-one run, under a concurrency group that never cancels -- and build-image.sh
-refuses a variant-on-variant chain rather than let it race.
-
-Give them `ARG BASE_IMAGE=...:latest` + `FROM ${BASE_IMAGE}` (the pattern
-ci-container-images already uses for its external base) and have build-base emit
-the digest it pushed, so dependents pin to it. Two payoffs: the intra-run
-:latest race closes by construction, and a pull request could validate its
-dependents against the PR's OWN base instead of the published one -- which would
-retire `--discover --mode validate`'s "skip dependents whose base is rebuilding"
-rule entirely. Costs a job output and a matrix rewrite.
-
-## container images: EXTRA_TAG_PATHS over-approximates
-
-build-image.sh puts src, pyproject.toml and LICENSE in EVERY image's tag paths,
-so an image that installed no ci_infrastructure would still retag on every src/
-commit. That is deliberate -- over-building is safe, under-building is not, and
-the alternative is a per-Dockerfile "does this bake the package?" probe, which is
-exactly the machinery the current design deleted. Revisit only if a genuinely
-independent image is added and the wasted rebuilds start to hurt.
+Dependents FROM the base at :latest, safe only because images.yml builds the base
+first under a non-cancelling concurrency group. Have build-base emit the digest it
+pushed and pin published dependents to it.

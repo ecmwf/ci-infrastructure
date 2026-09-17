@@ -16,11 +16,8 @@ repos:
       - id: ruff-check
       - id: ruff-format
 
-  # Workflow YAML is otherwise unlinted here, and this repo's whole product is
-  # workflow YAML. Custom self-hosted runner labels are declared in
-  # .github/actionlint.yaml. (zizmor belongs next to this -- it is what caught the
-  # template-injection findings a48f078 fixed -- but it reports 78 pre-existing
-  # findings today, so adopting it needs its own pass. See TODOs.)
+  # Lints workflow YAML; custom runner labels in .github/actionlint.yaml.
+  # zizmor: see TODOs.
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
@@ -35,11 +32,7 @@ repos:
         additional_dependencies: ["PyYAML>=6"]
         files: ^\.github/workflows/.*\.ya?ml$
 
-  # For the shell that remains: public-images/verify-image.sh, which runs inside
-  # the images, and the build-image.sh entry point.
-  # shellcheck-py, not koalaman/shellcheck-precommit: that one runs shellcheck in
-  # a container, and the pre-commit job runs on ubuntu-slim, which is
-  # unprivileged and has no docker. This one is a plain pip wheel.
+  # shellcheck-py (a pip wheel): the pre-commit runner has no docker.
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:

@@ -2,17 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The fork-CI gate's shell script, run for real against synthetic event payloads.
-
-Everything else about this gate was covered by check_ci_approval.py's tests, which
-only prove the gate is WIRED UP. Nothing exercised the verdict itself, and the
-verdict is the security boundary: it decides whether an outside contributor's
-branch reaches our hardware.
-
-`gh` is stubbed onto PATH rather than mocked, so the DELETE is asserted as the
-action actually issues it -- URL encoding included -- and its failure is exercised
-on the path where it matters.
-"""
+"""require-ci-approval's `run:` body, executed against synthetic payloads with a stub `gh` on PATH."""
 
 from __future__ import annotations
 
@@ -23,22 +13,11 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-import yaml
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ACTION = REPO_ROOT / "actions" / "require-ci-approval" / "action.yml"
+from conftest import action_run_body, stub_gh
 
 LABEL: Final = "approved-for-ci"
 BASE: Final = "ecmwf/eckit"
 FORK: Final = "outsider/eckit"
-
-
-def _script() -> str:
-    """The composite step's `run:` body, so the test cannot drift from the action."""
-    doc: dict[str, Any] = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
-    (step,) = doc["runs"]["steps"]
-    body: str = step["run"]
-    return body
 
 
 def _payload(*, action: str, head_repo: str | None, labels: list[str]) -> dict[str, Any]:
@@ -76,16 +55,12 @@ def _run(
     gh_fails: bool = False,
     inputs: dict[str, str] | None = None,
 ) -> Result:
-    """Run the step body with a stub `gh` first on PATH. `payload=None` means a
-    non-pull-request event, which is how workflow_run and schedule look here."""
+    """`payload=None` is a non-pull-request event (workflow_run, schedule)."""
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload if payload is not None else {"action": "completed"}))
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
     gh_log = tmp_path / "gh-calls.log"
-    (bindir / "gh").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {gh_log}\nexit {1 if gh_fails else 0}\n')
-    (bindir / "gh").chmod(0o755)
+    bindir = stub_gh(tmp_path, f'printf "%s\\n" "$*" >> {gh_log}\nexit {1 if gh_fails else 0}')
 
     outputs = tmp_path / "outputs.txt"
     env = {
@@ -100,7 +75,9 @@ def _run(
         "TRUST_SAME_REPO_INPUT": "",
         **(inputs or {}),
     }
-    proc = subprocess.run(["bash", "-c", _script()], env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        ["bash", "-c", action_run_body("require-ci-approval")], env=env, capture_output=True, text=True, check=False
+    )
     return Result(proc, gh_log, outputs)
 
 
@@ -112,9 +89,6 @@ def _deletes(result: Result) -> list[str]:
 
 
 def test_a_non_pull_request_event_passes_untouched(tmp_path: Path) -> None:
-    """schedule, workflow_dispatch, push, workflow_run and merge_group have no fork
-    to distrust. Gating them would strand the nightly run behind a label nobody can
-    apply, and there is no label to spend."""
     r = _run(tmp_path, None)
 
     assert r.code == 0
@@ -123,9 +97,7 @@ def test_a_non_pull_request_event_passes_untouched(tmp_path: Path) -> None:
 
 
 def test_a_branch_in_the_base_repo_passes_untouched(tmp_path: Path) -> None:
-    """Pushing to it already needed write access, so the label was never required
-    and must not be spent -- a maintainer's own pull request would otherwise eat an
-    approval it never used."""
+    """Pushing there already needed write access, so no label is spent."""
     r = _run(tmp_path, _payload(action="opened", head_repo=BASE, labels=[LABEL]))
 
     assert r.code == 0
@@ -147,8 +119,7 @@ def test_trust_same_repo_false_demands_the_label_from_everyone(tmp_path: Path) -
 
 
 def test_an_approved_fork_passes_and_the_label_is_deleted(tmp_path: Path) -> None:
-    """One approval buys one run: the label is gone before the gated jobs start, so
-    a later event on a commit nobody re-read cannot replay it."""
+    """One approval buys one run."""
     r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL, "bug"]))
 
     assert r.code == 0
@@ -157,8 +128,6 @@ def test_an_approved_fork_passes_and_the_label_is_deleted(tmp_path: Path) -> Non
 
 
 def test_the_label_name_is_url_encoded(tmp_path: Path) -> None:
-    """Labels may contain spaces and slashes; the raw name in a path would delete
-    the wrong label or nothing at all."""
     r = _run(
         tmp_path,
         _payload(action="labeled", head_repo=FORK, labels=["ready for CI/HPC"]),
@@ -170,8 +139,6 @@ def test_the_label_name_is_url_encoded(tmp_path: Path) -> None:
 
 
 def test_a_failed_delete_fails_the_job(tmp_path: Path) -> None:
-    """Fail loudly. An approval that silently outlived the run that spent it is the
-    exact hole this action exists to close."""
     r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), gh_fails=True)
 
     assert r.code == 1
@@ -202,8 +169,7 @@ def test_an_unapproved_fork_fails(tmp_path: Path) -> None:
 
 
 def test_a_deleted_fork_counts_as_a_fork(tmp_path: Path) -> None:
-    """head.repo is null once the fork is gone. Unknown provenance is the
-    fail-closed direction."""
+    """head.repo is null once the fork is gone; fail closed."""
     r = _run(tmp_path, _payload(action="opened", head_repo=None, labels=[]))
 
     assert r.code == 1
@@ -211,9 +177,7 @@ def test_a_deleted_fork_counts_as_a_fork(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("action", ["synchronize", "reopened"])
 def test_a_push_fails_and_sweeps_up_a_leftover_label(tmp_path: Path, action: str) -> None:
-    """The backstop. Reaching here with the label still applied means the run that
-    should have spent it was cancelled first -- consumers set `cancel-in-progress`,
-    so that is reachable, and it is why this branch exists at all."""
+    """A leftover label means the run that should have spent it was cancelled."""
     r = _run(tmp_path, _payload(action=action, head_repo=FORK, labels=[LABEL]))
 
     assert r.code == 1
@@ -222,8 +186,6 @@ def test_a_push_fails_and_sweeps_up_a_leftover_label(tmp_path: Path, action: str
 
 @pytest.mark.parametrize("action", ["synchronize", "reopened"])
 def test_a_push_fails_from_the_payload_alone(tmp_path: Path, action: str) -> None:
-    """The failure must not depend on the API call landing, or a run racing the
-    delete could pass on a commit nobody read."""
     r = _run(tmp_path, _payload(action=action, head_repo=FORK, labels=[]), gh_fails=True)
 
     assert r.code == 1
@@ -235,8 +197,6 @@ def test_a_push_fails_from_the_payload_alone(tmp_path: Path, action: str) -> Non
 
 @pytest.mark.parametrize("value", ["yes", "True ", "1"])
 def test_a_non_boolean_input_stops_the_workflow(tmp_path: Path, value: str) -> None:
-    """Tri-state parse: a typo must not silently pick the permissive branch of a
-    security gate."""
     r = _run(
         tmp_path,
         _payload(action="labeled", head_repo=FORK, labels=[LABEL]),

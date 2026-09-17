@@ -2,19 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ci_infrastructure.check_ci_approval.
-
-Covers both trigger shapes that need the gate, the cases that must stay quiet
-(GitHub-hosted `pull_request`, `push`), the transitive-needs hole the checker
-exists to close, both allowlist granularities, and the allow-unsafe-pr-checkout
-rule that is enforced independently of all of the above.
-"""
+"""check_ci_approval: which workflows need the gate, direct needs, allowlists and allow-unsafe-pr-checkout."""
 
 from __future__ import annotations
 
 import ast
 import textwrap
 from pathlib import Path
+
+import pytest
 
 from ci_infrastructure.check_ci_approval import check
 
@@ -39,86 +35,38 @@ def write_allowlist(tmp_path: Path, body: str) -> None:
     (d / "ci-approval-allowlist.yml").write_text(textwrap.dedent(body), encoding="utf-8")
 
 
-def test_push_only_is_ignored(tmp_path: Path) -> None:
-    wf = write_wf(
+def _single_job(tmp_path: Path, trigger: str, runs_on: str) -> Path:
+    return write_wf(
         tmp_path,
-        "push.yml",
-        """
-        on:
-          push:
-            branches: [main]
+        "wf.yml",
+        f"""
+        on: {trigger}
         jobs:
           build:
-            runs-on: arc-runner-normal
-            steps: [{run: make}]
+            runs-on: {runs_on}
+            steps: [{{run: make}}]
         """,
     )
-    assert check(wf) == []
 
 
-def test_pull_request_on_github_hosted_is_ignored(tmp_path: Path) -> None:
-    """Forks get no secrets and GitHub's own VM — nothing of ours is exposed."""
-    wf = write_wf(
-        tmp_path,
-        "hosted.yml",
-        """
-        on: pull_request
-        jobs:
-          build:
-            runs-on: ubuntu-latest
-            steps: [{run: make}]
-        """,
-    )
-    assert check(wf) == []
-
-
-def test_pull_request_target_needs_a_gate(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "prt.yml",
-        """
-        on: pull_request_target
-        jobs:
-          label:
-            runs-on: ubuntu-latest
-            steps: [{run: gh pr edit}]
-        """,
-    )
-    (problem,) = check(wf)
-    assert "pull_request_target" in problem
-    assert "no job uses" in problem
-
-
-def test_pull_request_on_self_hosted_needs_a_gate(tmp_path: Path) -> None:
-    """The ECMWF-hardware case: no secrets, but our runner runs their code."""
-    wf = write_wf(
-        tmp_path,
-        "arc.yml",
-        """
-        on: pull_request
-        jobs:
-          build:
-            runs-on: arc-runner-normal
-            steps: [{run: make}]
-        """,
-    )
-    (problem,) = check(wf)
-    assert "non-GitHub-hosted" in problem
-
-
-def test_expression_runner_is_not_assumed_hosted(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "matrix.yml",
-        """
-        on: pull_request
-        jobs:
-          build:
-            runs-on: ${{ matrix.runs-on }}
-            steps: [{run: make}]
-        """,
-    )
-    assert check(wf) != []
+@pytest.mark.parametrize(
+    ("trigger", "runs_on", "needle"),
+    [
+        ("push", "arc-runner-normal", None),
+        ("pull_request", "ubuntu-latest", None),
+        ("pull_request", "ubuntu-slim", None),
+        ("pull_request_target", "ubuntu-latest", "no job uses"),
+        ("pull_request", "arc-runner-normal", "non-GitHub-hosted"),
+        ("pull_request", "${{ matrix.runs-on }}", ""),
+    ],
+    ids=["push", "hosted-pr", "slim-is-hosted", "prt", "self-hosted-pr", "expression-runner"],
+)
+def test_which_workflows_need_a_gate(tmp_path: Path, trigger: str, runs_on: str, needle: str | None) -> None:
+    problems = check(_single_job(tmp_path, trigger, runs_on))
+    if needle is None:
+        assert problems == []
+    else:
+        assert problems and all(needle in p for p in problems)
 
 
 def test_gated_workflow_passes(tmp_path: Path) -> None:
@@ -161,8 +109,7 @@ def test_gate_on_self_hosted_is_not_exempt(tmp_path: Path) -> None:
 
 
 def test_transitive_needs_is_rejected(tmp_path: Path) -> None:
-    """`build` waits on `resolve` which waits on the gate. Not good enough: one
-    edge moved later silently ungates build."""
+    """One edge moved later would silently ungate `build`."""
     wf = write_wf(
         tmp_path,
         "transitive.yml",
@@ -184,19 +131,12 @@ def test_transitive_needs_is_rejected(tmp_path: Path) -> None:
     assert "'build'" in problem
 
 
-def test_allowlist_whole_workflow(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "bot.yml",
-        """
-        on: pull_request_target
-        jobs:
-          label:
-            runs-on: ubuntu-latest
-            steps: [{run: gh pr edit}]
-        """,
-    )
-    write_allowlist(tmp_path, "exempt:\n  - workflow: bot.yml\n")
+@pytest.mark.parametrize(
+    "allowlist", ["exempt:\n  - workflow: wf.yml\n", "exempt:\n  - workflow: wf.yml\n    reason: API-only\n"]
+)
+def test_allowlist_whole_workflow(tmp_path: Path, allowlist: str) -> None:
+    wf = _single_job(tmp_path, "pull_request_target", "ubuntu-latest")
+    write_allowlist(tmp_path, allowlist)
     assert check(wf) == []
 
 
@@ -221,65 +161,20 @@ def test_allowlist_single_job(tmp_path: Path) -> None:
     assert "'build'" in problem
 
 
-def test_allowlist_reason_is_optional_and_ignored(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "bot.yml",
-        """
-        on: pull_request_target
-        jobs:
-          label:
-            runs-on: ubuntu-latest
-            steps: [{run: gh pr edit}]
-        """,
-    )
-    write_allowlist(tmp_path, "exempt:\n  - workflow: bot.yml\n    reason: API-only\n")
-    assert check(wf) == []
-
-
-def test_ubuntu_slim_counts_as_hosted(tmp_path: Path) -> None:
-    """Despite the name it is a GitHub-hosted larger runner, not an ARC one."""
-    wf = write_wf(
-        tmp_path,
-        "slim.yml",
-        """
-        on: pull_request
-        jobs:
-          lint:
-            runs-on: ubuntu-slim
-            steps: [{run: pre-commit run}]
-        """,
-    )
-    assert check(wf) == []
-
-
-def test_reusable_workflow_job_is_not_assumed_self_hosted(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("trigger", "gated"), [("pull_request", False), ("pull_request_target", True)])
+def test_reusable_workflow_job(tmp_path: Path, trigger: str, gated: bool) -> None:
     """A `uses:` job names no runner; the called workflow is checked on its own."""
     wf = write_wf(
         tmp_path,
         "caller.yml",
-        """
-        on: pull_request
+        f"""
+        on: {trigger}
         jobs:
           delegate:
             uses: ./.github/workflows/other.yml
         """,
     )
-    assert check(wf) == []
-
-
-def test_reusable_workflow_job_still_gated_under_pull_request_target(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "bot.yml",
-        """
-        on: pull_request_target
-        jobs:
-          delegate:
-            uses: ./.github/workflows/other.yml
-        """,
-    )
-    assert check(wf) != []
+    assert bool(check(wf)) is gated
 
 
 def _write_manifest(tmp_path: Path, visibility: str) -> None:
@@ -288,37 +183,12 @@ def _write_manifest(tmp_path: Path, visibility: str) -> None:
     (d / "manifest.toml").write_text(f'[package]\nname = "x"\nvisibility = "{visibility}"\n', encoding="utf-8")
 
 
-def test_private_repo_is_skipped(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("visibility", "gated"), [("private", False), ("public", True)])
+def test_manifest_visibility(tmp_path: Path, visibility: str, gated: bool) -> None:
     """Forking a private/internal repo already needs access."""
-    wf = write_wf(
-        tmp_path,
-        "arc.yml",
-        """
-        on: pull_request_target
-        jobs:
-          build:
-            runs-on: arc-runner-normal
-            steps: [{run: make}]
-        """,
-    )
-    _write_manifest(tmp_path, "private")
-    assert check(wf) == []
-
-
-def test_public_manifest_stays_strict(tmp_path: Path) -> None:
-    wf = write_wf(
-        tmp_path,
-        "arc.yml",
-        """
-        on: pull_request_target
-        jobs:
-          build:
-            runs-on: arc-runner-normal
-            steps: [{run: make}]
-        """,
-    )
-    _write_manifest(tmp_path, "public")
-    assert check(wf) != []
+    wf = _single_job(tmp_path, "pull_request_target", "arc-runner-normal")
+    _write_manifest(tmp_path, visibility)
+    assert bool(check(wf)) is gated
 
 
 # --- allow-unsafe-pr-checkout ------------------------------------------------
@@ -350,12 +220,7 @@ def test_unsafe_checkout_behind_the_gate_is_fine(tmp_path: Path) -> None:
 
 
 def test_unsafe_checkout_without_the_gate_is_rejected(tmp_path: Path) -> None:
-    """`pull_request` on ubuntu-latest: the gate rule stays quiet, this one does not.
-
-    That gap is the point. Nothing of ours is exposed by the trigger alone, so
-    _gate_reason returns None -- but the step still opts in to fetching a fork's
-    code, and under a later pull_request_target flip that becomes live.
-    """
+    """Hosted `pull_request` needs no gate, but the opt-in goes live under pull_request_target."""
     problems = check(_unsafe_wf(tmp_path))
     assert len(problems) == 1, problems
     assert "allow-unsafe-pr-checkout" in problems[0]
@@ -384,11 +249,7 @@ def test_unsafe_checkout_respects_a_job_exemption(tmp_path: Path) -> None:
 
 
 def test_unsafe_checkout_under_workflow_run_is_exempt(tmp_path: Path) -> None:
-    """The generated orchestrators' shape: require-ci-approval cannot gate here.
-
-    Under workflow_run it reports `not-a-pull-request` and passes every time, so
-    demanding it would be demanding an inert gate.
-    """
+    """require-ci-approval is inert under workflow_run."""
     wf = write_wf(
         tmp_path,
         "trigger-downstream.yml",
@@ -410,11 +271,6 @@ def test_unsafe_checkout_under_workflow_run_is_exempt(tmp_path: Path) -> None:
 
 
 def test_both_rules_fire_independently(tmp_path: Path) -> None:
-    """Under pull_request_target an ungated unsafe checkout breaks two rules.
-
-    Pins that the new check is additive rather than folded into the existing
-    walk -- a regression here would silently drop one of the two messages.
-    """
     wf = write_wf(
         tmp_path,
         "ci.yml",
@@ -440,19 +296,12 @@ def test_both_rules_fire_independently(tmp_path: Path) -> None:
 
 # --- the light-install contract ----------------------------------------------
 
-#: Everything pyproject.toml keeps out of the base dependency set. This module is
-#: exported as a pre-commit hook, so pre-commit builds a venv from the base set on
-#: every developer machine and in every consuming repo; boto3 alone is a ~50MB
-#: download and troika is a git clone, to lint YAML.
+#: Kept out of the base dependency set, which is all the pre-commit hook installs.
 _OPTIONAL_DEPS = {"boto3", "botocore", "pydantic", "jinja2", "troika"}
 
 
 def test_the_linter_imports_nothing_optional() -> None:
-    """check_ci_approval must stay installable from the base dependency set alone.
-
-    Asserted on the source rather than by importing, so it holds even on a machine
-    that happens to have the optional packages available.
-    """
+    """Checked on the source, so it holds where the optional packages happen to be installed."""
     src = Path(check.__globals__["__file__"]).read_text(encoding="utf-8")
     imported: set[str] = set()
     for node in ast.walk(ast.parse(src)):
@@ -465,5 +314,4 @@ def test_the_linter_imports_nothing_optional() -> None:
         f"check_ci_approval imports {sorted(imported & _OPTIONAL_DEPS)}, which pyproject.toml "
         "keeps in an extra. Either drop the import or the pre-commit hook gets heavy again."
     )
-    # It also must not reach them indirectly through a sibling module.
     assert not (imported & {"ci_infrastructure"}), imported

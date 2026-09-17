@@ -37,18 +37,15 @@ ordinary matrix leg with `execution = "hpc"`.
   download-only step produces points at runner-local dep install trees the compute
   node cannot see. So each is tarred and unpacked into `<staging>/deps/<i>` on the
   shared filesystem before the marker, and the job's `CMAKE_PREFIX_PATH` is pointed
-  there (not at the runner paths). A build with no deps (e.g. stack-deps) ships
-  nothing extra and its job script is unchanged.
+  there (not at the runner paths).
 - **One shipper at a time.** Staging is keyed on the artifact alone, so two runs
   that want the same artifact (a repo's own CI and a fan-out) ship into one
   directory — and shipping starts by resetting that directory. A run therefore
   holds `<staging>.shiplock` (an atomic remote `mkdir`, a *sibling* of the staging
   dir because the reset renames the staging tree aside) for the whole ship, and
   re-checks the marker once it has the lock: the second run finds the first one's
-  completed transfer and skips instead of deleting it mid-flight. Without it the
-  loser's next remote untar fails on a tarball the winner just moved away
-  (`deps/1.tgz: Cannot open: No such file or directory`). A lock left behind by a
-  dead runner is broken after 30 minutes by the next shipper.
+  completed transfer and skips instead of deleting it mid-flight. A lock left
+  behind by a dead runner is broken after 30 minutes by the next shipper.
 - Completion is detected by a `Finished: SUCCESS` / `Finished: FAILURE`
   **sentinel** in the job output (a completed job vanishes from `squeue`, so the
   scheduler is only used as a low-frequency liveness guard). The wait holds a
@@ -64,7 +61,7 @@ directives, `module load` lines and cmake/ctest body). ci-infrastructure injects
 `#SBATCH --output/--error`, the dependency environment
 (`CMAKE_PREFIX_PATH` / `CI_INSTALL_PREFIX` / `CI_INSTALL_ARCHIVE`) and the sentinel footer.
 
-**The recipe must end by writing `$CI_INSTALL_ARCHIVE`** — a gzipped tar of the install
+**The recipe must end by writing `$CI_INSTALL_ARCHIVE`** — a zstd tar of the install
 tree, taken from wherever the recipe installed it:
 
 ```bash
@@ -73,17 +70,11 @@ tar -cf - -C "$CI_INSTALL_PREFIX" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
 mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
 ```
 
-zstd rather than gzip, `-T0` so it uses every core the job asked for; the smaller result
-also comes back over the connection faster. `zstd` is in the public base image, so the
-runner side can unpack it.
-
-That is what `fetch_install` collects; it does not tar anything itself, and a job that
-finishes without the archive fails the fetch. Archiving on the compute node keeps the
-install tree off shared storage — for a tree of many small files, creating it there and
-reading it back can cost more than the build — and compresses on the job's own cores. Use
-`.part` + `mv` so the file only ever appears complete. A recipe whose install step supports
-`DESTDIR` can go further and stage onto node-local disk, so the tree never reaches shared
-storage at all (see `eccodes/.ci/hpc/build-gnu.sh`).
+`fetch_install` collects that archive; a job that finishes without it fails the fetch.
+Archiving on the compute node keeps a tree of many small files off shared storage, and
+`.part` + `mv` makes the file appear only when complete. A recipe whose install step
+supports `DESTDIR` can stage onto node-local disk instead (see
+`eccodes/.ci/hpc/build-gnu.sh`).
 
 ```toml
 [[matrix.build.include]]
@@ -111,9 +102,7 @@ Slugs read general → detailed: lane, then site, then toolchain.
 labels they currently resolve to live in `src/ci_infrastructure/runners.py`;
 `resolve_deps` substitutes the label into the emitted matrix, so renaming a scale
 set org-wide is one edit there instead of one per manifest leg. A value that is
-not a class passes through verbatim, so a literal label still works. There is
-deliberately no environment or `vars.*` override — one source of truth means one
-place to look.
+not a class passes through verbatim, so a literal label still works.
 
 Name a **plain** recipe after its toolchain (`build-gnu.sh`, `build-intel.sh`, …)
 even when a repo has only one: `[matrix.<kind>] job-script` is a default, and a
@@ -128,17 +117,12 @@ templated one.
 
 A recipe whose path ends in **`.j2`** is rendered as a [Jinja][jinja] template
 against the matrix leg that selected it, and the result is then wrapped exactly as
-a plain recipe is. The suffix is the whole of the opt-in: any other path is read
-verbatim, so every existing `build-gnu.sh` keeps working untouched.
+a plain recipe is. Any other path is read verbatim.
 
 [jinja]: https://jinja.palletsprojects.com/
 
-This exists to close a real gap. A leg declares `cxx-compiler = "g++-8"` and
-`build-type = "Release"` — the values the **artifact name** is built from — while
-the recipe independently runs `module load gcc/old` and `-DCMAKE_BUILD_TYPE=Release`.
-Nothing kept the two in agreement, so a module bump changed the binary without
-changing the name, and the store then served an ABI-mismatched tree to every
-consumer. With a template the leg is the only statement of the fact:
+The leg is then the single statement of the toolchain, so the recipe and the
+**artifact name** cannot disagree:
 
 ```toml
 [[matrix.build-hpc.include]]
@@ -175,12 +159,8 @@ cmake -S "$CI_SOURCE_DIR" -B "${TMPDIR:-/tmp}/build" \
 | `artifact_name` | this build's identity |
 | the `sh` filter | `shlex.quote`, for a value used as **one shell word** |
 
-**Anything else is an error, never an empty string.** The environment uses
-`StrictUndefined`, so a recipe reading `{{ fortran }}` on a leg that does not
-declare it fails and says so. That is the enforcement — rendering it empty is
-exactly the silent disagreement this feature removes. The same check runs
-statically at `ci-infrastructure-generate` time, so it usually fails on a laptop
-rather than half an hour into a SLURM queue. Being static, a name used only inside
+**Anything else is an error, never an empty string** (`StrictUndefined`). The same
+check runs statically at `ci-infrastructure-generate` time, so a name used only inside
 a branch that is never taken must still be declared; `leg['x']` is invisible to it.
 
 `| sh` is the only quoting tool a template has (autoescape is off — this is shell,
@@ -190,9 +170,8 @@ sub-command: quoting makes each one argument and breaks it.
 `$CMAKE_PREFIX_PATH`, `$CI_INSTALL_PREFIX`, `$CI_INSTALL_ARCHIVE` and
 `$CI_SOURCE_DIR` are **not** template names and `_resolved` is not in the context.
 They are resolved on the cluster — the work dir may be `$SCRATCH/…`, and dependency
-prefixes are re-shipped there and repointed *after* the leg is read. A template that
-baked the runner-local value in would send the job at directories no compute node
-can see. Keep writing `"$CI_INSTALL_PREFIX"`.
+prefixes are re-shipped there and repointed *after* the leg is read. Keep writing
+`"$CI_INSTALL_PREFIX"`.
 
 ### Rendering one locally
 
@@ -214,9 +193,7 @@ The generator stops two *legs* colliding on one artifact name. It cannot stop a
 *single* leg's `modules` changing from `gcc/old` to `gcc/11` while `platform` stays
 `hpc-atos-gnu`: the name is unchanged, and the old artifact is still served from
 cache. **Bump the `platform` slug when you change the toolchain** — that is what
-invalidates the cache. The gain here is that the module set now lives in the same
-four-line TOML table as `platform`, so this is a local, reviewable invariant on one
-diff instead of a cross-file one nobody can see in a PR.
+invalidates the cache.
 
 ## Shared base template
 
@@ -345,9 +322,7 @@ The runner and the compute node need the *same* directory, but only one of them
 knows where it is. troika `shlex.quote`s every argv element, so a `$SCRATCH`
 handed to `mkdir`/`scp` arrives literally and creates a directory named
 `$SCRATCH`. Expanding it in the workflow instead is worse: `$SCRATCH` is unset on
-the runner, so it silently becomes the empty string (this is a live bug in the
-reference implementation, whose `--workdir=$SCRATCH` legs quietly run somewhere
-else entirely). So the spec is passed through verbatim and expanded once over the
+the runner, so it silently becomes the empty string. So the spec is passed through verbatim and expanded once over the
 connection — a login shell, because on atos `$SCRATCH` comes from `ecprofile` in
 `/etc/profile.d`. Paths that only the *job* uses (`$TMPDIR`) need none of this:
 they are written into the job script and expanded by the compute node's bash.
@@ -380,20 +355,11 @@ Re-running a job is safe and cheap:
 
 Reattach uses the **scheduler** as the shared job store: each job is named
 `ci-<artifact>`, and `submit-wait` finds an in-flight job by name (`squeue -n`)
-before submitting. Because the scheduler is global, this dedups across
-independent runners; a runner-local jid file cannot, so two runners would each
-submit a duplicate.
+before submitting; the scheduler is global, so this dedups across runners.
 
-The **name is the only thing read back**. A job also carries its submitting run
-id in the SLURM `--comment`, but that is provenance for a human reading
-`squeue`/`sacct` and is never parsed. `Comment` belongs to the scheduler and
-sites rewrite it: ECMWF's `sbatch` wrapper appends its own accounting fields, so
-a run id recovered from it arrives as `<run>-<attempt>;Gres=gres/ssdtmp:20G;` —
-which contains a `/` and so cannot name a file at all. The transfer marker is
-therefore named for the **staging dir**, which is already per-artifact — exactly
-the scope the rendezvous needs — so a reattaching runner can ask "has anyone
-finished shipping?" and re-drop the marker without knowing which run submitted
-the job it adopted.
+The **name is the only thing read back**. The submitting run id goes into the SLURM
+`--comment` for humans only; sites rewrite `Comment`. The transfer marker is named
+for the per-artifact **staging dir**, so a reattaching runner needs no run id.
 
 Cancelling the GitHub job scancels the batch job (a signal handler in
 `submit-wait`), so a cancellation never orphans work on the cluster. troika has
@@ -401,8 +367,8 @@ no "restart" verb — restart is just re-submit, handled by the flow above.
 
 ## Cleanup
 
-The submit-then-poll path leaves per-artifact `staging/`, `src/`, `install/` and
-`hpc-jobs/` trees under `HPC_CI_REMOTE_WORK_DIR`. Two mechanisms reclaim them:
+The submit-then-poll path leaves per-artifact `staging/`, `install/`, `hpc-jobs/`,
+`locks/` and `transfer-e2e/` trees under `HPC_CI_REMOTE_WORK_DIR`. Two mechanisms reclaim them:
 
 - **Opportunistic**: a fresh submit clears the artifact's staging dir before
   shipping (also removes any stale `TRANSFER_COMPLETED` marker), under the staging
@@ -446,8 +412,7 @@ Two rules for the remote directory:
 
 As composite actions. `push-hpc-tree` writes the resolved cluster path as its
 `remote-dir` output and `fetch-hpc-tree` writes `local-dir`, so later steps read
-the resolved path rather than recomputing the spec. Neither needs a bootstrap
-step: both run `ensure-infrastructure-present` themselves.
+the resolved path rather than recomputing the spec.
 
 ```yaml
 - uses: ecmwf/ci-infrastructure/actions/push-hpc-tree@main
@@ -493,7 +458,4 @@ on failure too.
 ```
 
 `.github/workflows/smoke-test-hpc.yml` exercises all three actions against the
-real cluster, on every push and pull request. pytest covers the same
-ground without a cluster: `test_push_then_fetch_roundtrip_preserves_tree` does the
-same tar → transfer → untar round-trip through a connection that really copies
-bytes.
+real cluster.

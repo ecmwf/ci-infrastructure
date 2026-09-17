@@ -8,11 +8,7 @@ description: >
   S3 artifact store under its artifact name. Skips the tar and the upload when
   `found` says the artifact was already in the store.
 
-  Use it after a successful build; fetch-deps is the counterpart that runs at
-  the start of the job.
-
-  Requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment
-  (the same credentials used for sccache).
+  Needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment.
 
 inputs:
   install-path:
@@ -68,8 +64,6 @@ runs:
         S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
       run: |
         set -euo pipefail
-        # Only non-empty inputs are exported; an empty input lets the org
-        # default baked into ci_infrastructure.s3_store apply.
         if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
         if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
         if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
@@ -81,12 +75,7 @@ runs:
     - name: Validate publish inputs
       shell: bash
       run: |
-        # `required: true` above is documentation only -- GitHub does not enforce
-        # it for composite actions, and would not catch an input whose expression
-        # evaluated to empty anyway. That is the real failure: an upstream `jq -r`
-        # decode swallowing `jq: command not found` inside $(). Fail fast instead
-        # of tarring '$RUNNER_TEMP/.tar.gz' and uploading an unnamed artifact that
-        # downstream pollers will never find.
+        # Composite `required:` is not enforced, and an input can evaluate to empty.
         missing=()
         [ -z "${ARTIFACT_NAME}" ] && missing+=("artifact-name")
         [ -z "${INSTALL_PATH}" ] && missing+=("install-path")
@@ -99,13 +88,7 @@ runs:
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
         INSTALL_PATH: ${{ inputs.install-path }}
 
-    # Deliberately no actions/cache here: artifacts are distributed via the
-    # object store and read back by fetch_deps.py, so a per-SHA cache has no
-    # consumer, and concurrent runs at the same SHA race for the key ("Unable to
-    # reserve cache with key …") and then silently continue. If you do
-    # re-introduce it, wrap the call in a post-step that greps the action's
-    # stderr for "Unable to reserve" / "Failed to save" and `exit 1`s — this
-    # action carries no cache, so any warning of that shape is a regression.
+    # No actions/cache: artifacts go through the object store.
 
     - name: Create artifact tar
       if: inputs.found != 'true'
@@ -119,11 +102,6 @@ runs:
           -C "$INSTALL_PATH_INPUT" .
 
     - name: Upload artifact to S3 store
-      # Mirror the `found != 'true'` gate on `Create artifact tar`: when the
-      # artifact already exists in the store the tar file isn't produced, so
-      # the upload would fail on a missing path. The S3 key is derived purely
-      # from the artifact name, so the object lands in the same place no matter
-      # which repo's run publishes it.
       if: inputs.found != 'true'
       shell: bash
       env:

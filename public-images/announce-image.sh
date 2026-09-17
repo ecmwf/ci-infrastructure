@@ -9,11 +9,8 @@
 # step as `bash --noprofile --norc -e -o pipefail`, which sources it. See
 # IMAGES.md.
 #
-# Everything goes to stderr. This runs inside whichever step happens to be
-# first, and if that step is not bash the first bash of the job can be a
-# command substitution -- whose stdout is a captured value, not the log. That
-# rules out `::notice`, which the runner only parses on stdout; the annotation
-# stays with actions/announce-image, which runs as a step of its own.
+# stderr only: the first bash may be a command substitution, whose stdout is
+# captured. The ::notice annotation belongs to actions/announce-image.
 
 __ci_announce_image() {
   [ -n "${CI_IMAGE_NAME:-}" ] || return 0

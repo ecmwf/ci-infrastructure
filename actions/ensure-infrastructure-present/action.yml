@@ -4,89 +4,18 @@
 
 name: Ensure ci-infrastructure infrastructure is present
 description: >
-  YOU PROBABLY DO NOT NEED TO CALL THIS. Every action here that uses the
-  ci_infrastructure package nests it already, as its first step, so a caller
-  never bootstraps -- see README.md, and tests/test_action_conventions.py, which
-  enforces it. Call it directly only when a workflow runs
-  $CI_INFRASTRUCTURE_PYTHON itself rather than through an action, as
-  hpc-nightly-cleanup.yml and smoke-test-hpc.yml do. To force a reinstall from
-  inside a job that only reaches this through a nested action, set
-  CI_INFRASTRUCTURE_FORCE_REINSTALL=true in the job's env.
-
-  Materialise a dedicated venv at
-  $RUNNER_TOOL_CACHE/ci-infrastructure-venv/<ref>-<src-hash> with the
-  ci-infrastructure package installed, isolated from the test interpreter's
-  site-packages. Exposes the venv's interpreter as $CI_INFRASTRUCTURE_PYTHON for
-  all subsequent steps in the job.
-
-  The path carries a hash of the action checkout's sources, not just the ref
-  name, because a ref like `main` moves: keyed on the name alone, a runner with
-  a persistent tool cache keeps serving whichever ci-infrastructure it installed
-  first and never picks up a push to main. A content key makes a source change a
-  new venv, and leaves an unchanged ref hitting the same cached one.
-
-  The bootstrap interpreter is chosen INDEPENDENTLY of any
-  actions/setup-python step the consumer may have run before us. The helper
-  venv hosts ci-infrastructure, and we prefer a
-  stable system interpreter over the consumer's test-matrix one, so we drop
-  setup-python's bin from PATH for the probe.
-
-  Idempotent, with two short-circuits. An image that bakes ci-infrastructure
-  into an interpreter advertises it via CI_INFRASTRUCTURE_PYTHON; when that is
-  set, can import the HPC entrypoint, AND matches the sources we would otherwise
-  install, we reuse it and skip the venv entirely (a true no-op — no per-job
-  build, no PyPI/GitHub egress). The bake must live outside _work: ARC's
-  Kubernetes mode overlays the runner's _work tree (where RUNNER_TOOL_CACHE, and
-  thus the venv, lives) with an ephemeral per-job volume that shadows anything
-  baked at that path, so a baked tool-cache venv would be hidden. Absent a baked
-  interpreter, we reuse an existing venv at the target path if a prior step in
-  the same job already built one.
-
-  THE MATCH IS CHECKED, AND A MISMATCH IS FATAL. Importability is not version: a
-  baked install from an older commit imports perfectly well, so an import check
-  would take the fast path and the job would silently run stale code — surfacing
-  much later as a missing CLI command. We compare a digest of the baked package's
-  *.py files against the checkout's and fail loudly when they differ, naming both
-  digests and (when the image records it in CI_INFRASTRUCTURE_BAKED_REF) the
-  commit the image was built from.
-
-  Only *.py files are hashed, deliberately. An installed tree is not
-  byte-identical to src/ci_infrastructure: the certs/*.pem.license sidecar is not
-  matched by the package-data glob, and py.typed is not declared as package data
-  at all, so whether it survives an install depends on the setuptools version.
-  Hashing everything would report a mismatch on an image that is perfectly in
-  sync. *.py is what determines behaviour and CLI surface, which is the failure
-  mode that matters; drift confined to troika-config.yml or the bundled certs is
-  not detected.
-
-  Source of the install: normally the ci-infrastructure checkout that GitHub
-  Actions pulled into _actions/<owner>/ci-infrastructure/<ref>/ when it loaded
-  this composite. Pip installs from that local path, so the install needs no
-  token and works for private repos. When the job's own workspace IS a
-  ci-infrastructure checkout, that wins instead — so this repo's own workflows
-  test the branch under test rather than whatever @main currently holds.
-
-  The checkout is located by probing candidate paths for the file we actually
-  need, rather than by re-anchoring github.action_path: that assumes an
-  /_actions/ segment, which a local `uses: ./actions/...` reference does not have.
+  Usually nested by other actions (see README.md); call it directly only when a
+  workflow runs $CI_INFRASTRUCTURE_PYTHON itself. Exposes a ci-infrastructure
+  interpreter as $CI_INFRASTRUCTURE_PYTHON: a baked image interpreter whose *.py
+  digest matches the checkout (a mismatch is fatal), else a content-keyed venv in
+  $RUNNER_TOOL_CACHE. Only *.py is hashed, so drift in data files is not detected.
 
 inputs:
   force-reinstall:
     description: >
-      When 'true', ignore any baked interpreter and any cached venv and install
-      ci-infrastructure fresh from the checkout. Empty or 'false' keeps the
-      default: reuse a matching baked interpreter, else a content-keyed venv.
-
-      The environment variable CI_INFRASTRUCTURE_FORCE_REINSTALL=true does the
-      same thing and is what a consumer normally wants: this action is usually
-      reached through another action that nests it, and a nested `uses:` cannot
-      forward an input. Set the env var once on the job and every bootstrap in
-      that job honours it.
-      Set this in ci-infrastructure's own end-to-end jobs, which must exercise
-      the branch rather than whatever an image happens to carry — it makes those
-      jobs independent of which commit the image was built from. Needed on any
-      pull-request job that runs inside one of the published images, because the
-      image necessarily lags the branch under test.
+      'true' ignores any baked interpreter or cached venv and installs from the
+      checkout. CI_INFRASTRUCTURE_FORCE_REINSTALL=true in the job env does the same
+      for nested calls. Needed on PR jobs inside a published image, which lags the branch.
     required: false
     default: ''
 
@@ -120,14 +49,9 @@ runs:
           ( cd "$dir" && printf '%s\n' "$list" | xargs sha256sum | sha256sum | cut -c1-16 )
         }
 
-        # Locate the ci-infrastructure sources to install/compare against. The
-        # job's own workspace wins when it is a ci-infrastructure checkout, so
-        # this repo's own workflows exercise the branch under test; otherwise the
-        # _actions checkout of whatever ref the consumer pinned.
-        #
-        # Probing for the file we need, instead of re-anchoring github.action_path
-        # unconditionally, is what makes `uses: ./actions/...` work: a local
-        # reference has no /_actions/ segment for the substitution to strip.
+        # The job workspace wins when it is a ci-infrastructure checkout, so this
+        # repo tests the branch under test. Probe for the file rather than
+        # re-anchoring action_path: a local `uses: ./actions/...` has no /_actions/.
         cands=()
         if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/$rel" ] \
            && grep -qE '^name[[:space:]]*=[[:space:]]*"ci-infrastructure"' "$GITHUB_WORKSPACE/pyproject.toml" 2>/dev/null; then
@@ -137,10 +61,8 @@ runs:
         case "${GITHUB_ACTION_PATH:-}" in
           */_actions/*)
             if [ -n "${RUNNER_WORKSPACE:-}" ]; then
-              # ARC's Kubernetes container mode mounts the work tree elsewhere in
-              # the job container, so github.action_path can be a host path that
-              # does not resolve here. Re-anchor the _actions tail on the
-              # in-container work root (parent of RUNNER_WORKSPACE).
+              # ARC's Kubernetes mode mounts the work tree elsewhere, so
+              # re-anchor the _actions tail on the in-container work root.
               cands+=( "$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../.." )
             fi
             ;;
@@ -162,12 +84,7 @@ runs:
           echo "ensure-infrastructure-present: sources = the action checkout ($repo_root)"
         fi
 
-        # Either source enables it. The env var exists because this action is
-        # almost always reached through another action that nests it -- see the
-        # invariant in README.md -- and a nested `uses:` cannot forward an input.
-        # A consumer sets CI_INFRASTRUCTURE_FORCE_REINSTALL once at job level and
-        # every bootstrap in that job sees it, at any nesting depth. The input
-        # stays for the workflows that call this action directly.
+        # The env var reaches nested calls, which cannot forward inputs.
         force_reinstall=false
         [ "${FORCE_REINSTALL_INPUT:-}" = "true" ] && force_reinstall=true
         [ "${CI_INFRASTRUCTURE_FORCE_REINSTALL:-}" = "true" ] && force_reinstall=true
@@ -178,11 +95,7 @@ runs:
         checkout_hash="$(pkg_py_hash "$repo_root/src/ci_infrastructure")" \
           || { echo "::error::ensure-infrastructure-present: no *.py under $repo_root/src/ci_infrastructure" >&2; exit 1; }
 
-        # Fast path: an image that baked ci-infrastructure into an interpreter
-        # advertises it via CI_INFRASTRUCTURE_PYTHON. Honour it only when that
-        # interpreter can import the HPC entrypoint AND carries the same sources
-        # we would install — an import check alone passes on a stale bake and
-        # silently runs old code. force-reinstall skips this path entirely.
+        # Fast path: a baked interpreter, only if its *.py digest matches the checkout.
         python="${CI_INFRASTRUCTURE_PYTHON:-}"
         baked_ok=false
         if ! $force_reinstall && [ -n "$python" ] && [ -x "$python" ] \
@@ -201,11 +114,7 @@ runs:
 
         if ! $baked_ok; then
           ref="${GITHUB_ACTION_REF:-main}"
-          # Hash what pip would install. Two details keep the digest stable for
-          # unchanged sources: sort by path (field 2), because `find -exec … +`
-          # batches in directory order; and prune build leftovers, because the
-          # _actions checkout persists between jobs on a self-hosted runner and
-          # a pip install may leave an .egg-info or __pycache__ behind in it.
+          # Sorted by path and without build leftovers, so unchanged sources hash the same.
           src_hash="$(cd "$repo_root" && find pyproject.toml src \
             \( -name '__pycache__' -o -name '*.egg-info' \) -prune -o \
             -type f -exec sha256sum {} + | sort -k 2 | sha256sum | cut -c1-16)"
@@ -228,11 +137,8 @@ runs:
             echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
-            # Strip the consumer's setup-python bin from PATH for the probe. If
-            # pythonLocation is unset (no consumer setup-python ran) we just use
-            # PATH as-is. We prefer a stable system interpreter over the
-            # matrix-leg one. The version gate below must match
-            # ci-infrastructure's requires-python, or the pip install fails.
+            # Prefer a system interpreter over the consumer's setup-python one.
+            # The version gate must match requires-python.
             bootstrap_path="$PATH"
             if [ -n "${pythonLocation:-}" ]; then
               exclude="${pythonLocation}/bin"
@@ -264,24 +170,15 @@ runs:
             echo "  using bootstrap interpreter: $bootstrap_py ($("$bootstrap_py" --version 2>&1))"
             "$bootstrap_py" -m venv "$venv"
             start=$SECONDS
-            # Drop --quiet so pip's "Collecting …" progress is visible — a stall is
-            # then obvious from the log instead of being silent. --no-input never
-            # prompts; --timeout/--retries bound network waits so a blocked PyPI
-            # egress fails fast with a clear error rather than hanging for minutes.
+            # Not --quiet, so a stall is visible; timeouts make blocked egress fail fast.
             echo "  pip install ci-infrastructure from $repo_root ..."
-            # [all] because the base dependency set is deliberately just PyYAML + click
-            # (see pyproject.toml): the actions need boto3, pydantic, jinja2 and troika,
-            # and only the pre-commit hook wants the light install.
+            # [all]: the base install is only what the pre-commit hook needs.
             "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[all]"
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
-          # mtime is the venv's last-used time, not its build time, so the sweep
-          # below measures idleness. Touch on reuse as well as after a build.
+          # mtime = last use, so the sweep below measures idleness.
           touch "$venv"
-          # Content keys mean a new venv per ci-infrastructure change, which on a
-          # persistent self-hosted tool cache would accumulate forever. Drop the
-          # ones no job has touched in a week; anything a concurrent job is using
-          # was touched seconds ago and is never a candidate.
+          # Content keys accumulate on a persistent tool cache; drop venvs idle a week.
           find "$venv_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
         fi
         echo "CI_INFRASTRUCTURE_PYTHON=$python" >> "$GITHUB_ENV"

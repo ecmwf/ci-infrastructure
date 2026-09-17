@@ -4,27 +4,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Renders a Markdown table of the OWN package + each resolved dep to
-$GITHUB_STEP_SUMMARY so CI job logs show a human-readable dependency
-overview with clickable links to each upstream repo and commit.
+"""Render the OWN package and its resolved deps as a Markdown table in $GITHUB_STEP_SUMMARY.
 
-The input is the resolver's `_resolved` block for one matrix leg, whole:
+The input is one leg's whole `_resolved` block, so the key mapping lives here once:
 
   --resolved '{own-name, own-ref, own-sha, own-platform, own-compiler,
                own-build-type, own-python, own-deps-hash,
                deps: [{name, repo, ref, sha, platform, compiler, build-type,
                        python-version, deps-hash, source, ...}, ...], ...}'
-
-Whole, rather than a field list, because a workflow spelling out
-`own-sha: ${{ matrix._resolved.own-sha }}` ten times is ten chances to mistype a
-key into a silently blank column -- which is how three repos came to render an
-empty table for months. The key mapping lives here, once, where it is tested.
-
-The resolver carries the structured fields (platform / compiler / python /
-build-type / deps-hash) explicitly, so each column is read straight from the
-dep dict — no parsing of the artifact name. The Package column links to the
-upstream repo, the SHA column links to the upstream commit, and the Ref column
-shows the resolved branch/tag (blank when a literal SHA was pinned).
 
 Usage:
     print_dep_table.py --resolved '<JSON>' [--own-repo o/r] [--own-source built]
@@ -36,7 +23,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, TypedDict
 
@@ -44,15 +30,14 @@ import click
 
 from ._errors import CIError
 
-# A ref that is itself a (full or abbreviated) commit SHA — a literal pin. The
-# Ref column blanks these out, since the SHA column already shows the commit.
+# A ref that is itself a commit SHA; the Ref column blanks it.
 _SHA_RE: Final = re.compile(r"[0-9a-f]{7,40}")
 
 
 class Row(TypedDict, total=False):
-    package: str  # markdown link to repo
-    ref: str  # branch/tag name (blank when a SHA was pinned)
-    sha: str  # markdown link to commit
+    package: str
+    ref: str
+    sha: str
     deps_hash: str
     platform: str
     compiler: str
@@ -74,7 +59,7 @@ def _looks_like_sha(ref: str) -> bool:
 
 
 def _row_from_dep(dep: Mapping[str, Any]) -> Row:
-    """Build a Row from a resolver dep dict, reading each column directly."""
+
     name = str(dep.get("name", ""))
     repo = str(dep.get("repo", ""))
     sha = str(dep.get("sha", ""))
@@ -117,8 +102,7 @@ def _md_table(rows: Sequence[Row], show_source: bool) -> str:
     return "\n".join(lines)
 
 
-#: `_resolved` own-* key -> the un-prefixed key `_row_from_dep` reads. Only
-#: own-python needs saying twice; the rest are the same word without the prefix.
+#: `_resolved` own-* key -> the dep key `_row_from_dep` reads.
 _OWN_COLUMNS: Final = {
     "own-name": "name",
     "own-ref": "ref",
@@ -132,12 +116,7 @@ _OWN_COLUMNS: Final = {
 
 
 def own_row_from_resolved(resolved: Mapping[str, Any], repo: str, source: str) -> dict[str, Any]:
-    """The OWN row, projected out of `_resolved`'s own-* fields.
-
-    `repo` and `source` are not in `_resolved` and cannot be: the first is the
-    workflow's own repository, the second is what the JOB did (built it, or found
-    it already published) rather than what the resolver decided.
-    """
+    """The OWN row from `_resolved`'s own-* fields; `source` is what the job did, not the resolver."""
     row = {column: resolved.get(key, "") for key, column in _OWN_COLUMNS.items()}
     row["repo"] = repo
     row["source"] = source
@@ -145,12 +124,7 @@ def own_row_from_resolved(resolved: Mapping[str, Any], repo: str, source: str) -
 
 
 def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
-    """Parse and vet `--resolved`, failing loudly rather than rendering blank.
-
-    Every check here is a shape a caller can actually produce: an input name the
-    action does not declare arrives as the empty string (GitHub only warns about
-    an unknown input), and a hand-rolled JSON blob is the other way in.
-    """
+    """Parse and vet `--resolved`, failing loudly rather than rendering blank."""
     if not resolved_json.strip():
         raise CIError("--resolved is required and was empty; pass the leg's `matrix._resolved` as JSON")
     try:
@@ -164,8 +138,6 @@ def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
     if not isinstance(resolved["deps"], list):
         raise CIError(f"--resolved.deps must be an array, got {type(resolved['deps']).__name__}")
     if not resolved.get("own-name"):
-        # resolve-deps and this action are both pinned @main and run in the same
-        # job graph, so they cannot legitimately disagree about the schema.
         raise CIError(
             "--resolved has no 'own-name'; the matrix was produced by a resolve-deps "
             "older than this action. Re-run the workflow so both come from the same ref."
@@ -189,16 +161,10 @@ def main(resolved_json: str, own_repo: str, own_source: str, title: str) -> None
 
     rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
 
-    # The deps array is ordered upstream→downstream (the link order the build
-    # needs). The table reads top-down from the OWN package, so list deps
-    # nearest-first: reverse to downstream→upstream below the OWN row.
+    # deps are upstream-first; list them nearest-first below the OWN row.
     for dep in reversed(deps):
         if isinstance(dep, dict):
             rows.append(_row_from_dep(dep))
-
-    if not rows:
-        print("No artifact names to display.", file=sys.stderr)
-        return
 
     show_source = any(row.get("source") for row in rows)
     table = f"## {title}\n\n{_md_table(rows, show_source)}\n"

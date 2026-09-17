@@ -2,51 +2,37 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""pick-ref's shell script, run for real with a stub `gh` first on PATH.
-
-Same approach as test_require_label_decision.py.
-"""
+"""pick-ref's `run:` body, executed with a stub `gh` on PATH."""
 
 from __future__ import annotations
 
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
-import yaml
+from conftest import REPO_ROOT, action_run_body, stub_gh
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ACTION = REPO_ROOT / "actions" / "pick-ref" / "action.yml"
 FALLBACK = "develop"
 
 
-def _script() -> str:
-    doc: dict[str, Any] = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
-    (step,) = doc["runs"]["steps"]
-    body: str = step["run"]
-    return body
-
-
 def _run(tmp_path: Path, branch: str, *, exists: bool) -> tuple[str, list[str]]:
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
     gh_log = tmp_path / "gh-calls.log"
-    (bindir / "gh").write_text(f'#!/bin/sh\necho "$*" >> {gh_log}\nexit {0 if exists else 1}\n')
-    (bindir / "gh").chmod(0o755)
+    bindir = stub_gh(tmp_path, f'echo "$*" >> {gh_log}\nexit {0 if exists else 1}')
 
     outputs = tmp_path / "outputs.txt"
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "GITHUB_ACTION_PATH": str(ACTION.parent),
+        "GITHUB_ACTION_PATH": str(REPO_ROOT / "actions" / "pick-ref"),
         "GITHUB_OUTPUT": str(outputs),
         "REPO": "ecmwf/eckit",
         "TRY_BRANCH": branch,
         "FALLBACK_REF": FALLBACK,
     }
-    proc = subprocess.run(["bash", "-c", _script()], env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        ["bash", "-c", action_run_body("pick-ref")], env=env, capture_output=True, text=True, check=False
+    )
     assert proc.returncode == 0, proc.stderr
     (ref,) = (line.removeprefix("ref=") for line in outputs.read_text().splitlines())
     calls = gh_log.read_text().splitlines() if gh_log.exists() else []

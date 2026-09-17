@@ -2,17 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Loading troika sites as a Python library.
-
-Thin typed wrapper over troika's ``get_config`` / ``get_site`` so the rest of
-the HPC backend talks to a small, explicit interface (`SlurmSiteLike`) instead
-of the untyped troika objects. The same protocol is what the unit tests'
-fake site implements, so the orchestrator can be exercised without a cluster.
-
-Also home to :func:`resolve_remote_path`, which turns a work-dir spec that names
-cluster variables (``$SCRATCH/github-ci``) into the literal path the runner
-needs in order to scp into it.
-"""
+"""Typed wrapper over troika's ``get_config`` / ``get_site``, and remote path expansion."""
 
 from __future__ import annotations
 
@@ -29,14 +19,8 @@ from .._errors import CIError
 
 
 class SlurmSiteLike(Protocol):
-    """The subset of troika's ``SlurmSite`` API the orchestrator relies on.
+    """The subset of troika's ``SlurmSite`` API the orchestrator uses (incl. troika-internal names)."""
 
-    ``_get_state`` and ``_connection`` are troika-internal names; we depend on
-    them deliberately because they are the cleanest programmatic poll/transport
-    troika exposes (the public ``monitor`` only writes a ``.stat`` file).
-    """
-
-    #: troika connection object (untyped upstream) used to tail the job output.
     _connection: Any
 
     def submit(self, script: str, user: str | None, output: str, dryrun: bool = ...) -> int: ...
@@ -69,15 +53,7 @@ def load_site(site_name: str, *, config_path: str | Path | None = None, user: st
 
 
 def ensure_batch_site(site: SlurmSiteLike, site_name: str) -> None:
-    """Reject a site the orchestrator cannot actually drive.
-
-    Everything here is built around a batch scheduler: ``submit`` returns a job
-    id we persist for reattach, ``_get_state`` is the liveness guard, and the
-    job writes its own output on the cluster for us to tail. troika's ``direct``
-    sites (``hpc-login``) have none of that — ``submit`` hands back a Popen,
-    there is no ``_get_state``, and troika opens the output *locally*. Without
-    this check that mismatch surfaces as a TypeError deep inside submit.
-    """
+    """Reject non-slurm (direct) sites: the build path needs a scheduler to submit to and poll."""
     if not hasattr(site, "_get_state"):
         raise CIError(
             f"Site {site_name!r} is not a batch (slurm) site. The HPC build path needs a scheduler "
@@ -92,19 +68,10 @@ _SAFE_SPEC: Final = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
 
 
 def resolve_remote_path(conn: Any, spec: str) -> str:
-    """Expand a work-dir ``spec`` on the cluster and return the literal path.
+    """Expand a work-dir ``spec`` (e.g. ``$SCRATCH/github-ci``) on the cluster to a literal path.
 
-    A spec like ``$SCRATCH/github-ci`` cannot be used as-is: troika
-    ``shlex.quote``s every argv element, so cluster variables passed to
-    ``mkdir``/``scp`` would arrive literally and we would create a directory
-    actually named ``$SCRATCH``. Expanding it here, once, gives the runner a real
-    path while keeping the configured value portable across clusters (and free of
-    the deploy username).
-
-    The expansion runs in a **login** shell: on ECMWF's atos, ``$SCRATCH`` is set
-    by ``ecprofile`` under ``/etc/profile.d``, which a plain non-interactive ssh
-    shell does not source. ``printf %s`` keeps stdout free of any profile banner
-    a login shell might print (that lands on stderr, which we discard).
+    troika quotes every argv element, so cluster variables must be expanded here.
+    A login shell is needed because ``$SCRATCH`` comes from ``/etc/profile.d``.
     """
     if not _SAFE_SPEC.match(spec):
         raise CIError(

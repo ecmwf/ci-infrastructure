@@ -9,23 +9,10 @@ FROM debian:11
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Bullseye is END OF LIFE: LTS ended 2026-08-31, and its security archive is
-# being torn down. The bullseye-security INDEX is still served while the pool
-# behind it is emptied, so a plain `apt-get update && apt-get install` reads a
-# stale index and 404s on packages that no longer exist -- which is exactly how
-# this image started failing. archive.debian.org is not an answer either: it
-# carries original bullseye main, which conflicts with the security-updated
-# libraries already in the debian:11 base layer (git, gnupg and build-essential
-# all come out unsatisfiable).
-#
-# snapshot.debian.org serves every suite as it stood at one instant, so main,
-# updates and security stay mutually consistent. Check-Valid-Until must be off:
-# a snapshot's Release file is deliberately old, and bullseye-security's last
-# one expired on 2026-09-07.
-#
-# This freezes the image's packages. That is the point -- there are no further
-# bullseye security updates to miss. Bump SNAPSHOT only to move to a different
-# frozen instant; the real fix is retiring debian11.
+# Bullseye is end of life and its security archive is being emptied, so install
+# from a snapshot.debian.org instant (main, updates and security consistent) with
+# Check-Valid-Until off, as snapshot Release files are old. This freezes the
+# packages; the real fix is retiring debian11.
 ARG DEBIAN_SNAPSHOT=20260815T000000Z
 RUN printf '%s\n' \
       "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bullseye main" \
@@ -35,24 +22,10 @@ RUN printf '%s\n' \
  && echo 'Acquire::Check-Valid-Until "false";' \
       > /etc/apt/apt.conf.d/99no-check-valid-until
 
-# The debian11 counterpart of public-images/ubuntu24.04/base. That file explains
-# why each package belongs in the BASE rather than a variant; this one records
-# only where bullseye forces a different answer.
-#
-# The big one is PYTHON, handled in the next layer: bullseye's python3 is 3.9 and
-# its newest packaged interpreter is 3.10, while ci_infrastructure declares
-# requires-python >= 3.11 (pyproject.toml). There is no backport -- so unlike
-# every other platform here, this image builds its interpreter from source.
-#
-# python3 / python3-pip are still installed: plenty of tooling shells out to
-# `python3`, and it costs little to have the distro one present. It is simply not
-# the interpreter CI_INFRASTRUCTURE_PYTHON names.
-#
-# The libraries after `build-essential` are Python's build dependencies -- the
-# set that decides which stdlib modules get built. Missing ones do NOT fail the
-# build, they silently produce an interpreter without ssl, or without sqlite3,
-# or without zlib, which then fails much later inside pip. They are listed
-# explicitly for that reason.
+# The debian11 counterpart of ubuntu24.04/base; only bullseye-specific answers
+# here. Bullseye tops out at python 3.10, so the next layer builds 3.11; the
+# libraries after build-essential are its build deps, and a missing one silently
+# drops a stdlib module (ssl, sqlite3, zlib) rather than failing the build.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -84,22 +57,9 @@ RUN apt-get update && apt-get install -y \
     libgdbm-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Python 3.11 from source -- see above for why there is no packaged option.
-#
-# Pinned with a checksum: this is the one thing in any of these images fetched
-# from outside a distro archive, so it does not get to be a moving target.
-#
-# --enable-shared, because ecflow (and anything else using
-# find_package(Python3 COMPONENTS Development)) needs libpython3.11.so, which a
-# default static build does not produce. ldconfig then makes it findable;
-# /usr/local/lib is already on debian's default search path.
-#
-# `make altinstall`, never `make install`: the latter would overwrite
-# /usr/bin/python3 and take apt, dpkg and half the distro's python scripts with
-# it. This lands as python3.11 alongside the system 3.9.
-#
-# No --enable-optimizations: PGO roughly triples the build time of an image
-# whose interpreter only ever runs CI glue.
+# Python 3.11 from source, checksum-pinned. --enable-shared for libpython3.11.so
+# (find_package(Python3 Development)); altinstall so /usr/bin/python3 stays the
+# distro's; no PGO, which triples build time for CI glue.
 ARG PYTHON_VERSION=3.11.16
 ARG PYTHON_SHA256=6c0bd76ab0ec7d94ed400b1497f01ac6c7751c8822615ee0855a3eb2d893ea76
 RUN cd /tmp \
@@ -113,20 +73,14 @@ RUN cd /tmp \
  && ldconfig \
  && cd /tmp && rm -rf "Python-${PYTHON_VERSION}" "Python-${PYTHON_VERSION}.tgz"
 
-# pytest for the interpreter this image actually runs things with. The
-# python3-pytest deb is pytest 6.0 built for the 3.9 interpreter, which is not
-# the one anything here uses -- and ecflow's py3_u_* tests shell out to
-# `<interpreter> -m pytest`, so it has to be importable from python3.11.
+# pytest in python3.11: ecflow's tests run `<interpreter> -m pytest`.
 RUN python3.11 -m pip install --no-cache-dir pytest
 
-# CMake is the one piece of tooling here that is NOT what this platform exists to
-# test: the old compiler, boost and Qt are the point, the build driver is not.
-# Bullseye's 3.18 is below the 3.26 our submodules require (libaec). Pin a
-# modern one; /usr/local/bin precedes /usr/bin.
+# Bullseye's cmake 3.18 is below our 3.26 floor; pin a modern one
+# (/usr/local/bin precedes /usr/bin).
 RUN python3.11 -m pip install --no-cache-dir cmake==3.31.6
 
-# Install GitHub CLI (gh) -- same upstream apt repo as the ubuntu base; debian
-# ships no gh package either.
+# GitHub CLI from the upstream apt repo, as in the ubuntu base.
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -139,45 +93,27 @@ RUN mkdir -p /etc/apt/keyrings \
  && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Install ci-infrastructure from the build context (the repo root), not over the
-# network -- see public-images/ubuntu24.04/base/Dockerfile for the full
-# reasoning, which applies verbatim here.
+# Install ci-infrastructure from the build context; see ubuntu24.04/base.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
 
-# Advertise the interpreter ci-infrastructure was baked into. The source-built
-# 3.11, NOT /usr/bin/python3 (3.9), for the reason at the top of this file.
+# The source-built 3.11, not /usr/bin/python3 (3.9).
 ENV CI_INFRASTRUCTURE_PYTHON=/usr/local/bin/python3.11
 
-# Record WHICH ci-infrastructure got baked. Declared LAST so a new revision never
-# busts the cache of the pip layer above.
+# Declared late to keep the pip layer cached.
 ARG SOURCE_REVISION=""
 ENV CI_INFRASTRUCTURE_BAKED_REF=${SOURCE_REVISION}
 
-# Make container ARC/GitHub-Actions compatible
 ENTRYPOINT []
 CMD []
 
-# Useful default working directory
 WORKDIR /workspace
 
-# Announce the image from the first bash step of any job, no workflow step
-# required: GitHub runs every step as `bash --noprofile --norc -e -o pipefail`,
-# which sources $BASH_ENV. Inherited by descendants on purpose -- this is
-# behaviour reading the CI_IMAGE_* below, which each image re-declares itself.
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description. The same facts build-image.sh writes as OCI labels, baked in
-# as environment as well: a label can only be read from OUTSIDE the image
-# (registry or daemon), and a job running INSIDE it has neither.
-# announce-image.sh and actions/announce-image print these. See IMAGES.md.
-#
-# Declared LAST so a new value never busts the cache of the layers above, and
-# repeated in EVERY image rather than inherited: ENV is inherited by descendants,
-# so a variant that did not re-declare these would announce itself as its base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

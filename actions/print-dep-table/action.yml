@@ -4,36 +4,21 @@
 
 name: Print dependency table
 description: >
-  Renders a Markdown table of the OWN package and its resolved upstream
-  dependencies to the job's step summary. The Package and SHA columns
-  link to the upstream repo and commit, so log readers can click through
-  to the source of every dep.
-
-  Inputs are the JSON the resolver emits via _resolved.deps and the
-  per-leg own-* fields. Pass them straight from the matrix entry.
-
-  Columns: Package | Ref | SHA | Deps hash | Platform | Compiler | Python | Build type | Source
+  Render a Markdown table of the own package and its resolved dependencies,
+  linked to repo and commit, to the step summary.
 
 inputs:
   resolved:
     description: >
-      The matrix leg's `_resolved` block as JSON, i.e. toJSON of matrix._resolved
-      (spelled out here without the expression braces on purpose: a description is
-      evaluated, and a `matrix` reference in one fails every caller at workflow load).
-      Every column but the two below is read out of it, so a workflow never restates
-      a field name. Rejected when empty: an input this action does not declare arrives
-      as the empty string (GitHub only warns about an unknown input), and a blank table
-      reads as "no dependencies" rather than as a broken call.
+      The matrix leg's _resolved block as JSON (toJSON of matrix._resolved).
+      Rejected when empty, since an undeclared input also arrives empty.
     required: true
   own-repo:
     description: 'owner/repo of the OWN package. Not in _resolved — it is the calling workflow.'
     required: false
     default: ${{ github.repository }}
   own-source:
-    description: >
-      How this job got the OWN artifact. Not in _resolved either: it describes what the
-      JOB did, not what the resolver decided. 'built' is right wherever the build step is
-      unconditional; a cache-gated build should pass 'artifact' when it skipped.
+    description: "How this job got the OWN artifact: 'built' (default) or 'artifact' when a cache-gated build skipped."
     required: false
     default: 'built'
   title:

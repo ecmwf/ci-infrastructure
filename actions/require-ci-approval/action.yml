@@ -13,27 +13,14 @@ description: >
   repository, since pushing to it already needed write access; or a fork
   carrying `label`. Otherwise the step fails.
 
-  The label is a single-use token: it is deleted the moment it is honoured, so
-  one approval buys one run and cannot be replayed by a later event on a commit
-  nobody re-read. Deleting it then rather than on the next push is the whole
-  point -- callers cancel in-flight runs, so a revocation that depends on one
-  particular run surviving to its own gate step is not a revocation. A
-  `synchronize` or `reopened` still fails outright, and still deletes, as the
-  backstop for the run that was cancelled before it could.
+  The label is single-use: deleted the moment it is honoured, so one approval
+  buys one run. `synchronize`/`reopened` of a fork PR fails and deletes it too.
 
-  Hang the gated jobs off it with `needs:` and nothing else -- the step succeeds
-  exactly when they may run. Two invariants are easy to lose by "simplifying"
-  this. It FAILS rather than skipping, because a job skipped by an `if:` reports
-  Success, so gating on the label directly would show green ticks meaning "never
-  ran" and a required check on them would enforce nothing. And the caller MUST
-  listen for `synchronize`, or the backstop never fires.
-
-  Repository policy (opt-in labels, paths filters) belongs on the gate job's own
-  `if:`, where a skip skips everything behind it -- not in here, and never on
-  the gated jobs. Applying a label needs only triage permission, so treat "who
-  may label" as "who may approve". Needs bash, jq and gh, plus
-  `pull-requests: write`: run it on the cheapest label. See the README for the
-  rest.
+  Gate jobs with `needs:` only. It FAILS rather than skipping, because a skipped
+  job reports Success; and the caller MUST listen for `synchronize`. Repository
+  policy belongs on the gate job's own `if:`. Labelling needs only triage, so
+  "who may label" is "who may approve". Needs bash, jq, gh and
+  `pull-requests: write`. See the README.
 
 inputs:
   label:
@@ -72,10 +59,6 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
-        # Per this repo's convention (commit a48f078) no input is interpolated
-        # into the script body. The pull request payload is not interpolated
-        # either: it is read from $GITHUB_EVENT_PATH with jq, so a label or a
-        # repository name can never reach the shell as syntax.
         LABEL_INPUT: ${{ inputs.label }}
         CONSUME_INPUT: ${{ inputs.consume-label }}
         TRUST_SAME_REPO_INPUT: ${{ inputs.trust-same-repo }}
@@ -99,8 +82,6 @@ runs:
         consume="$(parse_bool consume-label "${CONSUME_INPUT:-}")"
         trust_same_repo="$(parse_bool trust-same-repo "${TRUST_SAME_REPO_INPUT:-}")"
 
-        # Only ever called on the passing paths: the output exists for logs and
-        # for a caller that wants to say WHY it ran, not to gate anything.
         pass() {
           echo "reason=$1" >> "$GITHUB_OUTPUT"
           echo "CI approval: $1"

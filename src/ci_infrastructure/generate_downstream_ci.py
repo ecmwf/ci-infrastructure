@@ -4,92 +4,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reads every consumer repo's .ci/manifest.toml, validates the cross-repo
-trigger / needs graph, and emits two generated files per repo:
+"""Validate the cross-repo trigger / needs graph of every consumer repo's
+.ci/manifest.toml and emit its generated workflows, one pair per lane
+(runner, `-hpc`):
 
-  - .github/workflows/cross-repo-trigger.yml — has two entry points sharing
-    typed inputs (from-repo, from-sha, from-jobs, rebuild-request, branch,
-    fallback-ref): `workflow_call`, used by the upstream-driven orchestrator
-    (trigger-downstream.yml) which sets `from-jobs=["pkg/kind", ...]` (every
-    originator kind reaching this consumer); and `workflow_dispatch` (plus a
-    dispatch-only `dispatch-id`), used by the consumer-driven recovery path
-    (resolve_deps from inside a consumer's run when a producer's artifact is
-    missing), which sets `rebuild-request=true`. Per-kind jobs gate on
-    `contains(fromJSON(inputs.from-jobs), 'pkg/kind')` / `rebuild-request` via
-    the kind's `triggers` field. Artifacts publish to shared S3 keyed by a deterministic
-    name (independent of the producing run), so it does not matter whether
-    this runs standalone or nested inside the upstream's run. Runtime
-    branch-matching happens in the resolve job's pick-ref step.
+  - cross-repo-trigger{-hpc}.yml: per-kind jobs, entered via `workflow_call`
+    from an upstream orchestrator (`from-jobs`) or via `workflow_dispatch` from
+    a consumer's recovery path (`rebuild-request`).
 
-  - .github/workflows/trigger-downstream.yml (only for repos with consumers)
-    — an orchestrator triggered by `workflow_call` from the upstream's ci.yml
-    once CI has passed. It flat-fans-out one job per consumer package; each job
-    invokes the consumer's cross-repo-trigger.yml as a reusable workflow
-    (workflow_call) with `secrets: inherit`, so GitHub waits for it natively
-    and surfaces its jobs on the upstream PR — no dispatch, no API polling. The
-    ref is taken from the upstream's [[trigger-downstream]].ref entries
-    (transitive paths must agree on the ref or generation fails). A consumer
-    reached by several originator kinds still gets ONE caller job; its
-    `from-jobs` carries the whole set so a single call wakes all its chains.
+  - trigger-downstream{-hpc}.yml (repos with consumers only): on a completed
+    CI run, fan out one job per transitive consumer package and post a
+    `downstream/<lane>` commit status. A public->private edge is dispatched
+    rather than called (see `_edge_needs_dispatch`).
 
-    EXCEPTION (log isolation): a public->private edge is dispatched rather than
-    called, so the private consumer's logs never render into the public run.
-    `_edge_needs_dispatch` is the predicate and carries the full rule.
-
-Manifest schema: the pydantic models below are the definition — `Manifest`,
-`MatrixKind` and `TriggerDownstream`, each field carrying the rule that governs
-it. `--check` reports a violation in TOML notation (`[matrix.build]`).
-
-Invariants enforced (fail-loud, exit 1):
-
-  - [[trigger-downstream]] graph is acyclic.
-  - Every [[trigger-downstream]] target manifest declares a [[deps]] back at us
-    (triggers ⊆ reverse-deps).
-  - Local `needs` resolve to a real [matrix.<kind>] in the same manifest.
-  - Cross-repo `needs = "P/K"` resolve to a [matrix.K] in the manifest whose
-    [package].name == "P", whose triggers include "upstream-change", AND that
-    upstream repo lists us in its [[trigger-downstream]] (otherwise the
-    orchestrator never calls us).
-  - The cross-repo job graph (only cross-repo edges) is acyclic.
-  - `reuse-matrix` references a real kind in the same manifest.
-  - Transitive trigger paths agree on the consumer ref (no ref disagreement
-    across diamond closures — `gh workflow run --ref` can't be pinned to two
-    values for the same consumer).
-  - Per-orchestrator GHA cap: ≤220 estimated jobs (safety margin below the
-    256-job-per-run hard cap).
+Manifest schema: the `_*Raw` pydantic models plus the `_check_*` graph
+invariants; a violation fails with exit 1 in TOML notation (`[matrix.build]`).
 
 Usage:
 
     cd <consumer-repo>
-    ci-infrastructure-generate [--check]
+    ci-infrastructure-generate [--check [--fail-on-drift]]
 
-For a coordinated change that spans repos, before the sibling manifests are on
-their default branches, point the generator at your local clones instead:
+Sibling manifests named in [[deps]] / [[trigger-downstream]] are fetched over
+the GitHub GraphQL API (GH_TOKEN, or gh's keychain auth). For a coordinated
+change still on branches, read local clones instead:
 
     ci-infrastructure-generate --sibling-root ~/code/rollout
 
-The script always operates on the cwd's manifest and fetches every sibling
-manifest named in [[deps]] / [[trigger-downstream]] over the GitHub GraphQL
-API (no clones, ≤2-3 batched queries per BFS layer). Auth: GH_TOKEN env, or
-the gh CLI's keychain auth if no env token is set.
-
-Without --check, regenerated YAML is written in place under
-.github/workflows/. With --check, nothing is written and any file that is out of
-date is reported, pointing the developer at the regen command -- as a WARNING by
-default, or as a failure under --fail-on-drift. Warning is the default because an
-orchestrator gates its whole fan-out on this check, and one repo regenerated
-without its sibling is not a reason to withhold downstream CI from every consumer.
-A schema or graph violation still fails outright either way: it renders a workflow
-that cannot run.
-
-The two modes compare differently on purpose. A write compares the text, so
-regenerating always restores the one canonical spelling. --check compares the
-PARSED documents, so a comment or a blank line added by hand never fails an
-orchestrator run -- only a difference GitHub Actions would act on does -- and it
-names where they disagree (`.jobs.eccodes.with.branch: ...`) rather than only
-which file. A repo that needs a licence header in every file declares it once as
-[generated].header, because a regeneration rewrites the file wholesale and a
-header kept anywhere else is a header the next run deletes.
+Without --check, the YAML is written in place. --check writes nothing and
+reports stale files as a warning (a failure under --fail-on-drift). It compares
+PARSED documents, so hand-added comments never count as drift.
 """
 
 from __future__ import annotations
@@ -130,93 +74,49 @@ GENERATED_HEADER: Final = (
 
 
 def _normalise_header(header: str) -> str:
-    """A [generated].header ready to concatenate: stripped, then one trailing newline.
-
-    TOML multi-line strings pick up leading and trailing blank lines from however
-    the block was indented, so the spacing cannot be left to however the author
-    happened to write the block. A header gets one blank line after it, which is
-    what keeps a licence block from reading as part of the DO-NOT-EDIT banner
-    below it; no header means no leading blank line at all.
-    """
+    """Strip [generated].header and follow it with one blank line."""
     stripped = header.strip("\n")
     return f"{stripped}\n\n" if stripped else ""
 
 
-# Runner for the jobs that only talk to APIs and shuffle YAML — resolve,
-# validate, and the dispatch-and-wait jobs that idle for a whole downstream run.
-# ubuntu-slim is a 1-CPU/5GB GitHub-hosted runner billed at a lower rate, with
-# git, gh, jq, tar and Python preinstalled, which is everything these need. It
-# runs unprivileged, so nothing that wants Docker or a real build may use it.
+# 1-CPU, unprivileged, cheap: only for jobs that talk to APIs and shuffle YAML.
 SLIM_RUNNER: Final = "ubuntu-slim"
 
 
-# Workflow YAML is built up as plain Python dicts and dumped via PyYAML;
-# multi-line shell bodies are tagged with the _BlockScalar marker so they
-# come out as literal block scalars (`|`) instead of quoted strings.
-
-Step: TypeAlias = dict[str, Any]  # one entry of `steps:` inside a job
-NodeT = TypeVar("NodeT")  # a node of any graph _require_acyclic walks
+Step: TypeAlias = dict[str, Any]
+NodeT = TypeVar("NodeT")
 
 
 class _BlockScalar(str):
-    """str subclass the custom YAML representer renders as a `|` block scalar.
-
-    Use for multi-line `run:` bodies where preserving literal newlines matters
-    and quoting would be unreadable.
-    """
+    """Dumped as a `|` block scalar."""
 
 
 class _WorkflowDumper(yaml.SafeDumper):
-    """SafeDumper that emits GA-friendly YAML 1.2 booleans.
-
-    PyYAML defaults to YAML 1.1, where the literal `on`, `off`, `yes`, `no`
-    (and capitalisation variants) are interpreted as booleans — so a dict
-    key `"on"` round-trips as `'on':` with disambiguating quotes. GitHub
-    Actions parses YAML 1.2, where only `true`/`false` are booleans, and
-    workflow files canonically use bare `on:`. Replace the YAML 1.1 bool
-    resolver with the YAML 1.2 one to drop the spurious quotes.
-    """
-
-
-_WorkflowDumper.yaml_implicit_resolvers = {
-    k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
-    for k, v in yaml.SafeDumper.yaml_implicit_resolvers.items()
-}
-# Both codes on purpose: whether this call is typed depends on the types-PyYAML
-# version, and mypy is not pinned. no-untyped-call covers the older stubs;
-# unused-ignore keeps strict mode from failing on the newer ones, where the first
-# code is redundant.
-_WorkflowDumper.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
-    "tag:yaml.org,2002:bool",
-    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
-    list("tTfF"),
-)
+    """YAML 1.2 booleans, so `on:` is not quoted."""
 
 
 class _WorkflowLoader(yaml.SafeLoader):
-    """SafeLoader that reads GA-friendly YAML 1.2 booleans.
-
-    The mirror of _WorkflowDumper, and needed for the same reason: under YAML 1.1
-    a bare `on:` key loads as the boolean True, which would have --check's
-    difference locations talk about `.True` instead of `.on`. Both sides are read
-    through this loader, so the comparison itself is unaffected either way — this
-    is purely so the message names the key the file actually spells.
-    """
+    """YAML 1.2 booleans, so `on:` does not load as True."""
 
 
-_WorkflowLoader.yaml_implicit_resolvers = {
-    k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
-    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()
-}
-_WorkflowLoader.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
-    "tag:yaml.org,2002:bool",
-    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
-    list("tTfF"),
-)
+def _use_yaml12_bools(cls: type[yaml.SafeDumper] | type[yaml.SafeLoader]) -> None:
+    cls.yaml_implicit_resolvers = {
+        k: [(tag, regexp) for tag, regexp in v if tag != "tag:yaml.org,2002:bool"]
+        for k, v in cls.yaml_implicit_resolvers.items()
+    }
+    # Both codes: whether this call is typed depends on the unpinned types-PyYAML.
+    cls.add_implicit_resolver(  # type: ignore[no-untyped-call, unused-ignore]
+        "tag:yaml.org,2002:bool",
+        re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+        list("tTfF"),
+    )
+
+
+_use_yaml12_bools(_WorkflowDumper)
+_use_yaml12_bools(_WorkflowLoader)
 
 
 def _parse_workflow(text: str) -> Any:
-    """Parse workflow YAML for comparison. Raises yaml.YAMLError on bad input."""
     return yaml.load(text, Loader=_WorkflowLoader)
 
 
@@ -228,12 +128,7 @@ _WorkflowDumper.add_representer(_BlockScalar, _block_scalar_representer)
 
 
 def _dump_workflow(doc: Mapping[str, Any]) -> str:
-    """Serialise a workflow dict to YAML using our preferred style.
-
-    `sort_keys=False` preserves insertion order so `name`/`on`/`jobs` come out
-    top-down. `width` is set high so long ${{ }} expressions don't get folded
-    across lines.
-    """
+    """Dump in insertion order, never folding long expressions."""
     out: str = yaml.dump(
         dict(doc),
         Dumper=_WorkflowDumper,
@@ -245,34 +140,22 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
     return out
 
 
-# Valid values for [matrix.<kind>].triggers. Either or both may be set; the
-# kind's generated `if:` filter becomes the OR of clauses for each opted-in
-# trigger. An empty `triggers` (the default) means the kind is push/PR only
-# and does NOT appear in cross-repo-trigger.yml at all.
-TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"  # upstream's trigger-downstream orchestrator dispatched us
-TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"  # a consumer dispatched us to rebuild our artifact
+# [matrix.<kind>].triggers; an empty set keeps the kind out of cross-repo-trigger.yml.
+TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"
+TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"
 _VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQUEST})
 
-# A repo's [package].visibility; see _edge_needs_dispatch for what it gates.
 Visibility: TypeAlias = Literal["public", "private"]
 VISIBILITY_PUBLIC: Final[Visibility] = "public"
 VISIBILITY_PRIVATE: Final[Visibility] = "private"
 
 
-#: Re-exported under the module-local name the call sites below already use.
-_lane_suffix = lane_suffix
-
-
 def _lane_label(lane: Execution) -> str:
-    """How a lane is named in human-facing text (statuses, workflow names)."""
     return "runner" if lane == EXECUTION_RUNNER else "HPC"
 
 
 def _status_context(lane: Execution) -> str:
-    """Commit-status context the orchestrator posts back to the tested SHA.
-
-    Exposed per lane (`downstream/runner`, `downstream/hpc`) so each can be made a
-    required status check independently and block a merge on its own."""
+    """Per lane, so each can be a separate required check."""
     return f"downstream/{lane}"
 
 
@@ -285,63 +168,30 @@ class MatrixKind:
     """One [matrix.<kind>] table plus its [[matrix.<kind>.include]] legs."""
 
     name: str
-    triggers: frozenset[str]  # subset of _VALID_TRIGGERS; empty -> push/PR only
+    triggers: frozenset[str]
     needs: Sequence[str]
     reuse_matrix: str | None
-    legs: Sequence[dict[str, Any]]  # raw include entries (after reuse resolution)
-    # How this kind's build runs. "runner" (default) invokes the manifest's
-    # `action` composite on the GitHub runner. "hpc" instead submits the repo's
-    # `job_script` as a SLURM job (via the shared build-on-hpc action) from the
-    # `hpc` self-hosted runner. Everything else — resolve, fetch, artifact
-    # identity, needs-graph — is identical between the two.
+    legs: Sequence[dict[str, Any]]  # after reuse-matrix resolution
     execution: Execution
-    # `action` is the composite the generated cross-repo-trigger.yml's per-kind
-    # job invokes (e.g. './.github/actions/build-cxxmath'). Required when
-    # `triggers` is non-empty and execution is "runner"; empty for HPC kinds
-    # (which call the shared build-on-hpc action) and for push/PR-only kinds.
-    action: str
-    # For execution == "hpc": the repo-owned build recipe submitted as a SLURM
-    # job (its #SBATCH header + module loads + cmake/ctest body). None otherwise.
-    job_script: str | None
-    # Matrix-leg fields the generator extracts into per-step outputs and threads
-    # into the action's `with:` block. Each entry must be a key that appears in
-    # at least one matrix leg (typo guard).
-    forwarded_inputs: tuple[str, ...]
-    # Outputs of the fetch-deps step to forward into the action's `with:`
-    # block. Today the only meaningful value is
-    # "cmake-prefix-path"; leaf producers (ecbuild, stack-deps) leave this empty.
-    forwarded_deps_outputs: tuple[str, ...]
-    # Whether this kind produces an artifact to upload. Build kinds typically
-    # publish (default); test kinds consume an already-uploaded artifact and
-    # publish nothing. When false the render emits no publish step and instead
-    # threads `own-artifact-name` into the action's `with:` block so it can
-    # download the artifact it's testing.
+    action: str  # runner kinds: the composite the per-kind job calls
+    job_script: str | None  # hpc kinds: the recipe submitted to SLURM
+    forwarded_inputs: tuple[str, ...]  # leg fields passed to the action's `with:`
+    forwarded_deps_outputs: tuple[str, ...]  # fetch-deps outputs passed to the action's `with:`
+    # False for test kinds: no publish step; the action gets `own-artifact-name` instead.
     publishes: bool
-    # Whether the job's `container:` needs registry credentials. Opt-in: the
-    # public images the runner lane pulls anonymously must not be handed empty
-    # credentials, so this stays false unless a repo says its image is private.
-    # Kind-level rather than per-leg because one `container:` block is rendered
-    # per job, and a job covers every leg of the kind.
     container_credentials: bool
-    # Whether the per-kind job runs ctest against the build tree BEFORE
-    # publishing (see _ctest_step). Runner-only: an HPC kind's ctest belongs in
-    # the repo's job-script, where it runs on the compute node.
-    ctest: bool
-    # Extra arguments appended verbatim to the generated ctest invocation (e.g.
-    # "-L nightly -E s_http"). Only meaningful when `ctest` is true.
+    ctest: bool  # run ctest on the build tree before publishing (runner only)
     ctest_args: str
 
 
 @dataclass(frozen=True)
 class TriggerDownstream:
     repo: str
-    ref: str  # consumer ref the orchestrator pins `uses: …@<ref>` to.
+    ref: str
 
 
 @dataclass(frozen=True)
 class DepRef:
-    """Just the bits of [[deps]] needed for validation (not full resolution)."""
-
     repo: str
     package: str
 
@@ -350,26 +200,18 @@ class DepRef:
 class Manifest:
     """Parsed view of one repo's .ci/manifest.toml."""
 
-    path: Path  # filesystem path to the manifest
-    repo_root: Path  # the repo directory (manifest.path.parents[1])
+    path: Path
+    repo_root: Path
     package_name: str
-    repo: str  # owner/repo
-    compiler_inputs: tuple[str, ...] = ()  # [package].compiler-inputs; see _artifact_identity
+    repo: str
+    compiler_inputs: tuple[str, ...] = ()
     visibility: Visibility = VISIBILITY_PRIVATE
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
-    # [downstream-gate].label, or None for the default "always fan out". When set,
-    # the orchestrator runs a pull request's fan-out only if the pull request
-    # carries that label; a push, which has no pull request to label, always runs.
-    # Opt-in, because turning it on silently would stop every unlabelled repo's
-    # downstream CI.
+    # [downstream-gate].label: a PR fans out only if it carries this label; a push always does.
     downstream_gate_label: str | None = None
-    # [generated].header: comment lines emitted above GENERATED_HEADER in every
-    # file this repo generates. For a repo whose licensing check wants an SPDX
-    # block in each file (ecflow's reuse.yml), the manifest is where that belongs:
-    # a regeneration rewrites the file wholesale, so a header kept anywhere else
-    # is a header the next run deletes.
+    # [generated].header: comment lines above GENERATED_HEADER in every generated file.
     generated_header: str = ""
 
 
@@ -391,30 +233,19 @@ _RESERVED_MATRIX_KEYS: Final = frozenset(
         "ctest-args",
     }
 )
-# Valid entries for `forwarded-deps-outputs` — must correspond to real outputs
-# of `actions/fetch-deps`.
+# Outputs of actions/fetch-deps.
 _VALID_DEPS_OUTPUTS: Final = frozenset({"cmake-prefix-path"})
 _ACTION_PATH_RE: Final = re.compile(r"^\./\.github/actions/[A-Za-z0-9_-]+$")
-# Constrained to the same character class artifact-name parts use; rejects
-# slashes, dots, spaces, and other shell-metacharacters that would corrupt
-# downstream `gh api` / cache-key lookups.
 _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class _PackageRaw(BaseModel):
-    # extra="ignore" — resolve_deps owns the full [package] schema (compiler-inputs,
-    # needs-python, etc.); the generator only reads name + repo + visibility.
-    # Re-validating the rest here would couple the two parsers.
+    # resolve_deps owns the full [package] schema.
     model_config = ConfigDict(extra="ignore")
     name: str
     repo: str
-    # Read solely so _check_leg_identity_uniqueness can model the artifact name
-    # exactly (see _artifact_identity). Not re-validation of [package] — resolve_deps
-    # still owns that, and a bad value is its error to report.
     compiler_inputs: tuple[str, ...] = Field(default=(), alias="compiler-inputs")
-    # Absent -> "private" (fail closed: an unlabelled repo is treated as private
-    # so a public upstream never exposes its logs; mark "public" to opt in to
-    # the native reusable-workflow path). The Literal rejects any other value.
+    # Fail closed: an unlabelled repo is private.
     visibility: Visibility = VISIBILITY_PRIVATE
 
 
@@ -480,7 +311,6 @@ class _MatrixKindRaw(BaseModel):
         bad = [t for t in v if t not in _VALID_TRIGGERS]
         if bad:
             raise ValueError(f"triggers entries must be drawn from {sorted(_VALID_TRIGGERS)}; got unknown: {bad}")
-        # Reject duplicates so the schema reads as a set.
         if len(set(v)) != len(v):
             raise ValueError(f"triggers must not contain duplicates: {list(v)}")
         return v
@@ -488,9 +318,7 @@ class _MatrixKindRaw(BaseModel):
     @field_validator("action")
     @classmethod
     def _action_path_shape(cls, v: str) -> str:
-        # Empty is fine — kinds without triggers don't need an action. The
-        # required-when-triggered check happens after include legs are resolved
-        # so we can emit a precise message.
+        # Required-when-triggered is checked in _resolve_matrices.
         if v and not _ACTION_PATH_RE.fullmatch(v):
             raise ValueError(f"action must be a local composite path like './.github/actions/<name>'; got {v!r}")
         return v
@@ -520,9 +348,6 @@ class _MatrixKindRaw(BaseModel):
     @field_validator("artifact_prefix")
     @classmethod
     def _artifact_prefix_shape(cls, v: str | None) -> str | None:
-        # None (default) means "use [package].prefix" — handled in the resolver.
-        # An empty/whitespace string is almost always a typo; reject loudly so
-        # the artifact-name suffix doesn't start with a stray '-'.
         if v is None:
             return v
         stripped = v.strip()
@@ -577,18 +402,11 @@ class _ManifestRaw(BaseModel):
 
 
 def _format_validation_error(path: Path, exc: ValidationError) -> str:
-    """Render the first pydantic error as one line in TOML notation.
-
-    Turns the pydantic loc tuple into `[matrix.build]` /
-    `[[trigger-downstream]][1]`, which is how the manifest spells it.
-    """
+    """The first pydantic error as one line in TOML notation."""
     err = exc.errors()[0]
     loc: tuple[str | int, ...] = tuple(err["loc"])
-    msg = err["msg"]
-    # Strip the "Value error, " prefix that pydantic adds to ValueError raised
-    # from @model_validator / @field_validator hooks; our hooks already produce
-    # the user-facing wording.
-    msg = msg.removeprefix("Value error, ")
+    # pydantic prefixes errors raised from our validators.
+    msg = err["msg"].removeprefix("Value error, ")
     prefix = _format_loc(loc)
     sep = " " if prefix and not prefix.endswith(" ") else ""
     return f"{path}: {prefix}{sep}{msg}".rstrip()
@@ -641,23 +459,14 @@ def _format_loc(loc: tuple[str | int, ...]) -> str:
 
 
 def parse_manifest(path: Path) -> Manifest:
-    """Load one .ci/manifest.toml and apply only the validation we need here.
-
-    Intentionally narrow: we don't re-validate every existing field; the existing
-    resolve_deps.py owns that. We only parse what the generator needs.
-    """
+    """Parse only what the generator needs; resolve_deps owns the rest."""
     with path.open("rb") as fh:
         raw_dict = tomllib.load(fh)
     return _build_manifest(path, raw_dict)
 
 
 def parse_manifest_text(text: str, path: Path) -> Manifest:
-    """Parse a manifest TOML *string* — used in --fetch mode where sibling manifests
-    arrive as GraphQL blobs and have no real on-disk path. The caller passes a
-    synthetic `path` (e.g. `Path("github://owner/repo@HEAD/.ci/manifest.toml")`)
-    used only for error messages and as `repo_root` for symmetry with on-disk
-    manifests; we never write to it.
-    """
+    """Parse manifest TOML text; `path` is synthetic and used only in error messages."""
     return _build_manifest(path, tomllib.loads(text))
 
 
@@ -685,15 +494,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
 
 
 def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> dict[str, MatrixKind]:
-    """Second pass: resolve reuse-matrix into concrete legs and project to MatrixKind.
-
-    Pydantic has already enforced the per-kind shape (no unknown keys, correct
-    types). What's left is the cross-kind reference: `reuse-matrix = "X"` must
-    point at a kind that exists, isn't itself a reuse-matrix, and isn't combined
-    with an explicit `include`.
-    """
-    # A dict view of each block, so the reuse-matrix expansion shared with
-    # resolve_deps can read pydantic-validated bodies and raw TOML alike.
+    """Resolve reuse-matrix into legs and apply the cross-field rules."""
     blocks = {k: {"reuse-matrix": b.reuse_matrix, "include": b.include} for k, b in raw_matrix.items()}
 
     resolved: dict[str, MatrixKind] = {}
@@ -703,10 +504,6 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
         except ManifestSchemaError as e:
             raise SchemaError(f"{path}: {e}") from e
 
-        # `execution` picks the build path and dictates which of action /
-        # job-script is required. HPC kinds call the shared build-on-hpc action,
-        # so they carry a job-script (the repo's recipe) and must NOT set action;
-        # runner kinds are the mirror image.
         if body.execution == EXECUTION_HPC:
             if body.action:
                 raise SchemaError(
@@ -718,9 +515,6 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
                     "execution = 'hpc' but has no `job-script`; there is no build recipe to submit"
                 )
-            # A generated ctest step would run in the container that SUBMITTED
-            # the SLURM job, not on the compute node where the build tree is —
-            # so it would test nothing. HPC recipes call ctest themselves.
             if body.ctest:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc'; "
@@ -733,26 +527,17 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
                     f"{path}: [matrix.{kind}] sets `job-script` but execution is 'runner'; "
                     "`job-script` only applies to execution = 'hpc'"
                 )
-            # When a runner kind opts into any trigger, the generator's per-kind
-            # job needs something to call — the manifest must name a composite.
             if body.triggers and not body.action:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
                     "but has no `action`; cross-repo-trigger.yml has nothing to invoke"
                 )
 
-        # `ctest-args` alone is inert — almost always a forgotten `ctest = true`
-        # rather than a deliberate no-op, so reject it instead of silently
-        # dropping the arguments.
         if body.ctest_args and not body.ctest:
             raise SchemaError(
                 f"{path}: [matrix.{kind}] sets `ctest-args` without `ctest = true`; the arguments would never be used"
             )
 
-        # The generated step tests the tree the BUILD left behind. A kind that
-        # publishes nothing is a test kind: it downloads an artifact and its
-        # composite owns whatever it runs, with no build tree and so no
-        # `build-dir` output to point ctest at.
         if body.ctest and not body.publishes:
             raise SchemaError(
                 f"{path}: [matrix.{kind}] sets `ctest` with `publishes = false`; "
@@ -760,9 +545,6 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
                 f"{body.action or 'its action'} instead"
             )
 
-        # Every forwarded-input must appear as a key in at least one matrix leg,
-        # otherwise it's a typo that would only surface as an empty `require`
-        # at workflow runtime.
         if body.forwarded_inputs:
             available = {k for leg in legs for k in leg}
             missing = [x for x in body.forwarded_inputs if x not in available]
@@ -794,8 +576,6 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> d
 
 @dataclass(frozen=True)
 class JobRef:
-    """A reference like 'cxxmath/build' parsed into (package, kind)."""
-
     package: str
     kind: str
 
@@ -809,11 +589,7 @@ def _split_need(raw: str) -> tuple[str | None, str]:
 
 
 def _index_unique(manifests: Sequence[Manifest], key: Callable[[Manifest], str], label: str) -> dict[str, Manifest]:
-    """Index manifests by `key`, failing loudly on a collision.
-
-    A duplicate would otherwise silently overwrite its twin in the lookup every
-    check below reads, so the collision is reported naming both manifest paths.
-    """
+    """Index manifests by `key`; a collision is a SchemaError."""
     out: dict[str, Manifest] = {}
     for m in manifests:
         if key(m) in out:
@@ -834,49 +610,19 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
     _check_leg_identity_uniqueness(manifests)
 
 
-# Fields that schedule a build (which runner / image delivers the tools) but do
-# NOT enter the artifact name. Two publishing legs that differ only in these
-# would upload different builds under one artifact name — a self-collision a
-# by-name lookup resolves non-deterministically.
-_SCHEDULING_FIELDS: Final = frozenset({"runs-on", "container", "site"})
-
-
-# The leg fields make_artifact_name is actually a function of (resolve_deps.py:701,
-# _github_api.make_artifact_name), beyond these the per-package compiler-inputs.
-# Everything else on a leg — runs-on, container, site, job-script, and any toolchain
-# key a .j2 recipe reads — is invisible to the store.
+# Leg fields make_artifact_name reads (plus [package].compiler-inputs).
 _FIXED_NAME_FIELDS: Final = ("build-type", "platform", "python-version", "options")
 
 
 def _artifact_identity(leg: Mapping[str, Any], compiler_inputs: Sequence[str]) -> tuple[str, ...]:
-    """The projection of a leg that the artifact name is a function of.
-
-    Mirrors resolve_deps' defaults so absence and the default spell one identity: an
-    absent `build-type` is "Release" (resolve_leg), an absent platform /
-    python-version / options is "". Deliberately total and non-raising — that
-    `platform` is required and `options` is a restricted token are resolve_deps'
-    rules to enforce, with its own messages.
-    """
+    """The projection of a leg the artifact name depends on, with resolve_deps' defaults. Never raises."""
     parts = [str(leg.get(f, "Release" if f == "build-type" else "")).strip() for f in _FIXED_NAME_FIELDS]
     parts.extend(str(leg.get(f, "")).strip() for f in sorted(compiler_inputs))
     return tuple(parts)
 
 
 def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
-    """No two legs of the same publishing kind may resolve to one artifact name.
-
-    Identity is the artifact-name projection (_artifact_identity) and nothing else.
-    It was previously "every field except runs-on/container/site", which is not a
-    weaker version of the name but a DIFFERENT, non-conservative predicate: more
-    fields means more legs look distinct, so fewer real collisions are caught. That
-    denylist also had to be extended every time a manifest grew a key, and forgetting
-    to extend it failed silently — it only weakened the guard. Templated recipes make
-    that acute: four legs differing only in `modules` would each build a different
-    binary and publish it under one name, which a by-name fetch then resolves
-    non-deterministically.
-
-    Non-publishing kinds (test) are exempt — they upload nothing.
-    """
+    """No two legs of a publishing kind may share an artifact identity."""
     for m in manifests:
         for kind, mk in m.matrices.items():
             if not mk.publishes:
@@ -902,25 +648,9 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
 
 
 def validate_job_templates(m: Manifest) -> None:
-    """Check every `.j2` job-script in `m` against the legs that select it.
+    """Check each .j2 job-script exists, parses, and reads only names its legs declare.
 
-    All leg data is known here, so a recipe reading a key no leg declares is caught
-    on a laptop rather than half an hour into a SLURM queue. That is the whole
-    manifest/recipe agreement, checked statically:
-
-      * the file exists,
-      * it parses as a template (a syntax error with a line number),
-      * every top-level name it reads is one the leg supplies.
-
-    Static, so a name used only inside a branch that is never taken must still be
-    declared — the right side to err on when the point is that the manifest says
-    what a leg is. `leg['x']` is invisible to it, which is the documented cost of
-    that escape hatch.
-
-    Only `.j2` paths are read from disk, so a plain `.sh` named by a manifest whose
-    checkout we do not have (and every test fixture that names one) is untouched.
-    Callers pass the LOCAL manifest only: siblings arrive as GraphQL blobs with a
-    synthetic repo_root and no recipes behind them.
+    Pass the local manifest only: siblings have no recipes on disk.
     """
     if not m.path.is_file():
         return
@@ -957,7 +687,6 @@ def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str,
         for t in m.triggers:
             target = by_repo.get(t.repo)
             if target is None:
-                # External repo: not ours to validate.
                 continue
             depends_on_us = any(d.repo == m.repo for d in target.deps)
             if not depends_on_us:
@@ -971,11 +700,7 @@ def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str,
 def _require_acyclic(
     graph: Mapping[NodeT, Sequence[NodeT]], roots: Iterable[NodeT], *, label: str, render: Callable[[NodeT], str]
 ) -> None:
-    """Three-colour DFS. Raises SchemaError naming the cycle, in traversal order.
-
-    GRAY means "on the current path", so meeting a GRAY node is a back edge; the
-    cycle is the tail of the stack from that node onwards.
-    """
+    """Three-colour DFS; raises SchemaError naming the cycle."""
     WHITE, GRAY, BLACK = 0, 1, 2
     color: dict[NodeT, int] = defaultdict(lambda: WHITE)
 
@@ -995,11 +720,7 @@ def _require_acyclic(
 
 
 def _check_trigger_cycles(manifests: Sequence[Manifest], by_repo: Mapping[str, Manifest]) -> None:
-    """A -> B -> A in the [[trigger-downstream]] graph would fan out forever.
-
-    Targets outside the manifest set are external — we cannot follow them, so
-    they are dropped rather than treated as leaves.
-    """
+    """The [[trigger-downstream]] graph must be acyclic; external targets are dropped."""
     graph = {m.repo: [t.repo for t in m.triggers if t.repo in by_repo] for m in manifests}
     _require_acyclic(graph, [m.repo for m in manifests], label="trigger-downstream cycle", render=str)
 
@@ -1010,7 +731,7 @@ def _check_needs(
     by_repo: Mapping[str, Manifest],
 ) -> None:
     """Resolve every entry in matrix.needs and verify cross-repo fan-out reachability."""
-    cross_edges: list[tuple[Manifest, str, JobRef]] = []  # (downstream-manifest, downstream-kind, upstream-jobref)
+    cross_edges: list[tuple[Manifest, str, JobRef]] = []
 
     for m in manifests:
         for kind, mk in m.matrices.items():
@@ -1036,17 +757,12 @@ def _check_needs(
                         f"but {upstream.path} has no [matrix.{target_kind}]"
                     )
                 if not up_kind.triggers:
-                    # The upstream kind exists but is push/PR only (no triggers).
-                    # Cross-repo needs implies the kind should participate in
-                    # cross-repo wiring; otherwise the originator string in the
-                    # orchestrator's dispatch can't reach anything meaningful.
                     raise SchemaError(
                         f"{m.path}: [matrix.{kind}].needs references {pkg}/{target_kind}, "
                         f"but [matrix.{target_kind}] in {upstream.path} has no triggers — "
                         f"the kind exists for push/PR runs only and can't originate a "
                         f"cross-repo dispatch"
                     )
-                # Reachability: upstream must trigger us, or this is dead code.
                 if not any(t.repo == m.repo for t in upstream.triggers):
                     raise SchemaError(
                         f"{m.path}: [matrix.{kind}] needs {pkg}/{target_kind} but "
@@ -1063,7 +779,7 @@ def _check_cross_repo_job_cycles(
     by_pkg: Mapping[str, Manifest],
     cross_edges: Sequence[tuple[Manifest, str, JobRef]],
 ) -> None:
-    """Same check one level down: nodes are (package, kind), edges cross-repo needs only."""
+    """Cross-repo needs between (package, kind) nodes must be acyclic."""
     out_edges: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for downstream_m, downstream_kind, upstream_ref in cross_edges:
         out_edges[(downstream_m.package_name, downstream_kind)].append((upstream_ref.package, upstream_ref.kind))
@@ -1076,11 +792,7 @@ def _check_cross_repo_job_cycles(
 
 
 def _check_kinds_have_legs(manifests: Sequence[Manifest]) -> None:
-    """A kind that participates in cross-repo wiring needs at least one leg.
-
-    Zero legs — whether declared directly or inherited via reuse-matrix — renders
-    a matrix the consuming workflow rejects with `fromJSON: empty input`.
-    """
+    """A triggered or reuse-matrix kind needs at least one leg."""
     for m in manifests:
         for kind, mk in m.matrices.items():
             if not mk.legs and (mk.triggers or mk.reuse_matrix is not None):
@@ -1100,18 +812,10 @@ def _id_segment(s: str) -> str:
 
 
 def transitive_cross_repo_needs(m: Manifest, kind: str, by_pkg: Mapping[str, Manifest]) -> list[JobRef]:
-    """Walk needs (local AND cross-repo) collecting every transitive cross-repo ref.
-
-    The result is the upstream-job filter set: this `(package, kind)` job must
-    run when the orchestrator calls us with ANY of these upstream-job inputs.
-    Without recursing cross-repo, a consumer would only accept its direct
-    upstream and a transitive call (e.g. orchestrator on fortran calling
-    cxxmath-python with upstream-job=fortmath/build) would find no matching
-    `if:` and skip silently.
-    """
+    """Every cross-repo (package, kind) this kind transitively needs; its from-jobs filter set."""
     cross: list[JobRef] = []
     seen_refs: set[tuple[str, str]] = set()
-    seen_local: set[tuple[str, str]] = set()  # (package, kind) — avoid re-walking
+    seen_local: set[tuple[str, str]] = set()
 
     def walk(manifest: Manifest, k: str) -> None:
         key = (manifest.package_name, k)
@@ -1139,19 +843,7 @@ def transitive_cross_repo_needs(m: Manifest, kind: str, by_pkg: Mapping[str, Man
 
 
 def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execution) -> str | None:
-    """Emit a repo's .github/workflows/cross-repo-trigger{-hpc}.yml as a string,
-    or None if no kind in the repo's matrix opts into cross-repo dispatch on `lane`.
-
-    A kind appears here iff its `triggers` list is non-empty, and the `if:` filter
-    rendered is the OR of the clauses for each opted-in trigger. Leaf producers
-    (rebuild-request only, no upstream-change) get a generated workflow too. See
-    the module docstring for the two entry points and who fires each.
-    """
-    # One file per lane: only kinds whose execution matches this lane appear here.
-    # The lanes are provably self-contained (every hpc kind depends only on upstream
-    # hpc kinds, every runner kind only on runner kinds), so the filtered kind list
-    # yields a self-consistent single-lane DAG — the per-kind `if:` filter and
-    # `from-jobs` matching are unchanged.
+    """cross-repo-trigger{-hpc}.yml for the kinds with triggers on `lane`, or None."""
     runnable = sorted(k for k, mk in m.matrices.items() if mk.triggers and mk.execution == lane)
     if not runnable:
         return None
@@ -1173,45 +865,21 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
 
     doc: dict[str, Any] = {
         "name": f"Cross-repo trigger ({m.package_name})",
-        # run-name embeds dispatch-id so the workflow_dispatch recovery path
-        # (resolve_deps) can correlate this run with the dispatch it just made.
-        # Inert under workflow_call: GitHub names the run after the top-level
-        # caller and ignores a called workflow's run-name, so the empty
-        # dispatch-id there does no harm.
+        # dispatch-id lets resolve_deps find the run it dispatched; ignored under workflow_call.
         "run-name": ("Cross-repo trigger (${{ inputs.from-repo }}@${{ inputs.from-sha }}) [${{ inputs.dispatch-id }}]"),
-        # Both entry points take the same typed inputs (see the module docstring).
         "on": {
-            # workflow_call needs no dispatch-id: GitHub waits for the called
-            # run natively, so there is no run to correlate by name.
             "workflow_call": {"inputs": _shared_trigger_inputs()},
             "workflow_dispatch": {"inputs": _workflow_dispatch_inputs()},
         },
-        # Concurrency keyed on the producer package + ref, via a STATIC token —
-        # NOT `github.workflow`. Under workflow_call (the orchestrator path)
-        # github.workflow/github.ref resolve to the *caller's* values, so a
-        # `${{ github.workflow }}-${{ github.ref }}` group would collapse onto
-        # the top-level caller's own group and GitHub would cancel us with a
-        # "deadlock detected" (parent waits for us; we wait for the parent's
-        # group). A package-specific literal can never collide with a caller.
-        # Still coalesces simultaneous consumer-driven dispatches from C and E
-        # into B onto one run; we don't cancel in-flight so a late dispatcher
-        # reuses the result instead of restarting.
+        # A static package token, not github.workflow: under workflow_call that is
+        # the caller's, and sharing its group deadlocks. No cancel, so a late
+        # dispatcher reuses the in-flight run.
         "concurrency": {
             "group": f"cross-repo-trigger-{lane}-{m.package_name}-" + "${{ github.ref }}",
             "cancel-in-progress": False,
         },
-        # The object-store location and the AWS creds (one credential pair, used
-        # by both the artifact store and sccache) flow to every job so resolve's
-        # S3 existence checks and each kind's fetch/publish reach the artifact
-        # store. Workflow-level so we never miss a job as kinds are added.
-        #
-        # SCCACHE_BUCKET rides along because setup-sccache takes its bucket from
-        # the job environment and has no fallback for it -- deliberately, since
-        # artifacts and sccache are orthogonal uses in SEPARATE buckets and one
-        # must never silently borrow the other's. Without it here, any downstream
-        # build calling setup-sccache with backend=s3 fails outright. The
-        # endpoint needs no entry: the action falls back to the artifact one,
-        # because that half really is shared.
+        # setup-sccache has no fallback for SCCACHE_BUCKET: artifacts and sccache
+        # live in separate buckets.
         "env": {
             "ARTIFACT_POLL_INTERVAL": "${{ vars.ARTIFACT_POLL_INTERVAL || '60' }}",
             "ARTIFACT_S3_ENDPOINT": "${{ secrets.ARTIFACT_S3_ENDPOINT }}",
@@ -1226,17 +894,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
 
 
 def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
-    """Inputs common to both entry points (workflow_call + workflow_dispatch):
-    dispatcher metadata + branch-match hints.
-
-    `from-jobs` carries the upstream-change coordinates (a JSON array of
-    package/kinds); a consumer asking us to rebuild our artifact sends
-    `rebuild-request=true` instead. The two are mutually exclusive (exactly one
-    is set per invocation); the per-kind `if:` filter enforces it. One dispatch
-    carries every originator kind that reaches us, so both a runner chain and an
-    HPC chain wake from a single call — the per-kind `if:` matches the array with
-    `contains(fromJSON(...))`.
-    """
+    """Inputs shared by workflow_call and workflow_dispatch."""
     return {
         "from-repo": {
             "description": "owner/repo of the dispatcher (upstream producer or downstream consumer)",
@@ -1282,10 +940,7 @@ def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
 
 
 def _workflow_dispatch_inputs() -> dict[str, dict[str, Any]]:
-    """workflow_dispatch typed inputs: the shared set plus `dispatch-id`, which
-    resolve_deps' recovery stamps into run-name so it can correlate the run it
-    just fired. Optional/defaulted so the workflow_call entry point (which never
-    sets it) stays valid."""
+    """The shared inputs plus `dispatch-id`."""
     return {
         "dispatch-id": {
             "description": "Correlation id stamped into run-name so the dispatcher can find this run",
@@ -1298,20 +953,7 @@ def _workflow_dispatch_inputs() -> dict[str, dict[str, Any]]:
 
 
 def _render_kind_filter(refs: Sequence[JobRef], triggers: Iterable[str]) -> str:
-    """Build the `if:` expression gating a job on the dispatch trigger conditions.
-
-    Each opted-in trigger contributes its own clause:
-
-      - `upstream-change`: one `contains(fromJSON(inputs.from-jobs), 'pkg/kind')`
-        per ref in `refs`. `from-jobs` is a JSON array, so a single dispatch can
-        carry several originator kinds and array-`contains` matches whole
-        elements (``fortmath/build`` never matches ``fortmath/build-hpc``).
-      - `rebuild-request`: a single `inputs.rebuild-request` clause.
-
-    The result is the OR of all clauses. An empty triggers set produces
-    `"false"` — the job would never fire — but the caller should be gating
-    rendering itself rather than relying on this.
-    """
+    """OR of `contains(from-jobs, 'pkg/kind')` per ref and/or `inputs.rebuild-request`; "false" if none."""
     triggers_set = frozenset(triggers)
     clauses: list[str] = []
     if TRIGGER_UPSTREAM_CHANGE in triggers_set:
@@ -1322,11 +964,7 @@ def _render_kind_filter(refs: Sequence[JobRef], triggers: Iterable[str]) -> str:
 
 
 def _mint_step() -> Step:
-    """The `create-github-app-token` mint step that every cross-repo job
-    starts with. GA redacts add-mask'd values when they flow through
-    needs.<job>.outputs.* (community/13082), so jobs can't share a token via
-    outputs; each one mints its own.
-    """
+    """App token, minted per job: masked values do not survive job outputs."""
     return {
         "id": "mint",
         "uses": "actions/create-github-app-token@v3",
@@ -1340,8 +978,6 @@ def _mint_step() -> Step:
 
 def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) -> dict[str, Any]:
     matrix_arg = ",".join(runnable)
-    # Resolve fires whenever any runnable kind would; its filter is the union
-    # of all kinds' triggers.
     all_triggers: frozenset[str] = frozenset().union(*(m.matrices[k].triggers for k in runnable))
     cond = _render_kind_filter(cross, all_triggers)
     outputs: dict[str, str] = {"ref": "${{ steps.pick.outputs.ref }}"}
@@ -1364,11 +1000,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                 },
             },
             {
-                # Explicit repository + token: under workflow_call this workflow
-                # runs in the CALLER's run, so github.repository is the upstream
-                # orchestrator's repo, not ours. A bare checkout would clone the
-                # caller and resolve-deps would read the WRONG manifest. Pin to
-                # our own repo at the branch-matched ref.
+                # Explicit repository: under workflow_call github.repository is the caller's.
                 "uses": "actions/checkout@v6",
                 "with": {
                     "repository": m.repo,
@@ -1383,9 +1015,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                     "current-branch": "${{ steps.pick.outputs.ref }}",
                     "matrix": matrix_arg,
                     "token": "${{ steps.mint.outputs.token }}",
-                    # App credentials enable consumer-driven recovery: if any transitive
-                    # dep's artifact is missing on a normal ref, resolve-deps dispatches
-                    # that producer's cross-repo-trigger.yml and waits.
+                    # Enables dispatching a producer whose artifact is missing.
                     "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
                     "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
                 },
@@ -1394,33 +1024,13 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
     }
 
 
-def _field_to_var(name: str) -> str:
-    """Convert a hyphenated matrix-leg field name to a shell-safe variable name.
-
-    `cxx-compiler` -> `cxx_compiler`, `runs-on` -> `runs_on`, etc. The
-    GITHUB_OUTPUT key keeps the hyphenated form (matching the original field
-    name) so the action call's `with:` block stays readable.
-    """
-    return name.replace("-", "_")
-
-
 def _decode_step(mk: MatrixKind) -> Step:
-    """`Decode matrix-leg` step — extracts mk.forwarded_inputs +
-    _resolved.own-artifact-name + _resolved.deps from the matrix leg JSON,
-    fails loudly on empty/null via the require helper, writes outputs.
-
-    The leg JSON arrives through `env:`, never interpolated into the script —
-    see the comment on the `leg=` line. Keep every `${{ }}` out of the emitted
-    body: the leg carries manifest-authored strings, and one of them holding an
-    apostrophe is enough to turn the rest of the script into commands.
-    """
-    # A forwarded field that is absent from at least one leg (e.g. `options`, which a
-    # plain build omits) is OPTIONAL: extract it with `// ""` and ALLOW empty. Fields
-    # present in every leg are mandatory and keep the require() non-empty guard.
+    """Decode forwarded leg fields, deps and own-artifact-name into step outputs."""
+    # A field missing from some leg is optional and may be empty.
     optional_fields = {fld for fld in mk.forwarded_inputs if any(fld not in leg for leg in mk.legs)}
     var_assignments: list[str] = []
     for fld in mk.forwarded_inputs:
-        var = _field_to_var(fld)
+        var = jobscript.template_var(fld)
         if fld in optional_fields:
             var_assignments.append(f'{var}=$(jq -r \'."{fld}" // ""\' <<<"$leg")')
         else:
@@ -1432,7 +1042,7 @@ def _decode_step(mk: MatrixKind) -> Step:
 
     output_lines: list[str] = []
     for fld in mk.forwarded_inputs:
-        output_lines.append(f'  echo "{fld}=${{{_field_to_var(fld)}}}"')
+        output_lines.append(f'  echo "{fld}=${{{jobscript.template_var(fld)}}}"')
     output_lines.append('  echo "deps-json=${deps_json}"')
     output_lines.append('  echo "own-artifact-name=${own_artifact_name}"')
 
@@ -1443,14 +1053,7 @@ def _decode_step(mk: MatrixKind) -> Step:
         '  echo "::error::jq is required but not installed in this runner/image." >&2',
         "  exit 1",
         "}",
-        # Via the environment, NEVER spliced into this script. An expression
-        # written into a `run:` body is concatenated as script TEXT before bash
-        # ever sees it, so a single quote anywhere in the leg -- e.g. ecflow's
-        # ctest-args, `-L nightly -E 's_test|s_zombies' -j 8` -- closes the
-        # string early and bash runs the remainder as commands. An `env:` value
-        # is handed to the process environment instead, where quoting and
-        # $(...) are inert. Same reason every input in print-dep-table's action
-        # arrives this way.
+        # Via env, never a `${{ }}` in the script: a quote in the leg would become shell.
         'leg="$MATRIX_LEG"',
         "require() {",
         "  local val",
@@ -1476,11 +1079,7 @@ def _decode_step(mk: MatrixKind) -> Step:
 
 
 def _setup_python_step(mk: MatrixKind) -> Step | None:
-    """`actions/setup-python@v6` between Decode and Fetch — emitted only when
-    a leg declares python-version. Provides the right interpreter to
-    fetch_deps.py's pip-install of needs-python wheels (the kind's composite
-    runs after Fetch, so its own setup-python step is too late).
-    """
+    """setup-python before Fetch, whose needs-python wheel install needs the leg's interpreter."""
     if not any("python-version" in leg for leg in mk.legs):
         return None
     return {
@@ -1491,10 +1090,7 @@ def _setup_python_step(mk: MatrixKind) -> Step | None:
 
 
 def _action_call_step(mk: MatrixKind) -> Step:
-    """The `uses: <manifest.action>` step with forwarded inputs. When
-    `publishes` is false (test kinds), `own-artifact-name` is auto-added so
-    the action can download the artifact it's verifying.
-    """
+    """Call the kind's composite with forwarded inputs."""
     with_block: dict[str, str] = {}
     for out in mk.forwarded_deps_outputs:
         with_block[out] = f"${{{{ steps.deps.outputs.{out} }}}}"
@@ -1511,32 +1107,11 @@ def _action_call_step(mk: MatrixKind) -> Step:
 
 
 def _hpc_build_step(mk: MatrixKind) -> Step:
-    """The build-on-hpc step for an HPC kind — a drop-in for `_action_call_step`.
-
-    Consumes the resolved cmake-prefix-path from the download-only step and
-    exposes `install-path` (id: build) exactly like the runner build composite,
-    so the surrounding job wiring (publish, print-dep-table, …) is unchanged.
-    Publishing happens inside build-on-hpc (gated on cache-hit), so `_kind_job`
-    emits no separate publish step for HPC kinds.
-
-    `site` is a scheduling field taken from the matrix leg; `job-script` is the
-    repo-owned recipe. A multi-recipe kind (e.g. one leg per Python version)
-    names it per leg, which overrides the kind-level default; a leg that declares
-    none falls back to that default. `work-dir` and `troika-user` come from
-    org-level config (a variable and a secret) so the cluster paths and ssh
-    identity aren't baked into every manifest.
-
-    A test-only kind (`publishes = false`) builds and publishes no artifact, so
-    it runs build-on-hpc with `publish: false`: the job runs for its pass/fail
-    sentinel and the never-created install tree is neither fetched nor published.
-    """
-    assert mk.job_script is not None  # guaranteed for execution == "hpc"
+    """build-on-hpc step: a drop-in for _action_call_step that also publishes (unless publishes=false)."""
+    assert mk.job_script is not None
     with_block: dict[str, str] = {
         "site": "${{ matrix.site }}",
         "job-script": f"${{{{ matrix.job-script || '{mk.job_script}' }}}}",
-        # The render context for a `.j2` recipe; inert for a plain `.sh`. A `with:`
-        # VALUE, so GitHub substitutes it as an action input and never as script
-        # text — the rule _decode_step's comment states, satisfied by construction.
         "matrix-leg": "${{ toJSON(matrix) }}",
         "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
@@ -1554,100 +1129,43 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
     }
 
 
-# A per-kind job posts a check run back to the dispatcher only on the
-# workflow_dispatch entry point with upstream-change coordinates (from-jobs set).
-# That is exactly the "a public upstream dispatched us because we are private"
-# case: reusable-workflow invocations surface as push/pull_request events (not
-# workflow_dispatch) and already show on the PR natively, and the rebuild-request
-# recovery path leaves from-jobs empty. See render_orchestrator_workflow.
+# Only a public upstream's dispatch (workflow_dispatch with from-jobs) posts check
+# runs; reusable-workflow calls already show on the PR.
 _CHECK_RUN_WHEN: Final = "github.event_name == 'workflow_dispatch' && inputs.from-jobs != '[]'"
-# The dispatched run lives in THIS repo; under workflow_dispatch github.repository
-# is us (the private consumer), so the URL points at the private run (auth-gated).
-_CHECK_RUN_DETAILS_URL: Final = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 _REPORT_CHECK_RUN_ACTION: Final = "ecmwf/ci-infrastructure/actions/report-check-run@main"
-
-
 _ANNOUNCE_IMAGE_ACTION: Final = "ecmwf/ci-infrastructure/actions/announce-image@main"
+_RUN_URL: Final = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
 
 def _announce_image_step() -> Step:
-    """Say which container image this job is running in, and when it was built.
-
-    Emitted for every kind, not just containerised ones: the action reads the
-    CI_IMAGE_* environment our images bake in and is silent when it is absent, so
-    an HPC-submit or bare-runner leg costs one no-op step rather than needing a
-    condition here that would have to track which kinds run in a container.
-
-    No `extra` is passed. The input exists for callers who know something the
-    image does not, but anything the generator could put there (compiler, matrix
-    leg) comes from manifest-specific forwarded-inputs that not every repo
-    declares, and a generated reference to a field a manifest lacks is a broken
-    workflow. Hand-written callers pass their own.
-    """
+    """Log the container image; a no-op outside our images."""
     return {
         "name": "Announce image",
         "uses": _ANNOUNCE_IMAGE_ACTION,
     }
 
 
-def _check_run_start_step(check_name: str) -> Step:
-    """Post an in-progress check run to the dispatcher's commit (start of a
-    dispatched per-kind job). No-op unless a public upstream dispatched us."""
-    return {
-        "id": "check_start",
-        "if": "${{ " + _CHECK_RUN_WHEN + " }}",
-        "uses": _REPORT_CHECK_RUN_ACTION,
-        "with": {
-            "token": "${{ steps.mint.outputs.token }}",
-            "head-repo": "${{ inputs.from-repo }}",
-            "head-sha": "${{ inputs.from-sha }}",
-            "name": check_name,
-            "details-url": _CHECK_RUN_DETAILS_URL,
-            "phase": "start",
-        },
+def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
+    """Report this job as a check run on the dispatcher's commit."""
+    step: Step = {"id": "check_start"} if phase == "start" else {"name": "Report check-run conclusion"}
+    step["if"] = "${{ " + ("always() && " if phase == "finish" else "") + _CHECK_RUN_WHEN + " }}"
+    step["uses"] = _REPORT_CHECK_RUN_ACTION
+    step["with"] = {
+        "token": "${{ steps.mint.outputs.token }}",
+        "head-repo": "${{ inputs.from-repo }}",
+        "head-sha": "${{ inputs.from-sha }}",
+        "name": check_name,
+        "details-url": _RUN_URL,
+        "phase": phase,
     }
-
-
-def _check_run_finish_step(check_name: str) -> Step:
-    """Complete the check run with this job's conclusion. `always()` so a failed
-    or cancelled build still reports; conclusion is taken from job.status."""
-    return {
-        "name": "Report check-run conclusion",
-        "if": "${{ always() && " + _CHECK_RUN_WHEN + " }}",
-        "uses": _REPORT_CHECK_RUN_ACTION,
-        "with": {
-            "token": "${{ steps.mint.outputs.token }}",
-            "head-repo": "${{ inputs.from-repo }}",
-            "head-sha": "${{ inputs.from-sha }}",
-            "name": check_name,
-            "details-url": _CHECK_RUN_DETAILS_URL,
-            "phase": "finish",
-            "conclusion": "${{ job.status }}",
-            "check-run-id": "${{ steps.check_start.outputs.check-run-id }}",
-        },
-    }
+    if phase == "finish":
+        step["with"]["conclusion"] = "${{ job.status }}"
+        step["with"]["check-run-id"] = "${{ steps.check_start.outputs.check-run-id }}"
+    return step
 
 
 def _ctest_step(mk: MatrixKind) -> Step:
-    """`ctest` against the build tree the kind's composite left behind.
-
-    Emitted BEFORE the publish step, so a red suite means no artifact. That
-    ordering is the only thing standing between a failing test and a consumer
-    linking against its output: the store records existence and nothing else --
-    resolve_deps and fetch_deps both decide with a bare `object_exists`, and
-    check_artifact deliberately stops asking about the producing run the moment
-    the object is found. An artifact published before its tests ran is therefore
-    indistinguishable from a green one, and the `conclusion == 'success'` gate on
-    the orchestrator does not help: it stops the FAN-OUT from starting, not a
-    rebuild-request waiter or a later run from consuming what is already there.
-
-    The cost is that a consumer now waits for this package's tests, where it used
-    to pick the artifact up as soon as publish ran. Accepted deliberately; revisit
-    with a marker object or an artifact retraction if the wall-clock hurts.
-
-    Reads `build-dir` from the composite (id: build), which is why a kind that
-    sets `ctest` must expose that output.
-    """
+    """ctest on the build tree, before publishing: the store cannot tell a tested artifact from an untested one."""
     cmd = 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure'
     if mk.ctest_args:
         cmd = f"{cmd} {mk.ctest_args}"
@@ -1655,15 +1173,7 @@ def _ctest_step(mk: MatrixKind) -> Step:
 
 
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
-    """One job per kind: mint → checkout → decode → (setup-python) → fetch →
-    action call → (test) → (publish). The action call is the manifest-declared
-    composite (e.g. build-cxxmath); the per-job dispatch shim that used to
-    live in each repo's downstream-job composite is inlined here.
-
-    container.image is driven by `${{ matrix.container || '' }}`: when the
-    leg sets a container the job runs in that image, when it doesn't the
-    expression evaluates to '' and GA falls back to host mode.
-    """
+    """One job per kind: mint → checkout → decode → (setup-python) → fetch → build → (test) → (publish)."""
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
 
@@ -1672,25 +1182,15 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
 
     cond = _render_kind_filter(cross, mk.triggers)
 
-    # The slots themselves are resolve_deps' job (ci_infrastructure.job_names),
-    # emitted per leg into `_resolved.job-name`, so this lane and the repo's own
-    # hand-written ci.yml cannot spell one rule two ways. Only the prefix differs:
-    # here a job must say which package it belongs to, there it need not.
+    # The slots come from resolve_deps (job_names), shared with the repo's own ci.yml.
     job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
 
     steps: list[Step] = [
         _mint_step(),
-        # Signal "in progress" on the dispatcher's PR before doing any work, so a
-        # private consumer of a public upstream shows a pending check immediately.
-        _check_run_start_step(job_name),
-        # Before the checkout, so the log says which image this ran in even when
-        # the job goes on to fail early. Needs nothing from the repo -- GitHub
-        # fetches the action itself.
+        _check_run_step(job_name, "start"),
+        # Before checkout, so an early failure still names the image.
         _announce_image_step(),
         {
-            # Explicit repository + token: under workflow_call github.repository
-            # is the caller's, so a bare checkout would clone the upstream
-            # orchestrator's repo instead of ours. Pin to our own repo.
             "uses": "actions/checkout@v6",
             "with": {
                 "repository": m.repo,
@@ -1701,8 +1201,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         _decode_step(mk),
     ]
     is_hpc = mk.execution == EXECUTION_HPC
-    # setup-python provides the interpreter fetch_deps installs needs-python
-    # wheels into; HPC legs build inside a SLURM job and never take that path.
     if not is_hpc:
         setup_py = _setup_python_step(mk)
         if setup_py is not None:
@@ -1712,10 +1210,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         "token": "${{ steps.mint.outputs.token }}",
     }
     if is_hpc:
-        # No setup-python ran above, so there is no consumer interpreter to
-        # install needs-python wheels into — and installing them on the runner
-        # would be pointless anyway. Stage them; the repo's job script
-        # installs them on the compute node from $CMAKE_PREFIX_PATH.
+        # The job script installs wheels on the compute node.
         fetch_with["install-python-deps"] = "false"
     steps.append(
         {
@@ -1726,15 +1221,10 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         }
     )
     if is_hpc:
-        # build-on-hpc submits the SLURM job AND publishes internally (gated on
-        # cache-hit), so no separate publish step follows.
         steps.append(_hpc_build_step(mk))
     else:
         steps.append(_action_call_step(mk))
         if mk.publishes:
-            # Before the publish step (see _ctest_step), and inside the publishes
-            # branch on purpose: ctest tests the tree the build left behind, and
-            # the schema rejects ctest on a kind that publishes nothing.
             if mk.ctest:
                 steps.append(_ctest_step(mk))
             steps.append(
@@ -1747,8 +1237,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     },
                 }
             )
-    # Last step: report the final conclusion back to the dispatcher (always()).
-    steps.append(_check_run_finish_step(job_name))
+    steps.append(_check_run_step(job_name, "finish"))
 
     job: dict[str, Any] = {
         "needs": needs_list,
@@ -1756,11 +1245,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         "name": job_name,
         "runs-on": "${{ matrix['runs-on'] }}",
     }
-    # Both lanes thread the container a leg declares; a leg that declares none
-    # renders image: '' and GA falls back to host mode. HPC legs need this as much
-    # as runner ones: the ssh identity that reaches the cluster (keys, the site
-    # alias in ~/.ssh/config, known_hosts) lives inside the image, and the ARC
-    # scale sets that run these jobs keep nothing on the host.
+    # An empty image runs on the host. HPC legs need it too: the ssh identity lives in the image.
     container: dict[str, Any] = {"image": "${{ matrix.container || '' }}"}
     if mk.container_credentials:
         container["credentials"] = {
@@ -1779,28 +1264,13 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
 def compute_transitive_consumers(
     manifests: Sequence[Manifest],
 ) -> dict[str, dict[str, dict[str, list[str]]]]:
-    """For each manifest, return a per-repo mapping of `<package>/<kind>` to a
-    dict with two fields:
+    """Per repo: `pkg/kind` → transitive `consumers` and the `expected-checks` they run.
 
-      - `consumers`: sorted list of transitive consumer `owner/repo`s (the
-        orchestrator's flat fan-out target list).
-      - `expected-checks`: sorted list of `<package>/<kind>` job names that
-        the orchestrator emits as caller-side jobs in trigger-downstream.yml.
-
-    A `<package>/<kind>` key is included only when some other manifest references
-    it as a cross-repo `needs` target -- i.e. when the upstream has real
-    consumers to fan out to. Repos with nothing downstream get an empty dict.
-
-    Closure rule: when this job changes, every repo *transitively* downstream of
-    us (via the `[[trigger-downstream]]` graph, starting at the direct consumers
-    that name this job in their `needs`) needs a re-test. We collapse the closure
-    at generation time so the orchestrator can call every consumer flat (depth=1)
-    rather than via chained workflow_call (which hits GHA's 4-deep cap).
+    Flattened at generation time so the orchestrator calls every consumer at depth 1.
     """
     by_pkg = {m.package_name: m for m in manifests}
     by_repo = {m.repo: m for m in manifests}
 
-    # 1) Find direct consumers per (package, kind): which repos cite this job in needs?
     direct: dict[tuple[str, str], set[str]] = defaultdict(set)
     for m in manifests:
         for mk in m.matrices.values():
@@ -1808,15 +1278,10 @@ def compute_transitive_consumers(
                 pkg, target_kind = _split_need(need)
                 if pkg is None:
                     continue
-                # Validation has already verified the upstream exists; pkg is in by_pkg.
                 direct[(pkg, target_kind)].add(m.repo)
 
-    # 2) Trigger graph (repo -> repos it triggers). Targets outside our manifest set
-    # (e.g. an external `stack-deps`) are silently dropped from the closure -- the
-    # orchestrator can't `uses:` a workflow file we don't own.
     trigger_out: dict[str, list[str]] = {m.repo: [t.repo for t in m.triggers if t.repo in by_repo] for m in manifests}
 
-    # 3) BFS the trigger graph from each direct-consumer set to obtain the closure.
     out: dict[str, dict[str, dict[str, list[str]]]] = {m.repo: {} for m in manifests}
     for (pkg, kind), starts in direct.items():
         upstream = by_pkg.get(pkg)
@@ -1833,9 +1298,6 @@ def compute_transitive_consumers(
                 if nxt not in seen:
                     q.append(nxt)
 
-        # 4) For every consumer in the closure, list the kinds whose
-        # upstream-job filter actually accepts `pkg/kind` -- those are the
-        # caller-side jobs the orchestrator will emit.
         upstream_ref = (pkg, kind)
         expected: list[str] = []
         for consumer_repo in seen:
@@ -1855,17 +1317,7 @@ def compute_transitive_consumers(
 
 
 def resolve_consumer_refs(m: Manifest, by_repo: Mapping[str, Manifest]) -> dict[str, str]:
-    """Walk m's transitive trigger closure and return {consumer-repo: agreed-ref}.
-
-    For each consumer reachable via the [[trigger-downstream]] graph, the
-    incoming-edge ref(s) must agree. If two distinct paths reach the same
-    consumer with different refs, raise SchemaError -- the orchestrator can't
-    pin `uses: …@<ref>` to two values.
-
-    Direct triggers contribute the ref from m's own [[trigger-downstream]];
-    transitive triggers contribute the ref from intermediate parents'
-    [[trigger-downstream]] entries.
-    """
+    """{consumer: ref} over m's trigger closure; SchemaError if two paths disagree."""
     refs: dict[str, str] = {}
     seen: set[str] = set()
     queue: deque[str] = deque([m.repo])
@@ -1879,7 +1331,6 @@ def resolve_consumer_refs(m: Manifest, by_repo: Mapping[str, Manifest]) -> dict[
             continue
         for t in parent.triggers:
             if t.repo not in by_repo:
-                # External trigger; no orchestrator job will be emitted for it.
                 continue
             existing = refs.get(t.repo)
             if existing is None:
@@ -1893,23 +1344,10 @@ def resolve_consumer_refs(m: Manifest, by_repo: Mapping[str, Manifest]) -> dict[
     return refs
 
 
-# Three GitHub Actions limits bound each lane's orchestrator; we enforce each at
-# generation time so a manifest change that breaches one fails at PR review,
-# not at workflow-load. Every lane is its own top-level `workflow_run`, so these
-# budgets apply per lane (post-split counts only shrink):
-#
-#   1. 256 jobs per run. The consumer's resolve+legs expand INSIDE the
-#      orchestrator's run (each reusable-workflow call is part of the same run, not a
-#      separately-dispatched one), so they count here. ORCHESTRATOR_MAX_TOTAL_JOBS
-#      is a tighter safety margin; _check_orchestrator_caps sums the expansion.
-#   2. 4 nested workflow levels. Our chain is trigger-downstream{-hpc} (L1,
-#      top-level workflow_run) -> consumer cross-repo-trigger{-hpc} (L2). The flat
-#      closure (compute_transitive_consumers) guarantees the consumer workflow never
-#      itself `uses:` another reusable workflow — it only calls composite actions,
-#      which don't count toward the cap — so depth is fixed at 2.
-#   3. 20 distinct reusable workflows called transitively from one top-level
-#      caller. Each consumer package's cross-repo-trigger.yml is one distinct
-#      file, so the count equals the number of consumer packages in the closure.
+# GHA limits per top-level run, checked at generation time, per lane:
+#   1. 256 jobs; called workflows expand inside the orchestrator's run (220 keeps a margin).
+#   2. 4 nesting levels; the flat closure fixes our depth at 2.
+#   3. 20 distinct reusable workflows, i.e. consumer packages.
 ORCHESTRATOR_MAX_TOTAL_JOBS: Final = 220
 ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS: Final = 20
 
@@ -1922,39 +1360,10 @@ def render_orchestrator_workflow(
     *,
     lane: Execution,
 ) -> str | None:
-    """Emit `.github/workflows/trigger-downstream{-hpc}.yml` for one upstream repo
-    and one lane, or None if `m` has no in-lane transitive consumers.
+    """trigger-downstream{-hpc}.yml: on a successful CI run, call each in-lane consumer and post `downstream/<lane>`.
 
-    Top-level `on: workflow_run` (fires when the upstream's `CI` workflow completes),
-    NOT a nested `workflow_call` from ci.yml. Each lane is its own Actions-tab run
-    with its own 256-job / 20-reusable-workflow budget, so the two lanes never share
-    a run and the graphs stay short. Root jobs gate on `workflow_run.conclusion ==
-    'success'`, so downstream waits for the upstream's full CI, tests included —
-    broader than "depend only on the build step", which is the right trade for
-    separate runs.
-
-    Flat fan-out: one orchestrator job per in-lane consumer package. Each job invokes
-    the consumer's cross-repo-trigger{-hpc}.yml as a reusable workflow (workflow_call)
-    with `secrets: inherit`; GitHub waits for it natively and surfaces its jobs on the
-    Actions run. Cross-package needs are encoded as orchestrator-side `needs:` so
-    cross-repo build order is preserved; the called workflow handles intra-package kind
-    ordering internally. All ordering is same-lane only (see _cross_package_deps).
-
-    The one exception is a public->private edge (_edge_needs_dispatch), which is
-    dispatched rather than called — see _orchestrator_dispatch_job.
-
-    Because plain `workflow_run` runs post nothing to the PR, extra jobs post a commit
-    status (`downstream/{lane}`) back to the tested head SHA — `report-start` (pending)
-    and `report-result` (final) on the success path, and `report-ci-failure` (a red
-    status) when the upstream CI did not succeed. Exactly one final status is posted per
-    completed CI run, so the context is never left hanging and can be a required check
-    that blocks the merge.
-
-    Branch matching (sync branches only) is delegated to the called workflow's `pick-ref` step at runtime;
-    the orchestrator passes `branch` (the upstream's head branch) and `fallback-ref`
-    (the manifest-declared consumer ref). The `uses:@<ref>` itself is pinned to the
-    static manifest ref (GHA forbids expressions there), which only selects the workflow
-    *definition* — the code built is still the branch-matched checkout from pick-ref.
+    None if `m` has no in-lane consumers. `uses:@<ref>` pins only the workflow
+    definition; the consumer's pick-ref still branch-matches the code.
     """
     self_closure = closures.get(m.repo, {})
     if not self_closure:
@@ -1962,11 +1371,8 @@ def render_orchestrator_workflow(
 
     consumer_refs = resolve_consumer_refs(m, by_repo)
 
-    # Every in-lane originator kind that reaches each consumer. `from-jobs` carries the
-    # whole set, so ONE call per consumer wakes all its (same-lane) chains. Only
-    # originator kinds whose execution matches this lane contribute — the produced file
-    # is a single-lane DAG.
-    origins: dict[str, set[str]] = {}  # cpkg -> the in-lane orig_keys reaching it
+    # cpkg -> in-lane `pkg/kind` originators reaching it; one call carries them all.
+    origins: dict[str, set[str]] = {}
     for orig_key in sorted(self_closure.keys()):
         okind = orig_key.split("/", 1)[1]
         if m.matrices[okind].execution != lane:
@@ -1975,20 +1381,13 @@ def render_orchestrator_workflow(
             origins.setdefault(by_repo[r].package_name, set()).add(orig_key)
 
     if not origins:
-        # This upstream has consumers, but none reached via an in-lane originator kind
-        # (e.g. a runner-only producer has no hpc orchestrator).
         return None
 
-    _check_orchestrator_caps(m, self_closure, by_pkg, by_repo, lane=lane)
+    _check_orchestrator_caps(m, origins, by_pkg, lane=lane)
 
     all_consumers = sorted(origins)
-    # Cross-package ordering, collapsed across kinds but restricted to this lane: a
-    # consumer waits for the whole of each same-lane upstream consumer it depends on.
     consumer_deps = _cross_package_deps(all_consumers, by_pkg, lane=lane)
 
-    # `validate` runs first and gates every consumer dispatch: if this repo's manifest
-    # and its checked-in workflow YAMLs have drifted, fail immediately rather than
-    # spending dispatch tokens and consumer-side build time on a stale orchestrator.
     jobs: dict[str, Any] = {
         "validate": _validate_job(),
         "report-start": _report_start_job(lane),
@@ -2003,12 +1402,6 @@ def render_orchestrator_workflow(
         consumer_job_ids.append(jid)
         dep_ids = sorted(_orchestrator_job_id(p) for p in consumer_deps.get(cpkg, set()))
         from_jobs = sorted(origins[cpkg])
-        # Log-isolation rule: a public upstream must NOT reach a private consumer via
-        # `uses:` (reusable-workflow jobs run in the caller's public run, exposing the
-        # private repo's build logs). Dispatch it instead, so its run — and logs — stay
-        # in the private repo; this job then waits on the downstream run's conclusion
-        # (status only) so it gates like a workflow_call edge. Every other edge keeps the
-        # native reusable-workflow call.
         if _edge_needs_dispatch(m, cmanifest):
             jobs[jid] = _orchestrator_dispatch_job(cpkg, crepo, cref, from_jobs, dep_ids, lane=lane)
         else:
@@ -2029,15 +1422,8 @@ def render_orchestrator_workflow(
     }
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
-        # Top-level workflow_run: fires when this repo's CI completes. All ci.yml are
-        # named `CI`. Root jobs additionally gate on conclusion == 'success', so a
-        # failed CI posts nothing and the required downstream/<lane> status stays
-        # "Expected" — blocking the merge.
         "on": on,
-        # Coalesce re-runs for the same tested commit; a superseding run cancels the
-        # in-flight one. Keyed by lane so the two lanes' runs never collide.
-        # Concurrency cannot see `needs`, so the commit is read from the event rather
-        # than from the context job.
+        # Concurrency cannot see `needs`, so the commit comes from the event.
         "concurrency": {
             "group": f"trigger-downstream-{lane}-" + "${{ github.event.workflow_run.head_sha }}",
             "cancel-in-progress": True,
@@ -2047,9 +1433,6 @@ def render_orchestrator_workflow(
     return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
-#: Resolves which commit this run is about. Everything below reads the commit from
-#: here rather than from `github.event.workflow_run.*` directly, so one job owns the
-#: lookup.
 _CONTEXT_JOB_ID: Final = "context"
 
 _HEAD_SHA: Final = f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.head-sha }}}}"
@@ -2061,16 +1444,8 @@ _CI_CONCLUSION: Final = f"needs.{_CONTEXT_JOB_ID}.outputs.ci-conclusion"
 _SUCCESS_GATE: Final = f"${{{{ {_CI_CONCLUSION} == 'success' }}}}"
 
 
-#: This orchestrator run — where report-start / report-result point their status.
-_RUN_URL: Final = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-
 def _post_status_script(*, state: str, context: str, target_url: str, description: str, preamble: str = "") -> str:
-    """The `gh api` call posting one commit status to the tested head SHA.
-
-    `state` and `description` arrive already quoted for the shell: the final
-    status interpolates a variable ("$state") where the others are literals.
-    """
+    """`gh api` posting one commit status; `state` and `description` arrive shell-quoted."""
     return (
         preamble + "gh api -X POST \\\n"
         '  "/repos/${{ github.repository }}/statuses/' + _HEAD_SHA + '" \\\n'
@@ -2082,21 +1457,9 @@ def _post_status_script(*, state: str, context: str, target_url: str, descriptio
 
 
 def _status_job(*, when: str, step_name: str, script: str, needs: Sequence[str] = ()) -> dict[str, Any]:
-    """A job whose whole purpose is to POST one `downstream/{lane}` commit status.
+    """A job posting one `downstream/<lane>` commit status with github.token.
 
-    A plain `workflow_run` posts nothing to the PR, so the orchestrator reports
-    itself as a commit status on the tested head SHA. Exactly one *final* status
-    is posted per completed CI run — report-result on the success path,
-    report-ci-failure on anything else — so a required check is never left
-    hanging at "Expected".
-
-    Writes to its own repo, so it takes github.token and no App token, for the
-    reason spelled out on _label_gate_job: an App token carries only what its
-    installation was granted and 403s on a repo that is not public, where the
-    plain token plus an explicit `permissions` block is granted by the repo
-    itself. Nothing here listens on `on: status`, so GITHUB_TOKEN's no-cascade
-    rule costs nothing, and branch protection matches a required check by its
-    context string, not by who posted it.
+    Exactly one final status per completed CI run: report-result or report-ci-failure.
     """
     job: dict[str, Any] = {}
     if needs:
@@ -2111,7 +1474,7 @@ def _status_job(*, when: str, step_name: str, script: str, needs: Sequence[str] 
 
 
 def _report_start_job(lane: Execution) -> dict[str, Any]:
-    """`pending` for `downstream/{lane}`, before any consumer starts."""
+    """`pending`, before any consumer starts."""
     return _status_job(
         when=_SUCCESS_GATE,
         step_name="Post pending downstream status",
@@ -2125,18 +1488,7 @@ def _report_start_job(lane: Execution) -> dict[str, Any]:
 
 
 def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
-    """`failure` for `downstream/{lane}` when the upstream CI did NOT succeed.
-
-    The exact complement of the success gate every other root job carries, so
-    precisely one final status is posted per completed CI run. Without it a failed
-    CI would post nothing and a required check would hang at "Expected" rather
-    than going red. `target_url` points at the failed CI run, since this
-    orchestrator run did no downstream work worth linking to.
-
-    The reason comes from the context job rather than the event payload, so this
-    job says the same thing as every other status and does not have to know where
-    the verdict was read from.
-    """
+    """`failure` linking the CI run, when CI did not succeed (the complement of _SUCCESS_GATE)."""
     return _status_job(
         when=f"${{{{ {_CI_CONCLUSION} != 'success' }}}}",
         step_name="Post downstream failure status",
@@ -2150,13 +1502,7 @@ def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
 
 
 def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict[str, Any]:
-    """The final status: `failure` if any gated job failed or was cancelled, else `success`.
-
-    `always()` so it still posts when a consumer fails, but still gated on CI
-    success so a failed CI posts nothing here at all. `validate` is in `needs` so
-    an orchestrator drift (validate failing, its consumers skipped) posts a
-    failure rather than a spurious success.
-    """
+    """`failure` if validate or any consumer failed or was cancelled, else `success`."""
     needs = ["validate", *consumer_job_ids]
     results = " ".join(f"${{{{ needs.{jid}.result }}}}" for jid in needs)
     return _status_job(
@@ -2181,31 +1527,16 @@ def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict
 
 
 def _orchestrator_job_id(consumer_pkg: str) -> str:
-    """Job ID for one orchestrator fan-out job — one per consumer package.
-
-    A consumer reached by several originator kinds still gets a single caller
-    job (its `from-jobs` carries the whole set), so the bare package id is
-    unique and no kind suffix is needed.
-    """
+    """One job per consumer package, so no kind suffix."""
     return _id_segment(consumer_pkg)
 
 
 def _edge_needs_dispatch(caller: Manifest, consumer: Manifest) -> bool:
     """True iff a public upstream fans out to a private consumer.
 
-    THE single home for the log-isolation rule; other sites point here.
-
-    That is the only edge that would leak: a reusable-workflow call runs the
-    consumer's jobs inside the caller's (public) run, so a private consumer is
-    reached by workflow_dispatch instead (via dispatch-and-wait) and its run —
-    and its logs — stay in the private repo. The orchestrator job still gates the
-    upstream PR by polling that run's conclusion, never its logs, and the
-    consumer's per-kind jobs post per-leg check runs back for detail.
-
-    All other combinations (public->public, private->private, private->public)
-    keep the native reusable-workflow call. Visibility is declared per repo via
-    [package].visibility and defaults to "private" — fail closed, so an
-    unlabelled repo is dispatched rather than inlined.
+    A called workflow's jobs log into the caller's public run, so this edge is
+    dispatched instead; the orchestrator waits on the run's conclusion only, and
+    the consumer's jobs post check runs back.
     """
     return caller.visibility == VISIBILITY_PUBLIC and consumer.visibility == VISIBILITY_PRIVATE
 
@@ -2213,12 +1544,7 @@ def _edge_needs_dispatch(caller: Manifest, consumer: Manifest) -> bool:
 def _cross_package_deps(
     consumer_pkgs: Sequence[str], by_pkg: Mapping[str, Manifest], *, lane: Execution
 ) -> dict[str, set[str]]:
-    """For each consumer package in scope, return the other consumer packages it depends on
-    (collapsed across kinds) via cross-repo `needs`, restricted to `lane`.
-
-    Only same-lane kinds contribute deps, so a consumer's hpc leg waits solely on
-    upstream hpc packages and its runner leg solely on upstream runner packages —
-    the two lanes never couple at a consumer boundary."""
+    """In-scope consumer packages each consumer needs via its `lane` kinds."""
     out: dict[str, set[str]] = {p: set() for p in consumer_pkgs}
     in_scope = set(consumer_pkgs)
     for cpkg in consumer_pkgs:
@@ -2239,21 +1565,19 @@ _GATE_JOB_ID: Final = "label-gate"
 _GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
 
 
+def _prepend_need(job: dict[str, Any], jid: str) -> None:
+    needs = job.get("needs", [])
+    job["needs"] = [jid, *(needs if isinstance(needs, list) else [needs])]
+
+
 def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
-    """Put `label-gate` in front of every job in an orchestrator workflow.
+    """Make every job need `label-gate` and AND its verdict into the job's `if:`.
 
-    Applied as a post-pass rather than threaded through each job constructor, so
-    a job added later is gated by construction instead of by remembering to.
-
-    Every job gains `needs: [label-gate, ...]` and has its `if:` ANDed with the
-    gate's verdict — including report-ci-failure, so an opted-out pull request
-    whose CI then fails posts nothing at all rather than a red downstream status
-    for a lane nobody asked to run.
+    A post-pass, so a job added later is gated by construction.
     """
     gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(label)}
     for jid, job in jobs.items():
-        needs = job.get("needs", [])
-        job["needs"] = [_GATE_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
+        _prepend_need(job, _GATE_JOB_ID)
         cond = job.get("if")
         inner = cond[3:-2].strip() if isinstance(cond, str) and cond.startswith("${{") else None
         job["if"] = f"${{{{ ({inner}) && {_GATE_PASSED} }}}}" if inner else f"${{{{ {_GATE_PASSED} }}}}"
@@ -2262,39 +1586,20 @@ def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
 
 
 def _require_context(jobs: dict[str, Any]) -> dict[str, Any]:
-    """Put `context` in front of every job in an orchestrator.
+    """Make every job need `context` (a post-pass, like _apply_label_gate).
 
-    A post-pass, for the same reason _apply_label_gate is one: a job added later
-    gets its commit by construction rather than by remembering to. Every `if:` and
-    every `with:` below reads the commit from `needs.context.outputs.*`, which is
-    only in scope for a job that needs it.
-
-    There is no approval gate here. `workflow_run` is the only trigger, so
-    require-ci-approval would report `not-a-pull-request` and pass every time --
-    a gate that cannot gate. What actually keeps fork code off our runners is
-    that the work jobs demand `ci-conclusion == 'success'` for the head SHA, and
-    CI can only have gone green on that SHA by passing its own approval gate.
+    No approval gate: fork code is kept out because work jobs demand a green CI
+    run on the head SHA, which had to pass its own approval gate.
     """
     ordered: dict[str, Any] = {_CONTEXT_JOB_ID: _context_job()}
     for jid, job in jobs.items():
-        needs = job.get("needs", [])
-        job["needs"] = [_CONTEXT_JOB_ID, *(needs if isinstance(needs, list) else [needs])]
+        _prepend_need(job, _CONTEXT_JOB_ID)
         ordered[jid] = job
     return ordered
 
 
 def _context_job() -> dict[str, Any]:
-    """`context`: which commit this run is about, and whether its CI passed.
-
-    One job, so nothing below has to read the event payload itself. The lookup
-    lives in actions/resolve-dispatch-context for the reason the label verdict
-    lives in check-pr-label: a copy rendered into every orchestrator in every repo
-    is a copy that drifts and cannot be tested.
-
-    Lists this repo's own Actions runs, so like label-gate it takes github.token
-    and `actions: read` rather than an App token, which on a repo that is not
-    public grants only what its installation was given.
-    """
+    """`context`: which commit this run is about, and whether its CI passed."""
     return {
         "runs-on": SLIM_RUNNER,
         "permissions": {"actions": "read"},
@@ -2316,31 +1621,11 @@ def _context_job() -> dict[str, Any]:
 
 
 def _label_gate_job(label: str) -> dict[str, Any]:
-    """`label-gate`: does the commit under test want its downstream fan-out run?
+    """`label-gate`: does the commit's open PR carry the label (a push always runs)?
 
-    `workflow_run` carries no pull request and no labels, so the pull request is
-    looked up from the head SHA. Deliberately NOT gated on CI success: every other
-    root job needs this one, including report-ci-failure on the failure path, and
-    a skipped need would take its dependents down with it.
-
-    A commit with no OPEN pull request is a push to a protected branch — there is
-    nothing there to label, so it always fans out. Only a pull request can opt out,
-    and it does so by simply not carrying the label; the paired
-    require-label-decision status is what stops that being an accident.
-
-    The verdict itself lives in actions/check-pr-label, not inlined here: the
-    rule (and the "a push has nothing to label" carve-out) is one behaviour, and
-    a copy rendered into every orchestrator in every repo is a copy that drifts
-    and cannot be unit-tested.
-
-    Reads its own repo, so it takes github.token and no App token: the lookup is
-    what an App adds nothing to, and on a repo that is not public an App token is
-    strictly worse -- it carries only what its installation was granted, which is
-    how this job came to 403 on every stack-dependencies run while passing on the
-    public repos, where pull request data is readable by any token. The explicit
-    `permissions` block is what makes the plain token dependable: it grants the
-    one scope the lookup needs regardless of the repo's default, and drops the
-    rest.
+    Not gated on CI success: report-ci-failure needs it too. Like every job that
+    reads or writes its own repo, it uses github.token with explicit
+    `permissions`; an App token 403s on non-public repos.
     """
     return {
         "runs-on": SLIM_RUNNER,
@@ -2361,24 +1646,10 @@ def _label_gate_job(label: str) -> dict[str, Any]:
 
 
 def _validate_job() -> dict[str, Any]:
-    """Orchestrator's `validate` job: checks out the tested commit and runs the
-    validate-generated-workflows composite to confirm this repo's manifest and its
-    checked-in workflow YAMLs are in sync. Every consumer job prepends `validate` to
-    its needs: so a drift fails fast — and skips the consumers, which then flips the
-    posted status to failure via report-result.
+    """Check the generated workflows match the manifest at the tested SHA.
 
-    Under `on: workflow_run` a bare checkout would land on the default branch, so we
-    pin `ref` to the tested head SHA. Gated on CI success like every other root job.
-
-    That pin is also why the checkout has to opt in to `allow-unsafe-pr-checkout`.
-    From a `workflow_run` whose upstream event was a pull request, actions/checkout
-    refuses a ref that resolves to a FORK's head sha -- which is exactly what
-    `head-sha` is on a fork pull request -- because such a job holds the base
-    repository's token, secrets and runners. Defensible here, and only here:
-    nothing from this checkout is executed. `ensure-infrastructure-present`
-    installs the generator from its own pinned ref, and the generator only READS
-    the tree (manifest TOML, workflow YAML, and .j2 recipes it parses without
-    rendering). Do not copy the flag to a job that builds or runs what it checks out.
+    allow-unsafe-pr-checkout is safe only because nothing checked out is executed;
+    never copy it to a job that builds or runs the checkout.
     """
     return {
         "if": _SUCCESS_GATE,
@@ -2401,10 +1672,14 @@ def _validate_job() -> dict[str, Any]:
     }
 
 
-def _from_jobs_input(from_jobs: Sequence[str]) -> str:
-    """The `from-jobs` workflow input: a compact JSON array the consumer parses
-    with `fromJSON(...)` and matches per-kind with `contains(...)`."""
-    return json.dumps(sorted(from_jobs), separators=(",", ":"))
+def _consumer_inputs(cref: str, from_jobs: Sequence[str]) -> dict[str, str]:
+    return {
+        "from-repo": "${{ github.repository }}",
+        "from-sha": _HEAD_SHA,
+        "from-jobs": json.dumps(sorted(from_jobs), separators=(",", ":")),
+        "branch": _HEAD_BRANCH,
+        "fallback-ref": cref,
+    }
 
 
 def _orchestrator_job(
@@ -2416,30 +1691,12 @@ def _orchestrator_job(
     *,
     lane: Execution,
 ) -> dict[str, Any]:
-    """Per-consumer caller job: invoke the consumer's cross-repo-trigger{-hpc}.yml
-    (this lane's file) as a reusable workflow (workflow_call) and let GitHub wait for
-    it natively. `secrets: inherit` flows the App + AWS secrets through, so the called
-    workflow mints its own token internally (no per-consumer mint step here).
-
-    `from-jobs` carries every in-lane originator kind reaching this consumer, so the one
-    call wakes all its same-lane chains. `@<cref>` is a generation-time-static ref (from
-    the manifest), so the `uses:` reference is a literal — GHA forbids expressions there.
-    The tested commit's SHA/branch come from the `workflow_run` event; runtime branch
-    matching still happens inside the called workflow via its `pick-ref` step.
-    """
-    cowner, cname = crepo.split("/", 1)
-    suffix = _lane_suffix(lane)
+    """Call the consumer's cross-repo-trigger{-hpc}.yml as a reusable workflow."""
     return {
         "name": cpkg,
-        "needs": ["validate"] + list(dep_job_ids),
-        "uses": f"{cowner}/{cname}/.github/workflows/cross-repo-trigger{suffix}.yml@{cref}",
-        "with": {
-            "from-repo": "${{ github.repository }}",
-            "from-sha": _HEAD_SHA,
-            "from-jobs": _from_jobs_input(from_jobs),
-            "branch": _HEAD_BRANCH,
-            "fallback-ref": cref,
-        },
+        "needs": ["validate", *dep_job_ids],
+        "uses": f"{crepo}/.github/workflows/cross-repo-trigger{lane_suffix(lane)}.yml@{cref}",
+        "with": _consumer_inputs(cref, from_jobs),
         "secrets": "inherit",
     }
 
@@ -2453,39 +1710,22 @@ def _orchestrator_dispatch_job(
     *,
     lane: Execution,
 ) -> dict[str, Any]:
-    """Per-consumer dispatch job for a PRIVATE consumer of a PUBLIC upstream.
-
-    The dispatch half of _edge_needs_dispatch's rule. Unlike _orchestrator_job
-    (a reusable-workflow call), this fires the consumer's cross-repo-trigger{-hpc}.yml
-    via workflow_dispatch through dispatch-and-wait, then WAITS for that run's
-    conclusion, so this job turns red/green with the downstream and the
-    cross-package `needs:` ordering is honoured.
-
-    The hpc lane targets the `-hpc` workflow file via dispatch-and-wait's
-    `workflow-file` input; the runner lane uses the action's default.
-    """
-    suffix = _lane_suffix(lane)
+    """Dispatch a private consumer (see _edge_needs_dispatch) and wait for its run's conclusion."""
     dispatch_with: dict[str, Any] = {"consumer-repo": crepo}
     if lane == EXECUTION_HPC:
-        dispatch_with["workflow-file"] = f"cross-repo-trigger{suffix}.yml"
+        dispatch_with["workflow-file"] = f"cross-repo-trigger{lane_suffix(lane)}.yml"
+    dispatch_with["ref"] = cref
+    dispatch_with.update(_consumer_inputs(cref, from_jobs))
     dispatch_with.update(
         {
-            "ref": cref,
-            "from-repo": "${{ github.repository }}",
-            "from-sha": _HEAD_SHA,
-            "from-jobs": _from_jobs_input(from_jobs),
-            "branch": _HEAD_BRANCH,
-            "fallback-ref": cref,
             "token": "${{ steps.mint.outputs.token }}",
-            # No artifact to wait for (upstream consumes nothing back); gate on the
-            # downstream run's conclusion instead so this job reflects its pass/fail.
             "artifact-names": "",
             "wait-for-run-conclusion": "true",
         }
     )
     return {
         "name": cpkg,
-        "needs": ["validate"] + list(dep_job_ids),
+        "needs": ["validate", *dep_job_ids],
         "runs-on": SLIM_RUNNER,
         "steps": [
             _mint_step(),
@@ -2500,42 +1740,22 @@ def _orchestrator_dispatch_job(
 
 def _check_orchestrator_caps(
     m: Manifest,
-    self_closure: Mapping[str, dict[str, list[str]]],
+    origins: Mapping[str, set[str]],
     by_pkg: Mapping[str, Manifest],
-    by_repo: Mapping[str, Manifest],
     *,
     lane: Execution,
 ) -> None:
-    """Pre-validate one lane's orchestrator against two GHA limits: the
-    256-job-per-run hard cap and the 20-distinct-reusable-workflows-per-top-level-caller
-    cap. Each lane is its own top-level `workflow_run`, so the budgets are per lane.
-
-    The orchestrator emits ONE caller job per in-lane consumer package. Each call
-    expands inside the same run to 1 resolve job plus the legs of every in-lane kind
-    that accepts any originator reaching the consumer (its `from-jobs` carries them
-    all). We sum these for the job cap, and count distinct consumer packages for the
-    reusable-workflow cap. Base overhead is the orchestrator's own validate +
-    report-start + report-result + report-ci-failure jobs.
-    """
-    # cpkg -> the in-lane originator (package, kind) pairs reaching it.
-    origins: dict[str, set[tuple[str, str]]] = {}
-    for orig_key, entry in self_closure.items():
-        opkg, okind = orig_key.split("/", 1)
-        if m.matrices[okind].execution != lane:
-            continue
-        for r in entry["consumers"]:
-            origins.setdefault(by_repo[r].package_name, set()).add((opkg, okind))
-
+    """Estimate the lane's job count and distinct reusable workflows against the GHA caps."""
     estimated_jobs = 4  # validate + report-start + report-result + report-ci-failure
     distinct_consumers = set(origins)
-    for cpkg, orig_pairs in origins.items():
+    for cpkg, orig_keys in origins.items():
         cmanifest = by_pkg[cpkg]
-        estimated_jobs += 2  # this consumer's caller job + its single resolve
+        estimated_jobs += 2  # caller job + resolve
         for ckind, mk in cmanifest.matrices.items():
             if TRIGGER_UPSTREAM_CHANGE not in mk.triggers or mk.execution != lane:
                 continue
             refs = transitive_cross_repo_needs(cmanifest, ckind, by_pkg)
-            if any((r.package, r.kind) in orig_pairs for r in refs):
+            if any(f"{r.package}/{r.kind}" in orig_keys for r in refs):
                 estimated_jobs += max(1, len(mk.legs))
 
     if estimated_jobs > ORCHESTRATOR_MAX_TOTAL_JOBS:
@@ -2545,7 +1765,6 @@ def _check_orchestrator_caps(
             f"jobs per workflow run). Reduce matrix density or split via tiered fan-out."
         )
 
-    # One `uses:` per consumer package == one distinct reusable workflow file.
     if len(distinct_consumers) > ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS:
         raise SchemaError(
             f"{m.path}: orchestrator for {m.package_name} would call {len(distinct_consumers)} distinct "
@@ -2554,7 +1773,7 @@ def _check_orchestrator_caps(
         )
 
 
-_FETCH_DEPTH_CAP: Final = 8  # Same depth budget resolve_deps uses for upstream BFS.
+_FETCH_DEPTH_CAP: Final = 8
 
 
 def _local_sibling_layer(
@@ -2562,14 +1781,7 @@ def _local_sibling_layer(
     sibling_root: Path,
     manifest_path: str,
 ) -> dict[tuple[str, str], tuple[str | None, bool]]:
-    """Resolve a BFS layer from sibling clones under `sibling_root` instead of GitHub.
-
-    Same shape as fetch_manifests_layer, so the BFS below is unchanged. `owner/repo`
-    maps to `<sibling_root>/<repo>`; a directory that isn't there yields None and is
-    skipped exactly as a missing remote manifest would be. The ref is ignored on
-    purpose — the point is to read each clone's WORKING TREE, which is what makes a
-    coordinated multi-repo change checkable before any of it is pushed.
-    """
+    """fetch_manifests_layer from the working trees under `sibling_root`; refs are ignored."""
     out: dict[tuple[str, str], tuple[str | None, bool]] = {}
     for repo, ref in layer:
         candidate = sibling_root / repo.split("/")[-1] / manifest_path
@@ -2583,20 +1795,13 @@ def _fetch_sibling_manifests(
     manifest_path: str,
     sibling_root: Path | None = None,
 ) -> list[Manifest]:
-    """BFS the dep+trigger graph outward from `local`, fetching each sibling's
-    manifest TOML text via GraphQL and parsing it. Missing manifests (None text)
-    are skipped — `validate_graph` already treats unknown repos as external, so
-    a sibling that lacks a manifest at HEAD just doesn't contribute to validation
-    rather than failing the whole check.
+    """`local` first, then every manifest reachable via deps and triggers; missing ones are skipped."""
 
-    The resulting list always includes `local` first; siblings in arbitrary order.
-    """
+    def neighbours(m: Manifest) -> list[tuple[str, str]]:
+        return [(d.repo, "HEAD") for d in m.deps] + [(t.repo, t.ref or "HEAD") for t in m.triggers]
+
     seen: dict[str, Manifest] = {local.repo: local}
-    queue: list[tuple[str, str]] = []
-    for d in local.deps:
-        queue.append((d.repo, "HEAD"))
-    for t in local.triggers:
-        queue.append((t.repo, t.ref or "HEAD"))
+    queue = neighbours(local)
 
     for _ in range(_FETCH_DEPTH_CAP):
         layer = [(r, ref) for (r, ref) in queue if r not in seen]
@@ -2612,20 +1817,10 @@ def _fetch_sibling_manifests(
                 continue
             m = parse_manifest_text(text, Path(f"github://{repo}@{ref}/{manifest_path}"))
             seen[repo] = m
-            for d in m.deps:
-                next_q.append((d.repo, "HEAD"))
-            for t in m.triggers:
-                next_q.append((t.repo, t.ref or "HEAD"))
+            next_q.extend(neighbours(m))
         queue = next_q
 
-    # A [[trigger-downstream]] target we could not read is the one silent failure
-    # in this whole path. validate_graph skips unknown repos as "external", which
-    # is right for a [[deps]] entry on something outside the graph, but a trigger
-    # target IS the graph: unresolved, it contributes no orchestrator job, so the
-    # fan-out quietly shrinks and both --check and a plain run agree the smaller
-    # output is correct. A typo'd repo and a consumer whose manifest has not landed
-    # on its ref yet are indistinguishable here, and neither is an error, so warn
-    # rather than fail — and name the fix for the case that is not a typo.
+    # An unreadable trigger target silently shrinks the fan-out; warn.
     unresolved = sorted({t.repo for t in local.triggers if t.repo not in seen})
     if unresolved:
         where = f"under {sibling_root}" if sibling_root is not None else "at the ref it declares"
@@ -2639,7 +1834,6 @@ def _fetch_sibling_manifests(
                 file=sys.stderr,
             )
 
-    # Sorted so error messages are predictable.
     return [local] + sorted((m for m in seen.values() if m.repo != local.repo), key=lambda m: m.repo)
 
 
@@ -2649,9 +1843,7 @@ class Change:
 
     action: Literal["delete", "update", "create"]
     path: Path
-    #: Where the parsed documents disagree; empty unless a --check found semantic
-    #: drift in a file that exists on both sides.
-    where: Sequence[str] = ()
+    where: Sequence[str] = ()  # where the parsed documents disagree
 
     def render(self) -> str:
         lines = [f"  - [{self.action}] {self.path}"]
@@ -2659,18 +1851,11 @@ class Change:
         return "\n".join(lines)
 
 
-#: How many differing locations _yaml_diff_locations reports before it stops. Enough
-#: to recognise WHICH drift this is; the regen command is the fix either way.
 _MAX_DIFF_LOCATIONS: Final = 6
 
 
 def _yaml_diff_locations(rendered: Any, checked_in: Any, path: str = "") -> list[str]:
-    """Where two parsed workflow documents disagree, in dotted-path notation.
-
-    `.jobs.eccodes.with.branch` beats "the file is out of date": the point of
-    --check failing is that the reader can tell a stale generator apart from an
-    edited-by-hand file without diffing two 150-line YAMLs by eye.
-    """
+    """Where two parsed workflow documents disagree, as dotted paths."""
     label = path or "<root>"
     if type(rendered) is not type(checked_in):
         return [f"{label}: {type(rendered).__name__} vs {type(checked_in).__name__}"]
@@ -2698,22 +1883,9 @@ def _yaml_diff_locations(rendered: Any, checked_in: Any, path: str = "") -> list
 
 
 def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[bool, list[str]]:
-    """Reconcile a single file with its desired content.
+    """Write, delete (`content=None`) or --check one file; returns (changed, where).
 
-    `content=None` means "this file should not exist"; if it does we delete it
-    (or report stale) — the manifest is the source of truth, so a workflow for a
-    lane the manifest no longer uses must not linger.
-
-    The two modes compare differently, on purpose. `--check` compares the PARSED
-    documents, so a comment or a blank line someone added by hand never fails an
-    orchestrator run; only a difference GitHub Actions would act on does. A write
-    compares the text, so regenerating restores the one canonical spelling —
-    [generated].header included — and tidies that comment away. The asymmetry is
-    the whole design: the generator owns the file's form, the check only owns its
-    meaning.
-
-    Returns (changed, where-it-differs); the locations are empty unless a --check
-    found a semantic drift in a file that exists on both sides.
+    A write compares text; --check compares parsed documents.
     """
     existing = out.read_text() if out.exists() else None
     if content is None:
@@ -2730,8 +1902,6 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
         try:
             rendered_doc, existing_doc = _parse_workflow(content), _parse_workflow(existing)
         except yaml.YAMLError as exc:
-            # Only the checked-in side can be unparseable — we just rendered the
-            # other one — so say so rather than reporting a phantom drift.
             return True, [f"cannot parse the checked-in file: {str(exc).splitlines()[0]}"]
         if rendered_doc == existing_doc:
             return False, []
@@ -2766,10 +1936,8 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
     help="Read sibling manifests from clones under this directory (<root>/<repo-name>) "
-    "instead of GitHub. Use when a coordinated change spans repos and the sibling "
-    "manifests are not on their default branches yet — without it they look absent, "
-    "and a consumer that has not landed is indistinguishable from one that does not "
-    "exist, so orchestrator jobs are silently dropped.",
+    "instead of GitHub, for a coordinated change whose sibling manifests are not on "
+    "their default branches yet.",
 )
 def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None) -> None:
     _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
@@ -2782,8 +1950,6 @@ def _run(
     *,
     fail_on_drift: bool = False,
 ) -> None:
-    # Inert rather than harmless: without --check the drift is being written away,
-    # so a caller asking to fail on it has misunderstood which mode they are in.
     if fail_on_drift and not check:
         raise CIError(
             "--fail-on-drift only applies with --check; without it, drift is written away rather than reported"
@@ -2794,31 +1960,14 @@ def _run(
 
     try:
         local = parse_manifest(local_manifest_path)
-        # Only the local manifest: siblings are GraphQL blobs with no recipes behind
-        # them. Here rather than in _resolve_matrices for exactly that reason.
         validate_job_templates(local)
-    except SchemaError as e:
-        raise CIError(str(e)) from e
-
-    # select_token() is None when no env-var token is set; that's fine — gh
-    # falls back to GITHUB_TOKEN / keychain auth, and a real auth failure
-    # surfaces from `gh api graphql` directly rather than being second-guessed.
-    token = select_token()
-
-    manifests = _fetch_sibling_manifests(local, token, manifest_path, sibling_root)
-
-    try:
+        # No env token is fine: gh falls back to its own auth.
+        manifests = _fetch_sibling_manifests(local, select_token(), manifest_path, sibling_root)
         validate_graph(manifests)
-    except SchemaError as e:
-        raise CIError(str(e)) from e
-
-    closures = compute_transitive_consumers(manifests)
-    by_pkg = {m.package_name: m for m in manifests}
-    by_repo = {m.repo: m for m in manifests}
-
-    try:
-        # Only render+diff the local manifest; sibling manifests existed solely
-        # to feed validate_graph and compute_transitive_consumers.
+        closures = compute_transitive_consumers(manifests)
+        by_pkg = {m.package_name: m for m in manifests}
+        by_repo = {m.repo: m for m in manifests}
+        # Siblings only feed validation and the closure; render the local repo alone.
         changed = _render_one_repo(local, by_pkg, by_repo, closures, check)
     except SchemaError as e:
         raise CIError(str(e)) from e
@@ -2836,11 +1985,8 @@ def _render_one_repo(
     changed: list[Change] = []
     wf_dir = m.repo_root / ".github" / "workflows"
 
-    # Two lanes, two files per side. A lane with no runnable/consumer content
-    # renders None, which deletes any stale file for that lane (e.g. a runner-only
-    # leaf never gets a -hpc file).
     for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
-        suffix = _lane_suffix(lane)
+        suffix = lane_suffix(lane)
         for basename, content in (
             (f"cross-repo-trigger{suffix}.yml", render_workflow(m, by_pkg, lane=lane)),
             (
@@ -2861,10 +2007,7 @@ def _render_one_repo(
 
 
 def _regen_command(manifest_path: str) -> str:
-    """Reconstruct the invocation that would *write* the regenerated YAML
-    instead of checking it. We rebuild from parsed args (not sys.argv) so
-    the suggestion is canonicalised regardless of how the user invoked it.
-    """
+    """The canonical invocation that writes instead of checking."""
     parts: list[str] = ["ci-infrastructure-generate"]
     if manifest_path != ".ci/manifest.toml":
         parts += ["--manifest-path", manifest_path]
@@ -2872,12 +2015,7 @@ def _regen_command(manifest_path: str) -> str:
 
 
 def _drift_message(changed: Sequence[Change], manifest_path: str, *, fatal: bool) -> str:
-    """The out-of-date report, headline first.
-
-    Whoever reads this is going to run one command, so the message is mostly that
-    command. `gh auth login` is a prerequisite when GH_TOKEN isn\'t set and is
-    idempotent when it is, so the hint is harmless either way.
-    """
+    """The out-of-date report, headline first, then the regen command."""
     stale = "\n".join(c.render() for c in changed)
     tail = (
         ""
@@ -2902,17 +2040,10 @@ def _drift_message(changed: Sequence[Change], manifest_path: str, *, fatal: bool
 
 
 def _report(changed: Sequence[Change], check: bool, manifest_path: str, *, fail_on_drift: bool) -> None:
-    """Say what --check found, and decide whether that is a failure.
+    """Print what changed; under --check, drift is a warning unless `fail_on_drift`.
 
-    Drift defaults to a warning: an orchestrator gates its whole fan-out on this
-    job, and "someone regenerated one repo and not its sibling" is not a reason to
-    withhold downstream CI from every consumer. It IS a reason to say so loudly on
-    every run until a human or a bot regenerates. `fail_on_drift` restores the
-    hard gate for a caller that wants one.
-
-    A schema or graph violation is a different animal and still raises out of
-    _run before we get here: a trigger cycle or an unresolvable `needs` renders a
-    workflow that cannot run, so there is nothing to warn about.
+    A warning by default: one repo regenerated without its sibling should not
+    withhold downstream CI from every consumer.
     """
     if not check:
         for c in changed:
@@ -2923,9 +2054,7 @@ def _report(changed: Sequence[Change], check: bool, manifest_path: str, *, fail_
     message = _drift_message(changed, manifest_path, fatal=fail_on_drift)
     if fail_on_drift:
         raise CIError(message)
-    # GitHub parses the workflow command on the first line only, so the headline
-    # is annotated and the rest shows as plain log -- exactly how CIError renders
-    # the fatal case, and one annotation rather than fifteen.
+    # A workflow command only covers its first line.
     head, _, rest = message.partition("\n")
     print(f"::warning::{head}", file=sys.stderr)
     if rest:
