@@ -52,7 +52,7 @@ development headers, OpenSSL headers, and the `ci_infrastructure` package). Ever
 other variant `FROM`s it **directly** and installs its own full toolchain — no
 variant builds on another variant, because `images.yml` builds the base and then
 all dependents in one parallel matrix, so a chain would race on `:latest`.
-`build-image.sh` refuses a chain deeper than that rather than let it race.
+`scripts/build_image.py` refuses a deeper chain.
 
 Boost and Qt are deliberately not in the base: both are large and wanted by one
 package, so they live in `gfortran13-boost-qt6`, whose name then says exactly
@@ -105,9 +105,7 @@ the distro package.
 Every other platform pins a distro release, so the stack meets a new gcc, cmake
 or Qt only when someone bumps an image. `rolling-arch` tracks
 upstream continuously, so a change that will reach the pinned platforms in a year
-breaks *here* first, on a nightly build nobody is waiting on. It is already a
-useful canary: it currently carries gcc 16 and **cmake 4**, which no longer
-accepts `cmake_minimum_required(VERSION < 3.5)`.
+breaks *here* first, on a nightly build nobody is waiting on.
 
 The **`rolling-` prefix** is load-bearing — see the tag rule below. It states the
 guarantee (tracks upstream, rebuilt nightly) while the suffix names the distro
@@ -136,11 +134,8 @@ running job can tell whether the image is current.
 > `ensure-infrastructure-present` compares a digest of the baked package's `*.py`
 > against the checkout's and **fails on a mismatch**. On a pull request the
 > published image necessarily lags the branch under test, so any PR job running
-> inside one of these images must force a reinstall — set
-> `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in the job's `env:`. Use the env var,
-> not the action's `force-reinstall:` input: the bootstrap is almost always
-> reached through another action that nests it, and a nested `uses:` cannot
-> forward an input, so there is no step in your workflow to set it on.
+> inside one of these images must set `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in
+> the job's `env:` (an env var, because a nested `uses:` cannot forward an input).
 
 ## Tagging — `<sha>` + `latest`
 
@@ -151,7 +146,7 @@ tag = git log -1 --format=%h -- <the image's build inputs>
 The build inputs are the image's own directory, plus its base's directory if it
 is a dependent, plus `src`, `pyproject.toml` and `LICENSE` — the paths the base
 `COPY`s out of the context. The rule is *everything outside the image's own
-directory that a Dockerfile reads from the context*; `build-image.sh`'s
+directory that a Dockerfile reads from the context*; `scripts/build_image.py`'s
 `EXTRA_TAG_PATHS` is where that list lives. `actions/` and `tests/` are
 deliberately absent: actions are fetched by GitHub at job time and never baked,
 and tests are not installed.
@@ -169,7 +164,7 @@ only when the image actually changes, and rebuilding is idempotent. Each push to
 
 **An image is rebuilt when its tag is not already in the registry.** That is the
 whole rule. `--discover` and the build path compute the tag through the same
-functions in `build-image.sh`, so they cannot disagree.
+functions in `scripts/build_image.py`, so they cannot disagree.
 
 #### Rolling platforms change the tag, never the rule
 
@@ -180,12 +175,8 @@ unaided, because each night's tag is genuinely new and genuinely absent from the
 registry. The nightly `schedule:` in `images.yml` discovers *every* image exactly
 as a push does; the pinned platforms are already published and skipped.
 
-Note what this deliberately is **not**. It is not a second answer to the rebuild
-question. And it is not a forced rebuild republishing one tag with new content,
-which would break the guarantee that a tag names fixed bytes — the guarantee the
-whole "Two-way jump" section below rests on. Nothing in `images.yml` names the
-rolling images; `build-image.sh`'s `is_rolling()` matches any platform named
-`rolling` or `rolling-*`, so there is still no list anywhere.
+A tag still names fixed bytes; nothing republishes one. `is_rolling()` in
+`scripts/build_image.py` matches `rolling` or `rolling-*`, so there is no list.
 
 The build jobs pin the tag `--discover` computed, via `IMAGE_TAG`. Without that,
 a run straddling midnight UTC could discover `<sha>-20260902` as missing and then
@@ -233,12 +224,11 @@ skopeo inspect docker://eccr.ecmwf.int/public-ci-images/<platform>-<variant>:<ta
                    revision:   ."org.opencontainers.image.revision"}'
 ```
 
-From inside a running container: `echo "$CI_INFRASTRUCTURE_BAKED_REF"`.
-
 **Source → image:** `eccr.ecmwf.int/public-ci-images/<platform>-<variant>`,
 at the tag `./build-image.sh --print-tag <platform>/<variant>` prints.
 
-**From inside a running container**, where no label is readable:
+**From inside a running container**, where no label is readable
+(`$CI_INFRASTRUCTURE_BAKED_REF` also names the commit):
 
 ```sh
 docker run --rm <image> env | grep ^CI_IMAGE_
@@ -304,12 +294,8 @@ job" block cannot be extended, and the job container's `ENTRYPOINT`/`CMD` never
 run — GitHub starts it with its own command, which is why every base here ends
 with `ENTRYPOINT []`.
 
-On a GitHub-hosted runner the image reference and digest are already in
-"Initialize containers". **Under ARC's Kubernetes mode they are not** — that step
-prints three lines of boilerplate and nothing else, which is what
-[`runners/container-hook-wrapper.js`](runners/README.md) restores. Until a scale
-set enables that hook, the announcement below is the only place a job's image
-appears at all.
+Under ARC's Kubernetes mode "Initialize containers" does not name the image; see
+[`runners/README.md`](runners/README.md).
 
 > **Inheritance cuts both ways.** Docker `ENV` is inherited, so an image that
 > `FROM`s one of these **must re-declare the whole `CI_IMAGE_*` `ARG`/`ENV`

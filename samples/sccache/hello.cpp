@@ -2,12 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// One translation unit with enough template instantiation to be a genuine
-// compile rather than a no-op, but small enough that a cache miss costs a
-// second. Deliberately free of __DATE__/__TIME__ and of anything else that
-// would differ between two compiles of the same source: sccache keys on the
-// preprocessed text, so a varying macro would turn every build into a miss and
-// the probe could never observe a cache hit.
+// No __DATE__/__TIME__: sccache keys on preprocessed text.
 
 #include <iostream>
 #include <numeric>

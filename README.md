@@ -22,9 +22,7 @@ testing ECMWF's downstream package graph. It provides:
   used to wire the above into workflow YAML.
 
 See [`HPC.md`](HPC.md) for details on the SLURM/HPC execution path, and
-[`IMAGES.md`](IMAGES.md) for the container images the CI jobs run inside —
-they are built from `public-images/` in this repo, so an image and the
-`ci_infrastructure` it carries can never drift apart.
+[`IMAGES.md`](IMAGES.md) for the container images the CI jobs run inside.
 
 ## Scope
 
@@ -33,10 +31,6 @@ resolution, artifact caching, workflow generation, HPC job submission) and the
 Dockerfiles for the public container images those jobs run inside. It is
 **not** a scientific or operational package and does not process or produce
 forecast data itself.
-
-Images whose *content* must stay internal — anything with credentials baked in —
-live in [`ecmwf/ci-container-images`](https://github.com/ecmwf/ci-container-images)
-instead.
 
 ## Software maturity & support
 
@@ -113,13 +107,8 @@ Call `ensure-infrastructure-present` yourself only when a workflow runs
 `$CI_INFRASTRUCTURE_PYTHON` **directly** rather than through an action — as this
 repo's own `hpc-nightly-cleanup.yml` and `smoke-test-hpc.yml` do.
 
-One thing does reach it from outside: setting
-`CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in a job's `env:` makes every bootstrap
-in that job install from the checkout instead of trusting a baked interpreter.
-That is what a pull-request job running inside one of the published images needs,
-because the image necessarily lags the branch under test (see
-[`IMAGES.md`](IMAGES.md)). An env var rather than an input precisely because a
-nested `uses:` cannot forward one.
+Set `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in a job's `env:` to install from the
+checkout instead of a baked interpreter; see [`IMAGES.md`](IMAGES.md).
 
 ## Enforcing the PR Contributor Declaration
 
