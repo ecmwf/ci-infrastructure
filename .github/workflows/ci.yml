@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[test]"
       - name: Mypy
-        run: mypy src/ tests/
+        run: mypy src/ tests/ scripts/build_image.py
       - name: pytest
         run: pytest
 
