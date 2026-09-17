@@ -2,11 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the S3 artifact store backend.
-
-These exercise the store logic against an in-memory fake S3 client (injected
-via the `client=` parameter), so they run with no network and no credentials.
-"""
+"""S3 artifact store, against an in-memory fake client."""
 
 from __future__ import annotations
 
@@ -21,11 +17,7 @@ from ci_infrastructure._errors import CIError
 
 @pytest.fixture(autouse=True)
 def _configured_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Supply the now-required object-store location for every test.
-
-    The module has no built-in endpoint/bucket default; the deployment provides
-    them. Tests that assert on the missing-config behaviour delete these again.
-    """
+    """Endpoint and bucket have no defaults."""
     monkeypatch.setenv("ARTIFACT_S3_ENDPOINT", "https://s3.test.invalid")
     monkeypatch.setenv("ARTIFACT_S3_BUCKET", "test-bucket")
 
@@ -75,8 +67,6 @@ def test_artifact_key_honours_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_download_creates_the_destination_parent_directory(fake: FakeS3, tmp_path: Path) -> None:
-    """download() mkdir -p's dest.parent, so a caller may name a path whose
-    directory does not exist yet -- which is what fetch_deps does per dep."""
     src = tmp_path / "src.tar.gz"
     src.write_bytes(b"the-install-tree")
     s3_store.upload("pkg-1", src, client=fake)
@@ -136,8 +126,6 @@ def test_ca_bundle_defaults_to_vendored_root(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_vendored_root_ca_is_shipped_and_parses() -> None:
-    # Package data must actually be present and be a self-signed root for the
-    # object store (HARICA TLS RSA Root CA 2021), not just any file.
     pem = s3_store._VENDORED_ROOT_CA.read_text()
     assert "HARICA TLS RSA Root CA 2021" in pem
     assert "-----BEGIN CERTIFICATE-----" in pem
@@ -150,8 +138,6 @@ def test_bucket_required_when_unset(monkeypatch: pytest.MonkeyPatch, fake: FakeS
 
 
 def test_endpoint_required_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No injected client, so _client() builds a real boto3 client and must first
-    # read the (now required) endpoint.
     monkeypatch.delenv("ARTIFACT_S3_ENDPOINT", raising=False)
     with pytest.raises(CIError, match="ARTIFACT_S3_ENDPOINT is not set"):
         s3_store.object_exists("pkg")

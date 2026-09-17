@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The label-decision gate's shell script, run for real against synthetic payloads.
-
-Same approach as test_require_ci_approval.py: the composite step's `run:` body is
-executed with a stub `gh` first on PATH, so the status is asserted exactly as the
-action posts it.
-"""
+"""require-label-decision's `run:` body, executed with a stub `gh` on PATH."""
 
 from __future__ import annotations
 
@@ -18,22 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Final
 
-import yaml
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ACTION = REPO_ROOT / "actions" / "require-label-decision" / "action.yml"
+from conftest import action_run_body, stub_gh
 
 LABEL: Final = "run-expensive-tests"
 OPT_OUT: Final = "expensive-tests-not-needed"
 CONTEXT: Final = "expensive-tests-label"
-
-
-def _script() -> str:
-    """The composite step's `run:` body, so the test cannot drift from the action."""
-    doc: dict[str, Any] = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
-    (step,) = doc["runs"]["steps"]
-    body: str = step["run"]
-    return body
 
 
 def _payload(*, author: str = "someone", labels: list[str] | None = None) -> dict[str, Any]:
@@ -78,13 +62,8 @@ def _run(tmp_path: Path, payload: dict[str, Any], **inputs: str) -> Result:
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload))
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
     gh_log = tmp_path / "gh-calls.log"
-    (bindir / "gh").write_text(
-        f'#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done >> {gh_log}\necho --- >> {gh_log}\n'
-    )
-    (bindir / "gh").chmod(0o755)
+    bindir = stub_gh(tmp_path, f'for a in "$@"; do printf "%s\\n" "$a"; done >> {gh_log}\necho --- >> {gh_log}')
 
     outputs = tmp_path / "outputs.txt"
     env = {
@@ -103,7 +82,9 @@ def _run(tmp_path: Path, payload: dict[str, Any], **inputs: str) -> Result:
         "DESC_EXEMPT_INPUT": "",
         **inputs,
     }
-    proc = subprocess.run(["bash", "-c", _script()], env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        ["bash", "-c", action_run_body("require-label-decision")], env=env, capture_output=True, text=True, check=False
+    )
     return Result(proc, gh_log, outputs)
 
 
@@ -131,8 +112,6 @@ def test_either_label_is_a_decision(tmp_path: Path) -> None:
 
 
 def test_an_exempt_author_needs_no_decision(tmp_path: Path) -> None:
-    """A release bot has nobody to apply a label; without this its pull requests
-    sit pending behind a required check forever."""
     r = _run(tmp_path, _payload(author="DeployDuck"), EXEMPT_AUTHORS_INPUT="DeployDuck")
 
     assert r.decision == "exempt"
@@ -141,7 +120,7 @@ def test_an_exempt_author_needs_no_decision(tmp_path: Path) -> None:
 
 
 def test_exemption_ignores_account_type(tmp_path: Path) -> None:
-    """Machine users report type "User"; the list is the caller's, so it is honoured."""
+    """Machine users report type "User"."""
     payload = _payload(author="DeployDuck")
     assert payload["pull_request"]["user"]["type"] == "User"
 

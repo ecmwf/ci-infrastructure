@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for runners/container-hook-wrapper.js.
-
-This file sits in the start path of every job on a scale set that enables it, so
-the properties worth pinning are the pass-through ones: the real hook must
-receive the payload byte-identically and its exit code must survive, whatever the
-wrapper thinks of the input.
-"""
+"""runners/container-hook-wrapper.js: the real hook gets the payload byte-identically and keeps its exit code."""
 
 from __future__ import annotations
 
@@ -23,9 +17,7 @@ import pytest
 
 WRAPPER: Final = Path(__file__).resolve().parent.parent / "runners" / "container-hook-wrapper.js"
 
-# The runner invokes a .js hook with its own bundled node, so on a runner this is
-# never absent. Locally it may be; skipping beats a red suite for a missing
-# interpreter this repo does not otherwise need.
+# Runners bundle node; a dev machine may not.
 NODE: Final = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 

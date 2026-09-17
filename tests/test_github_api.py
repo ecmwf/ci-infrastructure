@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the shared GitHub-API and artifact-naming primitives.
-
-`probe_workflow_runs` is the single answer to three questions that used to have
-three separate implementations: whether to keep waiting for an artifact
-(fetch_deps), whether a missing artifact is explained by a failed build
-(check_artifact), and whether a producer is already building (resolve_deps).
-None of those copies had a test; these drive the real payload-parsing against
-canned REST responses.
-"""
+"""probe_workflow_runs, make_artifact_name and resolve_reuse_matrix, against canned REST payloads."""
 
 from __future__ import annotations
 
@@ -19,6 +11,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from conftest import write_repo
 
 from ci_infrastructure import _github_api
 from ci_infrastructure._github_api import (
@@ -54,8 +47,7 @@ def test_absent_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_failed_api_call_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    # gh_api_rest returns None on a non-zero exit (e.g. a token without
-    # actions:read). That must not read as "completed successfully".
+    # gh_api_rest returns None on a non-zero exit.
     _payload(monkeypatch, None)
     runs = probe_workflow_runs("o/r", "a" * 40, None)
     assert runs.state == "none"
@@ -69,20 +61,16 @@ def test_in_progress_run_reports_detail_and_url(monkeypatch: pytest.MonkeyPatch)
     assert runs.in_flight
     assert runs.detail == "in_progress"
     assert runs.url == "https://gh/run/1"
-    # Nothing is decided while a run is still going.
     assert runs.conclusion is None
 
 
 def test_queued_counts_as_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A queued run has not started, so its output file does not exist yet — but
-    the consumer must still wait rather than declare the artifact unbuildable."""
     _payload(monkeypatch, {"workflow_runs": [QUEUED]})
     assert probe_workflow_runs("o/r", "a" * 40, None).detail == "queued"
 
 
 def test_in_progress_beats_a_failed_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failed run alongside a live one must not end the wait: the live one may
-    still publish. This ordering is why the in-progress scan runs first."""
+    """The live run may still publish."""
     _payload(monkeypatch, {"workflow_runs": [FAILED, RUNNING]})
     assert probe_workflow_runs("o/r", "a" * 40, None).state == "running"
 
@@ -94,8 +82,6 @@ def test_all_succeeded_is_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("bad", [FAILED, CANCELLED, {"status": "completed", "conclusion": "timed_out"}])
 def test_any_unsuccessful_conclusion_is_failure(monkeypatch: pytest.MonkeyPatch, bad: dict[str, str]) -> None:
-    """A cancelled or timed-out producer published nothing, so it must read as a
-    failure — otherwise the consumer reports 'built fine but artifact missing'."""
     _payload(monkeypatch, {"workflow_runs": [OK, bad]})
     runs = probe_workflow_runs("o/r", "a" * 40, None)
     assert (runs.state, runs.conclusion) == ("completed", "failure")
@@ -129,8 +115,6 @@ def test_artifact_name_full_shape() -> None:
 def test_absent_segments_are_dropped_not_blanked(
     deps_hash8: str | None, compiler: str | None, python_version: str | None, expected: str
 ) -> None:
-    """Every optional segment vanishes rather than leaving an empty one — a
-    doubled hyphen would be a different (and permanently unresolvable) key."""
     assert make_artifact_name("pkg", SHA, deps_hash8, "ubuntu-24.04", compiler, "Release", python_version) == expected
 
 
@@ -171,8 +155,6 @@ def test_a_kind_with_neither_has_no_legs() -> None:
 
 
 def test_legs_are_copied_not_aliased() -> None:
-    """The caller stores these per kind; a shared dict would let an edit to one
-    kind's leg silently change another's."""
     legs = resolve_reuse_matrix("test", None, "build", _BLOCKS)
     legs[0]["cxx-compiler"] = "mutated"
     assert _BLOCKS["build"]["include"][0] == {"cxx-compiler": "clang++-18"}
@@ -193,10 +175,6 @@ def test_reuse_matrix_rejections(kind: str, include: Any, reuse: Any, expected: 
 
 
 def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) -> None:
-    """The invariant behind sharing this: a kind whose legs differed between the
-    two parsers would have the resolver look up artifact names for legs the
-    generator never emitted a job for (or the reverse), and every lookup misses.
-    """
     body = textwrap.dedent("""
         [package]
         name = "a"
@@ -220,14 +198,11 @@ def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) 
         build-type = "Release"
         platform = "ubuntu-24.04"
     """)
-    manifest_path = tmp_path / "r" / ".ci" / "manifest.toml"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(body)
+    manifest_path = write_repo(tmp_path, "a", body)
 
     generated = generator_parse(manifest_path)
-    resolved = resolver_parse(body)
+    resolved = resolver_parse(manifest_path.read_text())
 
     for kind in ("build", "test"):
         assert [dict(leg) for leg in generated.matrices[kind].legs] == resolved.matrix[kind]
-    # …and reuse really did inherit rather than yield nothing.
     assert resolved.matrix["test"] == resolved.matrix["build"] != []

@@ -2,12 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the Contributor Declaration checker.
+"""Contributor Declaration checker.
 
-Every whitespace and line-ending fixture is built in Python rather than read from
-a file on disk. The repo's ``trailing-whitespace`` and ``end-of-file-fixer``
-pre-commit hooks would silently "fix" such a file, leaving these tests green while
-testing nothing.
+Whitespace fixtures are built in Python: the pre-commit whitespace hooks would "fix" them on disk.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ import ast
 import json
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -85,28 +82,45 @@ def event(body_text: str | None, login: str = "someone", kind: str = "User") -> 
     return {"pull_request": {"number": 7, "body": body_text, "user": {"login": login, "type": kind}}}
 
 
-def run_main(
-    tmp_path: Path,
-    argv: Sequence[str],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> tuple[int, str, str, str]:
-    """Run ``main`` with the Actions file commands pointed at ``tmp_path``."""
-    summary = tmp_path / "summary.md"
-    output = tmp_path / "output.txt"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    code = main(list(argv))
-    captured = capsys.readouterr()
-    return (
-        code,
-        captured.out + captured.err,
-        summary.read_text(encoding="utf-8") if summary.exists() else "",
-        output.read_text(encoding="utf-8") if output.exists() else "",
-    )
+Runner = Callable[..., tuple[int, str, str, str]]
 
 
-# === Stdlib purity -- the highest-value test in this file ===
+@pytest.fixture
+def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> Runner:
+    """Run ``main`` with the Actions file commands and any `body`/`payload` files under ``tmp_path``."""
+
+    def _run(
+        *argv: str, body: str | bytes | None = None, payload: dict[str, Any] | None = None
+    ) -> tuple[int, str, str, str]:
+        args = list(argv)
+        if body is not None:
+            body_file = tmp_path / "body.md"
+            if isinstance(body, bytes):
+                body_file.write_bytes(body)
+            else:
+                body_file.write_text(body, encoding="utf-8", newline="")
+            args += ["--body-file", str(body_file)]
+        if payload is not None:
+            event_file = tmp_path / "event.json"
+            event_file.write_text(json.dumps(payload), encoding="utf-8")
+            args += ["--event-file", str(event_file)]
+        summary = tmp_path / "summary.md"
+        output = tmp_path / "output.txt"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        code = main(args)
+        captured = capsys.readouterr()
+        return (
+            code,
+            captured.out + captured.err,
+            summary.read_text(encoding="utf-8") if summary.exists() else "",
+            output.read_text(encoding="utf-8") if output.exists() else "",
+        )
+
+    return _run
+
+
+# === Stdlib purity ===
 
 STDLIB_ALLOWLIST: Final = frozenset(
     {
@@ -127,13 +141,7 @@ STDLIB_ALLOWLIST: Final = frozenset(
 
 
 def test_module_imports_only_stdlib() -> None:
-    """The action runs this module with a bare ``python3`` and no install.
-
-    In CI the package IS pip-installed, so a stray ``import click`` or
-    ``from ._errors import CIError`` would pass every other test here and only
-    explode on a consumer's runner. Walking the AST is the only check that fails
-    at the right time.
-    """
+    """The action runs this with a bare python3; CI has the package installed, so only the AST check catches it."""
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -150,25 +158,15 @@ def test_module_imports_only_stdlib() -> None:
 
 
 def test_org_template_passes_unmodified() -> None:
-    """The regression test for the whole normalization design.
-
-    CRLF line endings and a trailing space-only line, exactly as GitHub serves
-    the org template. If this fails, every PR in the org fails.
-    """
+    """CRLF and a trailing space-only line, as GitHub serves it."""
     assert check_body(ORG_TEMPLATE).verdict is Verdict.OK
 
 
 def test_rstrip_happens_before_trailing_blanks_are_dropped() -> None:
-    """Ordering matters, and the unmodified org template is the proof.
-
-    Its last line is ``" "``. Dropping trailing blanks first leaves that line in
-    place, so the body would end with a stray blank and never match.
-    """
     assert normalize(ORG_TEMPLATE)[-1] == "* I have run all existing tests and confirmed they pass."
 
 
 def test_anemoi_variant_fails() -> None:
-    """The drifting one-line variant must not satisfy the canonical block."""
     result = check_body("## Description\n\nwork\n\n" + ANEMOI_TAIL)
     assert result.verdict is Verdict.HEADING_MISSING
 
@@ -188,16 +186,9 @@ def test_normalize_is_idempotent() -> None:
     assert normalize("\n".join(once)) == once
 
 
-def test_lf_only_body_passes() -> None:
-    assert check_body(body()).verdict is Verdict.OK
-
-
-def test_cr_only_body_passes() -> None:
-    assert check_body(body().replace("\n", "\r")).verdict is Verdict.OK
-
-
-def test_crlf_body_passes() -> None:
-    assert check_body(body().replace("\n", "\r\n")).verdict is Verdict.OK
+@pytest.mark.parametrize("eol", ["\n", "\r", "\r\n"], ids=["lf", "cr", "crlf"])
+def test_any_line_ending_passes(eol: str) -> None:
+    assert check_body(body().replace("\n", eol)).verdict is Verdict.OK
 
 
 def test_per_line_trailing_whitespace_ignored() -> None:
@@ -219,17 +210,13 @@ def test_leading_bom_ignored() -> None:
 
 
 def test_indented_bullet_fails() -> None:
-    """Pins the deliberate absence of ``lstrip``: leading whitespace is visible."""
+    """No ``lstrip``: leading whitespace is visible."""
     result = check_body(body().replace("* I have run all", "    * I have run all"))
     assert result.verdict is Verdict.DIVERGED
 
 
 def test_unicode_line_separator_does_not_split_lines() -> None:
-    """U+2028 is why :meth:`str.splitlines` is banned.
-
-    It must stay inside its line -- diverging visibly -- rather than silently
-    becoming an extra line the reader never sees.
-    """
+    """U+2028 is why :meth:`str.splitlines` is banned."""
     tampered = body().replace("they pass.", "they" + chr(0x2028) + "pass.")
     lines = normalize(tampered)
     assert len(lines) == len(normalize(body()))
@@ -432,13 +419,9 @@ def test_summary_truncates_a_huge_excerpt() -> None:
     assert "x" * 4000 not in summary
 
 
-def test_main_only_writes_a_fixed_verdict_to_the_output_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_main_only_writes_a_fixed_verdict_to_the_output_file(run: Runner) -> None:
     """A body line reading ``EOF`` must not be able to forge step outputs."""
-    body_file = tmp_path / "body.md"
-    body_file.write_text(body() + "\nEOF\nforged=yes\n", encoding="utf-8")
-    code, _, _, output = run_main(tmp_path, ["--body-file", str(body_file)], monkeypatch, capsys)
+    code, _, _, output = run(body=body() + "\nEOF\nforged=yes\n")
     assert code == 1
     assert output.splitlines() == ["verdict=not-at-end"]
 
@@ -446,24 +429,16 @@ def test_main_only_writes_a_fixed_verdict_to_the_output_file(
 # === CLI ===
 
 
-def test_main_passes_on_a_compliant_body(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    body_file = tmp_path / "body.md"
-    body_file.write_text(ORG_TEMPLATE, encoding="utf-8", newline="")
-    code, out, summary, output = run_main(tmp_path, ["--body-file", str(body_file)], monkeypatch, capsys)
+def test_main_passes_on_a_compliant_body(run: Runner) -> None:
+    code, out, summary, output = run(body=ORG_TEMPLATE)
     assert code == 0
     assert "::error" not in out
     assert summary == ""
     assert output.splitlines() == ["verdict=ok"]
 
 
-def test_main_fails_and_writes_a_summary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    body_file = tmp_path / "body.md"
-    body_file.write_text(body().replace("project's", "project" + chr(0x2019) + "s"), encoding="utf-8")
-    code, out, summary, output = run_main(tmp_path, ["--body-file", str(body_file)], monkeypatch, capsys)
+def test_main_fails_and_writes_a_summary(run: Runner) -> None:
+    code, out, summary, output = run(body=body().replace("project's", "project" + chr(0x2019) + "s"))
     assert code == 1
     assert out.startswith("::error title=Contributor Declaration::")
     assert "U+2019" in out
@@ -471,48 +446,24 @@ def test_main_fails_and_writes_a_summary(
     assert output.splitlines() == ["verdict=diverged"]
 
 
-def test_main_reads_the_body_from_the_event_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    event_file = tmp_path / "event.json"
-    event_file.write_text(json.dumps(event(ORG_TEMPLATE)), encoding="utf-8")
-    code, _, _, output = run_main(tmp_path, ["--event-file", str(event_file)], monkeypatch, capsys)
-    assert code == 0
-    assert output.splitlines() == ["verdict=ok"]
+@pytest.mark.parametrize(
+    ("payload", "code", "verdict"),
+    [
+        (event(ORG_TEMPLATE), 0, "ok"),
+        (event("bump foo from 1 to 2", "dependabot[bot]", "Bot"), 0, "bot-exempt"),
+        (event("nothing here", "dependabot[bot]", "User"), 1, "heading-missing"),
+    ],
+    ids=["body", "bot", "human-with-bot-name"],
+)
+def test_main_reads_the_event_payload(run: Runner, payload: dict[str, Any], code: int, verdict: str) -> None:
+    got_code, _, _, output = run(payload=payload)
+    assert got_code == code
+    assert output.splitlines() == [f"verdict={verdict}"]
 
 
-def test_main_skips_an_allow_listed_bot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    event_file = tmp_path / "event.json"
-    event_file.write_text(json.dumps(event("bump foo from 1 to 2", "dependabot[bot]", "Bot")), encoding="utf-8")
-    code, out, _, output = run_main(tmp_path, ["--event-file", str(event_file)], monkeypatch, capsys)
-    assert code == 0
-    assert "::notice" in out
-    assert output.splitlines() == ["verdict=bot-exempt"]
-
-
-def test_main_checks_a_human_impersonating_a_bot_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    event_file = tmp_path / "event.json"
-    event_file.write_text(json.dumps(event("nothing here", "dependabot[bot]", "User")), encoding="utf-8")
-    code, _, _, output = run_main(tmp_path, ["--event-file", str(event_file)], monkeypatch, capsys)
-    assert code == 1
-    assert output.splitlines() == ["verdict=heading-missing"]
-
-
-def test_main_uses_the_body_file_and_the_event_file_together(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_main_uses_the_body_file_and_the_event_file_together(run: Runner) -> None:
     """The API path still needs the payload for the author allowlist."""
-    body_file = tmp_path / "body.md"
-    body_file.write_text("nothing here", encoding="utf-8")
-    event_file = tmp_path / "event.json"
-    event_file.write_text(json.dumps(event(ORG_TEMPLATE, "dependabot[bot]", "Bot")), encoding="utf-8")
-    code, _, _, output = run_main(
-        tmp_path, ["--body-file", str(body_file), "--event-file", str(event_file)], monkeypatch, capsys
-    )
+    code, _, _, output = run(body="nothing here", payload=event(ORG_TEMPLATE, "dependabot[bot]", "Bot"))
     assert code == 0
     assert output.splitlines() == ["verdict=bot-exempt"]
 
@@ -533,61 +484,37 @@ def test_main_rejects_invalid_json(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "::error" in capsys.readouterr().err
 
 
-def test_main_survives_invalid_utf8(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A crafted body must yield a verdict, never a UnicodeDecodeError."""
-    body_file = tmp_path / "body.md"
-    body_file.write_bytes(b"## Description\n\n\xff\xfe not utf-8\n")
-    code, out, _, output = run_main(tmp_path, ["--body-file", str(body_file)], monkeypatch, capsys)
+def test_main_survives_invalid_utf8(run: Runner) -> None:
+    code, out, _, output = run(body=b"## Description\n\n\xff\xfe not utf-8\n")
     assert code == 1
     assert output.splitlines() == ["verdict=heading-missing"]
     assert "::error" in out
 
 
-def test_main_fails_closed_on_an_oversized_body(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    body_file = tmp_path / "body.md"
-    body_file.write_text("x" * (MAX_BODY_CHARS + 1), encoding="utf-8")
-    code, out, _, _ = run_main(tmp_path, ["--body-file", str(body_file)], monkeypatch, capsys)
+def test_main_fails_closed_on_an_oversized_body(run: Runner) -> None:
+    code, out, _, _ = run(body="x" * (MAX_BODY_CHARS + 1))
     assert code == 1
     assert "limit this check accepts" in out
 
 
-def test_main_honours_no_summary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    body_file = tmp_path / "body.md"
-    body_file.write_text("nothing here", encoding="utf-8")
-    code, _, summary, _ = run_main(tmp_path, ["--body-file", str(body_file), "--no-summary"], monkeypatch, capsys)
+def test_main_honours_no_summary(run: Runner) -> None:
+    code, _, summary, _ = run("--no-summary", body="nothing here")
     assert code == 1
     assert summary == ""
 
 
-def test_main_honours_a_declaration_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_main_honours_a_declaration_file(run: Runner, tmp_path: Path) -> None:
     declaration = tmp_path / "template.md"
     declaration.write_text("### Contributor Declaration\n\nI agree.\n", encoding="utf-8")
-    body_file = tmp_path / "body.md"
-    body_file.write_text("prose\n\n### Contributor Declaration\n\nI agree.\n", encoding="utf-8")
-    code, _, _, output = run_main(
-        tmp_path,
-        ["--body-file", str(body_file), "--declaration-file", str(declaration)],
-        monkeypatch,
-        capsys,
+    code, _, _, output = run(
+        "--declaration-file", str(declaration), body="prose\n\n### Contributor Declaration\n\nI agree.\n"
     )
     assert code == 0
     assert output.splitlines() == ["verdict=ok"]
 
 
 def test_cli_contract_via_subprocess(tmp_path: Path) -> None:
-    """Pins the exact command line the composite action emits.
-
-    This cannot prove stdlib purity -- site-packages is still importable in a
-    subprocess -- which is what ``test_module_imports_only_stdlib`` is for.
-    """
+    """The command line the composite action emits."""
     body_file = tmp_path / "body.md"
     body_file.write_text(ORG_TEMPLATE, encoding="utf-8", newline="")
     completed = subprocess.run(
@@ -612,20 +539,9 @@ def test_vendored_pr_template_passes() -> None:
     assert check_body(template).verdict is Verdict.OK
 
 
-def test_reusable_workflow_job_id_is_frozen() -> None:
-    """The job id is a required-status-check context in every ECMWF repo.
-
-    Renaming it changes the context name in every consumer at once, because they
-    all pin ``@main``. If this test fails, that is the breaking change it is here
-    to make you notice.
-    """
+def test_reusable_workflow_job_id_trigger_and_permissions() -> None:
+    """The job id is a required-status-check context in every consumer, which all pin ``@main``."""
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "check-pr-declaration.yml").read_text())
     assert list(workflow["jobs"]) == ["contributor-declaration"]
-    # PyYAML resolves a bare `on` key to True under YAML 1.1.
-    triggers = workflow.get("on", workflow.get(True))
-    assert "workflow_call" in triggers
-
-
-def test_reusable_workflow_permissions_are_minimal() -> None:
-    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "check-pr-declaration.yml").read_text())
+    assert "workflow_call" in workflow.get("on", workflow.get(True))
     assert workflow["permissions"] == {"contents": "read"}

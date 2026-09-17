@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the explicit `platform` artifact-name slot.
-
-The platform key lets several ABI-compatible images (and a same-distro host
-runner) share one artifact: a producer built under one image is reused by a
-consumer building under a different image, instead of being rebuilt just
-because the image tag differs. These tests pin that:
-
-  - compute_platform_slug: the declared platform is used verbatim, is required,
-    and may not begin with an 8-hex segment (which would be read as deps-hash8).
-  - producer_can_build: runs-on/container do not discriminate, so two
-    ABI-compatible images declaring the same platform match.
-  - make_artifact_name: the image tag is not an input, so producer and consumer
-    agree on the name whichever image each builds under.
-"""
+"""The `platform` slot lets ABI-compatible images share one artifact; the image tag never enters the name."""
 
 from __future__ import annotations
 
@@ -71,8 +58,7 @@ platform = "ubuntu-24.04"
 
 def test_producer_can_build_across_images_on_same_platform() -> None:
     fortmath = parse_manifest(_FORTMATH_MANIFEST, default_repo="owner/fortran")
-    # cxx consumer builds under a DIFFERENT image but the SAME platform, and
-    # also pins cxx-compiler (which fortmath does not declare).
+    # A different image on the same platform, plus a cxx-compiler fortmath does not declare.
     consumer = {
         "cxx-compiler": "clang++-18",
         "fortran-compiler": "gfortran-13",
@@ -83,22 +69,11 @@ def test_producer_can_build_across_images_on_same_platform() -> None:
     }
     assert producer_can_build(fortmath, consumer)
 
-    # A different Fortran compiler the producer can't satisfy still fails.
-    bad = {**consumer, "fortran-compiler": "gfortran-12"}
-    assert not producer_can_build(fortmath, bad)
-
-    # A different platform also fails (the binary-compatibility class differs).
-    other_platform = {**consumer, "platform": "ubuntu-22.04"}
-    assert not producer_can_build(fortmath, other_platform)
+    assert not producer_can_build(fortmath, {**consumer, "fortran-compiler": "gfortran-12"})
+    assert not producer_can_build(fortmath, {**consumer, "platform": "ubuntu-22.04"})
 
 
 def test_artifact_name_is_independent_of_the_building_image() -> None:
-    """fortran building fortmath and cxx resolving the fortmath dep compute the
-    same name, because `platform` — not the image tag — is what enters it.
-
-    The two sides run under different container images (gfortran13 vs clang18);
-    since neither is an input to the name, one call is the whole story.
-    """
     assert (
         make_artifact_name(
             prefix=PackageName("fortmath"),

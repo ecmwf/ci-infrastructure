@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rendering a `.j2` HPC recipe against the matrix leg that selected it.
-
-The point of the feature is that the manifest and the recipe cannot disagree, so
-most of these tests are about what happens when they *would*: an undeclared name
-must fail loudly rather than render empty. The first test is the other half of the
-contract — a plain `.sh` must still come through byte-for-byte.
-"""
+"""Rendering a `.j2` HPC recipe against its matrix leg; an undeclared name fails rather than rendering empty."""
 
 from __future__ import annotations
 
@@ -49,11 +43,7 @@ def _render(
 
 
 def test_a_plain_sh_recipe_is_passed_through_byte_for_byte(tmp_path: Path) -> None:
-    """The backwards-compatibility contract: `.j2` is the whole of the opt-in.
-
-    A recipe containing jinja delimiters is the sharp case — `${x//{{/y}}` is legal
-    bash — and it must reach the wrapper untouched.
-    """
+    """Even with jinja delimiters in it: `${x//{{/y}}` is legal bash."""
     body = "#!/bin/bash\nawk '{ print $1 }' f\nx=${v//{{/y}}\n"
     script = tmp_path / "build-gnu.sh"
     script.write_text(body)
@@ -74,12 +64,10 @@ def test_artifact_name_is_available() -> None:
 
 
 def test_undeclared_name_fails_and_names_what_the_leg_has() -> None:
-    """StrictUndefined is the enforcement. Rendering empty is the bug being fixed:
-    an empty `module load` line builds a different binary under an unchanged name."""
     with pytest.raises(jobscript.JobTemplateError) as exc:
         _render("module load {{ fortran_compiler }}\n")
     assert "fortran_compiler" in str(exc.value)
-    assert "cxx-compiler" in str(exc.value)  # lists what IS declared
+    assert "cxx-compiler" in str(exc.value)
 
 
 def test_undeclared_subscript_on_the_raw_leg_also_fails() -> None:
@@ -88,35 +76,28 @@ def test_undeclared_subscript_on_the_raw_leg_also_fails() -> None:
 
 
 def test_resolved_is_not_in_the_context() -> None:
-    """`_resolved` carries RUNNER-local paths. cmake-prefix-path in particular is
-    rewritten to the shipped cluster copies after the leg is read, so a template that
-    baked it in would point the job at directories no compute node can see."""
+    """`_resolved` holds runner-local paths no compute node can see."""
     with pytest.raises(jobscript.JobTemplateError):
         _render("{{ _resolved }}\n")
 
 
 def test_cluster_env_vars_stay_env_vars() -> None:
-    """They are not knowable at render time (the work dir is expanded on the
-    cluster), so they are not template names — and a recipe using $VAR is untouched."""
     assert _render('p="$CI_INSTALL_PREFIX"\n') == 'p="$CI_INSTALL_PREFIX"\n'
     with pytest.raises(jobscript.JobTemplateError):
         _render("{{ CI_INSTALL_PREFIX }}\n")
 
 
 def test_shell_metacharacters_survive_verbatim() -> None:
-    """autoescape is off: this is shell, not markup."""
     assert _render("a && b > c || d 'e'\n") == "a && b > c || d 'e'\n"
 
 
 def test_sh_filter_quotes_a_hostile_value() -> None:
-    """The corpus really contains one: ecflow's ctest-args carries apostrophes."""
     leg = {"ctest-args": "-E 's_test|s_zombies'"}
     assert _render("ctest {{ ctest_args | sh }}\n", leg) == "ctest '-E '\"'\"'s_test|s_zombies'\"'\"''\n"
 
 
 def test_a_module_loop_leaves_no_blank_lines() -> None:
-    """trim_blocks/lstrip_blocks make a {% %}-only line vanish, which is what keeps a
-    templated #SBATCH block the contiguous run of #-lines _split_header needs."""
+    """Keeps a templated #SBATCH block contiguous for _split_header."""
     out = _render("    {% for m in modules %}\n    module {{ m }}\n    {% endfor %}\n")
     assert out == "    module load prgenv/gnu\n    module unload gcc\n    module load gcc/old\n"
 
@@ -147,17 +128,13 @@ def test_include_resolves_from_the_recipe_directory(tmp_path: Path) -> None:
 
 
 def test_undeclared_names_are_found_statically_in_a_dead_branch() -> None:
-    """Static, so a name inside a never-taken branch still has to be declared — the
-    right side to err on when the point is that the manifest says what a leg is."""
     src = "{% if false %}{{ never_declared }}{% endif %}{{ cc }}\n"
     assert jobscript.undeclared_template_names(src, LEG, template_name="t") == {"never_declared"}
     assert jobscript.undeclared_template_names("{{ cc }}{{ leg }}\n", LEG, template_name="t") == set()
 
 
 def test_rendered_template_keeps_its_shebang_and_sbatch_header() -> None:
-    """A leading {% set %} can leave a blank first line; the shebang must still be
-    recognised rather than demoted into the comment block (which would leave the real
-    shebang inert under an injected one)."""
+    """A leading {% set %} leaves a blank first line."""
     src = "{% set t = build_type %}\n#!/bin/bash\n\n#SBATCH --qos=nf\n\nmake {{ t }}\n"
     rendered = _render(src)
     wrapped = jobscript.render_job_script(
@@ -167,7 +144,6 @@ def test_rendered_template_keeps_its_shebang_and_sbatch_header() -> None:
     assert lines[0] == "#!/bin/bash"
     assert lines.count("#!/bin/bash") == 1
     assert "#SBATCH --qos=nf" in lines
-    # our injected directives must still land inside the header, before any command
     assert lines.index("#SBATCH --output=/o") < lines.index("set -euo pipefail")
     assert "make Release" in wrapped
 
