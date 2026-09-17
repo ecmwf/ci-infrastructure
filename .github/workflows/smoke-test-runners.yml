@@ -124,14 +124,46 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - image: ubuntu22.04-gfortran11
+            declares: ubuntu22.04/gfortran11
+          - image: ubuntu22.04-gfortran11-boost-qt6
+            declares: ubuntu22.04/gfortran11-boost-qt6
           - image: ubuntu24.04-gfortran13-boost-qt6
             declares: ubuntu24.04/gfortran13-boost-qt6
           - image: ubuntu24.04-clang18-gfortran13
             declares: ubuntu24.04/clang18-gfortran13
+          - image: ubuntu26.04-gfortran15
+            declares: ubuntu26.04/gfortran15
+          - image: ubuntu26.04-gfortran15-boost-qt6
+            declares: ubuntu26.04/gfortran15-boost-qt6
           - image: rocky8-gfortran8-boost-qt5
             declares: rocky8/gfortran8-boost-qt5
+          - image: rocky9-gfortran11
+            declares: rocky9/gfortran11
+          - image: rocky9-gfortran11-boost-qt5
+            declares: rocky9/gfortran11-boost-qt5
+          - image: rocky10-gfortran14
+            declares: rocky10/gfortran14
+          - image: rocky10-gfortran14-boost-qt6
+            declares: rocky10/gfortran14-boost-qt6
           - image: debian11-gfortran10-boost-qt5
             declares: debian11/gfortran10-boost-qt5
+          - image: debian12-gfortran12
+            declares: debian12/gfortran12
+          - image: debian12-gfortran12-boost-qt6
+            declares: debian12/gfortran12-boost-qt6
+          - image: debian13-gfortran14
+            declares: debian13/gfortran14
+          - image: debian13-gfortran14-boost-qt6
+            declares: debian13/gfortran14-boost-qt6
+          - image: fedora43-gfortran15
+            declares: fedora43/gfortran15
+          - image: fedora43-gfortran15-boost-qt6
+            declares: fedora43/gfortran15-boost-qt6
+          - image: fedora44-gfortran16
+            declares: fedora44/gfortran16
+          - image: fedora44-gfortran16-boost-qt6
+            declares: fedora44/gfortran16-boost-qt6
     name: image (${{ matrix.image }})
     runs-on: arc-runner-normal
     container:

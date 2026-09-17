@@ -32,17 +32,41 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 
 | Directory | Image |
 |---|---|
+| `public-images/ubuntu22.04/base` | `…/ubuntu22.04-base` |
+| `public-images/ubuntu22.04/gfortran11` | `…/ubuntu22.04-gfortran11` |
+| `public-images/ubuntu22.04/gfortran11-boost-qt6` | `…/ubuntu22.04-gfortran11-boost-qt6` |
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
 | `public-images/ubuntu24.04/gfortran13` | `…/ubuntu24.04-gfortran13` |
 | `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
 | `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
 | `public-images/ubuntu24.04/gfortran13-boost-qt6` | `…/ubuntu24.04-gfortran13-boost-qt6` |
+| `public-images/ubuntu26.04/base` | `…/ubuntu26.04-base` |
+| `public-images/ubuntu26.04/gfortran15` | `…/ubuntu26.04-gfortran15` |
+| `public-images/ubuntu26.04/gfortran15-boost-qt6` | `…/ubuntu26.04-gfortran15-boost-qt6` |
 | `public-images/rocky8/base` | `…/rocky8-base` |
 | `public-images/rocky8/gfortran8` | `…/rocky8-gfortran8` |
 | `public-images/rocky8/gfortran8-boost-qt5` | `…/rocky8-gfortran8-boost-qt5` |
+| `public-images/rocky9/base` | `…/rocky9-base` |
+| `public-images/rocky9/gfortran11` | `…/rocky9-gfortran11` |
+| `public-images/rocky9/gfortran11-boost-qt5` | `…/rocky9-gfortran11-boost-qt5` |
+| `public-images/rocky10/base` | `…/rocky10-base` |
+| `public-images/rocky10/gfortran14` | `…/rocky10-gfortran14` |
+| `public-images/rocky10/gfortran14-boost-qt6` | `…/rocky10-gfortran14-boost-qt6` |
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
 | `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
+| `public-images/debian12/base` | `…/debian12-base` |
+| `public-images/debian12/gfortran12` | `…/debian12-gfortran12` |
+| `public-images/debian12/gfortran12-boost-qt6` | `…/debian12-gfortran12-boost-qt6` |
+| `public-images/debian13/base` | `…/debian13-base` |
+| `public-images/debian13/gfortran14` | `…/debian13-gfortran14` |
+| `public-images/debian13/gfortran14-boost-qt6` | `…/debian13-gfortran14-boost-qt6` |
+| `public-images/fedora43/base` | `…/fedora43-base` |
+| `public-images/fedora43/gfortran15` | `…/fedora43-gfortran15` |
+| `public-images/fedora43/gfortran15-boost-qt6` | `…/fedora43-gfortran15-boost-qt6` |
+| `public-images/fedora44/base` | `…/fedora44-base` |
+| `public-images/fedora44/gfortran16` | `…/fedora44-gfortran16` |
+| `public-images/fedora44/gfortran16-boost-qt6` | `…/fedora44-gfortran16-boost-qt6` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
 | `public-images/rolling-arch/gfortran` | `…/rolling-arch-gfortran` |
 | `public-images/rolling-arch/gfortran-boost-qt6` | `…/rolling-arch-gfortran-boost-qt6` |
@@ -55,9 +79,10 @@ all dependents in one parallel matrix, so a chain would race on `:latest`.
 `scripts/build_image.py` refuses a deeper chain.
 
 Boost and Qt are deliberately not in the base: both are large and wanted by one
-package, so they live in `gfortran13-boost-qt6`, whose name then says exactly
-what it adds. Qt is there because ecflow builds ecFlowUI by default
-(`ENABLE_UI=ON`) and its configure step is a hard error without Qt6.
+package, so they live in the `gfortran<N>-boost-qt<M>` variant, whose name says
+which compiler and Qt major version it adds. Qt is there because ecflow builds
+ecFlowUI by default (`ENABLE_UI=ON`) and its configure step requires a supported
+Qt version. Most platforms provide Qt6; the exceptions below provide Qt5.
 
 ## Platforms
 
@@ -67,17 +92,25 @@ is in the *name*, so what you get is never a surprise:
 
 | Platform | gcc | Qt | boost | cmake | `CI_INFRASTRUCTURE_PYTHON` |
 |---|---|---|---|---|---|
+| `ubuntu22.04` | 11 | 6 | 1.74 | 3.31.6 | `/usr/local/bin/python3.11` (built from source) |
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
+| `ubuntu26.04` | 15 | 6 | 1.90 | 4.2 | `/usr/bin/python3` (3.14) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
+| `rocky9` | 11 | **5** | 1.75 | 3.31 | `/usr/bin/python3.12` |
+| `rocky10` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.12) |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
+| `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/bin/python3` (3.11) |
+| `debian13` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.13) |
+| `fedora43` | 15 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.14) |
+| `fedora44` | 16 | 6 | 1.90 | 4.3 | `/usr/bin/python3` (3.14) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:
 
-**Qt5, not Qt6, on `rocky8` and `debian11`.** Neither distro has Qt6 at all —
-bullseye predates it, and rocky 8 has it in no repo. ecflow's
-`cmake/Dependencies.cmake` accepts either, so these are real substitutions, and
-the image name says which you get.
+**Qt5, not Qt6, on `rocky8`, `rocky9`, and `debian11`.** These platforms use
+their supported Qt5 packages rather than the Qt6 used by the other platforms.
+ecflow's `cmake/Dependencies.cmake` accepts either, so these are real
+substitutions, and the image name says which you get.
 
 **`rocky8` uses the distro's own gcc, 8.5.** Not a `gcc-toolset-N` SCL under
 `/opt/rh`: 8.5 is what the distro gives you by default and what the Atos HPC GNU
@@ -88,17 +121,21 @@ every package here requires, is there. The variants symlink `gcc-8`/`g++-8`/
 `gfortran-8` into `/usr/local/bin`, because the rocky RPMs ship only unversioned
 names and every manifest asks CMake for a versioned one.
 
-**`debian11` builds its own Python.** `ci_infrastructure` needs >= 3.11
-(`pyproject.toml`) and bullseye's ceiling is 3.10, backports included. The base
-compiles a pinned, checksummed 3.11 with `--enable-shared` (for
+**`debian11` and `ubuntu22.04` build their own Python.** `ci_infrastructure`
+needs >= 3.11 (`pyproject.toml`), but bullseye provides Python 3.9 and Jammy's
+Python 3.11 package is only a release candidate. Both bases therefore compile a
+pinned, checksummed Python 3.11 from python.org with `--enable-shared` (for
 `find_package(Python3 COMPONENTS Development)`) and `make altinstall`, leaving
-the system 3.9 alone. It is the only image here that fetches anything from
-outside a distro archive.
+the system interpreter alone. These are the only images that fetch and build a
+CPython source tarball directly; both pin its checksum for provenance and
+repeatable builds.
 
-`rocky8` and `debian11` also take their pytest from pip rather than the distro,
-because in both cases the distro package targets an interpreter (3.6, 3.9) that
-is not the one those images run anything with. `ubuntu24.04` and `rolling-arch` use
-the distro package.
+`ubuntu22.04`, `rocky8`, `rocky9`, `rocky10`, and `debian11` take pytest from
+pip. On Ubuntu 22.04, Rocky 8, Rocky 9, and Debian 11, the selected CI Python is
+newer than the distro's default interpreter and its pytest package. Rocky 10
+also installs pytest with the selected system Python's pip. `ubuntu24.04`,
+`ubuntu26.04`, `debian12`, `debian13`, `fedora43`, `fedora44`, and
+`rolling-arch` use their distro pytest package.
 
 ### `rolling-arch` — newest of everything, rebuilt nightly
 

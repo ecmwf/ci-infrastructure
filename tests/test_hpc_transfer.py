@@ -268,7 +268,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     unpacked = tmp_path / "unpacked"
     unpacked.mkdir()
     with tarfile.open(staging / "source.tgz") as tar:
-        tar.extractall(unpacked, filter="data")
+        tar.extractall(unpacked)
     assert (unpacked / "hello.txt").read_text() == "content-xyz"
 
     _write_zstd_tar(Path(jobscript.install_archive_path(str(unpacked))), unpacked)
