@@ -4,12 +4,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Round-trip an object through every configured bucket, so a bad endpoint or a
-credential issued against the wrong store fails in the smoke test rather than
-halfway through a downstream publish.
-
-Configuration comes from the environment, so whatever works here is what
-belongs in the secrets:
+"""Round-trip an object through every configured bucket, so a bad endpoint or
+credential fails in the smoke test rather than in a downstream publish.
 
     ARTIFACT_S3_ENDPOINT   required: object store URL
     ARTIFACT_S3_BUCKET     artifact bucket, probed when set
@@ -18,34 +14,19 @@ belongs in the secrets:
     AWS_ACCESS_KEY_ID      required, read by boto3 itself
     AWS_SECRET_ACCESS_KEY
 
-All but SCCACHE_BUCKET are names s3_store itself reads; that one belongs to
-sccache, which this script only borrows in order to reach its bucket.
+The two bucket fingerprints should differ. At least one bucket must be set.
 
-The two buckets are separate on purpose -- artifacts and sccache are orthogonal
-uses that happen to share one store -- so the fingerprints printed below should
-differ. Two identical fingerprints mean one bucket is doing both jobs.
-
-At least one bucket must be set. Exits non-zero if any of them fails.
-
-The S3 error code is the whole point of the output, because the failures look
-identical from the outside:
+The S3 error code is the point of the output:
 
     InvalidAccessKeyId     key unknown to THIS store (wrong store, or revoked)
     SignatureDoesNotMatch  key known, secret wrong or the two halves swapped
     AccessDenied           pair valid, but no rights on this bucket
     NoSuchBucket           auth fine, bucket absent from this store
 
-A bare HTTP status ("404") in place of one of those codes means the reply
-carried no S3 error document, so it did not come from the object store and the
-status says nothing about the bucket named next to it. Each failure therefore
-also prints the HTTP status, the responding server and the request id: those
-say *who* answered, which the error code alone cannot. A missing server header
-is the tell.
+A bare HTTP status ("404") instead means the reply did not come from the store;
+the printed server and request id say who answered.
 
-No secret value is printed: this repository is public and the endpoint is
-itself held as a secret. Configuration is identified only by a truncated
-digest, which is enough to tell "the value CI used" from "the value I used by
-hand" without disclosing either.
+No secret value is printed, only truncated digests.
 """
 
 from __future__ import annotations
@@ -72,22 +53,12 @@ def _env(name: str) -> str:
 
 
 def _fingerprint(value: str) -> str:
-    """Short digest of a value, for comparing environments without printing it.
-
-    Same value in two places -> same digest, so a run in CI and a run by hand
-    can be told apart from a run against a different endpoint, bucket or key,
-    which is the difference these probes most often turn on.
-    """
+    """Short digest, to compare values across environments without printing them."""
     return hashlib.sha256(value.encode()).hexdigest()[:8] if value else "<unset>"
 
 
 def _describe_response(exc: ClientError) -> str:
-    """Who answered, in one line: HTTP status, server, request id.
-
-    The S3 error code identifies a *store* rejection. When the reply never came
-    from the store -- a proxy or ingress answering instead -- there is no code
-    to read, and only these fields distinguish the two.
-    """
+    """Who answered, in one line: HTTP status, server, request id."""
     meta = exc.response.get("ResponseMetadata", {})
     headers = {k.lower(): v for k, v in meta.get("HTTPHeaders", {}).items()}
     fields = {
@@ -100,24 +71,14 @@ def _describe_response(exc: ClientError) -> str:
 
 
 def round_trip(client: Any, role: str, bucket: str, key: str) -> str | None:
-    """PUT/GET/DELETE one bucket. Return a failure summary, or None if it passed.
+    """PUT/GET/DELETE one bucket; a failure summary, or None if it passed.
 
-    Write, read back and clean up -- exactly what publish and fetch do, so a
-    pass here means those will work.
-
-    Takes its own client, and that is not incidental. A PUT is sent with an
-    ``Expect: 100-continue`` header, so a rejection arrives before the body
-    does and leaves the pooled HTTPS connection undrained. A later PUT reusing
-    that connection reads the *previous* reply: the second bucket then reports
-    the first bucket's status with no body to parse, which surfaces as a bare
-    ``404`` rather than an S3 error code. One client per bucket means one
-    connection pool per bucket, so every result is that bucket's own.
+    Needs its own client: a rejected ``Expect: 100-continue`` PUT leaves the pooled
+    connection undrained, and a shared pool would hand its reply to the next bucket.
     """
     print(f"::group::{role} bucket")
     print(f"  bucket fingerprint: {_fingerprint(bucket)}")
-    # The request URL is built from the endpoint and the bucket; whether the
-    # bucket lands in the path or in the hostname decides which host is
-    # contacted at all, so record it rather than assume path style.
+    # Path vs virtual-host addressing decides which host is contacted.
     urls: list[str] = []
 
     def _record(request: Any, **_: Any) -> None:
@@ -138,8 +99,6 @@ def round_trip(client: Any, role: str, bucket: str, key: str) -> str | None:
         failure = detail = ""
     client.meta.events.unregister("before-send.s3.*", _record)
     if urls:
-        # Host only, and only whether it is the endpoint's: the endpoint and the
-        # bucket name are both secrets, so neither is printed.
         style = "path" if urlsplit(urls[0]).hostname == _endpoint_host() else "virtual-host"
         print(f"  addressing: {style}")
     print(f"  put/get/delete: {failure or 'OK'}")
@@ -164,13 +123,6 @@ def main() -> int:
         print("::error::set ARTIFACT_S3_BUCKET and/or SCCACHE_BUCKET -- there is nothing to probe")
         return 1
 
-    # Everything that decides where the requests actually go, identified but
-    # not disclosed. A probe that passes by hand and fails here is nearly
-    # always a different value behind one of these names -- an org-level secret
-    # shadowed in one place and not the other, a key from another store -- and
-    # comparing digests settles that in one look. The proxy variables are here
-    # because a proxy answering on the store's behalf is the other way a
-    # request ends up somewhere unintended.
     print("::group::configuration")
     print(f"  botocore: {botocore.__version__}")
     for var in ("ARTIFACT_S3_ENDPOINT", "ARTIFACT_S3_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
@@ -179,9 +131,7 @@ def main() -> int:
     print(f"  proxy env: {', '.join(sorted(proxies)) if proxies else 'none'}")
     print("::endgroup::")
 
-    # Built like s3_store._client(), vendored HARICA root included, so a pass
-    # here means the real publish path will work. One per bucket, never shared
-    # -- see round_trip on why a shared pool makes the second bucket lie.
+    # Like s3_store._client(); one per bucket (see round_trip).
     def new_client() -> Any:
         return boto3.client(
             "s3",

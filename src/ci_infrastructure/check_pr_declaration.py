@@ -2,50 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify that a pull request description ends with the ECMWF Contributor Declaration.
+"""Verify that a pull request description ends with the ECMWF Contributor Declaration, verbatim.
 
-ECMWF's public repos ship a PR template whose last section is the Contributor
-Declaration -- the CLA affirmation plus the contributor checklist. It is plain
-template text, so nothing stops a contributor from deleting or rewording it while
-filling in the description, which silently removes the affirmation the project
-relies on. This module is the checker behind
-``actions/check-pr-declaration``: it fails when the description does not END with
-that block, verbatim.
+The checker behind ``actions/check-pr-declaration``.
 
-STDLIB ONLY, AND AN OLDER PYTHON THAN THE REST OF THE PACKAGE, ON PURPOSE. The
-action runs this with whatever ``python3`` the consumer's runner happens to have,
-with no venv and no ``pip install`` -- see the action's description for why
-``ensure-infrastructure-present`` is deliberately not used. So two rules apply
-here and nowhere else in the package:
+STDLIB ONLY, AND AN OLDER PYTHON THAN THE REST OF THE PACKAGE, ON PURPOSE: the
+action runs it with the runner's bare ``python3``. So no ``click``, ``pydantic`` or
+``._errors`` imports (``tests/test_check_pr_declaration.py`` walks the AST), and no
+syntax newer than the oldest runner (``pyproject.toml`` disables the ruff rules
+that would push it in).
 
-* Do not import ``click``, ``pydantic``, or even this package's own ``._errors``
-  (which imports click). ``tests/test_check_pr_declaration.py`` asserts this with
-  an AST walk, because in CI the package IS installed and a stray import would
-  only explode on a consumer's runner.
-* Do not use syntax or stdlib newer than the oldest runner we might land on.
-  ``requires-python`` does not cover this module, since nothing installs it;
-  ``pyproject.toml`` disables the ruff rules that would push 3.11-only idioms in.
+The verdict is tail equality of the normalized line lists (plus HIDDEN_BLOCK on
+the passing path); everything else only explains a failure.
 
-The pass/fail decision is one expression -- tail equality of the normalized line
-lists -- so no heuristic can make a bad body pass. Everything else in here
-(heading hunting, loose heading matching, character-level diffing) exists solely
-to produce a diagnosis a contributor can act on, and runs only after that
-expression has already said no.
-
-The one exception is HIDDEN_BLOCK: a body that is an unclosed ``<!--`` followed by
-the verbatim block satisfies tail equality while GitHub renders the whole
-description as an HTML comment, so the declaration is invisible to every human
-reader. That is checked on the passing path too.
-
-SECURITY. The PR body is attacker-controlled text (up to 65 536 characters, from
-anonymous fork authors) that we echo into the runner log, an annotation and the
-step summary. Therefore: the raw body is never printed; at most one line of it
-appears, via ``repr()``, inside a single-line annotation whose newlines are
-escaped, so an embedded ``::stop-commands::`` is never at the start of a line and
-stays inert; C0/C1 control characters are stripped so ANSI sequences cannot hide
-or fake log output; summary excerpts are fenced with a backtick run longer than
-any in the content and hard-truncated; and ``$GITHUB_OUTPUT`` only ever receives a
-fixed ``Verdict`` value, never body-derived text.
+SECURITY. The PR body is attacker-controlled: it is never printed raw, and
+``$GITHUB_OUTPUT`` only receives a fixed ``Verdict`` value. See the rendering helpers.
 """
 
 from __future__ import annotations
@@ -65,13 +36,9 @@ from typing import Any, Final
 #: The heading that opens the declaration. Matched exactly, as a whole line.
 DECLARATION_HEADING: Final = "### Contributor Declaration"
 
-#: Vendored from ecmwf/.github/.github/PULL_REQUEST_TEMPLATE.md (verified 2026-08-17).
-#:
-#: Stored LF-terminated with no trailing-whitespace line, unlike the org copy
-#: (CRLF, ending ``pass.\r\n \r\n``); ``normalize`` makes the two equivalent, and
-#: this form survives the repo's ``trailing-whitespace`` / ``end-of-file-fixer``
-#: pre-commit hooks unchanged. ``.github/workflows/pr-declaration-drift.yml``
-#: fails if the org template diverges from this constant.
+#: Vendored from ecmwf/.github/.github/PULL_REQUEST_TEMPLATE.md, stored LF without the
+#: org copy's trailing-space line (``normalize`` makes them equal).
+#: ``.github/workflows/pr-declaration-drift.yml`` fails if the two diverge.
 CANONICAL_DECLARATION: Final = """\
 ### Contributor Declaration
 
@@ -84,12 +51,8 @@ By opening this pull request, I affirm the following:
 * I have run all existing tests and confirmed they pass.
 """
 
-#: Bot accounts whose PR bodies are machine-generated and cannot carry the
-#: declaration. Dependabot in particular offers no footer customisation and
-#: rewrites the body on every rebase, so a manual fix does not survive; without
-#: an exemption a required check would permanently block every such PR. Only
-#: honoured when the payload also reports ``user.type == "Bot"``, so a human
-#: account named ``dependabot`` is not exempt.
+#: Bots whose machine-generated PR bodies cannot carry the declaration.
+#: Only honoured with ``user.type == "Bot"``.
 DEFAULT_EXEMPT_AUTHORS: Final = (
     "dependabot[bot]",
     "renovate[bot]",
@@ -113,10 +76,7 @@ _SUMMARY_OPEN: Final = re.compile(r"<summary\b", re.IGNORECASE)
 _SUMMARY_CLOSE: Final = re.compile(r"</summary\s*>", re.IGNORECASE)
 _BACKTICK_RUN: Final = re.compile(r"`+")
 
-#: Per-verdict closing sentence for the annotation. Kept separate from the
-#: headline so each failure mode gets the fix that actually applies to it -- a
-#: generic "restore the block" is wrong advice for NOT_AT_END, where the block is
-#: already intact.
+#: Per-verdict fix for the annotation.
 _HINTS: Final = {
     "empty-body": "Paste the declaration from the job summary at the end of the description.",
     "heading-missing": "Copy the block from the job summary and paste it at the end of the description.",
@@ -185,37 +145,13 @@ class Result:
 def normalize(text: str) -> list[str]:
     """Reduce ``text`` to the canonical line list the comparison runs on.
 
-    The steps, in this order, are each forced by real data:
+    1. Strip a leading U+FEFF.
+    2. CRLF, then lone CR, to LF (the other order splits every CRLF twice).
+    3. Split on ``"\\n"`` only; :meth:`str.splitlines` splits on characters GitHub renders inline.
+    4. ``rstrip`` each line; never ``lstrip``, since leading whitespace is visible and semantic.
+    5. Drop trailing blank lines.
 
-    1. Strip a leading U+FEFF -- a Windows-authored ``--declaration-file`` would
-       otherwise fail invisibly on line 1.
-    2. CRLF and lone CR to LF. The org template is CRLF, GitHub's web form
-       submits CRLF, and real PR bodies are a mix (of four anemoi-core PRs
-       sampled, three were LF-only and one CRLF). CRLF must be replaced *first*:
-       handling lone CR first would split every CRLF into two lines.
-    3. Split on ``"\\n"`` and never with :meth:`str.splitlines`, which also
-       splits on U+0085, U+000B, U+000C, U+001C-1E, U+2028 and U+2029 -- that
-       would decouple our line model from GitHub's rendering and let a body
-       containing those characters normalize to something the reader never sees.
-    4. ``rstrip`` each line, trailing only. This absorbs the org template's stray
-       space-only final line and any editor-inserted trailing spaces, which are
-       invisible in GitHub's editor and would otherwise produce a red check
-       nobody can fix by looking. Markdown's two-space hard break renders
-       identically to no break, so dropping it is semantically right too. There
-       is deliberately no ``lstrip``: leading whitespace IS visible and IS
-       semantic (four spaces make a code block, indenting a ``*`` changes list
-       nesting), so an indented bullet must fail.
-    5. Drop trailing blank lines -- required by the real data, since after step 4
-       the org template's tail is ``["...they pass.", ""]``, and contributors
-       leave arbitrary trailing newlines. "Nothing may follow the block" means
-       nothing *meaningful*.
-
-    Deliberately NOT done: collapsing interior blank runs (the block's internal
-    blank lines are part of the canonical text and the reported line numbers
-    depend on them), and any Unicode or quote folding -- this is a legal
-    declaration, so ``project's`` becoming ``project’s`` has to fail. That is
-    survivable only because :func:`describe_char_diff` names the column and both
-    codepoints.
+    No interior blank collapsing and no Unicode folding: ``project’s`` must fail.
     """
     if text.startswith("\ufeff"):
         text = text[1:]
@@ -227,13 +163,7 @@ def normalize(text: str) -> list[str]:
 
 
 def expected_lines(source: str | None = None) -> list[str]:
-    """Normalized declaration lines, from ``source`` or the vendored constant.
-
-    When ``source`` contains the heading, everything from its *last* occurrence
-    onwards is used. That lets a consumer point ``declaration-file`` straight at
-    their own ``.github/PULL_REQUEST_TEMPLATE.md`` with no duplicated block to
-    keep in sync; for the vendored constant the slice is a no-op.
-    """
+    """Normalized declaration lines, from ``source`` (from its last heading on, so a whole PR template works) or the vendored constant."""
     lines = normalize(CANONICAL_DECLARATION if source is None else source)
     start = find_block_start(lines)
     if start is not None:
@@ -245,11 +175,7 @@ def expected_lines(source: str | None = None) -> list[str]:
 
 
 def body_from_event(payload: Mapping[str, Any]) -> str:
-    """Extract the PR body from a ``pull_request``/``pull_request_target`` payload.
-
-    A JSON ``null`` body becomes ``""``, which normalizes to no lines and is
-    reported as EMPTY_BODY rather than as a mismatch.
-    """
+    """The PR body from a ``pull_request``/``pull_request_target`` payload; null becomes ``""``."""
     pull_request = payload.get("pull_request")
     if not isinstance(pull_request, dict):
         raise ValueError(
@@ -274,12 +200,7 @@ def author_from_event(payload: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def is_exempt(login: str, kind: str, exempt: Sequence[str]) -> bool:
-    """True when this author is an allow-listed bot.
-
-    Both conditions are required. ``user.type`` is set by GitHub and cannot be
-    spoofed by a contributor, so a human account named ``dependabot`` stays
-    subject to the check.
-    """
+    """True for an allow-listed login whose GitHub-set ``user.type`` is Bot."""
     return kind == "Bot" and login in exempt
 
 
@@ -292,26 +213,13 @@ def parse_exempt_authors(raw: str) -> tuple[str, ...]:
 # === Locating and diffing the block ===
 
 
-def find_block_start(lines: Sequence[str], heading: str = DECLARATION_HEADING) -> int | None:
-    """Index of the *last* line equal to ``heading``, or None.
+def find_block_start(lines: Sequence[str], loose: bool = False) -> int | None:
+    """Index of the last heading line, or None; last, so an earlier quoted example never anchors.
 
-    Last, not first: the block belongs at the end, so a quoted example earlier in
-    the description must not anchor the diagnosis.
+    ``loose`` (diagnosis only) also accepts any heading level or case.
     """
     for index in range(len(lines) - 1, -1, -1):
-        if lines[index] == heading:
-            return index
-    return None
-
-
-def find_loose_block_start(lines: Sequence[str]) -> int | None:
-    """Index of the last line that looks like the heading at any level or case.
-
-    Diagnosis only. Lets ``## Contributor declaration`` be reported as "line 12:
-    expected ..., got ..." instead of the blunt "the section is gone entirely".
-    """
-    for index in range(len(lines) - 1, -1, -1):
-        if _LOOSE_HEADING.match(lines[index]):
+        if lines[index] == DECLARATION_HEADING or (loose and _LOOSE_HEADING.match(lines[index])):
             return index
     return None
 
@@ -335,12 +243,7 @@ def _char_label(char: str | None) -> str:
 
 
 def describe_char_diff(expected: str, actual: str) -> str:
-    """Name the column and both codepoints of the first difference.
-
-    This is what makes an autocorrected apostrophe or a stray NBSP diagnosable
-    rather than maddening, given that :func:`normalize` deliberately does no
-    Unicode folding.
-    """
+    """Name the column and both codepoints of the first difference (e.g. a curly apostrophe)."""
     column = _first_diff_column(expected, actual)
     index = column - 1
     expected_char = expected[index] if index < len(expected) else None
@@ -349,11 +252,7 @@ def describe_char_diff(expected: str, actual: str) -> str:
 
 
 def first_divergence(actual: Sequence[str], expected: Sequence[str], offset: int) -> LineDiff | None:
-    """First line of ``expected`` that ``actual`` fails to reproduce.
-
-    ``offset`` is the 0-based index in the body at which ``actual`` starts, so
-    the returned ``body_line_no`` is a line number the contributor can count to.
-    """
+    """First line of ``expected`` that ``actual`` (starting at body index ``offset``) fails to reproduce."""
     for index, expected_line in enumerate(expected):
         if index >= len(actual):
             return LineDiff(
@@ -377,12 +276,7 @@ def first_divergence(actual: Sequence[str], expected: Sequence[str], offset: int
 
 
 def _hidden_reason(lines: Sequence[str], block_start: int) -> str | None:
-    """Why the block, though present, would not be visible to a reader.
-
-    Counts openers against closers rather than merely spotting an opener, so a
-    body that legitimately closes a ``<details>`` log dump above the declaration
-    is not penalised.
-    """
+    """Why the block, though present, is not visible: more openers than closers above it."""
     prefix = "\n".join(lines[:block_start])
     if prefix.count("<!--") > prefix.count("-->"):
         return "an unclosed HTML comment (<!--) above it, which hides the whole description"
@@ -397,12 +291,7 @@ def _hidden_reason(lines: Sequence[str], block_start: int) -> str | None:
 
 
 def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
-    """Judge ``body`` against the declaration.
-
-    The decision is the single tail-equality comparison below. Everything after
-    it only explains a failure, so no diagnostic heuristic can turn a bad body
-    into a pass.
-    """
+    """Judge ``body``; only the tail-equality comparison decides, the rest explains."""
     declaration = list(expected) if expected is not None else expected_lines()
     lines = normalize(body)
 
@@ -429,7 +318,7 @@ def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
 
     found = find_block_start(lines)
     if found is None:
-        found = find_loose_block_start(lines)
+        found = find_block_start(lines, loose=True)
     if found is None:
         return Result(
             Verdict.HEADING_MISSING,
@@ -438,8 +327,6 @@ def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
 
     tail = lines[found:]
     if tail[: len(declaration)] == declaration:
-        # Blank lines after the block carry no meaning -- only the lines a reader
-        # would actually see are worth counting or showing.
         trailing = tuple(line for line in tail[len(declaration) :] if line)
         return Result(
             Verdict.NOT_AT_END,
@@ -464,27 +351,13 @@ def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
 
 
 def _strip_control(text: str) -> str:
-    """Drop C0/C1 control characters so ANSI sequences cannot reach the log.
-
-    Without this, a body could clear the log view (``\\x1b[2J``), hide text
-    (``\\x1b[8m``), or paint a fake green "passed" next to the real failure.
-
-    Surrogates are folded out in the same pass. A body read with
-    ``errors="surrogateescape"`` can carry lone surrogates, and those raise
-    ``UnicodeEncodeError`` the moment we write them to the step summary -- turning
-    a clean verdict into a traceback.
-    """
+    """Drop C0/C1 control characters (ANSI sequences) and lone surrogates (would raise on write)."""
     stripped = "".join(char for char in text if unicodedata.category(char) != "Cc")
     return stripped.encode("utf-8", "replace").decode("utf-8", "replace")
 
 
 def _escape_command(text: str) -> str:
-    """Escape a workflow-command payload so it stays on one line.
-
-    Newlines are what matter: a workflow command is only recognised at the start
-    of a line, so with them escaped an embedded ``::stop-commands::`` from the
-    body can never take effect.
-    """
+    """Escape a workflow-command payload onto one line, so an embedded ``::stop-commands::`` never starts a line."""
     return _strip_control(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
@@ -495,24 +368,12 @@ def render_error(result: Result) -> str:
 
 
 def _escape_markdown(text: str) -> str:
-    """Neutralise HTML in text that lands in the summary outside a code fence.
-
-    Step summaries render a sanitized HTML subset that still allows ``<img>``,
-    ``<a>`` and ``<details>``, so an unescaped body excerpt is an IP beacon and a
-    phishing surface aimed at whoever opens the run. Only the headline needs this;
-    everything else untrusted goes through :func:`_fence`.
-    """
+    """Escape HTML (summaries render ``<img>``/``<a>``) in the headline; other untrusted text is fenced."""
     return _strip_control(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _fence(lines: Sequence[str]) -> str:
-    """Fence untrusted lines in a code block they cannot escape.
-
-    The fence is one backtick longer than the longest run in the content, and
-    control characters are stripped. Content inside a fenced block is not
-    HTML-interpreted, so the ``<img>`` beacons and ``<a>`` phishing links a body
-    could aim at the maintainer reading the summary stay inert as text.
-    """
+    """Fence untrusted lines, truncated, with a backtick run longer than any inside them."""
     body = "\n".join(_strip_control(line) for line in lines)
     if len(body) > SUMMARY_EXCERPT_LIMIT:
         body = body[:SUMMARY_EXCERPT_LIMIT] + "\n... (truncated)"
@@ -569,14 +430,7 @@ def render_summary(result: Result, expected: Sequence[str]) -> str:
 
 
 def _read_text(path: Path) -> str:
-    """Read ``path`` verbatim.
-
-    ``newline=""`` matters: universal-newline translation would otherwise do step
-    2 of :func:`normalize` behind our back, making the CRLF tests vacuous on this
-    path while the event-payload path (where ``\\r\\n`` survives inside a JSON
-    string) behaved differently. ``surrogateescape`` turns invalid UTF-8 into a
-    verdict instead of a traceback.
-    """
+    """Read ``path`` verbatim: no newline translation, invalid UTF-8 kept as surrogates."""
     with path.open("r", encoding="utf-8", errors="surrogateescape", newline="") as handle:
         return handle.read()
 
@@ -677,8 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     declaration = expected_lines(declaration_source)
     result = check_body(body, declaration)
 
-    # The annotation goes out before anything else, so it cannot be suppressed by
-    # output emitted later in the job.
+    # Annotation first, so later output cannot suppress it.
     if result.ok:
         print(f"Contributor Declaration: {result.headline}")
     else:

@@ -4,26 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve a git ref to a full SHA and check whether its artifact already exists.
+"""Resolve a ref to a SHA, check whether its artifact exists, and report run state if not.
 
-Also reports whether a workflow run for that SHA is in progress, so callers can
-wait rather than rebuild. Outputs go to $GITHUB_OUTPUT (or stdout if unset); the
-``Outputs`` TypedDict below is the list. Two that the types cannot express:
-
-  run-status      running   at least one run for this SHA is queued/in_progress
-                  completed all runs for this SHA have finished
-                  none      no runs found for this SHA
-  run-conclusion  failure if any run failed, else success; empty unless completed
-
-The artifact name is minted by ``_github_api.make_artifact_name``, which is the
-single definition of its format — this module only re-derives it to look one up,
-and the two must agree byte-for-byte or every cache lookup misses.
-
-``--platform`` is used verbatim as the binary-compatibility class; the runner or
-image is pure scheduling and is not part of artifact identity. ``--compiler``
-should carry its version (``gfortran-14``, ``clang-18``), so builds for different
-compiler versions resolve independently. Leaf packages with no compiled deps pass
-no ``--deps-artifact-names`` and get no deps-hash8 segment.
+Outputs are the ``Outputs`` keys; run-status and run-conclusion follow
+``_github_api.WorkflowRuns`` and are empty when the artifact was found.
 """
 
 from typing import Literal, TypeAlias, TypedDict
@@ -46,12 +30,7 @@ from ._github_api import (
 RunStatus: TypeAlias = Literal["running", "completed", "none"]
 RunConclusion: TypeAlias = Literal["success", "failure"]
 
-# Functional TypedDict syntax, because the keys are hyphenated — they are the
-# literal $GITHUB_OUTPUT names, so they cannot be identifiers.
-#
-# `run-status` / `run-conclusion` are stored as Optional internally and only
-# get materialised to the empty string at the $GITHUB_OUTPUT boundary in
-# write_outputs — so absence is a real None in the type system, not a "" sentinel.
+# Functional syntax: the keys are hyphenated $GITHUB_OUTPUT names.
 Outputs = TypedDict(
     "Outputs",
     {
@@ -73,11 +52,7 @@ Outputs = TypedDict(
 @click.option(
     "--platform",
     required=True,
-    help=(
-        "Explicit binary-compatibility class (e.g. ubuntu-24.04), used verbatim as the "
-        "artifact-name platform slot. ABI-compatible images sharing a platform share one "
-        "artifact. The runner/image is pure scheduling and is not part of artifact identity."
-    ),
+    help="Binary-compatibility class (e.g. ubuntu-24.04), used verbatim as the artifact-name platform slot.",
 )
 @click.option(
     "--compiler",
@@ -100,22 +75,13 @@ Outputs = TypedDict(
     "--deps-artifact-names",
     "deps_artifact_names",
     default="",
-    help=(
-        "Space-separated list of direct compiled dependency artifact names. "
-        "When provided, a deps-hash8 segment is inserted into the artifact name "
-        "after the SHA to form a Merkle tree. Leave empty for leaf packages "
-        "(e.g. fortmath) that have no compiled binary dependencies."
-    ),
+    help="Space-separated direct dependency artifact names; hashed into the deps-hash8 segment. Empty for leaves.",
 )
 @click.option(
     "--options",
     "options",
     default="",
-    help=(
-        "Scalar build-option config name (feature config) for this build. When "
-        "non-empty, an 'opts.<name>' segment is appended to the artifact name. "
-        "Leave empty for a plain build (name unchanged)."
-    ),
+    help="Build-option config name; appends an 'opts.<name>' segment when non-empty.",
 )
 @click.option(
     "--lane",
@@ -136,10 +102,7 @@ def main(
     options: str,
     lane: str,
 ) -> None:
-    # An empty value in any required slot would silently produce a malformed
-    # artifact name (e.g. "ecbuild--Release") that downstream poll loops can
-    # never satisfy. Catch that at the boundary with a specific diagnostic
-    # rather than guessing later from the malformed name.
+    # An empty slot would mint a malformed name (e.g. "ecbuild--Release") nothing can satisfy.
     required = {
         "--repo": repo,
         "--ref": ref,
@@ -204,7 +167,7 @@ def main(
     elif run_status == "completed" and run_conclusion == "success":
         print(
             f"Artifact missing: {artifact_name} — upstream build succeeded but artifact not found "
-            "(wrong compiler / runs-on / container?)"
+            "(wrong compiler / platform / build-type?)"
         )
     else:
         print(f"Artifact not found: {artifact_name} — no upstream workflow runs found for this SHA")

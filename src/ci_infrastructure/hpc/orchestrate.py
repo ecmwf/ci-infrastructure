@@ -15,46 +15,9 @@ This is the HPC counterpart of the runner build step. It is invoked by the
         --source-dir <workspace> --run-id <run>-<attempt> \\
         --tar-dir <local>/hpc-tars --cmake-prefix-path <prefix>
 
-Design points that mirror the non-HPC path and satisfy the requirements:
-
-  * Orchestration is pure Python calling troika's ``Site`` API directly — no
-    shell-out to the troika CLI. The SLURM script itself is bash (it runs on a
-    compute node); everything around it is Python.
-
-  * The cluster work dir is expanded on the cluster (see
-    ``site.resolve_remote_path``) and the per-artifact layout derived from it
-    (see ``RemotePaths``), so the configured value stays portable
-    (``$SCRATCH/github-ci``) while every path the runner uses is literal.
-
-  * Submit-then-poll transfer. The job is submitted first (claiming its queue
-    slot), then the runner scp's the source tarball into the shared staging dir
-    and ``touch``es ``TRANSFER_COMPLETED`` in it. The job blocks on that marker,
-    unpacks the checkout into node-local ``$TMPDIR`` and builds. A reattach
-    re-checks the marker and re-ships only if it is missing. The marker is named
-    for the staging dir (already per-artifact), not for the submitting run, so a
-    reattaching runner needs nothing from the job it adopts beyond its jid.
-
-  * Restartable / idempotent. On every (re-)run ``submit-wait``:
-      (a) if the artifact already exists in the S3 store -> skip (cache hit);
-      (b) if a SLURM job for this artifact is still active -> reattach and wait
-          (no duplicate job);
-      (c) otherwise submit a fresh job.
-    Reattach uses the *scheduler itself* as the shared job store: each job is
-    stamped with a stable per-artifact name, and ``submit-wait`` finds an
-    in-flight job by name before submitting. Because the scheduler is global,
-    this dedups across independent runners — a runner-local record could not.
-    The name is all we read back; the ``--comment`` we also write is provenance
-    for humans, never parsed (see ``find_active_job_by_name``).
-
-  * Rate-friendly polling. A completed SLURM job disappears from ``squeue``, so
-    the job's ``Finished: SUCCESS`` / ``Finished: FAILURE`` output sentinel — not
-    the scheduler — is the authoritative outcome. We block on a single persistent
-    ``tail -F | grep`` of the output (one held connection, near-zero scheduler
-    load) and only touch ``squeue`` (via ``_get_state``) as a low-frequency
-    liveness guard so a job that dies without a sentinel can't hang us forever.
-    The waiter fails closed: only a sentinel it actually read is a verdict.
-
-Batch (slurm) sites only — see ``site.ensure_batch_site``.
+``submit-wait`` is idempotent: a cache hit skips, an active job with the same
+name is reattached, otherwise a fresh job is submitted. The output sentinel,
+not ``squeue``, is the verdict; ``squeue`` is only a slow liveness guard.
 """
 
 from __future__ import annotations
@@ -95,11 +58,7 @@ Verdict = Literal["SUCCESS", "FAILURE", "VANISHED", "TIMEOUT"]
 
 
 def _parse_matrix_leg(raw: str) -> dict[str, Any]:
-    """Parse ``--matrix-leg``. Empty means "no leg was passed".
-
-    A non-object is a caller bug, named as one here rather than surfacing later as
-    a Jinja ``TypeError`` about something that is not a mapping.
-    """
+    """Parse ``--matrix-leg``; empty means no leg was passed."""
     if not raw.strip():
         return {}
     try:
@@ -112,11 +71,7 @@ def _parse_matrix_leg(raw: str) -> dict[str, Any]:
 
 
 def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) -> str:
-    """Read a job-script, rendering it first when it is a `.j2` template.
-
-    The two kinds of recipe converge here: what this returns is the plain shell a
-    hand-written `.sh` always was, and render_job_script wraps it either way.
-    """
+    """Read a job-script as plain shell, rendering it first when it is a `.j2` template."""
     source = repo_script.read_text()
     if not jobscript.is_job_template(repo_script):
         return source
@@ -141,23 +96,13 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
 
 # === The cluster-side layout ===
 def write_job_script(path: Path, rendered: str) -> None:
-    """Write a rendered job script, executable.
-
-    ``sbatch`` reads the script rather than executing it, so the bit is not
-    required to submit; it is here so that a rendered script left behind after a
-    failure can be run directly while debugging.
-    """
+    """Write a rendered job script, executable so a leftover can be run by hand."""
     path.write_text(rendered)
     path.chmod(0o755)
 
 
 class RemotePaths(NamedTuple):
-    """Where one artifact's build lives under the (resolved) cluster work dir.
-
-    All three are on the shared filesystem: the compute node reads the staged
-    tarball and marker, writes the install tree, and both sides touch the output.
-    Only the *unpack* target is node-local (``$TMPDIR``, chosen by the job script).
-    """
+    """Where one artifact's build lives under the (resolved) cluster work dir, on the shared filesystem."""
 
     output: str
     install: str
@@ -171,21 +116,15 @@ class RemotePaths(NamedTuple):
             output=str(base / "hpc-jobs" / f"{artifact_name}.out"),
             install=str(base / "install" / artifact_name),
             staging=str(base / "staging" / artifact_name),
-            # Deliberately not derived from `staging`: a leg that ships no source
-            # still submits, and submission is what this one serialises.
+            # Not under `staging`: a leg that ships no source still submits.
             lock=str(base / "locks" / artifact_name),
         )
 
 
 def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str, list[str], str]:
-    """Map runner-local dependency prefixes to the cluster paths they are shipped to.
+    """Map runner-local dep prefixes to ``<staging_dir>/deps/<i>``.
 
-    The dep install trees in ``cmake_prefix_path`` live on the runner, which the
-    compute node cannot see, so ``transfer.ship_source`` unpacks each into
-    ``<staging_dir>/deps/<i>`` on the shared filesystem. This returns the
-    ``CMAKE_PREFIX_PATH`` to bake into the job (those cluster paths, in order),
-    the ordered local prefixes to ship, and the remote deps dir. A build with no
-    deps yields ``("", [], …)`` — its job script is byte-for-byte unchanged.
+    Returns (cluster ``CMAKE_PREFIX_PATH``, local prefixes to ship, remote deps dir).
     """
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
@@ -195,30 +134,10 @@ def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str,
 
 # === Reattach lookup (the scheduler is the shared, cross-runner job store) ===
 def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> int | None:
-    """Return the jid of an active SLURM job named ``job_name``, or None.
+    """Lowest jid of an active SLURM job named ``job_name`` (the cross-runner reattach key), or None.
 
-    Reattach uses the scheduler as the shared job store: a job is stamped with a
-    stable per-artifact name (``jobscript.job_name_for``). Querying by name lets a
-    second run on a *different* runner reattach to an in-flight job instead of
-    submitting a duplicate — the runner-local jid file this replaces was invisible
-    across runners.
-
-    The NAME is the whole of what we read back. We deliberately do not ask for the
-    job's ``Comment`` (``%k``), even though we write our run id into it: that field
-    belongs to the scheduler and sites rewrite it. ECMWF's sbatch wrapper appends
-    its own accounting fields, so the value returned here was
-    ``<run>-<attempt>;Gres=gres/ssdtmp:20G;`` — and because the caller then used it
-    to name a marker and a local tarball, every reattaching HPC job died on
-    ``tar -czf .../<that>.src.tgz``. Nothing needs it now: the transfer marker is
-    named for the staging dir (``jobscript.TRANSFER_MARKER_NAME``), so a
-    reattaching runner can check and re-drop it without knowing who submitted.
-
-    ``squeue -h -n <name> -t <active states> -o '%i'`` prints one jid per matching
-    job. Empty output -> no active job -> the caller submits fresh. More than one
-    line means two runs raced the submit (the residual window reattach-only
-    accepts); we take the lowest jid so every later run converges on the same one,
-    and warn. A ``squeue`` that itself errors yields None (fail open -> submit),
-    matching the prior ``_get_state(strict=False)`` behaviour.
+    Only the name is read back, never the job's ``--comment``: sites rewrite it
+    (ECMWF's sbatch appends ``;Gres=...``). A failing ``squeue`` yields None.
     """
     states = ",".join(sorted(ACTIVE_STATES))
     argv = ["squeue", "-h", "-n", job_name, "-t", states, "-o", "%i"]
@@ -234,7 +153,6 @@ def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> in
         line = raw.strip()
         if not line:
             continue
-        # Tolerate a trailing field should a site's squeue ever add one.
         try:
             jids.append(int(line.split("|", 1)[0].strip()))
         except ValueError:
@@ -258,36 +176,14 @@ def submit_or_reattach(
     after_submit: Callable[[], None] | None = None,
     dryrun: bool = False,
 ) -> tuple[int, Literal["submitted", "reattached", "dryrun"]]:
-    """Reattach to a still-active job for this artifact, else submit a fresh one.
-
-    Reattach is by scheduler name (``find_active_job_by_name``): if an active job
-    named ``job_name`` exists, we adopt its jid. That is all we take from the
-    scheduler — see that function for why the job's ``--comment`` is not read.
-    This dedups across independent runners.
-
-    Submit-then-poll: on a fresh submit the job is submitted first (claiming its
-    queue slot), then ``after_submit`` ships the source and drops the transfer
-    marker the job is waiting on. A reattach never re-ships, so an in-flight job's
-    sources are left untouched (the caller re-checks the marker for that case).
-
-    Returns ``(jid, action)``. ``jid`` is -1 for a dry run.
-    """
+    """Reattach to an active job named ``job_name``, else submit and run ``after_submit``. jid is -1 on a dry run."""
     if not dryrun:
         found = find_active_job_by_name(site._connection, job_name=job_name, user=user)
         if found is not None:
             return found, "reattached"
 
-    # troika's submit() scp's the script into the output directory on the remote,
-    # but the mkdir -p that would create it lives in the `create_output_dir`
-    # pre_submit hook, which only runs through troika's controller. We drive the
-    # site as a library and skip the controller, so we run that step ourselves.
+    # troika's `create_output_dir` pre_submit hook only runs through its controller, which we bypass.
     site.create_output_dir(output, dryrun=dryrun)
-    # Create the file the waiter tails, so an output path we cannot write is a
-    # failure here rather than a job that runs to completion with nowhere to
-    # report it. Emptied, not just touched: the path is per-artifact, so a re-run
-    # of this commit and leg would otherwise inherit the previous attempt's
-    # sentinel as its own verdict. Only on the submit path -- a reattach returns
-    # above, leaving the live job's output alone.
     if not dryrun:
         transfer.truncate_remote_file(site._connection, path=output)
 
@@ -308,28 +204,21 @@ def wait_for_job(
     guard_interval: float = _DEFAULT_GUARD_INTERVAL,
     jitter: float = 0.1,
 ) -> Verdict:
-    """Block until the job's outcome is known.
+    """Block until the output sentinel appears, the job leaves the queue, or ``timeout``.
 
-    ``sentinel_waiter(seconds)`` blocks up to ``seconds`` for the output
-    sentinel, returning ``"SUCCESS"``/``"FAILURE"`` if it appears or ``None`` on
-    timeout. ``state_getter()`` returns the scheduler state (or ``None`` if the
-    job is gone). The scheduler is only consulted once per ``guard_interval`` (a
-    jittered cadence to avoid many parallel jobs hitting ``squeue`` in lockstep).
+    The scheduler is consulted once per jittered ``guard_interval``.
     """
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return "TIMEOUT"
-        # Jitter the liveness cadence so concurrent jobs don't poll in lockstep.
         window = min(guard_interval * (1.0 + random.uniform(-jitter, jitter)), remaining)
         verdict = sentinel_waiter(window)
         if verdict is not None:
             return verdict
-        # Sentinel didn't appear in this window — is the job still alive?
         if state_getter() is None:
-            # Gone from the queue with no sentinel yet: give the output one last
-            # grace look (the sentinel may still be flushing), then declare it dead.
+            # The sentinel may still be flushing.
             final = sentinel_waiter(_GRACE_SECONDS)
             return final if final is not None else "VANISHED"
 
@@ -346,30 +235,17 @@ def cancel_job(
     return site.kill(str(script_path), None, output, jid=jid, dryrun=dryrun)
 
 
-# === Cleanup (nightly GC of the cluster work dir) ===
-#: A run id becomes a path segment (the local source tarball, the ``.trash.<id>``
-#: staging rename, the node-local ``ci-src-<id>``), so it may not contain a
-#: separator or shell metacharacter. Mirrors site._SAFE_SPEC in intent.
+#: A run id becomes a path segment, so no separators or shell metacharacters.
 _SAFE_RUN_ID: Final = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-#: Subdirectories of the remote work dir that run_gc sweeps by age. Each holds
-#: one entry per artifact (or a .out file for hpc-jobs), so a maxdepth-1 sweep
-#: reclaims whole builds without touching the roots. "transfer-e2e" is not
-#: written by the build path: smoke-test-hpc.yml puts its per-run tree there so
-#: a failed round-trip, which deliberately leaves the tree behind for debugging,
-#: is still reclaimed eventually. Anything written directly under the work dir
-#: instead of one of these is never swept.
+# === Cleanup (nightly GC of the cluster work dir) ===
+#: Swept at maxdepth 1 by age. "transfer-e2e" holds smoke-test-hpc.yml's trees.
 GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "locks", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
-    """Remove per-artifact trees under the remote work dir older than N days.
-
-    Runs one ``find ... -mtime +N`` per subdir over troika's connection. A
-    missing subdir is skipped (``test -d``), so a partially-used work dir is
-    fine. ``dryrun`` lists candidates instead of deleting them.
-    """
+    """Remove per-artifact trees under the remote work dir older than N days (``dryrun`` lists them)."""
     action = "-print" if dryrun else "-exec rm -rf {} +"
     for sub in GC_SUBDIRS:
         base = f"{remote_work_dir.rstrip('/')}/{sub}"
@@ -389,11 +265,7 @@ def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: boo
 
 
 def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str, jid: int) -> None:
-    """Scancel the SLURM job when GitHub cancels the step (SIGINT/SIGTERM).
-
-    A cancelled GitHub job would otherwise leave the batch job running on the
-    cluster. We cancel it, then exit non-zero so the step reflects the cancel.
-    """
+    """Scancel the SLURM job when GitHub cancels the step (SIGINT/SIGTERM), then exit non-zero."""
 
     def handler(signum: int, frame: FrameType | None) -> None:
         print(f"submit-wait: received signal {signum}; cancelling HPC job {jid}...")
@@ -408,31 +280,10 @@ def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str,
 
 
 def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float], Verdict | None]:
-    """Build a sentinel waiter that tails the job output over troika's connection.
+    """Sentinel waiter over one remote ``timeout N tail -F | grep -m1`` of the job output.
 
-    Holds a single ``tail -F | grep -m1`` on the remote output. ``grep`` exits at
-    the first sentinel and *prints* it, so the verdict is read from the matched
-    line rather than smuggled through an exit code. That matters: a queued job
-    has no output file yet (SLURM only creates it at start), and an exit-code
-    scheme cannot distinguish "the job said SUCCESS" from "there was nothing to
-    read" — which would report a build finished before it ever ran. Here anything
-    other than a printed sentinel (missing file, dropped connection, timeout)
-    yields ``None``, so the waiter fails closed and the caller re-checks
-    liveness and re-establishes the tail.
-
-    The pattern names ``jid``. Every attempt at an artifact writes to one output
-    path, so an unqualified sentinel there could belong to a previous run — which
-    is how a re-run used to report the last attempt's verdict for a job that was
-    still queued.
-
-    ``tail -F`` (rather than ``-f``) keeps retrying a path that does not exist
-    yet and survives the truncation SLURM does when the job starts writing.
-
-    The window is bounded *remotely* by ``timeout`` wrapping ``tail``: when it
-    expires ``grep`` sees EOF and the whole pipeline exits on its own. Killing
-    the local process instead would only reap the shell — the ``tail``/``grep``
-    it spawned would survive holding the pipe open, and reading their output
-    would then block forever.
+    Fails closed: only a printed sentinel naming ``jid`` is a verdict. The window
+    is bounded remotely, since killing the local process would leave tail/grep alive.
     """
     pattern = jobscript.sentinel_regex(jid)
     quoted_output = shlex.quote(output)
@@ -443,8 +294,7 @@ def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float
         pipeline = f"timeout {window} tail -F -n +1 {quoted_output} 2>/dev/null | grep -m1 -E {quoted_pattern}"
         proc = conn.execute(["bash", "-c", pipeline], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            # The remote timeout ends the pipeline; this is only a backstop for a
-            # wedged connection.
+            # Backstop for a wedged connection.
             stdout, _stderr = proc.communicate(timeout=window + _WAITER_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -463,15 +313,7 @@ def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float
 
 # === CLI ===
 def _echo_remote_output(conn: Any, output: str) -> None:
-    """Print the job's captured cluster output to the runner console.
-
-    The sentinel waiter only greps the output for the ``Finished:`` line, so on
-    its own the step would surface none of the job's own output — the compiler
-    messages, ctest results, the recipe's echoes. Once the job is done we read
-    the whole captured output back over the connection and print it, so it lands
-    in the CI step log on success and failure alike. Best-effort: a failure to
-    read the log must not mask the job's actual verdict.
-    """
+    """Print the job's whole cluster output to the runner log, best-effort."""
     try:
         proc = conn.execute(["cat", output], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout, _ = proc.communicate()
@@ -485,24 +327,14 @@ def _echo_remote_output(conn: Any, output: str) -> None:
 
 
 def _stream_job_output(conn: Any, output: str, jid: int) -> Any:
-    """Live-stream the job's output to the runner console; return the streamer process.
+    """Live-stream the job's output (display only) until a sentinel; return the streamer process.
 
-    Display only — the verdict still comes from ``wait_for_job``'s sentinel +
-    squeue liveness logic; this just lets the compiler/ctest output appear as it
-    is produced instead of only after the job ends. ``tail -F`` tolerates the
-    queued job's not-yet-created output and the truncation SLURM does when the
-    job starts; the ``sed`` prints every line and quits the remote pipeline the
-    moment a sentinel line appears, so a finished job's streamer ends on its own.
-    ``timeout`` bounds it so a job that vanishes without a sentinel cannot leave a
-    tail lingering on the login node. troika sends ``stdout=None`` to
-    ``/dev/null``, so we hand it the runner's own stdout explicitly — otherwise
-    the stream would be silently discarded.
+    troika sends ``stdout=None`` to /dev/null, so the runner's stdout is passed explicitly.
     """
     ceiling = int(_DEFAULT_WAIT_TIMEOUT + _WAITER_GRACE_SECONDS)
     quoted_output = shlex.quote(output)
     sed_quit = f"/{jobscript.sentinel_regex(jid)}/q"
-    # -E because the sentinel pattern alternates; in sed's default BRE the
-    # `(`, `|` and `)` would all be literals and nothing would ever match.
+    # -E: in BRE the pattern's `(`, `|` and `)` are literals.
     pipeline = f"timeout {ceiling} tail -F -n +1 {quoted_output} 2>/dev/null | sed -E '{sed_quit}'"
     sys.stdout.flush()
     return conn.execute(["bash", "-c", pipeline], stdout=sys.stdout)
@@ -523,11 +355,7 @@ def _stop_stream(proc: Any) -> None:
 
 
 def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
-    """The three troika-site options every subcommand takes.
-
-    Applied as a decorator so a new subcommand cannot drift from the flag names
-    the composite actions in actions/ pass verbatim.
-    """
+    """The troika-site options every subcommand takes."""
     for option in reversed(
         [
             click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)"),
@@ -542,12 +370,7 @@ def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _resolve_reported(command: str, conn: Any, remote_dir: str) -> str:
-    """Expand a cluster path spec and say so when it changed.
-
-    Every path-taking subcommand does this: the spec may name cluster variables
-    ('$SCRATCH/...') that only the cluster can expand, and echoing the result is
-    what makes a wrong work dir diagnosable from the runner log alone.
-    """
+    """Expand a cluster path spec and log the result when it changed."""
     resolved = resolve_remote_path(conn, remote_dir)
     if resolved != remote_dir:
         print(f"{command}: remote dir {remote_dir!r} -> {resolved}")
@@ -564,17 +387,7 @@ def main() -> None:
 @click.option("--matrix-leg", "matrix_leg", default="", help="The matrix leg as JSON (the render context)")
 @click.option("--artifact-name", "artifact_name", default="", help="Value for the template's `artifact_name`")
 def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
-    """Print the recipe a leg would produce, without submitting anything.
-
-    Renders only: the SLURM wrapper (#SBATCH --output, the marker wait, the
-    sentinel) is added at submit time and needs cluster paths this command has no
-    way to know. What it prints is the recipe half -- the part a repo owns and the
-    part a conversion has to get right -- so `diff <(... render ...) build-gnu.sh`
-    is the check that a template still says what the script it replaces said.
-
-    submit-wait --dryrun is NOT an offline substitute: it still resolves the remote
-    work dir over ssh, because `$SCRATCH` can only be expanded on the cluster.
-    """
+    """Print the rendered recipe, without the SLURM wrapper that needs cluster paths."""
     path = Path(job_script)
     if not path.is_file():
         raise CIError(f"--job-script does not exist: {path}")
@@ -650,12 +463,6 @@ def submit_wait(
     dryrun: bool,
     no_publish: bool,
 ) -> None:
-    # The run id names a local tarball, the moved-aside staging tree and the
-    # node-local source dir, so it must stay a single safe path segment. It comes
-    # from our own --run-id and should always be `<gh-run-id>-<attempt>`; this is
-    # the guard that keeps it that way. Its absence is what turned a scheduler
-    # field leaking a '/' into `tar: .../<run>;Gres=gres/ssdtmp:20G;.src.tgz: No
-    # such file or directory` rather than a named error.
     if run_id and not _SAFE_RUN_ID.fullmatch(run_id):
         raise CIError(
             f"--run-id {run_id!r} is not a safe path segment (expected {_SAFE_RUN_ID.pattern}). "
@@ -663,44 +470,35 @@ def submit_wait(
             "would write outside the intended paths."
         )
 
-    # Cache hit: the artifact already exists, so there is nothing to build. This
-    # is what makes a re-run cheap and makes downstream reuse work identically to
-    # the non-HPC path. Skipped under --no-publish: a test writes no artifact, so
-    # there is nothing to cache against and it must run every time.
-    if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
+    def cache_hit() -> bool:
+        # A --no-publish test writes no artifact, so it must run every time.
+        if dryrun or no_publish or not s3_store.object_exists(artifact_name):
+            return False
         print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
         write_outputs({"install-path": local_install_path, "cache-hit": "true"})
+        return True
+
+    if cache_hit():
         return
 
     repo_script = Path(job_script)
     if not repo_script.is_file():
         raise CIError(f"--job-script does not exist: {repo_script}")
-    # Before load_site: a template that cannot render should cost no ssh round-trip
-    # and no queue slot. (Already past the cache-hit short-circuit, so a cache hit
-    # never renders at all.)
+    # Before load_site: a template that cannot render costs no ssh round-trip.
     recipe = resolve_recipe(repo_script, matrix_leg=matrix_leg, artifact_name=artifact_name)
 
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     if not dryrun:
-        # A dry run only renders and asks troika to pretend, so any site will do;
-        # a real run needs a scheduler to submit to and poll.
         ensure_batch_site(site, site_name)
 
-    # Expand the work dir on the cluster before anything derives a path from it:
-    # the runner has to scp into these, so they must be literal by the time troika
-    # (which quotes its argv) sees them.
     resolved_work_dir = _resolve_reported("submit-wait", site._connection, remote_work_dir)
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
 
     ships_source = bool(source_dir and run_id)
-    # Dependency prefixes are runner-local; when we ship the source we also ship
-    # them onto the shared FS and point the job's CMAKE_PREFIX_PATH at the cluster
-    # copies. With no source shipping (dry run), the prefix is passed through as-is.
     if ships_source:
         remote_cmake_prefix, local_prefixes, remote_deps_dir = plan_remote_prefixes(cmake_prefix_path, paths.staging)
     else:
         remote_cmake_prefix, local_prefixes, remote_deps_dir = cmake_prefix_path, [], ""
-    # The scheduler-side identity a re-run reattaches by (see submit_or_reattach).
     job_name = jobscript.job_name_for(artifact_name)
     rendered = jobscript.render_job_script(
         repo_script=recipe,
@@ -713,8 +511,6 @@ def submit_wait(
         marker_wait_timeout=marker_wait_timeout,
     )
     if jobscript.is_job_template(repo_script):
-        # A template that renders wrongly is otherwise invisible until the job fails
-        # on the cluster half an hour later. Print what we are about to submit.
         print(f"submit-wait: rendered {repo_script} for this leg:")
         for line in recipe.splitlines():
             print(f"  | {line}")
@@ -722,79 +518,35 @@ def submit_wait(
     script_path = repo_script.parent / f"job-{artifact_name}.sh"
     write_job_script(script_path, rendered)
 
-    output = paths.output
-    install_path = paths.install
-    staging_dir = paths.staging
+    def shipped() -> bool:
+        if not transfer.marker_exists(site._connection, staging_dir=paths.staging):
+            return False
+        print(f"submit-wait: staging for '{artifact_name}' is already complete; not re-shipping.")
+        return True
 
-    # Submit-then-poll: submit first (claim the queue slot), then ship the source
-    # and drop the marker the job is waiting on. after_submit runs only on a
-    # fresh submit; a reattach is handled below (re-ship only if its marker is
-    # missing) so an in-flight job's sources are never disturbed.
     def ship_for(this_run_id: str) -> None:
-        """Stage the source and dep prefixes, unless someone already has.
+        """Stage source and deps unless a peer has; never reset a staging dir a running job reads.
 
-        The skip is not an optimisation, it is a safety property. Two runs can
-        want the same artifact at once (a repo's own CI and a fan-out), and the
-        loser of the submit race still reaches this. ``ship_source`` starts by
-        RESETTING the staging dir — it renames the tree aside — so a second ship
-        deletes ``deps/<i>`` out from under a job that is already reading them.
-        That is not hypothetical: it took out an ecflow hpc-atos-nvidia job with
-
-            CMake Error at CMakeLists.txt:28 (find_package):
-              Could not find a package configuration file provided by "ecbuild"
-
-        while the first job, reading the same staging dir, had found ecbuild and
-        compiled a thousand targets.
-
-        Skipping is safe because staging is per-artifact and the artifact name
-        embeds the source SHA and the deps hash: a completed transfer sitting in
-        this staging dir is, by construction, the same source and the same deps
-        we were about to write. A PARTIAL transfer leaves no marker, so this
-        still ships (and resets) in the case the reset exists for.
-
-        The marker alone only rules out a peer that already FINISHED, so the ship
-        runs under ``transfer.ship_lock`` with the marker re-checked INSIDE it
-        (see that function for the race it closes). The check out here stays as
-        the fast path: the common already-built case costs one ``test -f`` and no
-        lock.
+        Safe to skip: the artifact name embeds the source SHA and deps hash. The
+        unlocked check is the fast path; the locked one closes the race.
         """
-        if transfer.marker_exists(site._connection, staging_dir=staging_dir):
-            print(
-                f"submit-wait: staging for '{artifact_name}' is already complete "
-                "(another run shipped it); not re-shipping."
-            )
+        if shipped():
             return
-        with transfer.ship_lock(site._connection, staging_dir=staging_dir, run_id=this_run_id):
-            if transfer.marker_exists(site._connection, staging_dir=staging_dir):
-                print(
-                    f"submit-wait: staging for '{artifact_name}' was completed by another run "
-                    "while we waited for the staging lock; not re-shipping."
-                )
+        with transfer.ship_lock(site._connection, staging_dir=paths.staging, run_id=this_run_id):
+            if shipped():
                 return
             transfer.ship_source(
                 site._connection,
                 local_source_dir=source_dir,
-                staging_dir=staging_dir,
+                staging_dir=paths.staging,
                 run_id=this_run_id,
                 tar_dir=tar_dir,
                 local_prefixes=local_prefixes,
                 remote_deps_dir=remote_deps_dir,
             )
 
-    # Serialised per artifact, because submit_or_reattach's reattach check is a
-    # check-then-act and the scheduler is shared. Two fan-outs from sibling repos
-    # wanting the same consumer artifact both looked, both saw no job, and both
-    # submitted -- SLURM 30741016 and 30741061 built
-    # ecflow-...-hpc-atos-nvidia-nvc++-Release into ONE install prefix eleven
-    # seconds apart, and each run's fetch then tarred a tree the other job was
-    # still writing:
-    #
-    #     Remote tree tar failed (exit 1):
-    #       tar: ./bin/ecflow_server: file changed as we read it
-    #
-    # Same shape as the staging race ship_lock exists for (#33); this is the other
-    # half of the flow. Ordering is submit -> ship (after_submit takes ship_lock
-    # INSIDE this block), never the reverse, so the nesting cannot deadlock.
+    # Serialise submit per artifact: the reattach check is check-then-act on a
+    # shared scheduler. Lock order is always submit -> ship.
     with transfer.remote_lock(
         site._connection,
         lock_dir=paths.lock,
@@ -803,22 +555,15 @@ def submit_wait(
         subject=artifact_name,
         dryrun=dryrun,
     ):
-        # Re-checked under the lock: a peer that finished while we waited has
-        # published, and the loser of the race would otherwise spend another hour
-        # of cluster time rebuilding what is already in the store.
-        if not dryrun and not no_publish and s3_store.object_exists(artifact_name):
-            print(
-                f"submit-wait: artifact '{artifact_name}' was published by another run "
-                "while we waited for the submit lock — skipping build (cache hit)."
-            )
-            write_outputs({"install-path": local_install_path, "cache-hit": "true"})
+        # A peer may have published while we waited for the lock.
+        if cache_hit():
             return
 
         jid, action = submit_or_reattach(
             site=site,
             script_path=script_path,
             user=troika_user,
-            output=output,
+            output=paths.output,
             job_name=job_name,
             after_submit=(lambda: ship_for(run_id)) if ships_source else None,
             dryrun=dryrun,
@@ -828,52 +573,35 @@ def submit_wait(
         return
 
     if action == "reattached" and ships_source:
-        # The reattached job waits for a marker in its staging dir, not for one
-        # named after whoever submitted it — so we can answer "has anyone finished
-        # shipping?" without knowing that run at all. If nothing has (submit
-        # succeeded but the runner died before the ship), re-ship under OUR run id
-        # so the waiting job can proceed.
-        if not transfer.marker_exists(site._connection, staging_dir=staging_dir):
-            print(f"submit-wait: reattached job {jid} has no transfer marker; re-shipping source.")
-            ship_for(run_id)
+        # The submitting runner may have died before shipping.
+        ship_for(run_id)
 
-    # From here a GitHub cancellation must scancel the batch job, not orphan it.
-    _install_cancel_handler(site, script_path, output, jid)
+    _install_cancel_handler(site, script_path, paths.output, jid)
 
     print(f"submit-wait: {action} job {jid} for '{artifact_name}' on site '{site_name}'. Waiting for completion...")
-    # Stream the job's output live so the compiler/ctest logs show up as they are
-    # produced; the sentinel waiter greps past them, so without this the step
-    # would surface none of the actual build. Verdict logic is unchanged.
-    print(f"submit-wait: --- live job output ({output}) ---")
-    streamer = _stream_job_output(site._connection, output, jid)
+    print(f"submit-wait: --- live job output ({paths.output}) ---")
+    streamer = _stream_job_output(site._connection, paths.output, jid)
     try:
         verdict = wait_for_job(
-            sentinel_waiter=_remote_sentinel_waiter(site._connection, output, jid),
+            sentinel_waiter=_remote_sentinel_waiter(site._connection, paths.output, jid),
             state_getter=lambda: site._get_state(jid, strict=False),
         )
     finally:
         _stop_stream(streamer)
     print("submit-wait: --- end live job output ---")
 
-    # A clean finish (SUCCESS/FAILURE) prints its sentinel, so the streamer has
-    # already flushed the whole log and quit. A job that vanished or timed out
-    # never printed one, so dump whatever the output holds to be sure the failure
-    # is visible.
+    # Without a sentinel the streamer may not have shown everything.
     if verdict in ("VANISHED", "TIMEOUT"):
-        _echo_remote_output(site._connection, output)
+        _echo_remote_output(site._connection, paths.output)
 
     if verdict == "SUCCESS":
         if no_publish:
-            # Test-only leg: the green sentinel is the whole result. There is no
-            # install tree to fetch and no artifact to publish (the action skips
-            # its Publish step); a fetch here would fail on the never-created
-            # remote install dir.
             print(f"submit-wait: job {jid} finished successfully (test-only; nothing to publish).")
             return
         print(f"submit-wait: job {jid} finished successfully. Fetching install tree...")
         transfer.fetch_install(
             site._connection,
-            remote_install_dir=install_path,
+            remote_install_dir=paths.install,
             local_install_dir=local_install_path,
             tar_dir=tar_dir,
         )
@@ -885,7 +613,7 @@ def submit_wait(
         "VANISHED": "the job left the scheduler without reporting success (killed / cancelled / node failure)",
         "TIMEOUT": "the wait timed out",
     }[verdict]
-    raise CIError(f"HPC job {jid} for '{artifact_name}' did not succeed: {detail}. Job output: {output}")
+    raise CIError(f"HPC job {jid} for '{artifact_name}' did not succeed: {detail}. Job output: {paths.output}")
 
 
 @main.command("cancel", help="Cancel the active job for an artifact (used on workflow cancellation).")
@@ -904,17 +632,9 @@ def cancel(
     if found is None:
         print(f"cancel: no active job for '{artifact_name}'; nothing to cancel.")
         return
-    jid = found
-    # The job script path isn't needed to cancel by explicit jid, but troika's
-    # kill() signature takes it; a placeholder next to nothing is fine since jid
-    # is passed explicitly.
-    _, status = cancel_job(
-        site=site,
-        script_path=Path(f"job-{artifact_name}.sh"),
-        output=output,
-        jid=jid,
-    )
-    print(f"cancel: requested cancellation of job {jid} for '{artifact_name}' (status: {status}).")
+    # troika's kill() takes a script path; with an explicit jid a placeholder is fine.
+    _, status = cancel_job(site=site, script_path=Path(f"job-{artifact_name}.sh"), output=output, jid=found)
+    print(f"cancel: requested cancellation of job {found} for '{artifact_name}' (status: {status}).")
 
 
 @main.command("gc", help="Remove per-artifact trees under the cluster work dir older than N days.")
@@ -941,21 +661,7 @@ def gc(
 
 
 def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
-    """Refuse a resolved cluster path that sits directly under root.
-
-    Two failure modes share this guard, on remove-tree and push-tree. For
-    remove-tree it stops a bare ``$SCRATCH`` or ``/`` from being wiped. For
-    push-tree it catches the misconfiguration that produces such a path in the
-    first place: an unset ``vars.HPC_CI_REMOTE_WORK_DIR`` interpolated into
-    ``${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e-<id>`` renders
-    ``/transfer-e2e-<id>``, and the cluster then reports the confusing
-    ``mkdir: cannot create directory '/transfer-e2e-...': Read-only file system``.
-    Naming the variable here turns that into a one-line diagnosis.
-
-    fetch-tree is deliberately NOT guarded: it only reads, and a shallow source
-    such as ``/data`` is defensible on some clusters. In the round-trip flow its
-    path comes from push-tree's output anyway, so it is already covered.
-    """
+    """Refuse a resolved path directly under / (usually an unset HPC_CI_REMOTE_WORK_DIR). fetch-tree only reads."""
     if resolved.strip("/").count("/") >= 1:
         return
     detail = f"{resolved!r}" if resolved == remote_dir else f"{resolved!r} (from {remote_dir!r})"

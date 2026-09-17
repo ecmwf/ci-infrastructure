@@ -2,22 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared utilities for the ci-infrastructure CLI scripts.
+"""Shared helpers: GitHub API calls via the `gh` CLI, and artifact naming.
 
-Two clusters live here:
-
-  * GitHub-API helpers — every script shells out to the `gh` CLI rather than
-    maintaining HTTP sessions; runners always ship `gh` and it picks up
-    `GH_TOKEN` from the environment.
-  * Artifact naming — `make_artifact_name` and the primitives it composes
-    (`compute_platform_slug`, `compute_deps_hash8`, `canonical_option_segment`).
-    `resolve_deps` mints names and `check_artifact` re-derives them to look
-    artifacts up; a byte of disagreement makes every cache lookup miss, so
-    there is exactly one definition and both import it.
-
-Type-wise the module stays in plain `str`: callers with stricter NewTypes
-(`Repo`, `Ref`, `Sha`, `ArtifactName` in `resolve_deps`) pass them through
-unchanged thanks to NewType subtype compatibility.
+Artifact naming lives only here: `resolve_deps` mints names and `check_artifact`
+re-derives them, and any disagreement misses every cache lookup.
 """
 
 from __future__ import annotations
@@ -35,13 +23,7 @@ from ._errors import CIError
 
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
-# How a kind's build runs. "runner" is the default GitHub-runner path; "hpc"
-# submits the kind's job_script as a SLURM job via the build-on-hpc action.
-#
-# Lives here, in the module both generate_downstream_ci and resolve_deps already
-# import, because both need it and neither should import the other: the generator
-# names the per-lane workflow FILES, and the resolver has to pick the same file
-# when it dispatches a recovery rebuild.
+# How a kind's build runs: on a GitHub runner, or as a SLURM job via build-on-hpc.
 Execution: TypeAlias = Literal["runner", "hpc"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
 EXECUTION_HPC: Final[Execution] = "hpc"
@@ -58,21 +40,12 @@ def template_version_for_lane(lane: Execution) -> int:
 
 
 def lane_suffix(lane: Execution) -> str:
-    """Filename suffix distinguishing the two lanes' generated workflow files.
-
-    The runner lane uses the unsuffixed names (cross-repo-trigger.yml,
-    trigger-downstream.yml); the hpc lane gets a `-hpc` sibling. Splitting the flow
-    into two files per side (rather than one file gated by a `lane` input) keeps the
-    concurrency groups distinct and avoids skipped jobs on the unused lane.
-    """
+    """Generated-workflow filename suffix: '' for the runner lane, '-hpc' for hpc."""
     return "" if lane == EXECUTION_RUNNER else "-hpc"
 
 
-# Restrict to GitHub's allowed alias chars.
 _ALIAS_SAFE_RE: Final = re.compile(r"[^A-Za-z0-9_]")
 
-# GitHub Actions run.status values that mean "not yet done". Used to gate
-# polling loops in fetch_deps and the in-flight check in resolve_deps.
 IN_PROGRESS_STATUSES: Final = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 
 _HEX_CHARS: Final = frozenset("0123456789abcdef")
@@ -85,13 +58,7 @@ def _alias(s: str) -> str:
 
 
 def _gh(args: Sequence[str], token: str | None, input_text: str | None = None) -> tuple[int, str, str]:
-    """Run a `gh` subcommand and return (rc, stdout, stderr).
-
-    `token` precedence mirrors gh's own: a non-None value is exported as
-    GH_TOKEN, overriding whatever was in the parent shell. None leaves the
-    parent env untouched, so gh falls back to (in order) GITHUB_TOKEN, then
-    its on-disk keychain auth from `gh auth login`.
-    """
+    """Run `gh`; a token overrides GH_TOKEN, None leaves gh's own auth fallback."""
     env = {**os.environ}
     if token:
         env["GH_TOKEN"] = token
@@ -108,15 +75,13 @@ def _gh(args: Sequence[str], token: str | None, input_text: str | None = None) -
 def gh_api_rest(path: str, token: str | None) -> JSON | None:
     rc, out, err = _gh(["gh", "api", path], token)
     if rc != 0:
-        # Surface the failure so the resolve job logs show why a lookup returned None
-        # (the most common culprit is a token without actions:read on the upstream repo).
         print(f"::warning::REST call failed for {path}: {err.strip()}", file=sys.stderr)
         return None
     return cast(JSON, json.loads(out))
 
 
 def gh_api_graphql(query: str, token: str | None) -> JSON | None:
-    """Execute a GraphQL query via 'gh api graphql -f query=…'."""
+
     rc, out, err = _gh(["gh", "api", "graphql", "-f", f"query={query}"], token)
     if rc != 0:
         print(f"::warning::GraphQL call failed: {err.strip()}", file=sys.stderr)
@@ -128,10 +93,7 @@ def gh_api_graphql(query: str, token: str | None) -> JSON | None:
 
 
 def select_token() -> str | None:
-    """Return the first non-empty token from the standard env var precedence,
-    or None if none is set. Callers pass the result straight to `_gh`, which
-    treats None as "let gh fall back to keychain auth".
-    """
+    """First non-empty of GH_TOKEN, ORG_READ_TOKEN, GITHUB_TOKEN, else None."""
     for var in ("GH_TOKEN", "ORG_READ_TOKEN", "GITHUB_TOKEN"):
         val = os.environ.get(var)
         if val:
@@ -145,11 +107,7 @@ def fetch_manifests_layer(
     token: str | None,
     manifest_path: str,
 ) -> dict[tuple[str, str], tuple[str | None, bool]]:
-    """Fetch a layer of (repo, ref) manifests in one GraphQL call. Also checks
-    whether `sync_branch` exists in each repo (if sync_branch is non-None).
-
-    Returns mapping (repo, ref) -> (manifest_text_or_None, sync_branch_exists).
-    """
+    """One GraphQL call: (repo, ref) -> (manifest text or None, whether sync_branch exists)."""
     if not repos_refs:
         return {}
 
@@ -201,11 +159,7 @@ def fetch_manifests_layer(
 
 
 def compute_deps_hash8(dep_artifact_names: Sequence[str]) -> str | None:
-    """First 8 chars of SHA-256 of sorted, space-separated dep artifact names.
-
-    Returns None when there are no deps to hash — the caller threads that through
-    to make_artifact_name where it elides the deps-hash segment of the name.
-    """
+    """First 8 hex chars of SHA-256 over the sorted dep artifact names; None without deps."""
     cleaned = sorted(n for n in dep_artifact_names if n)
     if not cleaned:
         return None
@@ -216,19 +170,7 @@ _OPTION_TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def canonical_option_segment(option: str) -> str:
-    """The artifact-name segment for a build-option config, or '' when empty.
-
-    Options are an orthogonal build axis: a scalar named configuration (e.g.
-    'stochastic-moments', or a curated combo name like 'moments-fast') that varies
-    independently of build-type. The segment is the config name behind an 'opts.'
-    marker so it can never be confused with the free-form <build-type> segment that
-    precedes it. Empty option -> '' so a plain build's artifact name is
-    byte-identical to the pre-options format (no cache churn). Shared by resolve_deps
-    (mints names) and check_artifact (mirrors them) so the two can't drift.
-
-    Raises ValueError on a name outside [A-Za-z0-9_-] (would corrupt the segment
-    separators).
-    """
+    """'opts.<option>' ('' when empty); the marker keeps it apart from the free-form build-type."""
     if not option:
         return ""
     if not _OPTION_TOKEN_RE.fullmatch(option):
@@ -237,32 +179,14 @@ def canonical_option_segment(option: str) -> str:
 
 
 def compute_platform_slug(platform: str) -> str:
-    """Return the artifact-name platform slot from the required, explicit
-    `platform` declaration (used verbatim).
+    """The required `platform` (a binary-compatibility class), verbatim, as the artifact-name slot.
 
-    `platform` names the binary-compatibility class. Several images that are
-    ABI-compatible — plus a host-mode GH runner on the same distro — declare
-    the same `platform` and so share one artifact: an `ubuntu24.04-gfortran13`
-    image and an `ubuntu24.04-clang18-gfortran13` image both declare
-    `platform = "ubuntu-24.04"`, so a fortmath built under the first is reused
-    by a cxxmath build under the second instead of being rebuilt just because
-    the image tag changed.
-
-    Because the image tag does not enter the slug, the caller owns cache
-    invalidation: bump the platform string (e.g. `ubuntu-24.04-r2`) when an
-    ABI-relevant change ships within one distro release.
-
-    Raises ValueError when `platform` is empty (it is required) or when the
-    slug begins with an 8-hex-char segment (would collide with the deps-hash8
-    slot).
+    ABI-compatible images declaring the same platform share artifacts. Raises when
+    empty, or when the first segment is 8 hex chars (would read as deps-hash8).
     """
     slug = platform.strip()
     if not slug:
         raise ValueError("platform is required: every matrix leg must declare a 'platform' (e.g. ubuntu-24.04).")
-    # Disambiguation with the optional deps-hash8 segment: the artifact-name parser
-    # only confuses a slug whose first hyphen-separated segment is exactly 8 hex
-    # chars. Single-char-hex starts like `arc-sandbox-cci2` are fine because
-    # the first segment (`arc`) is too short to be a hash.
     first = slug.split("-", 1)[0].lower()
     if len(first) == 8 and all(c in _HEX_CHARS for c in first):
         raise ValueError(
@@ -273,12 +197,7 @@ def compute_platform_slug(platform: str) -> str:
 
 
 def resolve_ref_to_sha(repo: str, ref: str, token: str | None) -> str:
-    """Resolve a branch / lightweight or annotated tag / short or full SHA to a 40-char commit SHA.
-
-    Uses the commits/{ref} REST endpoint, which auto-disambiguates and dereferences
-    annotated tags to the underlying commit — the tags/{ref} endpoint returns the
-    tag-object SHA for an annotated tag, which is not what artifacts are keyed on.
-    """
+    """Resolve a branch / tag / short or full SHA to a 40-char commit SHA (annotated tags dereferenced)."""
     if _SHA_RE.fullmatch(ref):
         return ref
     data = gh_api_rest(f"repos/{repo}/commits/{ref}", token)
@@ -306,11 +225,7 @@ def make_artifact_name(
 
         <prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-hpcv<N>][-opts.<name>]
 
-    Shared by resolve_deps (which mints names) and check_artifact (which re-derives
-    them to look one up); the two must agree byte-for-byte or every cache lookup
-    misses. None for deps_hash8 / compiler / python_version means "this segment
-    does not apply" (no deps, no compilers declared, not a Python build) and the
-    segment is dropped. An empty `option` or a zero `template_version` appends nothing.
+    None / empty / zero drops the optional segment.
     """
     parts = [prefix, sha]
     if deps_hash8:
@@ -335,19 +250,10 @@ _FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "a
 
 
 class WorkflowRuns(NamedTuple):
-    """What the workflow runs for one commit SHA say about it.
+    """What the workflow runs for one commit SHA say.
 
-    state       'running' (>=1 run queued/in-progress), 'completed' (all done),
-                or 'none' (no runs for this SHA).
-    detail      concrete GitHub status of the first in-progress run, e.g.
-                'queued' or 'in_progress'; None unless state == 'running'.
-    url         that run's html_url; None unless state == 'running'.
-    conclusion  'failure' if any completed run failed/was cancelled, else
-                'success'; None unless state == 'completed'.
-
-    One probe serves three questions: whether to keep waiting (fetch_deps),
-    whether a missing artifact is explained by a failed build (check_artifact),
-    and whether a producer is already building (resolve_deps).
+    detail and url describe the first in-progress run (state 'running' only);
+    conclusion is set only for 'completed'.
     """
 
     state: Literal["running", "completed", "none"]
@@ -361,11 +267,7 @@ class WorkflowRuns(NamedTuple):
 
 
 def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
-    """Probe the workflow runs GitHub has for `sha`; see WorkflowRuns.
-
-    An in-progress run wins over a failed one: while anything is still going the
-    outcome is not decided yet.
-    """
+    """Probe the workflow runs for `sha`; an in-progress run wins over a failed one."""
     data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
     if not isinstance(data, dict):
         return WorkflowRuns("none")
@@ -386,14 +288,7 @@ def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
 
 
 def write_outputs(outputs: Mapping[str, object]) -> None:
-    """Append `key=value` lines to $GITHUB_OUTPUT, or print them when unset.
-
-    Actions outputs are stringly-typed, so None collapses to the empty string
-    here — at the wire boundary — rather than being carried as a "" sentinel
-    through the callers' own types. A value containing a newline needs GitHub's
-    delimited form; the delimiter is content-derived so it cannot appear inside
-    the value it terminates.
-    """
+    """Append `key=value` lines to $GITHUB_OUTPUT (or print them); None becomes "", multi-line values are delimited."""
     lines: list[str] = []
     for key, raw in outputs.items():
         value = "" if raw is None else str(raw)
@@ -418,16 +313,9 @@ class ManifestSchemaError(Exception):
 def resolve_reuse_matrix(
     kind: str, include: Sequence[Any] | None, reuse: object, blocks: Mapping[str, Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
-    """The include legs `[matrix.<kind>]` ends up with after `reuse-matrix`.
+    """The legs of `[matrix.<kind>]` after `reuse-matrix = "X"` (share X's legs; no chaining).
 
-    `reuse-matrix = "X"` means "share X's legs" — a test kind almost always wants
-    the exact matrix its build kind published for, and repeating the legs is how
-    they drift apart. Both the generator and the resolver expand this, and they
-    must agree: a consumer whose test legs differed from its build legs would
-    look up artifact names nothing ever published.
-
-    Chained reuse is refused rather than followed, so the legs of a kind are
-    always one hop from a literal `include`.
+    Shared by the generator and the resolver, which must agree on every leg.
     """
     if reuse is not None and include:
         raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")

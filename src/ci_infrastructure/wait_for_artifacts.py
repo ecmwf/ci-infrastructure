@@ -4,24 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Block until one or more named artifacts appear in the S3 artifact store.
+"""Block until named artifacts appear in the S3 artifact store.
 
-Used by the `dispatch-and-wait` composite action after it fires another repo's
-``cross-repo-trigger.yml``. Rather than waiting for the *whole* dispatched run to
-complete (build + tests + clang-tidy + valgrind + sanitizers), we only wait until
-the build legs we actually care about have published their artifacts. The run may
-keep doing unrelated work afterward — we no longer care once the artifact exists.
-
-This returns as soon as the build publishes (faster) and checks existence against
-the S3 store via ``head_object`` rather than the GitHub API (cheaper polling).
-
-All real work is delegated to the tested primitives:
-  * ``fetch_deps.poll_for_artifact`` — polls the store for a single artifact,
-    uses the producer's workflow-run status only as a give-up signal, honors the
-    ``ARTIFACT_WAIT_TIMEOUT`` / ``ARTIFACT_POLL_INTERVAL`` env knobs, and emits
-    structured diagnostics when it gives up.
-  * ``_github_api.resolve_ref_to_sha`` — resolves the ref to the 40-char SHA used
-    for the run-status give-up probe.
+Used by `dispatch-and-wait`: waits only for the artifacts, not the whole dispatched
+run. Polling is `fetch_deps.poll_for_artifact`.
 
 Usage:
     wait_for_artifacts.py --repo owner/repo --ref <branch|tag|sha> \\

@@ -2,15 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""HPC (SLURM) execution backend for ci-infrastructure.
-
-An HPC matrix leg is an ordinary leg whose build runs *inside a SLURM job*
-rather than on the GitHub runner. The `hpc` self-hosted runner submits the
-job over troika ssh, waits for it, and publishes the resulting artifact through the same
-name-keyed S3 store the non-HPC path uses.
-
-Orchestration (submit / poll / cancel) is pure Python driving troika's ``Site``
-API directly — there is no shell-out to the troika CLI. The SLURM job script
-itself is necessarily bash (it runs on a compute node); everything around it is
-Python.
-"""
+"""HPC backend: build a matrix leg inside a SLURM job driven through troika's ``Site`` API."""
