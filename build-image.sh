@@ -11,9 +11,18 @@
 # byte-identical, identically-tagged images.
 #
 # Usage:
-#   ./build-image.sh --discover [--mode validate|publish] [--rebuild "all|<names>"]
+#   ./build-image.sh --discover [--mode validate|validate-bases|publish] [--rebuild "all|<names>"]
 #   ./build-image.sh <platform>/<variant> [--push] [--force] [--require-clean]
+#   ./build-image.sh --test <platform>/<variant>
+#   ./build-image.sh --push-built <platform>/<variant> [--force] [--require-clean]
 #   ./build-image.sh --print-tag <platform>/<variant>
+#
+# A build lands in the local docker daemon. images.yml runs --test against that
+# image and then --push-built, so what reaches the registry is exactly what was
+# tested; `<name> --push` is the untested shortcut for use by hand.
+#
+# BASE_IMAGE=<ref> builds a dependent on a base loaded into the local daemon
+# instead of the published :latest, and makes --test prove that it did.
 #
 # THERE IS EXACTLY ONE ANSWER TO "DOES THIS IMAGE NEED REBUILDING?"
 #
@@ -192,6 +201,7 @@ compute_tag() {
 compute_revision() { _git_identity "$1" %H; }
 
 flat_name() { echo "${1//\//-}"; }   # ubuntu24.04/base -> ubuntu24.04-base
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 image_ref() { echo "$REPO_PREFIX/$(flat_name "$1"):$2"; }
 
 # --- registry -----------------------------------------------------------------
@@ -275,29 +285,50 @@ discover() {
     if [ -n "$(resolve_base "$base")" ]; then
       die "$name FROMs $base, which is itself a dependent; images.yml builds all dependents in one parallel matrix, so chains deeper than base->variant are not supported"
     fi
-    # On a validation run the base is NOT pushed, so a dependent would build
-    # against the previously published :latest -- i.e. against the wrong base,
-    # proving nothing at the cost of a job.
-    if [ "$mode" = validate ] && printf '%s' " $missing_names " | grep -q " $base "; then
-      note "skipping $name: its base $base is being rebuilt in this run, so validating it against the published base would test the wrong base"
+    # A dependent whose base is rebuilt in this run builds on that base, handed
+    # over by images.yml as an artifact. validate-bases skips such dependents
+    # instead, trading coverage for time.
+    if [ "$mode" = validate-bases ] && in_list "$base" "$missing_names"; then
+      note "skipping $name: its base $base is being rebuilt in this run (mode validate-bases)"
       continue
     fi
     dep_names="$dep_names $name"
   done
 
-  to_json() {
-    local first=true n
+  local exported=""
+  for name in $dep_names; do
+    base="$(resolve_base "$name")"
+    in_list "$base" "$base_names" && exported="$exported $base"
+  done
+
+  base_json() {
+    local first=true n exported_flag
     printf '{"include":['
     for n in $1; do
       $first || printf ','; first=false
-      printf '{"name":"%s","tag":"%s"}' "$n" "$(compute_tag "$n")"
+      exported_flag=false; in_list "$n" "$exported" && exported_flag=true
+      printf '{"name":"%s","tag":"%s","flat":"%s","ref":"%s","export":%s}' \
+        "$n" "$(compute_tag "$n")" "$(flat_name "$n")" "$(image_ref "$n" "$(compute_tag "$n")")" "$exported_flag"
+    done
+    printf ']}'
+  }
+
+  dependent_json() {
+    local first=true n b base_ref
+    printf '{"include":['
+    for n in $1; do
+      $first || printf ','; first=false
+      b="$(resolve_base "$n")"
+      base_ref=""; in_list "$b" "$base_names" && base_ref="$(image_ref "$b" "$(compute_tag "$b")")"
+      printf '{"name":"%s","tag":"%s","base":"%s","base_ref":"%s"}' \
+        "$n" "$(compute_tag "$n")" "$(flat_name "$b")" "$base_ref"
     done
     printf ']}'
   }
 
   {
-    echo "base-matrix=$(to_json "$base_names")"
-    echo "dependent-matrix=$(to_json "$dep_names")"
+    echo "base-matrix=$(base_json "$base_names")"
+    echo "dependent-matrix=$(dependent_json "$dep_names")"
     echo "base-in-set=$base_in_set"
   # tee -a, never plain tee: $GITHUB_OUTPUT is an append-only file shared with
   # every other step in the job, and truncating it would silently discard
@@ -324,7 +355,7 @@ discover() {
 
 build_one() {
   local name="$1" push="$2" force="$3" require_clean="$4"
-  local dockerfile base tag revision ref latest_ref paths=()
+  local dockerfile base tag revision ref paths=()
 
   require_buildx
   dockerfile="$(dockerfile_for "$name")"
@@ -334,32 +365,24 @@ build_one() {
   tag="$(compute_tag "$name")"
   revision="$(compute_revision "$name")"
   ref="$(image_ref "$name" "$tag")"
-  latest_ref="$(image_ref "$name" latest)"
 
   while IFS= read -r p; do [ -n "$p" ] && paths+=("$p"); done < <(tag_paths "$name")
 
   echo "  image:    $name"
-  [ -n "$base" ] && echo "  base:     $(image_ref "$base" latest)"
+  if [ -n "$base" ]; then
+    echo "  base:     ${BASE_IMAGE:-$(image_ref "$base" latest)}"
+  elif [ -n "${BASE_IMAGE:-}" ]; then
+    die "BASE_IMAGE is set but $name is not a dependent"
+  fi
   echo "  tag:      $tag ($revision)"
   echo "  inputs:   ${paths[*]}"
 
-  # The tag is a function of committed content but the build uses the working
-  # tree, so a dirty tree can mint a tag whose content is not what is committed.
-  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- "${paths[@]}" 2>/dev/null; then
-    if $require_clean; then
-      die "$name has uncommitted changes in ${paths[*]}; refusing to publish $ref"
-    fi
-    echo "::warning::${paths[*]} has uncommitted changes; image $ref may not match the committed Dockerfile"
-  fi
+  check_clean "$name" "$require_clean"
 
-  if $push; then
-    registry_login                     # also authenticates the FROM-base pull
-    if ! $force && image_exists "$ref"; then
-      note "$ref already exists — skipping build+push"
-      return 0
-    fi
-  else
-    registry_login                     # buildkit pulls the base from the registry
+  registry_login                       # buildkit pulls the base from the registry
+  if $push && ! $force && image_exists "$ref"; then
+    note "$ref already exists — skipping build+push"
+    return 0
   fi
 
   # OCI labels: https://specs.opencontainers.org/image-spec/annotations/
@@ -406,8 +429,8 @@ build_one() {
     esac
   done
 
-  local push_args=() tag_args=(-t "$ref")
-  if $push; then push_args=(--push); tag_args+=(-t "$latest_ref"); fi
+  local context_args=()
+  [ -n "${BASE_IMAGE:-}" ] && context_args=(--build-context "$(image_ref "$base" latest)=docker-image://$BASE_IMAGE")
 
   echo "Building $ref"
   docker buildx build \
@@ -415,11 +438,77 @@ build_one() {
     --file "$dockerfile" \
     "${labels[@]}" \
     ${build_args[@]+"${build_args[@]}"} \
-    "${tag_args[@]}" \
-    ${push_args[@]+"${push_args[@]}"} \
+    ${context_args[@]+"${context_args[@]}"} \
+    -t "$ref" \
+    --load \
     "$REPO_ROOT"
 
-  if $push; then note "pushed $ref and $latest_ref"; else note "built $ref (not pushed)"; fi
+  note "built $ref (loaded, not pushed)"
+  if $push; then push_built "$name" "$force" "$require_clean"; fi
+}
+
+# The tag is a function of committed content but the build uses the working
+# tree, so a dirty tree can mint a tag whose content is not what is committed.
+check_clean() {
+  local name="$1" require_clean="$2" paths=()
+  while IFS= read -r p; do [ -n "$p" ] && paths+=("$p"); done < <(tag_paths "$name")
+  git -C "$REPO_ROOT" diff --quiet HEAD -- "${paths[@]}" 2>/dev/null && return 0
+  $require_clean && die "$name has uncommitted changes in ${paths[*]}; refusing to publish"
+  echo "::warning::${paths[*]} has uncommitted changes; image $name may not match the committed Dockerfile"
+}
+
+# Push the image a previous build loaded, never a rebuild of it: a rebuild of a
+# rolling image, or of anything that installs unpinned packages, is not the
+# image that was tested.
+push_built() {
+  local name="$1" force="$2" require_clean="$3" ref latest_ref
+  require_buildx
+  ref="$(image_ref "$name" "$(compute_tag "$name")")"
+  latest_ref="$(image_ref "$name" latest)"
+  docker image inspect "$ref" >/dev/null 2>&1 || die "$ref is not in the local daemon; build it first"
+  check_clean "$name" "$require_clean"
+  registry_login
+  if ! $force && image_exists "$ref"; then
+    note "$ref already exists — skipping push"
+    return 0
+  fi
+  docker tag "$ref" "$latest_ref"
+  docker push "$ref"
+  docker push "$latest_ref"
+  note "pushed $ref and $latest_ref"
+}
+
+# Run the image contract and the test suite inside the locally built image. The
+# checkout is mounted read-only and the tests run against the BAKED package, so
+# a broken install cannot hide behind the sources next to the tests.
+test_image() {
+  local name="$1" ref base
+  require_buildx
+  ref="$(image_ref "$name" "$(compute_tag "$name")")"
+  docker image inspect "$ref" >/dev/null 2>&1 || die "$ref is not in the local daemon; build it first"
+
+  if [ -n "${BASE_IMAGE:-}" ]; then
+    local base_layers own_layers
+    base_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$BASE_IMAGE")"
+    own_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$ref")"
+    case "$own_layers" in
+      "${base_layers%]},"*) echo "  base:     $BASE_IMAGE (layers verified)" ;;
+      *) die "$ref was not built on $BASE_IMAGE: its layers do not start with the base's" ;;
+    esac
+  fi
+
+  echo "::group::image contract ($name)"
+  docker run --rm -v "$REPO_ROOT:/repo:ro" "$ref" bash "/repo/$IMAGES_DIR/verify-image.sh" "$name"
+  echo "::endgroup::"
+
+  echo "::group::pytest in $name"
+  # shellcheck disable=SC2016  # expanded inside the container
+  docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -w /tmp -v "$REPO_ROOT:/repo:ro" "$ref" bash -c '
+    set -euo pipefail
+    "$CI_INFRASTRUCTURE_PYTHON" -c "import ci_infrastructure, sys; f = ci_infrastructure.__file__; print(sys.version.split()[0], f); sys.exit(f.startswith(\"/repo/\"))"
+    "$CI_INFRASTRUCTURE_PYTHON" -m pytest -p no:cacheprovider /repo/tests'
+  echo "::endgroup::"
+  note "tested $ref"
 }
 
 # --- args ---------------------------------------------------------------------
@@ -436,6 +525,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --discover)      ACTION=discover ;;
     --print-tag)     ACTION=print-tag ;;
+    --test)          ACTION="test" ;;
+    --push-built)    ACTION="push-built" ;;
     --mode)          MODE="${2:-}"; shift ;;
     --rebuild)       REBUILD="${2:-}"; shift ;;
     --push)          PUSH=true ;;
@@ -450,13 +541,21 @@ done
 
 case "$ACTION" in
   discover)
-    case "$MODE" in validate|publish) ;; *) die "--mode must be validate or publish, got '$MODE'" ;; esac
+    case "$MODE" in validate|validate-bases|publish) ;; *) die "--mode must be validate, validate-bases or publish, got '$MODE'" ;; esac
     [ -z "$NAME" ] || die "--discover takes no image argument"
     discover "$MODE" "$REBUILD"
     ;;
   print-tag)
     [ -n "$NAME" ] || die "--print-tag needs an image: <platform>/<variant>"
     compute_tag "$NAME"
+    ;;
+  test)
+    [ -n "$NAME" ] || die "--test needs an image: <platform>/<variant>"
+    test_image "$NAME"
+    ;;
+  push-built)
+    [ -n "$NAME" ] || die "--push-built needs an image: <platform>/<variant>"
+    push_built "$NAME" "$FORCE" "$REQUIRE_CLEAN"
     ;;
   build)
     [ -n "$NAME" ] || die "usage: build-image.sh <platform>/<variant> [--push] [--force] [--require-clean]"
