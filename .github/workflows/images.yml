@@ -66,6 +66,9 @@ env:
   # Push for pushes to main; never for pull_request validation.
   PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
+  # Validate dependents on pull requests against the base rebuilt in the same run.
+  # 'false' validates only the bases, which is faster and misses broken variants.
+  VALIDATE_DEPENDENTS_ON_PR: 'true'
 
 jobs:
   discover:
@@ -90,10 +93,7 @@ jobs:
           persist-credentials: false
       - id: d
         env:
-          # publish keeps dependents in the set; validate drops the ones whose
-          # base is being rebuilt in the same run, because without a push they
-          # would build against the previously published base and prove nothing.
-          MODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && 'publish' || 'validate' }}
+          MODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && 'publish' || (env.VALIDATE_DEPENDENTS_ON_PR == 'true' && 'validate' || 'validate-bases') }}
           REBUILD: ${{ inputs.rebuild }}
         run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD"
 
@@ -105,76 +105,94 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.base-matrix) }}
     name: build ${{ matrix.name }}
+    env:
+      IMAGE: ${{ matrix.name }}
+      # Pin the tag discover computed rather than recomputing it here. For
+      # the pinned platforms the two are identical by construction; for a
+      # rolling image the tag carries a UTC date, and a run that straddles
+      # midnight would otherwise discover <sha>-20260902 as missing and then
+      # publish <sha>-20260903.
+      IMAGE_TAG: ${{ matrix.tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false   # see the discover job -- no git push here
       - name: Build ${{ matrix.name }}
+        run: ./build-image.sh "$IMAGE"
+      - name: Test ${{ matrix.name }}
+        run: ./build-image.sh --test "$IMAGE"
+      - name: Export for dependents
+        if: ${{ matrix.export }}
         env:
-          IMAGE: ${{ matrix.name }}
-          # Pin the tag discover computed rather than recomputing it here. For
-          # the pinned platforms the two are identical by construction; for a
-          # rolling image the tag carries a UTC date, and a run that straddles
-          # midnight would otherwise discover <sha>-20260902 as missing and then
-          # publish <sha>-20260903.
-          IMAGE_TAG: ${{ matrix.tag }}
-          # Only the publishing leg gets the push credentials. A pull request
-          # cannot push (PUSH is false), and it does not need them to PULL either:
-          # public-ci-images is world-readable -- smoke-test-runners.yml pulls
-          # the base with its `credentials:` block commented out. build-image.sh
-          # treats empty values as "skip login", so PR builds just work.
-          PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
-          PUBLIC_ECCR_ROBOT_TOKEN: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_TOKEN || '' }}
+          REF: ${{ matrix.ref }}
         run: |
-          args=("$IMAGE")
-          # --require-clean on the publish leg only: the tag is a function of
-          # committed content, so a published image must never come from a tree
-          # that differs from it.
-          [ "$PUSH" = "true" ] && args+=(--push --require-clean)
-          ./build-image.sh "${args[@]}"
+          set -euo pipefail
+          docker save "$REF" | zstd -T0 -3 > "$RUNNER_TEMP/image.tar.zst"
+      - if: ${{ matrix.export }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: image-${{ matrix.flat }}
+          path: ${{ runner.temp }}/image.tar.zst
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Push ${{ matrix.name }}
+        if: ${{ env.PUSH == 'true' }}
+        env:
+          # Only the publishing leg gets the push credentials, and only for this
+          # step: nothing the image or the tests run can see them.
+          PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
+          PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
+        # --require-clean: the tag is a function of committed content, so a
+        # published image must never come from a tree that differs from it.
+        run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
   build-dependents:
     needs: [discover, build-base]
-    # Run even when build-base was skipped (base already current); fail only if
-    # it actually failed.
+    # Not gated on build-base succeeding as a whole: one broken base must not
+    # hold back every other platform. A dependent whose base failed has no
+    # artifact to load and fails there, so it can never build on a stale base.
     if: ${{ !cancelled()
             && needs.discover.result == 'success'
-            && needs.discover.outputs.dependent-matrix != '{"include":[]}'
-            && (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') }}
+            && needs.discover.outputs.dependent-matrix != '{"include":[]}' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.dependent-matrix) }}
     name: build ${{ matrix.name }}
+    env:
+      IMAGE: ${{ matrix.name }}
+      IMAGE_TAG: ${{ matrix.tag }}   # see build-base
+      # Set when the base was rebuilt in this run; empty means the published
+      # :latest is current and is what the dependent builds on.
+      BASE_IMAGE: ${{ matrix.base_ref }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false   # see the discover job -- no git push here
-      - name: Build ${{ matrix.name }}
-        env:
-          IMAGE: ${{ matrix.name }}
-          # Pin the tag discover computed rather than recomputing it here. For
-          # the pinned platforms the two are identical by construction; for a
-          # rolling image the tag carries a UTC date, and a run that straddles
-          # midnight would otherwise discover <sha>-20260902 as missing and then
-          # publish <sha>-20260903.
-          IMAGE_TAG: ${{ matrix.tag }}
-          # Only the publishing leg gets the push credentials. A pull request
-          # cannot push (PUSH is false), and it does not need them to PULL either:
-          # public-ci-images is world-readable -- smoke-test-runners.yml pulls
-          # the base with its `credentials:` block commented out. build-image.sh
-          # treats empty values as "skip login", so PR builds just work.
-          PUBLIC_ECCR_ROBOT_NAME: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_NAME || '' }}
-          PUBLIC_ECCR_ROBOT_TOKEN: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && secrets.PUBLIC_ECCR_ROBOT_TOKEN || '' }}
+      - if: ${{ matrix.base_ref != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: image-${{ matrix.base }}
+          path: ${{ runner.temp }}/base
+      - name: Load base ${{ matrix.base }}
+        if: ${{ matrix.base_ref != '' }}
         run: |
-          # Dependents FROM their base at :latest. build-base has just pushed it
-          # (or the base was already current), and the concurrency group above
-          # serialises runs, so :latest cannot move underneath this build.
-          args=("$IMAGE")
-          [ "$PUSH" = "true" ] && args+=(--push --require-clean)
-          ./build-image.sh "${args[@]}"
+          set -euo pipefail
+          zstd -dc "$RUNNER_TEMP/base/image.tar.zst" | docker load
+          docker image inspect "$BASE_IMAGE" >/dev/null
+      - name: Build ${{ matrix.name }}
+        run: ./build-image.sh "$IMAGE"
+      - name: Test ${{ matrix.name }}
+        run: ./build-image.sh --test "$IMAGE"
+      - name: Push ${{ matrix.name }}
+        if: ${{ env.PUSH == 'true' }}
+        env:
+          PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
+          PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
+        run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
   # The private images in ecmwf/ci-container-images FROM our base. That repo
   # holds nothing but Dockerfiles, so it needs no change detection of its own --

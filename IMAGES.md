@@ -32,7 +32,6 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | Directory | Image |
 |---|---|
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
-| `public-images/ubuntu24.04/gfortran12` | `…/ubuntu24.04-gfortran12` |
 | `public-images/ubuntu24.04/gfortran13` | `…/ubuntu24.04-gfortran13` |
 | `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
 | `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
@@ -203,9 +202,23 @@ and a dependent's `:latest` keeps pointing at an image built on the previous
 base — a stale image that CI happily reports green.
 
 On a pull request nothing is pushed, so "tag missing" means "this is what merging
-would build" — exactly the set worth validating. Dependents whose base is *also*
-being rebuilt in the same run are skipped there, because without a push they
-would build against the previously published base and prove nothing.
+would build" — exactly the set worth validating.
+
+### Build, test, push
+
+Every build job builds into the runner's docker daemon, runs
+`build-image.sh --test` against that image, and only then pushes it — on `main`
+only, and the very image that was tested, never a rebuild. `--test` runs
+[`public-images/verify-image.sh`](public-images/verify-image.sh) (the image
+contract: baked `ci_infrastructure`, `CI_IMAGE_*`, cmake floor, the compilers the
+image's name promises, the announcer) and then `pytest` over `tests/` against the
+**baked** package, with the checkout mounted read-only.
+
+A dependent whose base is rebuilt in the same run builds on that base, not on the
+published `:latest`: the base job exports it as an artifact, the dependent job
+loads it and passes `BASE_IMAGE`, and `--test` checks the dependent's layers start
+with the base's. On pull requests, `VALIDATE_DEPENDENTS_ON_PR` in `images.yml`
+switches this off (`--mode validate-bases`), validating only the bases.
 
 ## Two-way jump (log ↔ Dockerfile)
 
@@ -326,6 +339,9 @@ identically-tagged images. The build context is the repo root.
 ```sh
 # validate locally (no push, no credentials needed)
 ./build-image.sh ubuntu24.04/base
+./build-image.sh --test ubuntu24.04/base
+BASE_IMAGE="$(./build-image.sh --print-tag ubuntu24.04/base | sed 's#^#eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:#')" \
+  ./build-image.sh ubuntu24.04/gfortran13
 
 # what would be built right now, and under which tags
 ./build-image.sh --discover --mode publish
