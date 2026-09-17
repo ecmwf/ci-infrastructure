@@ -32,7 +32,6 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | Directory | Image |
 |---|---|
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
-| `public-images/ubuntu24.04/gfortran12` | `…/ubuntu24.04-gfortran12` |
 | `public-images/ubuntu24.04/gfortran13` | `…/ubuntu24.04-gfortran13` |
 | `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
 | `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
