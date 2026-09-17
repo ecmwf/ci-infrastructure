@@ -4,16 +4,8 @@
 
 name: Run pre-commit
 description: >
-  Runs `pre-commit run --all-files` against the already-checked-out repo,
-  reading its .pre-commit-config.yaml.
-
-  No setup-python: ubuntu-slim and ubuntu-latest both ship a Python, and the
-  hooks pin their own toolchains anyway. A runner without one needs its own
-  setup-python step before this action.
-
-  Caller must have already run actions/checkout@v6 in the same job, and must set
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true' as a job-level env -- checkout runs
-  before this action and needs it too, so it cannot be set from in here.
+  Run `pre-commit run --all-files`. Needs a Python on the runner, a prior
+  actions/checkout, and job-level FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'.
 
 runs:
   using: composite

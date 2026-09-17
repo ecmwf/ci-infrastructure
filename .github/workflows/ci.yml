@@ -13,8 +13,6 @@ on:
 
 jobs:
   pre-commit:
-    # Lint hooks need a CPU and a Python, nothing else — ubuntu-slim is the cheap
-    # 1-CPU GitHub-hosted runner.
     runs-on: ubuntu-slim
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -45,19 +43,11 @@ jobs:
       - name: pytest
         run: pytest
 
-  # Build and publish the container images under public-images/. Gated behind the
-  # tests via `needs:` rather than given its own `on: push`, so the registry is
-  # never touched by a commit whose tests are red -- a separate workflow could
-  # only express that with workflow_run, which TODOs already records as a trap.
-  #
-  # The images live in this repo, so an image's tag is a function of this repo's
-  # committed content and images.yml owns that answer.
+  # Gated on the tests, so a red commit never touches the registry.
   images:
     needs: mypy_and_tests
     uses: ./.github/workflows/images.yml
-    # Not `inherit`: images.yml is the only workflow here that runs a
-    # pull-request-authored Dockerfile, so it gets the four secrets it uses and
-    # none of the other ten (AWS keys, HPC SSH user, artifact store, ...).
+    # Only the secrets images.yml uses: it runs PR-authored Dockerfiles.
     secrets:
       PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
       PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}

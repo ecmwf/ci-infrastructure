@@ -4,22 +4,9 @@
 
 name: Check a commit's pull request label
 description: >
-  Decide whether an expensive lane should run for one commit, by looking up the
-  pull request that commit belongs to and asking whether it carries `label`.
-
-  For `on: workflow_run`, which carries no pull request and no labels in its
-  payload — the event the orchestrators run on. Hence `sha` rather than reading
-  the event: the caller passes `github.event.workflow_run.head_sha`.
-
-  A commit with no OPEN pull request answers `true`. That is a push to a branch,
-  where there is nothing to put a label on; refusing there would silently stop
-  the lane on `develop`. Only a pull request can withhold the label, and
-  actions/require-label-decision is what stops that being an accident rather than
-  a decision.
-
-  Reports `run`; it never fails the job on a verdict, so the caller decides what
-  a `false` means. Pair it with `if: steps.<id>.outputs.run == 'true'` or a job
-  output.
+  For workflow_run orchestrators (no PR or labels in the payload): output
+  `run`=true when the open PR for `sha` carries `label`, or when the commit has
+  no open PR (a push). Never fails on the verdict.
 
 inputs:
   label:
@@ -29,13 +16,7 @@ inputs:
     description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
     required: true
   token:
-    description: >
-      Token that can read pull requests on this repo. Defaults to github.token,
-      which is the right answer whenever the pull request is on the repo running
-      the job -- give the job `pull-requests: read` and it works whatever the
-      repo's visibility. An App token is for reading some OTHER repo, and is a
-      downgrade here: it carries only what its installation grants, so on a
-      private or internal repo it 403s where github.token would not.
+    description: 'Token with pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
     required: false
     default: ''
 
@@ -51,9 +32,6 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
-        # Per this repo's convention (commit a48f078) no input is interpolated
-        # into the script body. A label reaching a `run:` as syntax is exactly
-        # how the Decode step broke (#36).
         LABEL_INPUT: ${{ inputs.label }}
         SHA_INPUT: ${{ inputs.sha }}
       run: |

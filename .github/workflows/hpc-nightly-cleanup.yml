@@ -4,11 +4,7 @@
 
 name: HPC nightly cleanup
 
-# Age-based GC of the cluster HPC work dir. The submit-then-poll build path
-# leaves per-artifact staging/source/install trees and job output under
-# vars.HPC_CI_REMOTE_WORK_DIR; this sweeps the ones older than the threshold so
-# disk does not accumulate. Runs on the `hpc` self-hosted runner and reaches
-# the cluster over troika's ssh connection (no S3, no scheduler).
+# Age-based GC of vars.HPC_CI_REMOTE_WORK_DIR, over troika's ssh connection.
 on:
   schedule:
     - cron: '17 3 * * *'
@@ -42,16 +38,10 @@ jobs:
           DRYRUN: ${{ github.event.inputs.dryrun || 'false' }}
         run: |
           set -euo pipefail
-          if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
-            echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
-            exit 1
-          fi
           if [ -z "$REMOTE_WORK_DIR" ]; then
             echo "::error::HPC_CI_REMOTE_WORK_DIR is empty; nothing to sweep." >&2
             exit 1
           fi
-          # Passed through verbatim: a spec like '$SCRATCH/github-ci' is
-          # expanded on the cluster, so it must not be expanded by this shell.
           args=(
             --site hpc-batch
             --remote-work-dir "$REMOTE_WORK_DIR"

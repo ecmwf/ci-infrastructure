@@ -4,10 +4,8 @@
 
 name: Resolve dependency tree from manifest
 description: >
-  Reads the consumer repo's .ci/manifest.toml, walks the upstream dependency
-  graph in 1-3 GraphQL calls, and emits a fully resolved per-matrix-leg dep
-  tree. Replaces per-repo use-deps and use-X composite actions: the dep graph
-  becomes data, not nested action calls.
+  Read .ci/manifest.toml, walk the upstream graph over GraphQL and emit the
+  resolved dependency tree per matrix leg.
 
 inputs:
   manifest:
@@ -41,13 +39,8 @@ inputs:
     default: ''
   client-id:
     description: >
-      GitHub App Client ID (e.g. Iv23li.xyz...). When this and app-private-key are
-      both set, the action mints an installation token (scoped to all repos in
-      github.repository_owner that the App is installed on) and threads it to
-      resolve_deps.py as DISPATCH_TOKEN. Enables consumer-driven recovery: if a
-      producer's artifact is missing and no producer CI is in flight, dispatch
-      the producer's cross-repo-trigger.yml and wait for the rebuild instead of
-      failing fast. Leave both empty to keep the strict orphan-pin behaviour.
+      GitHub App client ID. With app-private-key, mints an org token so a missing
+      producer artifact is rebuilt by dispatch instead of failing fast.
     required: false
     default: ''
   app-private-key:
@@ -108,16 +101,7 @@ outputs:
     description: 'Full resolved tree across all requested matrix blocks (object keyed by matrix name).'
     value: ${{ steps.r.outputs.json }}
   app-token:
-    description: >
-      The App-minted installation token, when client-id + app-private-key were both provided.
-      Usable WITHIN THE SAME JOB by sibling steps that need cross-repo read access
-      (e.g. an inline gh api call); empty when App credentials weren't passed.
-
-      WARNING: Do NOT pass this through job outputs (outputs.<x>) to downstream jobs —
-      GitHub Actions redacts ::add-mask::'d values when they flow across jobs
-      (community/13082), so downstream `needs.<job>.outputs.<x>` arrives as empty
-      string. Each consuming job must mint its OWN token (which is what the
-      generator and hand-written workflows do).
+    description: 'App-minted token, same job only (masked values arrive empty through job outputs).'
     value: ${{ steps.mint.outputs.token }}
 
 runs:
@@ -150,14 +134,7 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.app-private-key }}
-        # Deliberately org-wide (no `repositories:` list): the manifest graph
-        # walked below is dynamic (any repo named in [[deps]]/producers), so a
-        # fixed repo allowlist isn't possible here. What we *can* restrict is
-        # which permissions the minted token carries, regardless of what the
-        # App itself has installed — contents:read for GraphQL blob/ref reads,
-        # actions:write for `gh workflow run` dispatch (which also covers read
-        # of run status). No other permission (issues, packages, admin,
-        # secrets, ...) is requested.
+        # Org-wide (the graph is dynamic); permissions narrowed instead.
         owner: ${{ github.repository_owner }}
         permission-contents: read
         permission-actions: write
@@ -166,11 +143,7 @@ runs:
       id: r
       shell: bash
       env:
-        # Prefer the App-minted token when available: it's org-scoped so the
-        # resolver can read sibling private repos' refs/artifacts/runs, which
-        # the default github.token (scoped to the calling repo only) returns
-        # 404 for. Falls back to inputs.token (e.g. ORG_READ_TOKEN) then
-        # github.token for setups without App credentials.
+        # Prefer the org-scoped App token; github.token 404s on sibling private repos.
         GH_TOKEN: ${{ steps.mint.outputs.token || inputs.token || github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         DISPATCH_TOKEN: ${{ steps.mint.outputs.token }}

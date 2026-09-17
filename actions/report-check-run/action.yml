@@ -4,27 +4,14 @@
 
 name: Report a check run back to the dispatcher
 description: >
-  Post a GitHub check run onto the dispatcher's commit so a cross-repo
-  dispatched run surfaces its pass/fail on the dispatcher's PR WITHOUT exposing
-  its logs. Used when a public upstream dispatches a private consumer (see
-  dispatch-and-wait / render_orchestrator_workflow): the private run executes in
-  its own repo, so its logs stay private, and this check run is the only thing
-  that crosses back. The check's name and conclusion are public (allowed — repo
-  names/existence may be public); the `details_url` points at the private run
-  and needs repo access to open.
-
-  Two phases:
-    - phase=start   -> create an in-progress check run, output its id.
-    - phase=finish  -> complete the check run with a conclusion. If no id was
-                       captured at start (e.g. the create call failed), it
-                       creates a fresh completed check run instead, so the
-                       dispatcher still sees a final state.
+  Post a check run on the dispatcher's commit so a private dispatched run reports
+  pass/fail on a public PR without exposing its logs (details_url needs repo
+  access). phase=start creates it in progress; phase=finish completes it, or
+  creates a completed one if start failed.
 
 inputs:
   token:
-    description: >
-      Token with checks:write on head-repo. The dispatched job mints an App
-      installation token (owner-scoped) that reaches the dispatcher repo.
+    description: 'Token with checks:write on head-repo (an owner-scoped App installation token).'
     required: true
   head-repo:
     description: 'owner/repo whose commit the check run is attached to (the dispatcher / from-repo).'
@@ -71,9 +58,7 @@ runs:
         CHECK_RUN_ID: ${{ inputs.check-run-id }}
       run: |
         set -uo pipefail
-        # Never fail the job over check-run bookkeeping: status reporting is
-        # best-effort. A dropped check leaves the PR without this signal, but it
-        # must not turn a green build red (or a red build green).
+        # Best-effort: bookkeeping must never change the job's result.
         if [ "$PHASE" = "start" ]; then
           id=$(gh api -X POST "repos/$HEAD_REPO/check-runs" \
                  -f name="$CHECK_NAME" \
@@ -96,8 +81,7 @@ runs:
               -f details_url="$DETAILS_URL" >/dev/null 2>&1 \
               || echo "::warning title=check-run::Could not update check $CHECK_RUN_ID on $HEAD_REPO."
           else
-            # No id from start — create a terminal check so the dispatcher still
-            # sees a conclusion.
+            # No id from start: create a terminal check instead.
             gh api -X POST "repos/$HEAD_REPO/check-runs" \
               -f name="$CHECK_NAME" \
               -f head_sha="$HEAD_SHA" \

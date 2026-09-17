@@ -4,32 +4,10 @@
 
 name: Build a package on HPC via SLURM
 description: >
-  The HPC counterpart of a repo's runner build composite. Runs on the `hpc`
-  self-hosted runner: it submits the repo's .ci/hpc/build-<toolchain>.sh as a SLURM job
-  (through troika, driven as a Python library), waits for it, and publishes the
-  resulting install tree to the S3 artifact store under its artifact name.
-
-  Drop-in replacement for the per-repo `action` step in a generated job: it
-  consumes the dependency prefix produced by the preceding fetch-deps
-  (download-only) step and exposes `install-path` exactly like the runner build
-  composite, so the surrounding job wiring is unchanged.
-
-  Submit-then-poll: the job is submitted first, then the runner scp's the source
-  tarball (and any dependency prefixes from cmake-prefix-path) into the cluster
-  staging dir and drops a transfer marker; the job waits for that marker, unpacks
-  the checkout into node-local $TMPDIR and builds against the shipped deps.
-
-  Idempotent / restartable: on a re-run it skips when the artifact already
-  exists (cache hit), reattaches to a still-running job for the same artifact
-  rather than submitting a duplicate, and otherwise submits fresh. Reattach goes
-  through the scheduler: each job is named after the artifact and carries its
-  submitting run id in the SLURM comment, so a run on any runner (not just the
-  original) finds an in-flight job by name.
-
-  Requires: a `remote-work-dir` on a cluster-shared filesystem (visible to
-  compute nodes), a writable runner-local `work-dir` for tarball scratch, an ssh
-  config that lets troika reach the site, and AWS_ACCESS_KEY_ID /
-  AWS_SECRET_ACCESS_KEY for the S3 store.
+  HPC counterpart of the runner build: submit .ci/hpc/build-<toolchain>.sh via
+  troika/SLURM, ship source and deps, wait, and publish the install tree to S3.
+  Drop-in for the build step after fetch-deps (download-only). Restartable: a
+  cache hit skips, and a running job with the same artifact name is reattached.
 
 inputs:
   site:
@@ -40,19 +18,9 @@ inputs:
     required: true
   matrix-leg:
     description: >
-      The matrix leg as JSON — pass the caller's toJSON(matrix). It is the render
-      context for a `.j2` job-script and is ignored for any other recipe, so a
-      caller with a hand-written recipe may leave it empty. It travels as an action
-      input and then as an `env:` value; it is never interpolated into a `run:`
-      body, because a manifest-authored string containing a quote would otherwise
-      become commands (same reason as the generated Decode matrix-leg step).
-
-      Named WITHOUT expression delimiters on purpose. GitHub template-parses
-      expressions everywhere in this file, an input description included, and
-      `matrix` is not a context a composite action has — so writing the delimited
-      form here makes the whole action fail to LOAD ("Unrecognized named-value:
-      'matrix'"), taking every HPC leg with it before a single step runs. Callers
-      pass the delimited expression; this file only ever names it.
+      The matrix leg as JSON (pass toJSON of the matrix); render context for a
+      .j2 job-script, ignored otherwise. Never write the expression delimiters
+      here: descriptions are evaluated and `matrix` breaks loading.
     required: false
     default: ''
   artifact-name:
@@ -63,34 +31,20 @@ inputs:
     required: false
     default: ''
   source-dir:
-    description: >
-      Runner-local checkout that is tarred and shipped to the cluster before the
-      job runs (the job cds into the unpacked copy). Defaults to the runner
-      workspace; no shared filesystem is assumed.
+    description: 'Runner-local checkout shipped to the cluster. Defaults to the workspace.'
     required: false
     default: ${{ github.workspace }}
   work-dir:
-    description: >
-      Runner-local scratch directory for the shipped/fetched tarballs and the
-      fetched install tree. Empty falls back to $RUNNER_TEMP. Reattach no longer
-      needs a stable local path — it goes through the scheduler by job name — so
-      any writable dir works.
+    description: 'Runner-local scratch for tarballs and the fetched install tree. Empty uses $RUNNER_TEMP.'
     required: false
     default: ''
   remote-work-dir:
     description: >
-      Base directory on the cluster (writable by the troika user, on a filesystem
-      visible to the compute nodes) for the staged source, job output and the
-      install tree. May name cluster variables — the recommended value is
-      "$SCRATCH/github-ci" — which are expanded on the cluster, not on the
-      runner. The expansion must yield an absolute path; the step fails fast
-      otherwise, since a relative or runner-local path is invisible to compute
-      nodes and is the classic "wrong work directory" failure.
+      Absolute cluster dir visible to compute nodes, writable by the troika user.
+      May name cluster variables (e.g. "$SCRATCH/github-ci"), expanded remotely.
     required: true
   marker-wait-timeout:
-    description: >
-      Seconds the SLURM job waits for the source-transfer marker before failing.
-      Bounds how long a job holds an allocation if the runner never ships.
+    description: 'Seconds the SLURM job waits for the source-transfer marker before failing.'
     required: false
     default: '1800'
   troika-config:
@@ -102,13 +56,7 @@ inputs:
     required: false
     default: ''
   publish:
-    description: >
-      Whether to publish an artifact for this leg. "true" (default) builds and
-      publishes the install tree, exactly as before. "false" is test-only mode:
-      the job runs for its pass/fail (the Finished: sentinel) but produces no
-      artifact — the cache short-circuit and install-tree fetch are skipped, and
-      the Publish step below is not run. For pure-test HPC legs (e.g. a
-      pure-Python repo that only runs pytest on a compute node).
+    description: '"false": run the job for pass/fail only; no cache check, fetch or publish.'
     required: false
     default: 'true'
   s3-bucket:
@@ -160,8 +108,6 @@ runs:
         S3_CA_BUNDLE_INPUT: ${{ inputs.s3-ca-bundle }}
       run: |
         set -euo pipefail
-        # Only non-empty inputs are exported; an empty input lets the org
-        # default baked into ci_infrastructure.s3_store apply.
         if [ -n "$S3_BUCKET_INPUT" ]; then echo "ARTIFACT_S3_BUCKET=$S3_BUCKET_INPUT" >> "$GITHUB_ENV"; fi
         if [ -n "$S3_REGION_INPUT" ]; then echo "ARTIFACT_S3_REGION=$S3_REGION_INPUT" >> "$GITHUB_ENV"; fi
         if [ -n "$S3_ENDPOINT_INPUT" ]; then echo "ARTIFACT_S3_ENDPOINT=$S3_ENDPOINT_INPUT" >> "$GITHUB_ENV"; fi
@@ -188,10 +134,6 @@ runs:
         PUBLISH: ${{ inputs.publish }}
       run: |
         set -euo pipefail
-        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
-          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
-          exit 1
-        fi
         if [ -z "$REMOTE_WORK_DIR_INPUT" ]; then
           echo "::error::remote-work-dir is empty. Set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '\$SCRATCH/github-ci')." >&2
           exit 1
@@ -204,11 +146,7 @@ runs:
         # Unique per submission; names the TRANSFER_COMPLETED marker and is stamped
         # into the job's --comment so a reattaching run can find which run shipped.
         run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-        # The cluster work dir is passed through verbatim: referencing "$VAR"
-        # does not re-expand its value, so a spec like '$SCRATCH/github-ci'
-        # reaches Python intact and is expanded on the cluster, where $SCRATCH
-        # actually exists. Expanding it here would silently yield an empty
-        # string and send the build somewhere the compute nodes cannot see.
+        # Verbatim: '$SCRATCH/...' is expanded on the cluster, not here.
         args=(
           --site "$SITE"
           --job-script "$JOB_SCRIPT"
@@ -226,17 +164,12 @@ runs:
         if [ -n "$MATRIX_LEG" ]; then args+=(--matrix-leg "$MATRIX_LEG"); fi
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
-        # Test-only leg: run for the pass/fail sentinel, produce no artifact.
         if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
         # -u: unbuffered so the wait progress can't hide behind block buffering.
         "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
-    # Publish the freshly-built install tree. Reuses the same publish path (and
-    # its found-gate) as the runner build: on a cache hit `found` is true, so the
-    # step skips the tar+upload of an install tree that was never rebuilt.
+    # Skipped on a cache hit (found) and in test-only mode.
     - name: Publish
-      # Skipped in test-only mode (publish: false): the job produced no install
-      # tree and submit-wait emitted no install-path.
       if: ${{ inputs.publish != 'false' }}
       uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
       with:

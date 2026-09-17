@@ -4,36 +4,14 @@
 
 name: Announce image
 description: >
-  Prints which CI container image this job is running in -- name, tag, build date
-  and a link to the exact Dockerfile -- plus any extra context the caller passes.
-
-  The values come from the CI_IMAGE_* environment baked into every image under
-  public-images/ (see IMAGES.md). build-image.sh writes the same facts as OCI
-  labels, but a label can only be read from OUTSIDE the image, and a job running
-  inside it has neither registry nor daemon access.
-
-  This CANNOT be folded into the runner's "Set up job" output: that block is
-  emitted by the runner before any workflow-controlled code runs, and the job
-  container's own ENTRYPOINT/CMD never execute (which is why the images set
-  `ENTRYPOINT []`). The earliest an image can speak for itself is the first real
-  step of the job -- which is where this belongs. Earlier still is possible only
-  from the runner side, where runners/container-hook-wrapper.js names the image
-  in "Initialize containers"; ARC's Kubernetes hook otherwise prints nothing
-  there, unlike a GitHub-hosted runner.
-
-  Deliberately pure bash. It depends on nothing else in this repo: not on
-  ensure-infrastructure-present, not on python, not on a checkout. "Which image
-  am I" must not be able to fail for a reason unrelated to the question.
-
-  Silent, and successful, when CI_IMAGE_NAME is unset -- runners outside these
-  images (macOS legs, the HPC submit lane) have nothing to announce.
+  Print the CI image this job runs in (name, tag, build date, Dockerfile link,
+  from the baked CI_IMAGE_* env; see IMAGES.md) plus `extra`, as a notice and
+  step summary. Pure bash with no dependencies, so it cannot fail for unrelated
+  reasons. Silent when CI_IMAGE_NAME is unset.
 
 inputs:
   extra:
-    description: >
-      Free text printed alongside the image facts. For whatever the caller knows
-      and the image does not: resolved dependency refs, the compiler, the matrix
-      leg. Multi-line is fine.
+    description: 'Free text printed with the image facts (resolved deps, compiler, leg). Multi-line is fine.'
     required: false
     default: ''
   title:
@@ -49,37 +27,26 @@ runs:
       env:
         EXTRA: ${{ inputs.extra }}
         TITLE: ${{ inputs.title }}
-        # Stands this step down from the images' BASH_ENV announcer, which would
-        # otherwise print the same facts (to stderr, without the annotation)
-        # when bash sources it on the way into this very script.
+        # Stands down the images' BASH_ENV announcer for this step.
         CI_IMAGE_ANNOUNCE_ACTION: '1'
       run: |
         set -euo pipefail
 
-        # Not an image of ours -- say nothing rather than "unknown".
         if [ -z "${CI_IMAGE_NAME:-}" ]; then
           exit 0
         fi
 
-        # Announce once per job. This action is cheap to call and callers should
-        # not have to coordinate: a generated job gets it in its preamble, and a
-        # workflow may well add its own. GITHUB_ENV is how a step hands state to
-        # later steps in the same job.
+        # Once per job.
         if [ -n "${CI_IMAGE_ANNOUNCED:-}" ]; then
           exit 0
         fi
         [ -n "${GITHUB_ENV:-}" ] && echo "CI_IMAGE_ANNOUNCED=1" >> "$GITHUB_ENV"
-        # GITHUB_ENV only reaches LATER steps; the marker is what the BASH_ENV
-        # announcer checks, so nested bash within this step stays quiet too.
+        # The marker keeps the BASH_ENV announcer quiet within this step too.
         : > "${CI_IMAGE_ANNOUNCED_MARKER:-/tmp/.ci-image-announced}" 2>/dev/null || true
 
-        # CI_IMAGE_TAG is the tag the image was published under; for the rolling
-        # platform it carries a UTC date, so it and CI_IMAGE_CREATED are not
-        # redundant -- one says which build, the other says when it ran.
+        # The rolling tag carries a date: which build, vs CREATED: when it ran.
         line="$CI_IMAGE_NAME:${CI_IMAGE_TAG:-<untagged>} built ${CI_IMAGE_CREATED:-<unknown>}"
 
-        # A single-line ::notice:: is what shows up in the run's annotation list;
-        # the readable version goes to the step summary and the log below.
         echo "::notice title=$TITLE::$line"
 
         {
@@ -92,9 +59,7 @@ runs:
           [ -n "$EXTRA" ] && { echo "  --"; printf '%s\n' "$EXTRA" | sed 's/^/  /'; }
         } || true
 
-        # Same content as a collapsed markdown block on the run summary. Appended
-        # behind a guard, never `>`: GITHUB_STEP_SUMMARY is shared with every
-        # other step in the job and truncating it would discard their output.
+        # Append, never truncate: the summary is shared with the job's other steps.
         if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
           {
             echo "<details><summary>$TITLE — <code>$CI_IMAGE_NAME</code></summary>"

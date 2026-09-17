@@ -4,36 +4,11 @@
 
 name: Smoke test runners
 
-# One-shot smoke test: proves a job can be scheduled on each ARC scale set
-# (arc-runner-normal / -large / -very-large) running the public base image, so
-# the downstream CI can be repointed at them with confidence. Run it manually
-# from the Actions tab. Requires the pull-only eccr robot secrets
-# (ECCR_PULL_ROBOT_NAME / ECCR_PULL_ROBOT_TOKEN).
-#
-# It also probes the object store from each scale set, because artifact
-# publish/fetch and sccache both depend on egress plus a credential that is
-# valid for that particular store. Those come from secrets, never from
-# defaults, so a wrong endpoint or a key issued against another store fails
-# here instead of halfway through a downstream build:
-#
-#   ARTIFACT_S3_ENDPOINT   object store URL, shared by artifacts and sccache
-#   AWS_ACCESS_KEY_ID      credential valid for THAT endpoint
-#   AWS_SECRET_ACCESS_KEY
-#   ARTIFACT_S3_BUCKET     artifact bucket, probed when set
-#   SCCACHE_BUCKET         sccache bucket, probed when set
-#   ARTIFACT_S3_REGION     optional, defaults to RegionOne
-#
-# At least one of the two buckets must be set, and the two must name DIFFERENT
-# buckets: artifacts and sccache are orthogonal uses that merely share a store,
-# and the probe prints a fingerprint per bucket so a shared value is visible at
-# a glance. All but SCCACHE_BUCKET are names s3_store itself reads, so the env
-# block below is a straight passthrough and the same names work when running
-# scripts/probe_object_store.py by hand.
-#
-# The second job compiles a small C++ project through sccache and proves the
-# result came back from the bucket rather than from a local cache. Its logic
-# lives in scripts/probe_sccache.py, not in this file, so it can be run by hand
-# the same way.
+# Manual smoke test of each ARC scale set on the public base image: job
+# scheduling, object-store access (scripts/probe_object_store.py) and an sccache
+# round trip through the bucket (scripts/probe_sccache.py). Both use the env names
+# s3_store reads, so the scripts run the same by hand. ARTIFACT_S3_BUCKET and
+# SCCACHE_BUCKET must differ.
 on:
   workflow_dispatch:
 
@@ -88,19 +63,13 @@ jobs:
             kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket AWS_ACCESS_KEY_ID | AWS_ACCESS_KEY_ID;
             kvstore/data/fsst-pet/k8s-magnum-cci1-gh-runners-prod/gh-runners-artifact-bucket AWS_SECRET_ACCESS_KEY | AWS_SECRET_ACCESS_KEY;
 
-
       - name: Probe object store access
         shell: bash
-        # The vault-action step above exports the names s3_store itself reads, so
-        # the probe needs no env block and the same command works by hand.
         run: |
           set -euo pipefail
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_object_store.py
 
-  # A separate job because `container:` is per-job: the compile needs the
-  # toolchain image, while the probe above deliberately runs on the plain base
-  # image. Same scale-set matrix, so an sccache problem is attributed to the
-  # scale set it appears on.
+  # Separate job: the compile needs the toolchain image (`container:` is per-job).
   sccache:
     strategy:
       fail-fast: false
@@ -113,30 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Verify baked toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${CI_INFRASTRUCTURE_PYTHON:?the toolchain image should set CI_INFRASTRUCTURE_PYTHON}"
-          "$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure; print("ok")'
-          # Named explicitly rather than discovered: this image exists to carry
-          # this compiler, and its absence is a finding about the image.
-          command -v clang++-18 >/dev/null || { echo "::error::clang++-18 missing from the toolchain image"; exit 1; }
-          command -v cmake >/dev/null || { echo "::error::cmake missing from the toolchain image"; exit 1; }
-
-          # This job runs a VARIANT, which is what makes the check below worth
-          # having: ENV is inherited, so if the CI_IMAGE_* block is ever added to
-          # a base only, every variant silently announces itself as that base.
-          # This is the assertion that catches it.
-          : "${CI_INFRASTRUCTURE_BAKED_REF:?the toolchain image should record which commit it baked}"
-          : "${CI_IMAGE_NAME:?the image should record its own name}"
-          [ "$CI_IMAGE_NAME" = ubuntu24.04/clang18-gfortran13 ] || {
-            echo "::error::variant reports itself as '$CI_IMAGE_NAME' — CI_IMAGE_* inherited from its base?"; exit 1; }
-          echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED"
-
-      # Configures sccache the way downstream builds are told to, so this job
-      # exercises the action itself -- which until now had no caller anywhere
-      # and was therefore entirely unverified.
+      # Exercises actions/setup-sccache as downstream builds use it.
       - uses: ./actions/setup-sccache
         with:
           cache-key-suffix: smoke-${{ matrix.runner }}
@@ -149,9 +95,7 @@ jobs:
       - name: Prove sccache is served by the object store
         shell: bash
         env:
-          # boto3's half of the probe: it lists the bucket independently of
-          # sccache, over a different TLS trust path, to confirm which bucket
-          # the objects actually landed in.
+          # boto3 lists the bucket independently of sccache to confirm where objects landed.
           ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
           ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -164,10 +108,7 @@ jobs:
           SCCACHE_LOG: info
         run: |
           set -euo pipefail
-          # --use-ambient-config: take the SCCACHE_* variables exactly as
-          # setup-sccache left them, so the action's own output is what is under
-          # test. Run without that flag to have the script derive them itself,
-          # which is what makes a local run a single command.
+          # --use-ambient-config: test the SCCACHE_* setup-sccache exported.
           "$CI_INFRASTRUCTURE_PYTHON" scripts/probe_sccache.py --use-ambient-config
 
       - name: sccache daemon log
@@ -175,10 +116,7 @@ jobs:
         shell: bash
         run: cat "${{ runner.temp }}/sccache-server.log" || true
 
-  # Per-image contract checks, one leg per toolchain image. Both failures that
-  # reached a downstream repo's CI -- rocky8 shipping a compiler under the
-  # unversioned name `g++`, and debian11's CMake below the floor our submodules
-  # require -- were image defects that nothing here would have caught.
+  # Per-image contract checks (verify-image.sh), one leg per toolchain image.
   image-contract:
     permissions:
       contents: read

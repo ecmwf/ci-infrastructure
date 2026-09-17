@@ -4,15 +4,9 @@
 
 name: Fetch HPC tree
 description: >
-  Copy a directory a job produced on the cluster back to the runner, over
-  troika's own connection (no scheduler, no S3). Use it as a post-step after an
-  HPC job to pull an output directory — reference data, artifacts — off shared
-  scratch and onto the runner for later processing.
-
-  The remote directory must sit on a filesystem the login node can read (shared
-  scratch). It may name cluster variables such as SCRATCH; the spec is expanded
-  on the cluster, so pass it quoted so this runner does not expand it first. The
-  runner-local extraction directory is exposed as the local-dir output.
+  Copy a cluster directory (on scratch the login node can read) back to the
+  runner over troika's connection (no scheduler, no S3). Quote a $SCRATCH spec;
+  it is expanded on the cluster.
 
 inputs:
   site:
@@ -59,14 +53,8 @@ runs:
         TROIKA_USER: ${{ inputs.troika-user }}
       run: |
         set -euo pipefail
-        if [ -z "${CI_INFRASTRUCTURE_PYTHON:-}" ]; then
-          echo "::error::CI_INFRASTRUCTURE_PYTHON is unset — ensure-infrastructure-present did not run." >&2
-          exit 1
-        fi
         tar_dir="${TAR_DIR_INPUT:-$RUNNER_TEMP/hpc-tars}"
         mkdir -p "$tar_dir"
-        # REMOTE_DIR is passed verbatim: a spec like '$SCRATCH/ref' must be
-        # expanded on the cluster, not by this shell.
         args=(
           --site "$SITE"
           --remote-dir "$REMOTE_DIR"

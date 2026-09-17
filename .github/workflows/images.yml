@@ -4,21 +4,11 @@
 
 name: Images
 
-# Build and push the CI container images under public-images/ to the eccr
-# Harbor. Naming, tagging and conventions: IMAGES.md.
-#
-# There is ONE answer to "does this image need rebuilding?": its tag is the short
-# SHA of the last commit touching its build inputs, and it is rebuilt exactly
-# when that tag is not already in the registry. build-image.sh owns that answer
-# and both the discover job and the build jobs go through it, so they cannot
-# drift apart. That is why this file has:
-#
-#   - no `paths:` filter          )  each would be a second, independent answer
-#   - no `git diff` change set    )  to the same question, to be kept in sync by
-#   - no list of images anywhere  )  hand -- and hand-kept answers drift.
-#
-# On a pull request nothing is pushed, so "tag missing" means "this is what
-# merging would build" -- exactly the set worth validating.
+# Build and push the CI images under public-images/ (see IMAGES.md). An image is
+# rebuilt exactly when its tag (short SHA of the last commit touching its build
+# inputs) is missing from the registry. scripts/build_image.py is the only
+# answer to that, so there is no `paths:` filter, git diff or image list here.
+# On a pull request nothing is pushed.
 on:
   workflow_call:
     # Named explicitly rather than taking `secrets: inherit` from the caller:
@@ -72,10 +62,7 @@ env:
 
 jobs:
   discover:
-    # ubuntu-latest, not ubuntu-slim: the registry query goes through
-    # `docker buildx imagetools`, and slim runs unprivileged with no docker.
-    # The reads are anonymous -- public-ci-images is world-readable -- so
-    # this job needs no secrets and works on pull requests from forks.
+    # Not ubuntu-slim: imagetools needs docker. Anonymous reads, so no secrets.
     runs-on: ubuntu-latest
     outputs:
       base-matrix: ${{ steps.d.outputs.base-matrix }}
@@ -85,11 +72,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0          # the tag is `git log` over the build inputs
-          # This repo is PUBLIC and the build context is the repo root, so a
-          # pull-request-authored Dockerfile runs `docker build` over it. Without
-          # this, actions/checkout leaves the GITHUB_TOKEN in .git/config as an
-          # http.extraheader -- and .dockerignore, which excludes .git, is itself
-          # a file a PR can edit. We never push with git here, so drop the token.
+          # PR-authored Dockerfiles build over the repo root, and .dockerignore
+          # is editable by the PR: keep the token out of .git/config.
           persist-credentials: false
       - id: d
         env:
@@ -107,11 +91,7 @@ jobs:
     name: build ${{ matrix.name }}
     env:
       IMAGE: ${{ matrix.name }}
-      # Pin the tag discover computed rather than recomputing it here. For
-      # the pinned platforms the two are identical by construction; for a
-      # rolling image the tag carries a UTC date, and a run that straddles
-      # midnight would otherwise discover <sha>-20260902 as missing and then
-      # publish <sha>-20260903.
+      # Pin discover's tag: a rolling tag carries a UTC date that can change at midnight.
       IMAGE_TAG: ${{ matrix.tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -194,11 +174,8 @@ jobs:
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
         run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
-  # The private images in ecmwf/ci-container-images FROM our base. That repo
-  # holds nothing but Dockerfiles, so it needs no change detection of its own --
-  # it rebuilds on any trigger. A BARE dispatch is therefore all it needs: no
-  # pin file, no input, no commit, and no `contents: write` anywhere. Only
-  # actions:write, on that repo alone.
+  # The private images in ecmwf/ci-container-images FROM our base and rebuild on
+  # any trigger, so a bare dispatch is enough.
   notify-container-images:
     needs: [discover, build-base, build-dependents]
     if: ${{ !cancelled()
@@ -209,9 +186,7 @@ jobs:
             && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
     runs-on: ubuntu-slim
     steps:
-      # github.token is scoped to this repo and cannot dispatch into another, so
-      # mint a short-lived installation token narrowed to actions:write. Same
-      # pattern as actions/resolve-deps.
+      # github.token cannot dispatch into another repo.
       - id: mint
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
