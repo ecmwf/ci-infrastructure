@@ -33,39 +33,58 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | Directory | Image |
 |---|---|
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
-| `public-images/ubuntu24.04/gfortran13` | `…/ubuntu24.04-gfortran13` |
-| `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
-| `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
-| `public-images/ubuntu24.04/gfortran13-boost-qt6` | `…/ubuntu24.04-gfortran13-boost-qt6` |
+| `public-images/ubuntu24.04/gcc13-gfortran13` | `…/ubuntu24.04-gcc13-gfortran13` |
+| `public-images/ubuntu24.04/clang18` | `…/ubuntu24.04-clang18` |
+| `public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6` | `…/ubuntu24.04-gcc13-gfortran13-boost-qt6` |
 | `public-images/rocky8/base` | `…/rocky8-base` |
-| `public-images/rocky8/gfortran8` | `…/rocky8-gfortran8` |
-| `public-images/rocky8/gfortran8-boost-qt5` | `…/rocky8-gfortran8-boost-qt5` |
+| `public-images/rocky8/gcc8-gfortran8` | `…/rocky8-gcc8-gfortran8` |
+| `public-images/rocky8/gcc8-gfortran8-boost-qt5` | `…/rocky8-gcc8-gfortran8-boost-qt5` |
 | `public-images/debian11/base` | `…/debian11-base` |
-| `public-images/debian11/gfortran10` | `…/debian11-gfortran10` |
-| `public-images/debian11/gfortran10-boost-qt5` | `…/debian11-gfortran10-boost-qt5` |
+| `public-images/debian11/gcc10-gfortran10` | `…/debian11-gcc10-gfortran10` |
+| `public-images/debian11/gcc10-gfortran10-boost-qt5` | `…/debian11-gcc10-gfortran10-boost-qt5` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
-| `public-images/rolling-arch/gfortran` | `…/rolling-arch-gfortran` |
-| `public-images/rolling-arch/gfortran-boost-qt6` | `…/rolling-arch-gfortran-boost-qt6` |
+| `public-images/rolling-arch/gcc-gfortran` | `…/rolling-arch-gcc-gfortran` |
+| `public-images/rolling-arch/gcc-gfortran-boost-qt6` | `…/rolling-arch-gcc-gfortran-boost-qt6` |
 
-`base` is the shared foundation (system packages, `cmake`, `gh`, Python with its
-development headers, OpenSSL headers, and the `ci_infrastructure` package). Every
+`base` is the shared foundation (system packages, `cmake`, `make`, `gh`, Python
+with its development headers, OpenSSL headers, and the `ci_infrastructure`
+package) and **carries no compiler at all**. Every
 other variant `FROM`s it **directly** and installs its own full toolchain — no
 variant builds on another variant, because `images.yml` builds the base and then
 all dependents in one parallel matrix, so a chain would race on `:latest`.
 `scripts/build_image.py` refuses a deeper chain.
 
 Boost and Qt are deliberately not in the base: both are large and wanted by one
-package, so they live in `gfortran13-boost-qt6`, whose name then says exactly
-what it adds. Qt is there because ecflow builds ecFlowUI by default
+package, so they live in `gcc13-gfortran13-boost-qt6`, whose name then says
+exactly what it adds. Qt is there because ecflow builds ecFlowUI by default
 (`ENABLE_UI=ON`) and its configure step is a hard error without Qt6.
 
-A `clang<N>` variant ships the C driver too (`clang-N`, not only `clang++-N`), so
-a build can pin `CMAKE_C_COMPILER` and `CMAKE_CXX_COMPILER` to the same family
-instead of letting C fall through to the base's gcc. Every compiler a name
-promises must also build and run an OpenMP program, which for clang means
-`libomp-<N>-dev`: gcc carries `omp.h` and `libgomp` with the compiler, clang
-splits them into a separate package, so a clang image can satisfy its name and
-still have no OpenMP at all. `verify-image.sh` checks this.
+### The name is the whole toolchain
+
+The bases carry no compiler, so an image has exactly what its name lists and
+nothing is inferred from another token:
+
+| token | asserts |
+|---|---|
+| `gcc<N>` | `gcc-N`, `g++-N`, both with working OpenMP |
+| `clang<N>` | `clang-N`, `clang++-N`, both with working OpenMP |
+| `gfortran<N>` | `gfortran-N`, with working OpenMP |
+| `gcc`, `gfortran` | the same on rolling platforms, without a version check |
+
+`verify-image.sh` checks both directions: a `base` must have no compiler on
+`PATH`, and a variant naming no `gcc` must not have one — `gfortran-N` *Depends*
+on `gcc-N`, so a GNU toolchain can arrive as another package's dependency and
+become the `cc` a build picks up. That is also why a clang variant ships no
+Fortran.
+
+"Working OpenMP" means compiling, linking *and running* an OpenMP program. gcc
+carries `omp.h` and `libgomp` with the compiler; clang splits them into
+`libomp-<N>-dev`. A clang variant also needs `libstdc++-<N>-dev`, since clang++
+compiles C++ against GCC's libstdc++ headers.
+
+`debian11/base` is the exception that proves the rule: it compiles CPython from
+source, so it installs a toolchain and purges it again in the same image, ending
+up compiler-free like the others.
 
 ## Platforms
 
@@ -337,11 +356,11 @@ identically-tagged images. The build context is the repo root.
 ./build-image.sh ubuntu24.04/base
 ./build-image.sh --test ubuntu24.04/base
 BASE_IMAGE="$(./build-image.sh --print-tag ubuntu24.04/base | sed 's#^#eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:#')" \
-  ./build-image.sh ubuntu24.04/gfortran13
+  ./build-image.sh ubuntu24.04/gcc13-gfortran13
 
 # what would be built right now, and under which tags
 ./build-image.sh --discover --mode publish
-./build-image.sh --print-tag ubuntu24.04/clang18-gfortran13
+./build-image.sh --print-tag ubuntu24.04/clang18
 
 # build and push (needs eccr network access + robot creds)
 export PUBLIC_ECCR_ROBOT_NAME='robot$<project>+<purpose>'   # the Harbor push robot

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gfortran13-boost-qt6
+# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-boost-qt6
 # Boost and Qt are large, so only images that name them carry them.
 FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
@@ -17,6 +17,8 @@ FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 #                                             installing it keeps the server log
 #                                             viewer in the build)
 RUN apt-get update && apt-get install -y \
+    gcc-13 \
+    g++-13 \
     gfortran-13 \
     libboost-all-dev \
     qt6-base-dev \

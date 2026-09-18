@@ -2,15 +2,15 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky8-gfortran8
+# Published as eccr.ecmwf.int/public-ci-images/rocky8-gcc8-gfortran8
 FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 
 # Rocky 8's OWN gcc, 8.5, not an SCL toolset under /opt/rh. That is the compiler
 # this platform exists to test: it is the distro default, and it is what the
 # Atos HPC GNU builds target, so a rocky 8 leg on anything newer tests a
-# combination nobody ships. The base already installs gcc and gcc-c++; only
-# Fortran is missing from it.
-RUN dnf -y install gcc-gfortran \
+# combination nobody ships. The base carries no compiler; the toolchain is named
+# here instead.
+RUN dnf -y install gcc gcc-c++ gcc-gfortran \
  && dnf clean all && rm -rf /var/cache/dnf
 
 # ubuntu and debian name compilers <tool>-<version>; the rocky RPMs do not, so

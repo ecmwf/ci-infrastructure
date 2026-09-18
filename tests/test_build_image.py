@@ -94,7 +94,7 @@ def _by_name(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 def test_validate_hands_a_rebuilt_base_to_its_dependents(tmp_path: Path) -> None:
     m = _discover(tmp_path, "validate")
     base = _by_name(m["base-matrix"])["rocky8/base"]
-    dependent = _by_name(m["dependent-matrix"])["rocky8/gfortran8"]
+    dependent = _by_name(m["dependent-matrix"])["rocky8/gcc8-gfortran8"]
 
     assert base["export"] is True
     assert base["ref"] == f"{PREFIX}/rocky8-base:{base['tag']}"
@@ -116,13 +116,13 @@ def test_a_dependent_of_a_published_base_builds_on_latest(tmp_path: Path) -> Non
     m = _discover(tmp_path, "validate", PUBLISHED=f"rocky8-base:{_tag(tmp_path, 'rocky8/base')}")
 
     assert "rocky8/base" not in _by_name(m["base-matrix"])
-    assert _by_name(m["dependent-matrix"])["rocky8/gfortran8"]["base_ref"] == ""
+    assert _by_name(m["dependent-matrix"])["rocky8/gcc8-gfortran8"]["base_ref"] == ""
 
 
 @needs_git
 def test_base_image_overrides_the_literal_from_and_only_loads(tmp_path: Path) -> None:
     base_ref = f"{PREFIX}/rocky8-base:abc1234"
-    result = _run(tmp_path, "rocky8/gfortran8", BASE_IMAGE=base_ref)
+    result = _run(tmp_path, "rocky8/gcc8-gfortran8", BASE_IMAGE=base_ref)
     assert result.returncode == 0, result.stderr
 
     argv = (tmp_path / "docker-args").read_text().splitlines()

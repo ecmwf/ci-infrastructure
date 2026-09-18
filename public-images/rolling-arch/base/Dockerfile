@@ -25,7 +25,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 #   -Syu                a full upgrade: partial upgrades are unsupported.
 #   github-cli          Arch packages gh; no upstream repo to add.
 #   python-pytest       the distro package: Arch's python is current.
-#   base-devel          the equivalent of build-essential.
+#   make, patch         base-devel would drag in gcc.
 RUN pacman -Syu --noconfirm --disable-sandbox \
     sudo \
     git \
@@ -40,7 +40,8 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     jq \
     unzip \
     zstd \
-    base-devel \
+    make \
+    patch \
     python \
     python-pip \
     python-pytest \

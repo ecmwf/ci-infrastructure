@@ -26,6 +26,10 @@ RUN printf '%s\n' \
 # here. Bullseye tops out at python 3.10, so the next layer builds 3.11; the
 # libraries after build-essential are its build deps, and a missing one silently
 # drops a stdlib module (ssl, sqlite3, zlib) rather than failing the build.
+#
+# This base cannot simply omit the toolchain -- it compiles CPython -- so
+# build-essential is installed here and purged again below. The -dev libraries
+# stay: headers, not compilers.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -42,6 +46,7 @@ RUN apt-get update && apt-get install -y \
     zstd \
     lsb-release \
     software-properties-common \
+    make \
     build-essential \
     python3 \
     python3-pip \
@@ -98,6 +103,12 @@ COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
+
+# Last step that may need to compile. Explicit names rather than autoremove,
+# which would also take libraries the -dev packages and python3.11 still need.
+RUN apt-get purge -y build-essential gcc g++ cpp gcc-10 g++-10 cpp-10 \
+ && rm -rf /var/lib/apt/lists/* \
+ && for b in cc c++ gcc g++; do ! command -v "$b" >/dev/null || exit 1; done
 
 # The source-built 3.11, not /usr/bin/python3 (3.9).
 ENV CI_INFRASTRUCTURE_PYTHON=/usr/local/bin/python3.11
