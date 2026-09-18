@@ -12,9 +12,14 @@
 #
 # The compiler expectations come from the variant's name, so an image cannot
 # promise a toolchain in its name that it does not ship:
+#   gcc<N>       gcc-N and g++-N, major N
 #   clang<N>     clang-N and clang++-N, major N
-#   gfortran<N>  gfortran-N, major N, and gcc-N/g++-N unless a clang<N> names C and C++
-#   gfortran     (unversioned, rolling platforms) gcc, g++ and gfortran on PATH
+#   gfortran<N>  gfortran-N, major N
+#   gcc/gfortran (unversioned, rolling platforms) the same, without a version check
+#
+# One token per toolchain, and nothing is inferred from another token: the bases
+# carry no compiler, so an image has exactly what its name lists. A `base` is
+# checked for the absence of all of them.
 #
 # Every compiler named must also build and run an OpenMP program. GCC ships omp.h
 # and libgomp with the compiler, clang splits them into libomp-<N>-dev, so a
@@ -111,40 +116,62 @@ EOF
 }
 
 variant="${DECLARES#*/}"
-clang=""
+if [ "$variant" = base ]; then
+  for binary in cc c++ gcc g++ clang clang++ gfortran; do
+    if command -v "$binary" >/dev/null 2>&1; then
+      fail "$binary is on PATH in a base image; compilers belong in a named variant"
+    fi
+  done
+  echo "base: no compiler on PATH, as intended"
+fi
+# The other half of "the name says it all": a variant that does not name a gcc
+# must not have one. Catches a GNU toolchain arriving as someone else's
+# dependency -- gfortran-N, say -- and silently becoming the compiler a leg picks
+# up through /usr/bin/cc.
+declares_gcc=""
 for token in ${variant//-/ }; do
-  case "$token" in
-    clang[0-9]*)
-      clang="${token#clang}"
-      expect_compiler "clang-$clang" "$clang"
-      expect_compiler "clang++-$clang" "$clang"
-      expect_openmp "clang-$clang" c
-      expect_openmp "clang++-$clang" cxx
-      ;;
-  esac
+  case "$token" in gcc|gcc[0-9]*) declares_gcc=1 ;; esac
 done
+if [ -z "$declares_gcc" ]; then
+  for binary in cc c++ gcc g++; do
+    if command -v "$binary" >/dev/null 2>&1; then
+      fail "$(command -v "$binary") exists but '$variant' names no gcc; name it or stop installing it"
+    fi
+  done
+  for path in /usr/bin/gcc-* /usr/bin/g++-* /usr/local/bin/gcc-* /usr/local/bin/g++-*; do
+    [ -e "$path" ] || continue
+    fail "$path exists but '$variant' names no gcc; name it or stop installing it"
+  done
+fi
+
 for token in ${variant//-/ }; do
   case "$token" in
+    gcc[0-9]*)
+      gnu="${token#gcc}"
+      expect_compiler "gcc-$gnu" "$gnu"
+      expect_compiler "g++-$gnu" "$gnu"
+      expect_openmp "gcc-$gnu" c
+      expect_openmp "g++-$gnu" cxx
+      ;;
+    gcc)
+      expect_compiler gcc ""
+      expect_compiler g++ ""
+      expect_openmp gcc c
+      expect_openmp g++ cxx
+      ;;
+    clang[0-9]*)
+      expect_compiler "clang-${token#clang}" "${token#clang}"
+      expect_compiler "clang++-${token#clang}" "${token#clang}"
+      expect_openmp "clang-${token#clang}" c
+      expect_openmp "clang++-${token#clang}" cxx
+      ;;
     gfortran[0-9]*)
-      gnu="${token#gfortran}"
-      expect_compiler "gfortran-$gnu" "$gnu"
-      expect_openmp "gfortran-$gnu" f
-      if [ -z "$clang" ]; then
-        expect_compiler "gcc-$gnu" "$gnu"
-        expect_compiler "g++-$gnu" "$gnu"
-        expect_openmp "gcc-$gnu" c
-        expect_openmp "g++-$gnu" cxx
-      fi
+      expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
+      expect_openmp "gfortran-${token#gfortran}" f
       ;;
     gfortran)
       expect_compiler gfortran ""
       expect_openmp gfortran f
-      if [ -z "$clang" ]; then
-        expect_compiler gcc ""
-        expect_compiler g++ ""
-        expect_openmp gcc c
-        expect_openmp g++ cxx
-      fi
       ;;
   esac
 done

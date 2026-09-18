@@ -30,8 +30,6 @@ RUN dnf -y install dnf-plugins-core \
     unzip \
     zstd \
     make \
-    gcc \
-    gcc-c++ \
     redhat-rpm-config \
     python3.12 \
     python3.12-devel \

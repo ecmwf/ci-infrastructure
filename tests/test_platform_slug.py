@@ -51,7 +51,7 @@ compiler-inputs = ["fortran-compiler"]
 fortran-compiler = "gfortran-13"
 build-type = "Release"
 runs-on = "arc-sandbox-cci2"
-container = "registry.example/playground-ci/ubuntu24.04-gfortran13:0.1"
+container = "registry.example/playground-ci/ubuntu24.04-gcc13-gfortran13:0.1"
 platform = "ubuntu-24.04"
 """
 

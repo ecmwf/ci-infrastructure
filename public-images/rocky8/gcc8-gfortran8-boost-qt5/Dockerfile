@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky8-gfortran8-boost-qt5
+# Published as eccr.ecmwf.int/public-ci-images/rocky8-gcc8-gfortran8-boost-qt5
 FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 
-# Rocky 8's own gcc 8.5 (see rocky8/gfortran8); the base has gcc and gcc-c++.
+# Rocky 8's own gcc 8.5 (see rocky8/gcc8-gfortran8); the base has no compiler.
 #
 # Qt5: rocky 8 has no Qt6, and ecflow accepts either. Qt5 counterpart of the
-# ubuntu24.04-gfortran13-boost-qt6 set:
+# ubuntu24.04-gcc13-gfortran13-boost-qt6 set:
 #   qt5-qtbase-devel    Widgets, Gui, Network   (required components)
 #   qt5-qtsvg-devel     Svg                     (required component)
 #   qt5-qtcharts-devel  Charts                  (optional; enables ECFLOW_LOGVIEW)
@@ -19,6 +19,8 @@ FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 # EPEL only for qt5-qtcharts-devel, so ECFLOW_LOGVIEW matches the ubuntu image.
 RUN dnf -y install epel-release \
  && dnf -y install \
+    gcc \
+    gcc-c++ \
     gcc-gfortran \
     boost-devel \
     boost-static \
@@ -27,7 +29,7 @@ RUN dnf -y install epel-release \
     qt5-qtcharts-devel \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# <tool>-8 names, as in rocky8/gfortran8/Dockerfile.
+# <tool>-8 names, as in rocky8/gcc8-gfortran8/Dockerfile.
 RUN for t in gcc g++ gfortran cpp; do \
       ln -s /usr/bin/$t /usr/local/bin/$t-8; \
     done

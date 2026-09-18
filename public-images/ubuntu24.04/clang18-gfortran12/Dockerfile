@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     clang++-18 \
     clang-tidy-18 \
     libomp-18-dev \
+    libstdc++-13-dev \
+    libc6-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ARG IMAGE_NAME=""

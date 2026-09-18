@@ -124,16 +124,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: ubuntu24.04-gfortran13-boost-qt6
-            declares: ubuntu24.04/gfortran13-boost-qt6
+          - image: ubuntu24.04-gcc13-gfortran13-boost-qt6
+            declares: ubuntu24.04/gcc13-gfortran13-boost-qt6
           - image: ubuntu24.04-clang18-gfortran13
             declares: ubuntu24.04/clang18-gfortran13
           - image: ubuntu24.04-clang18-gfortran12
             declares: ubuntu24.04/clang18-gfortran12
-          - image: rocky8-gfortran8-boost-qt5
-            declares: rocky8/gfortran8-boost-qt5
-          - image: debian11-gfortran10-boost-qt5
-            declares: debian11/gfortran10-boost-qt5
+          - image: rocky8-gcc8-gfortran8-boost-qt5
+            declares: rocky8/gcc8-gfortran8-boost-qt5
+          - image: debian11-gcc10-gfortran10-boost-qt5
+            declares: debian11/gcc10-gfortran10-boost-qt5
     name: image (${{ matrix.image }})
     runs-on: arc-runner-normal
     container:

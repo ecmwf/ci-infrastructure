@@ -26,6 +26,13 @@ RUN printf '%s\n' \
 # here. Bullseye tops out at python 3.10, so the next layer builds 3.11; the
 # libraries after build-essential are its build deps, and a missing one silently
 # drops a stdlib module (ssl, sqlite3, zlib) rather than failing the build.
+#
+# Unlike the other bases this one cannot simply omit the toolchain -- it compiles
+# CPython -- so build-essential is installed here and purged again at the end,
+# leaving a base with no compiler like the others. The -dev libraries stay: they
+# are headers, not compilers, and they pin the runtime libs 3.11 links against.
+# A multi-stage build would be tidier and drop the layer too, but
+# scripts/build_image.py rejects multi-stage Dockerfiles.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -42,6 +49,7 @@ RUN apt-get update && apt-get install -y \
     zstd \
     lsb-release \
     software-properties-common \
+    make \
     build-essential \
     python3 \
     python3-pip \
@@ -98,6 +106,13 @@ COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
+
+# Last step that may need to compile, so the toolchain goes now. Explicit package
+# names rather than autoremove, which would also take libraries the -dev packages
+# and python3.11 still need. `cc`/`c++` are alternatives symlinks and go with it.
+RUN apt-get purge -y build-essential gcc g++ cpp gcc-10 g++-10 cpp-10 \
+ && rm -rf /var/lib/apt/lists/* \
+ && for b in cc c++ gcc g++; do ! command -v "$b" >/dev/null || exit 1; done
 
 # The source-built 3.11, not /usr/bin/python3 (3.9).
 ENV CI_INFRASTRUCTURE_PYTHON=/usr/local/bin/python3.11

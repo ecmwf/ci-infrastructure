@@ -16,6 +16,10 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # distro package because ecflow's tests run `/usr/bin/python3 -m pytest`.
 # bison + flex: without them eckit's build stays GREEN while silently dropping
 # eckit::sql and eckit::cmd. zstd unpacks HPC install archives.
+#
+# No compiler here: the toolchain belongs to the named variant, so that an image
+# has exactly what its name says. `make` stays because cmake's default generator
+# needs it and it is not a compiler.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -32,7 +36,7 @@ RUN apt-get update && apt-get install -y \
     zstd \
     lsb-release \
     software-properties-common \
-    build-essential \
+    make \
     python3 \
     python3-dev \
     python3-pip \

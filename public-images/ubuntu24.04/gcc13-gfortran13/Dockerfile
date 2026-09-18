@@ -2,10 +2,12 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gfortran13
+# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13
 FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
 RUN apt-get update && apt-get install -y \
+    gcc-13 \
+    g++-13 \
     gfortran-13 \
  && rm -rf /var/lib/apt/lists/*
 
