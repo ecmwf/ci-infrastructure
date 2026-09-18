@@ -8,7 +8,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from types import ModuleType
-from typing import Final
+from typing import Any, Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 
@@ -23,7 +23,7 @@ def _load() -> ModuleType:
 
 ro: Final = _load()
 
-REPOS: Final = [
+REPOS: Final[list[dict[str, Any]]] = [
     {
         "name": "public-ci-images/ubuntu24.04-base",
         "artifact_count": 3,
