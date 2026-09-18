@@ -19,7 +19,7 @@ from ci_infrastructure.resolve_deps import (
     producer_can_build,
 )
 
-CLANG_IMG: Final = "registry.example/playground-ci/ubuntu24.04-clang18-gfortran13:0.2"
+CLANG_IMG: Final = "registry.example/playground-ci/ubuntu24.04-clang18:0.2"
 
 
 def test_platform_used_verbatim() -> None:

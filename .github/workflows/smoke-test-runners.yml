@@ -78,7 +78,7 @@ jobs:
     name: sccache (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     container:
-      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-clang18-gfortran13:latest
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-clang18:latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -126,10 +126,8 @@ jobs:
         include:
           - image: ubuntu24.04-gcc13-gfortran13-boost-qt6
             declares: ubuntu24.04/gcc13-gfortran13-boost-qt6
-          - image: ubuntu24.04-clang18-gfortran13
-            declares: ubuntu24.04/clang18-gfortran13
-          - image: ubuntu24.04-clang18-gfortran12
-            declares: ubuntu24.04/clang18-gfortran12
+          - image: ubuntu24.04-clang18
+            declares: ubuntu24.04/clang18
           - image: rocky8-gcc8-gfortran8-boost-qt5
             declares: rocky8/gcc8-gfortran8-boost-qt5
           - image: debian11-gcc10-gfortran10-boost-qt5

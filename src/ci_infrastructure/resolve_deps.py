@@ -37,7 +37,7 @@ Manifest schema:
     build-type          = "Release"
     platform            = "ubuntu-24.04"      # required: binary-compatibility class
     runs-on             = "arc-sandbox-cci2"  # scheduling only
-    container           = "registry.example/playground-ci/ubuntu24.04-clang18-gfortran13:latest"  # scheduling only
+    container           = "registry.example/playground-ci/ubuntu24.04-clang18:latest"  # scheduling only
 
 `platform` is the artifact-name platform slot, verbatim; bump it when the ABI changes
 within a distro release. `runs-on` may name a runner class from `runners.RUNNER_CLASSES`.

@@ -34,8 +34,7 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 |---|---|
 | `public-images/ubuntu24.04/base` | `…/ubuntu24.04-base` |
 | `public-images/ubuntu24.04/gcc13-gfortran13` | `…/ubuntu24.04-gcc13-gfortran13` |
-| `public-images/ubuntu24.04/clang18-gfortran12` | `…/ubuntu24.04-clang18-gfortran12` |
-| `public-images/ubuntu24.04/clang18-gfortran13` | `…/ubuntu24.04-clang18-gfortran13` |
+| `public-images/ubuntu24.04/clang18` | `…/ubuntu24.04-clang18` |
 | `public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6` | `…/ubuntu24.04-gcc13-gfortran13-boost-qt6` |
 | `public-images/rocky8/base` | `…/rocky8-base` |
 | `public-images/rocky8/gcc8-gfortran8` | `…/rocky8-gcc8-gfortran8` |
@@ -65,10 +64,10 @@ exactly what it adds. Qt is there because ecflow builds ecFlowUI by default
 Keeping the compilers out of the base is what lets the name be the contract. A
 base used to install `build-essential` (or `gcc gcc-c++`, or `base-devel`) that no
 name mentioned and nothing checked, so `verify-image.sh` had to *infer* gcc from
-the `gfortran<N>` token — wrong whenever the versions differ, as in
-`clang18-gfortran12`, which carried gcc **13**. A leg could then pin a compiler
-the image never promised, or fall through to `/usr/bin/cc` and silently build C
-with a different toolchain than C++.
+the `gfortran<N>` token — wrong whenever the versions differ, as in the old
+`clang18-gfortran12`, which shipped gfortran 12 and gcc **13**. A leg could then
+pin a compiler the image never promised, or fall through to `/usr/bin/cc` and
+silently build C with a different toolchain than C++.
 
 Now each token stands for exactly one toolchain and nothing is inferred:
 
@@ -89,6 +88,13 @@ gcc carries `omp.h` and `libgomp` with the compiler; clang splits them into
 `libomp-<N>-dev`, so a clang image can satisfy its name and still have no OpenMP.
 A clang variant also needs `libstdc++-<N>-dev`, since clang++ compiles against
 GCC's libstdc++ headers, which used to arrive with the base's `build-essential`.
+That package carries headers, not a compiler.
+
+A clang variant ships **no Fortran**: `gfortran-N` *Depends* on `gcc-N`, so a
+clang image offering Fortran would also carry a GNU C compiler its name does not
+mention — exactly what this contract exists to prevent. Fortran interfaces are
+built on the `gcc<N>` legs and on HPC. Clang-native Fortran would be a `flang`
+variant of its own; ecbuild already recognises the `LLVMFlang` compiler id.
 
 `debian11/base` is the exception that proves the rule: it compiles CPython from
 source, so it installs a toolchain and purges it again in the same image, ending
@@ -368,7 +374,7 @@ BASE_IMAGE="$(./build-image.sh --print-tag ubuntu24.04/base | sed 's#^#eccr.ecmw
 
 # what would be built right now, and under which tags
 ./build-image.sh --discover --mode publish
-./build-image.sh --print-tag ubuntu24.04/clang18-gfortran13
+./build-image.sh --print-tag ubuntu24.04/clang18
 
 # build and push (needs eccr network access + robot creds)
 export PUBLIC_ECCR_ROBOT_NAME='robot$<project>+<purpose>'   # the Harbor push robot
