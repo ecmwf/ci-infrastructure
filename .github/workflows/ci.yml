@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[test]"
       - name: Mypy
-        run: mypy src/ tests/ scripts/build_image.py scripts/registry_orphans.py
+        run: mypy src/ tests/ scripts/
       - name: pytest
         run: pytest
 
