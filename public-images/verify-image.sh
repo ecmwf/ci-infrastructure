@@ -125,6 +125,17 @@ for token in ${variant//-/ }; do
   case "$token" in gcc|gcc[0-9]*) declares_gcc=1 ;; esac
 done
 
+# TEMPORARY: the names that predate "the name is the whole toolchain", still
+# published for branches in flight (IMAGES.md, "Legacy names"). They carry the
+# GNU toolchain their base used to provide, which is exactly what the naming
+# contract now forbids, so only its forbid half is stood down for them -- every
+# compiler they do name is still checked. Delete with the directories.
+LEGACY_NAMES="ubuntu24.04/gfortran13 ubuntu24.04/gfortran13-boost-qt6 \
+ubuntu24.04/clang18-gfortran13 rocky8/gfortran8 rocky8/gfortran8-boost-qt5 \
+debian11/gfortran10 debian11/gfortran10-boost-qt5"
+legacy=""
+case " $LEGACY_NAMES " in *" $DECLARES "*) legacy=1 ;; esac
+
 if [ "$variant" = base ]; then
   for binary in cc c++ gcc g++ clang clang++ gfortran; do
     forbid "$binary" "is a compiler in a base image; those belong to a named variant"
@@ -134,7 +145,7 @@ fi
 
 # gfortran-N Depends on gcc-N, so a GNU toolchain can arrive as another package's
 # dependency and become the cc a build silently picks up.
-if [ -z "$declares_gcc" ]; then
+if [ -z "$declares_gcc" ] && [ -z "$legacy" ]; then
   for binary in cc c++ gcc g++; do
     forbid "$binary" "exists but '$variant' names no gcc; name it or stop installing it"
   done
