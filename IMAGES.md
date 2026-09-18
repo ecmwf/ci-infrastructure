@@ -346,6 +346,18 @@ Under ARC's Kubernetes mode "Initialize containers" does not name the image; see
 
 No list to edit anywhere: discovery globs `public-images/*/*/Dockerfile`.
 
+## Removing or renaming an image
+
+Deleting the directory stops the image being built, but its repository stays in
+the registry serving `:latest`, so a reference to the old name keeps working
+silently instead of failing. Nothing prunes these.
+
+[`scripts/registry_orphans.py`](scripts/registry_orphans.py) lists the
+repositories no Dockerfile here builds any more; the **Registry orphans**
+workflow runs it on demand, and deletes them when dispatched with `delete`.
+Deletion is irreversible, so check what still pulls a repository — Harbor's pull
+count is on the report — before ticking it.
+
 ## Building by hand
 
 The workflow and a workstation share one script, so both produce identical,
