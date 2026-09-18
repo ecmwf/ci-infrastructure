@@ -20,6 +20,13 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # No compiler here: the toolchain belongs to the named variant, so that an image
 # has exactly what its name says. `make` stays because cmake's default generator
 # needs it and it is not a compiler.
+#
+# The `pkg-` entries are apt's "do not install this" syntax, not typos. Dropping
+# build-essential from the list is not enough: python3-dev and python3-pip pull
+# dpkg-dev, which *Recommends* build-essential, which Depends on gcc and g++, and
+# apt installs recommends by default -- so /usr/bin/cc reappears. Deselecting the
+# three by name is surgical where --no-install-recommends would silently drop
+# recommends the other packages here do want. verify-image.sh is what caught this.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -44,6 +51,9 @@ RUN apt-get update && apt-get install -y \
     python3-pytest \
     python-is-python3 \
     libssl-dev \
+    build-essential- \
+    gcc- \
+    g++- \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /etc/apt/keyrings \
