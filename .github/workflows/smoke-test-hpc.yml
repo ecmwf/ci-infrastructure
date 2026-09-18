@@ -10,6 +10,11 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
+    inputs:
+      full-matrix:
+        description: 'Both lanes (arc, hpc) against both sites (hpc-batch, ac-batch)'
+        type: boolean
+        default: false
 
 jobs:
   # Pinned remote rather than ./actions/...: a local path resolves only after a
@@ -21,32 +26,53 @@ jobs:
     steps:
       - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
 
-  ssh:
+  # Two lanes for the same test. `arc` is an ARC pod that pulls the
+  # internal-tools image, where the cluster ssh identity (keys, the hpc-batch
+  # alias, known_hosts) lives; hence the registry credentials. `hpc` is a
+  # self-hosted runner carrying the same identity on the host with NO container,
+  # proving these actions don't depend on the image.
+  #
+  # `include` entries add runner/container to both of that lane's sites.
+  # ac-batch exercises a second cluster: the image's ssh config matches
+  # `Host hpc-* a?-*` and its known_hosts carries aa/ab/ac/ad/ag-batch.
+  #
+  # Emitted as JSON rather than a YAML anchor because an alias cannot be made
+  # conditional, and the default run is one combination rather than four. The
+  # reduced matrix drops the `hpc` include entry as well as the lane: an include
+  # whose `lane` matches no base value would ADD a row, here one with no site.
+  lanes:
     needs: ci-approval
+    runs-on: ubuntu-slim
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick the lane/site matrix
+        id: pick
+        shell: bash
+        env:
+          # A boolean workflow_dispatch input reaches the payload as a string;
+          # on every other event it is absent, so the default is the reduced set.
+          FULL: ${{ github.event.inputs.full-matrix }}
+        run: |
+          set -euo pipefail
+          arc='{"lane":"arc","runner":"arc-hpc-pet-vsphere-prod","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
+          hpc='{"lane":"hpc","runner":"hpc","container":""}'
+          if [ "${FULL:-false}" = "true" ]; then
+            matrix="{\"lane\":[\"arc\",\"hpc\"],\"site\":[\"hpc-batch\",\"ac-batch\"],\"include\":[$arc,$hpc]}"
+          else
+            matrix="{\"lane\":[\"arc\"],\"site\":[\"hpc-batch\"],\"include\":[$arc]}"
+          fi
+          echo "$matrix" | jq -e . > /dev/null
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "::notice::HPC smoke matrix: $matrix"
+
+  ssh:
+    needs: [ci-approval, lanes]
     name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
     strategy: &hpc-lanes
-      fail-fast: false
-      # Two lanes for the same test. `arc` is an ARC pod that pulls the
-      # internal-tools image, where the cluster ssh identity (keys, the
-      # hpc-batch alias, known_hosts) lives; hence the registry credentials.
-      # `hpc` is a self-hosted runner carrying the same identity on the host with
-      # NO container, proving these actions don't depend on the image.
-      #
       # fail-fast off: which lane broke is the signal.
-      #
-      # `include` entries add runner/container to both of that lane's sites.
-      # ac-batch exercises a second cluster: the image's ssh config matches
-      # `Host hpc-* a?-*` and its known_hosts carries aa/ab/ac/ad/ag-batch.
-      matrix:
-        lane: [arc, hpc]
-        site: [hpc-batch, ac-batch]
-        include:
-          - lane: arc
-            runner: arc-hpc-pet-vsphere-prod
-            container: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
-          - lane: hpc
-            runner: hpc
-            container: ''
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.lanes.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     container: &hpc-container
       # An empty image runs the job on the host. Credentials are passed
@@ -72,7 +98,7 @@ jobs:
             'echo "connected to HPC"'
 
   hpc-roundtrip:
-    needs: ci-approval
+    needs: [ci-approval, lanes]
     name: transfer round-trip (${{ matrix.lane }}, ${{ matrix.site }})
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
@@ -144,7 +170,7 @@ jobs:
           remote-dir: ${{ steps.push.outputs.remote-dir }}
 
   hpc-submit:
-    needs: ci-approval
+    needs: [ci-approval, lanes]
     name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
     # Proves the half the transfer round-trip doesn't: troika submits, the
     # compute node waits for the marker, unpacks, runs the recipe, and the runner

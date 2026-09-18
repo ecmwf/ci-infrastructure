@@ -59,6 +59,14 @@ package, so they live in `gfortran13-boost-qt6`, whose name then says exactly
 what it adds. Qt is there because ecflow builds ecFlowUI by default
 (`ENABLE_UI=ON`) and its configure step is a hard error without Qt6.
 
+A `clang<N>` variant ships the C driver too (`clang-N`, not only `clang++-N`), so
+a build can pin `CMAKE_C_COMPILER` and `CMAKE_CXX_COMPILER` to the same family
+instead of letting C fall through to the base's gcc. Every compiler a name
+promises must also build and run an OpenMP program, which for clang means
+`libomp-<N>-dev`: gcc carries `omp.h` and `libgomp` with the compiler, clang
+splits them into a separate package, so a clang image can satisfy its name and
+still have no OpenMP at all. `verify-image.sh` checks this.
+
 ## Platforms
 
 Each platform carries the same three roles — `base`, a compiler variant, and a
@@ -203,7 +211,8 @@ Every build job builds into the runner's docker daemon, runs
 only, and the very image that was tested, never a rebuild. `--test` runs
 [`public-images/verify-image.sh`](public-images/verify-image.sh) (the image
 contract: baked `ci_infrastructure`, `CI_IMAGE_*`, cmake floor, the compilers the
-image's name promises, the announcer) and then `pytest` over `tests/` against the
+image's name promises and working OpenMP for each of them, the announcer) and
+then `pytest` over `tests/` against the
 **baked** package, with the checkout mounted read-only.
 
 A dependent whose base is rebuilt in the same run builds on that base, not on the
