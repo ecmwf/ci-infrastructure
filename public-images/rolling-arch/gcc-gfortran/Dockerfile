@@ -9,8 +9,7 @@ FROM eccr.ecmwf.int/public-ci-images/rolling-arch-base:latest
 # exactly one gcc and pinning a number in the name would start lying the first
 # time upstream moves. `gcc --version` inside the image is the answer.
 #
-# The base carries no compiler, so gcc is named here alongside the Fortran
-# front end -- as the image name now says.
+# The base carries no compiler; gcc is named here with the Fortran front end.
 RUN pacman -Syu --noconfirm --disable-sandbox \
     gcc \
     gcc-fortran \

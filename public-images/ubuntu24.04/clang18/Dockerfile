@@ -6,16 +6,11 @@
 # Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
-# No Fortran here, deliberately. gfortran-N Depends on gcc-N, so a clang image
-# that offers Fortran also ships a GNU C compiler its name does not mention --
-# which is the whole thing the name-is-the-toolchain contract exists to stop, and
-# what /usr/bin/cc used to fall through to. Of the legs that run in this image
-# only eccodes wanted Fortran, and it builds its Fortran interface on the gcc13
-# legs and on HPC. If clang-native Fortran is ever wanted, flang belongs in a
-# variant of its own (ecbuild already knows the LLVMFlang compiler id).
+# No Fortran: gfortran-N Depends on gcc-N, so a clang image offering Fortran also
+# ships a GNU C compiler its name does not mention. eccodes, the only leg here
+# that wanted it, builds its Fortran interface on the gcc13 legs and on HPC.
 #
-# libstdc++-N-dev: clang++ compiles C++ against GCC's libstdc++ headers, which
-# used to arrive with the base's build-essential. It carries no compiler.
+# libstdc++-N-dev: clang++ compiles C++ against GCC's libstdc++ headers.
 RUN apt-get update && apt-get install -y \
     clang-18 \
     clang++-18 \

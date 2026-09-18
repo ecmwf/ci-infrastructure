@@ -61,15 +61,8 @@ exactly what it adds. Qt is there because ecflow builds ecFlowUI by default
 
 ### The name is the whole toolchain
 
-Keeping the compilers out of the base is what lets the name be the contract. A
-base used to install `build-essential` (or `gcc gcc-c++`, or `base-devel`) that no
-name mentioned and nothing checked, so `verify-image.sh` had to *infer* gcc from
-the `gfortran<N>` token — wrong whenever the versions differ, as in the old
-`clang18-gfortran12`, which shipped gfortran 12 and gcc **13**. A leg could then
-pin a compiler the image never promised, or fall through to `/usr/bin/cc` and
-silently build C with a different toolchain than C++.
-
-Now each token stands for exactly one toolchain and nothing is inferred:
+The bases carry no compiler, so an image has exactly what its name lists and
+nothing is inferred from another token:
 
 | token | asserts |
 |---|---|
@@ -79,22 +72,15 @@ Now each token stands for exactly one toolchain and nothing is inferred:
 | `gcc`, `gfortran` | the same on rolling platforms, without a version check |
 
 `verify-image.sh` checks both directions: a `base` must have no compiler on
-`PATH`, and a variant that names no `gcc` must not have one — which is what stops
-a GNU toolchain arriving as some other package's dependency and quietly becoming
-the `cc` a build picks up.
+`PATH`, and a variant naming no `gcc` must not have one — `gfortran-N` *Depends*
+on `gcc-N`, so a GNU toolchain can arrive as another package's dependency and
+become the `cc` a build picks up. That is also why a clang variant ships no
+Fortran.
 
-"Working OpenMP" means compiling, linking *and running* a real OpenMP program.
-gcc carries `omp.h` and `libgomp` with the compiler; clang splits them into
-`libomp-<N>-dev`, so a clang image can satisfy its name and still have no OpenMP.
-A clang variant also needs `libstdc++-<N>-dev`, since clang++ compiles against
-GCC's libstdc++ headers, which used to arrive with the base's `build-essential`.
-That package carries headers, not a compiler.
-
-A clang variant ships **no Fortran**: `gfortran-N` *Depends* on `gcc-N`, so a
-clang image offering Fortran would also carry a GNU C compiler its name does not
-mention — exactly what this contract exists to prevent. Fortran interfaces are
-built on the `gcc<N>` legs and on HPC. Clang-native Fortran would be a `flang`
-variant of its own; ecbuild already recognises the `LLVMFlang` compiler id.
+"Working OpenMP" means compiling, linking *and running* an OpenMP program. gcc
+carries `omp.h` and `libgomp` with the compiler; clang splits them into
+`libomp-<N>-dev`. A clang variant also needs `libstdc++-<N>-dev`, since clang++
+compiles C++ against GCC's libstdc++ headers.
 
 `debian11/base` is the exception that proves the rule: it compiles CPython from
 source, so it installs a toolchain and purges it again in the same image, ending
