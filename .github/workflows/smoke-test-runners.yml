@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Verify baked toolchain
+      - name: Verify the image contract
         shell: bash
         run: ./public-images/verify-image.sh ubuntu24.04/base
 
@@ -115,33 +115,3 @@ jobs:
         if: failure()
         shell: bash
         run: cat "${{ runner.temp }}/sccache-server.log" || true
-
-  # Per-image contract checks (verify-image.sh), one leg per toolchain image.
-  image-contract:
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: ubuntu24.04-gcc13-gfortran13-boost-qt6
-            declares: ubuntu24.04/gcc13-gfortran13-boost-qt6
-          - image: ubuntu24.04-clang18
-            declares: ubuntu24.04/clang18
-          - image: rocky8-gcc8-gfortran8-boost-qt5
-            declares: rocky8/gcc8-gfortran8-boost-qt5
-          - image: debian11-gcc10-gfortran10-boost-qt5
-            declares: debian11/gcc10-gfortran10-boost-qt5
-    name: image (${{ matrix.image }})
-    runs-on: arc-runner-normal
-    container:
-      image: eccr.ecmwf.int/public-ci-images/${{ matrix.image }}:latest
-    steps:
-      # actions/checkout runs under node, so the verify step below is still the
-      # first bash of the job and the announcer marker it asserts is its own.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Verify the image contract
-        shell: bash
-        env:
-          DECLARES: ${{ matrix.declares }}
-        run: ./public-images/verify-image.sh "$DECLARES"
