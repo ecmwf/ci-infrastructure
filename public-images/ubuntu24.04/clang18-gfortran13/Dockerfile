@@ -7,8 +7,10 @@ FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
 RUN apt-get update && apt-get install -y \
     gfortran-13 \
+    clang-18 \
     clang++-18 \
     clang-tidy-18 \
+    libomp-18-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ARG IMAGE_NAME=""

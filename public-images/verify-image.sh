@@ -12,9 +12,13 @@
 #
 # The compiler expectations come from the variant's name, so an image cannot
 # promise a toolchain in its name that it does not ship:
-#   clang<N>     clang++-N, major N
-#   gfortran<N>  gfortran-N, major N, and g++-N unless a clang<N> names the C++ compiler
-#   gfortran     (unversioned, rolling platforms) gfortran and g++ on PATH
+#   clang<N>     clang-N and clang++-N, major N
+#   gfortran<N>  gfortran-N, major N, and gcc-N/g++-N unless a clang<N> names C and C++
+#   gfortran     (unversioned, rolling platforms) gcc, g++ and gfortran on PATH
+#
+# Every compiler named must also build and run an OpenMP program. GCC ships omp.h
+# and libgomp with the compiler, clang splits them into libomp-<N>-dev, so a
+# toolchain can satisfy its name and still have no OpenMP at all.
 set -euo pipefail
 
 DECLARES="${1:?usage: verify-image.sh <platform>/<variant>}"
@@ -54,22 +58,93 @@ expect_compiler() {
   echo "compiler: $(command -v "$binary") -> $("$binary" --version | head -1)"
 }
 
+omp_tmp="$(mktemp -d)"
+trap 'rm -rf "$omp_tmp"' EXIT
+
+# Compile, link AND run: the runtime library is the half that goes missing, and a
+# link that resolves against a libomp the loader cannot find still fails in a job.
+expect_openmp() {
+  local binary="$1" lang="$2" src out
+  case "$lang" in
+    c)   src="$omp_tmp/omp.c" ;;
+    cxx) src="$omp_tmp/omp.cxx" ;;
+    f)   src="$omp_tmp/omp.f90" ;;
+    *)   fail "expect_openmp: unknown language '$lang'" ;;
+  esac
+  if [ "$lang" = f ]; then
+    cat > "$src" <<'EOF'
+program main
+    use omp_lib
+    implicit none
+    integer :: threads
+    threads = 0
+    !$omp parallel
+    !$omp atomic
+    threads = threads + 1
+    !$omp end parallel
+    if (threads < 1) stop 1
+end program main
+EOF
+  else
+    cat > "$src" <<'EOF'
+#include <omp.h>
+int main(void) {
+    int threads = 0;
+    #pragma omp parallel
+    {
+        #pragma omp atomic
+        ++threads;
+    }
+    return threads < 1;
+}
+EOF
+  fi
+  if ! out="$("$binary" -fopenmp "$src" -o "$omp_tmp/omp.bin" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    fail "$binary cannot build an OpenMP program (-fopenmp)"
+  fi
+  if ! out="$(OMP_NUM_THREADS=2 "$omp_tmp/omp.bin" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    fail "$binary built an OpenMP program that does not run"
+  fi
+  echo "openmp: $binary"
+}
+
 variant="${DECLARES#*/}"
 clang=""
 for token in ${variant//-/ }; do
   case "$token" in
-    clang[0-9]*) clang="${token#clang}"; expect_compiler "clang++-$clang" "$clang" ;;
+    clang[0-9]*)
+      clang="${token#clang}"
+      expect_compiler "clang-$clang" "$clang"
+      expect_compiler "clang++-$clang" "$clang"
+      expect_openmp "clang-$clang" c
+      expect_openmp "clang++-$clang" cxx
+      ;;
   esac
 done
 for token in ${variant//-/ }; do
   case "$token" in
     gfortran[0-9]*)
-      expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
-      [ -n "$clang" ] || expect_compiler "g++-${token#gfortran}" "${token#gfortran}"
+      gnu="${token#gfortran}"
+      expect_compiler "gfortran-$gnu" "$gnu"
+      expect_openmp "gfortran-$gnu" f
+      if [ -z "$clang" ]; then
+        expect_compiler "gcc-$gnu" "$gnu"
+        expect_compiler "g++-$gnu" "$gnu"
+        expect_openmp "gcc-$gnu" c
+        expect_openmp "g++-$gnu" cxx
+      fi
       ;;
     gfortran)
       expect_compiler gfortran ""
-      [ -n "$clang" ] || expect_compiler g++ ""
+      expect_openmp gfortran f
+      if [ -z "$clang" ]; then
+        expect_compiler gcc ""
+        expect_compiler g++ ""
+        expect_openmp gcc c
+        expect_openmp g++ cxx
+      fi
       ;;
   esac
 done
