@@ -54,6 +54,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/debian13/base` | `…/debian13-base` |
 | `public-images/debian13/gcc14-gfortran14` | `…/debian13-gcc14-gfortran14` |
 | `public-images/debian13/gcc14-gfortran14-boost-qt6` | `…/debian13-gcc14-gfortran14-boost-qt6` |
+| `public-images/fedora43/base` | `…/fedora43-base` |
+| `public-images/fedora43/gcc15-gfortran15` | `…/fedora43-gcc15-gfortran15` |
+| `public-images/fedora43/gcc15-gfortran15-boost-qt6` | `…/fedora43-gcc15-gfortran15-boost-qt6` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
 | `public-images/rolling-arch/gcc-gfortran` | `…/rolling-arch-gcc-gfortran` |
 | `public-images/rolling-arch/gcc-gfortran-boost-qt6` | `…/rolling-arch-gcc-gfortran-boost-qt6` |
@@ -145,6 +148,7 @@ is in the *name*, so what you get is never a surprise:
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
 | `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/local/bin/python3.11` (built from source) |
 | `debian13` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.13) |
+| `fedora43` | 15 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.14) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:
@@ -175,7 +179,7 @@ directly; both pin its checksum for provenance and repeatable builds.
 On Rocky 8, Rocky 9, Debian 11, and Debian 12, the selected CI Python is newer
 than the distro's default interpreter and its pytest package. Rocky 10 also
 installs pytest with the selected system Python's pip. `ubuntu24.04`,
-`debian13`, and `rolling-arch` use their distro pytest package.
+`debian13`, `fedora43`, and `rolling-arch` use their distro pytest package.
 
 ### `rolling-arch` — newest of everything, rebuilt nightly
 
