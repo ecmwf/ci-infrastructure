@@ -39,6 +39,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/ubuntu24.04/gcc13-gfortran13` | `…/ubuntu24.04-gcc13-gfortran13` |
 | `public-images/ubuntu24.04/clang18` | `…/ubuntu24.04-clang18` |
 | `public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6` | `…/ubuntu24.04-gcc13-gfortran13-boost-qt6` |
+| `public-images/ubuntu26.04/base` | `…/ubuntu26.04-base` |
+| `public-images/ubuntu26.04/gcc15-gfortran15` | `…/ubuntu26.04-gcc15-gfortran15` |
+| `public-images/ubuntu26.04/gcc15-gfortran15-boost-qt6` | `…/ubuntu26.04-gcc15-gfortran15-boost-qt6` |
 | `public-images/rocky8/base` | `…/rocky8-base` |
 | `public-images/rocky8/gcc8-gfortran8` | `…/rocky8-gcc8-gfortran8` |
 | `public-images/rocky8/gcc8-gfortran8-boost-qt5` | `…/rocky8-gcc8-gfortran8-boost-qt5` |
@@ -149,6 +152,7 @@ is in the *name*, so what you get is never a surprise:
 |---|---|---|---|---|---|
 | `ubuntu22.04` | 11 | 6 | 1.74 | 3.31.6 | `/usr/local/bin/python3.11` (built from source) |
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
+| `ubuntu26.04` | 15 | 6 | 1.90 | 4.2 | `/usr/bin/python3` (3.14) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `rocky9` | 11 | **5** | 1.75 | 3.31 | `/usr/bin/python3.12` |
 | `rocky10` | 14 | 6 | 1.83 | 3.31 | `/usr/bin/python3` (3.12) |
@@ -188,8 +192,8 @@ directly; all pin its checksum for provenance and repeatable builds.
 pytest from pip. On Ubuntu 22.04, Rocky 8, Rocky 9, Debian 11, and Debian 12,
 the selected CI Python is newer than the distro's default interpreter and its
 pytest package. Rocky 10 also installs pytest with the selected system Python's
-pip. `ubuntu24.04`, `debian13`, `fedora43`, `fedora44`, and `rolling-arch` use
-their distro pytest package.
+pip. `ubuntu24.04`, `ubuntu26.04`, `debian13`, `fedora43`, `fedora44`, and
+`rolling-arch` use their distro pytest package.
 
 ### `rolling-arch` — newest of everything, rebuilt nightly
 
