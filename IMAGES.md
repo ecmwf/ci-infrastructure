@@ -42,6 +42,9 @@ The `/` becomes `-` because Harbor supports only two-level repository paths
 | `public-images/debian11/base` | `…/debian11-base` |
 | `public-images/debian11/gcc10-gfortran10` | `…/debian11-gcc10-gfortran10` |
 | `public-images/debian11/gcc10-gfortran10-boost-qt5` | `…/debian11-gcc10-gfortran10-boost-qt5` |
+| `public-images/debian12/base` | `…/debian12-base` |
+| `public-images/debian12/gcc12-gfortran12` | `…/debian12-gcc12-gfortran12` |
+| `public-images/debian12/gcc12-gfortran12-boost-qt6` | `…/debian12-gcc12-gfortran12-boost-qt6` |
 | `public-images/rolling-arch/base` | `…/rolling-arch-base` |
 | `public-images/rolling-arch/gcc-gfortran` | `…/rolling-arch-gcc-gfortran` |
 | `public-images/rolling-arch/gcc-gfortran-boost-qt6` | `…/rolling-arch-gcc-gfortran-boost-qt6` |
@@ -55,9 +58,10 @@ all dependents in one parallel matrix, so a chain would race on `:latest`.
 `scripts/build_image.py` refuses a deeper chain.
 
 Boost and Qt are deliberately not in the base: both are large and wanted by one
-package, so they live in `gcc13-gfortran13-boost-qt6`, whose name then says
-exactly what it adds. Qt is there because ecflow builds ecFlowUI by default
-(`ENABLE_UI=ON`) and its configure step is a hard error without Qt6.
+package, so they live in the `gcc<N>-gfortran<N>-boost-qt<M>` variant, whose name says
+which compiler and Qt major version it adds. Qt is there because ecflow builds
+ecFlowUI by default (`ENABLE_UI=ON`) and its configure step requires a supported
+Qt version. Most platforms provide Qt6; the exceptions below provide Qt5.
 
 ### The name is the whole toolchain
 
@@ -82,9 +86,9 @@ carries `omp.h` and `libgomp` with the compiler; clang splits them into
 `libomp-<N>-dev`. A clang variant also needs `libstdc++-<N>-dev`, since clang++
 compiles C++ against GCC's libstdc++ headers.
 
-`debian11/base` is the exception that proves the rule: it compiles CPython from
-source, so it installs a toolchain and purges it again in the same image, ending
-up compiler-free like the others.
+`debian11/base` and `debian12/base` compile CPython from source, so they install
+a toolchain and purge it again in the same image, ending up compiler-free like
+the others.
 
 ### Legacy names — temporary, do not build on them
 
@@ -128,6 +132,7 @@ is in the *name*, so what you get is never a surprise:
 | `ubuntu24.04` | 12, 13 | 6 | 1.83 | 3.28 | `/usr/bin/python3` (3.12) |
 | `rocky8` | 8.5 (distro default) | **5** | 1.66 | 3.26 | `/usr/bin/python3.12` |
 | `debian11` | 10 | **5** | 1.74 | 3.18 | `/usr/local/bin/python3.11` (built from source) |
+| `debian12` | 12 | 6 | 1.74 | 3.31.6 | `/usr/local/bin/python3.11` (built from source) |
 | `rolling-arch` | newest | 6 | newest | newest | `/usr/bin/python3` |
 
 Three consequences worth knowing before you pick one:
@@ -146,17 +151,18 @@ every package here requires, is there. The variants symlink `gcc-8`/`g++-8`/
 `gfortran-8` into `/usr/local/bin`, because the rocky RPMs ship only unversioned
 names and every manifest asks CMake for a versioned one.
 
-**`debian11` builds its own Python.** `ci_infrastructure` needs >= 3.11
-(`pyproject.toml`) and bullseye's ceiling is 3.10, backports included. The base
-compiles a pinned, checksummed 3.11 with `--enable-shared` (for
-`find_package(Python3 COMPONENTS Development)`) and `make altinstall`, leaving
-the system 3.9 alone. It is the only image here that fetches anything from
-outside a distro archive.
+**`debian11` and `debian12` build their own Python.** `ci_infrastructure` needs
+>= 3.11.4 (`pyproject.toml`), but bullseye provides Python 3.9 and bookworm
+stops at 3.11.2. Both bases therefore compile a pinned, checksummed Python 3.11
+from python.org with `--enable-shared` (for `find_package(Python3 COMPONENTS
+Development)`) and `make altinstall`, leaving the system interpreter alone.
+These are the only images that fetch and build a CPython source tarball
+directly; both pin its checksum for provenance and repeatable builds.
 
-`rocky8` and `debian11` also take their pytest from pip rather than the distro,
-because in both cases the distro package targets an interpreter (3.6, 3.9) that
-is not the one those images run anything with. `ubuntu24.04` and `rolling-arch` use
-the distro package.
+`rocky8`, `debian11`, and `debian12` take pytest from pip. On Rocky 8, Debian
+11, and Debian 12, the selected CI Python is newer than the distro's default
+interpreter and its pytest package. `ubuntu24.04` and `rolling-arch` use their
+distro pytest package.
 
 ### `rolling-arch` — newest of everything, rebuilt nightly
 
