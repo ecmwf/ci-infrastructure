@@ -114,8 +114,7 @@ forbid half down for exactly these seven names — every compiler they do name i
 still checked. Nothing new may name a legacy image, and `rolling-arch` got none,
 since nothing referenced those. Deleting the directory and the name from
 `verify-image.sh`'s `LEGACY_NAMES` is the whole revert; then
-[`scripts/registry_orphans.py`](scripts/registry_orphans.py) reports the
-repositories to delete.
+`scripts/registry_cleanup.py orphans` reports the repositories to delete.
 
 ## Platforms
 
@@ -384,11 +383,24 @@ Deleting the directory stops the image being built, but its repository stays in
 the registry serving `:latest`, so a reference to the old name keeps working
 silently instead of failing. Nothing prunes these.
 
-[`scripts/registry_orphans.py`](scripts/registry_orphans.py) lists the
-repositories no Dockerfile here builds any more; the **Registry orphans**
-workflow runs it on demand, and deletes them when dispatched with `delete`.
+[`scripts/registry_cleanup.py`](scripts/registry_cleanup.py) `orphans` lists
+the repositories no Dockerfile here builds any more; the **Registry cleanup**
+workflow runs it on demand (task `orphans`), and deletes them when dispatched
+with `delete`. It never does so on its own schedule.
 Deletion is irreversible, so check what still pulls a repository — Harbor's pull
 count is on the report — before ticking it.
+
+## Old versions and the project quota
+
+Every publish adds a version and nothing else removes one, so without pruning the
+project's 100 GiB quota fills and pushes fail with *"exceed the configured upper
+limit"*. The **Registry cleanup** workflow runs
+`scripts/registry_cleanup.py prune --delete` nightly, before the nightly image
+build. It deletes all but the two most recently pushed versions of
+every repository, and never one tagged `latest`. If a push was refused for quota,
+dispatch it with `delete` and re-run the build; dispatched without `delete` it
+only reports, and it takes a different `keep`. Anything
+pinned to an older `<sha>` tag stops pulling once it has been pruned.
 
 ## Building by hand
 
@@ -422,6 +434,7 @@ the tag names.
 | Secret | Used for |
 |---|---|
 | `PUBLIC_ECCR_ROBOT_NAME` / `PUBLIC_ECCR_ROBOT_TOKEN` | pushing to `public-ci-images` |
+| `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN` | deleting from `public-ci-images` (registry prune and orphans); needs *Artifact* and *Repository* delete, no push |
 | `CI_PERMISSIONS_APP_CLIENT_ID` / `CI_PERMISSIONS_APP_PRIVATE_KEY` | minting the `actions: write` token that dispatches the private image rebuild |
 
 Reads are anonymous, so the discover job needs no secrets and works on pull
