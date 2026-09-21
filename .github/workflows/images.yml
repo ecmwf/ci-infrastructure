@@ -20,6 +20,11 @@ on:
         required: false
       PUBLIC_ECCR_ROBOT_TOKEN:
         required: false
+      # A separate robot that may delete but not push; only prune-registry sees it.
+      PUBLIC_ECCR_CLEANUP_ROBOT_NAME:
+        required: false
+      PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN:
+        required: false
       CI_PERMISSIONS_APP_CLIENT_ID:
         required: false
       CI_PERMISSIONS_APP_PRIVATE_KEY:
@@ -226,8 +231,8 @@ jobs:
       - name: Prune all but the two newest versions per repository
         shell: bash
         env:
-          PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
-          PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
+          PUBLIC_ECCR_CLEANUP_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_NAME }}
+          PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN }}
         run: |
           set -euo pipefail
           python3 scripts/registry_prune.py --delete --format md | tee -a "$GITHUB_STEP_SUMMARY"

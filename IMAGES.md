@@ -434,6 +434,7 @@ the tag names.
 | Secret | Used for |
 |---|---|
 | `PUBLIC_ECCR_ROBOT_NAME` / `PUBLIC_ECCR_ROBOT_TOKEN` | pushing to `public-ci-images` |
+| `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN` | deleting from `public-ci-images` (registry prune and orphans); needs *Artifact* and *Repository* delete, no push |
 | `CI_PERMISSIONS_APP_CLIENT_ID` / `CI_PERMISSIONS_APP_PRIVATE_KEY` | minting the `actions: write` token that dispatches the private image rebuild |
 
 Reads are anonymous, so the discover job needs no secrets and works on pull

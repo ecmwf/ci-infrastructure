@@ -74,10 +74,10 @@ def test_render_markdown_lists_each_version() -> None:
 def test_delete_needs_credentials(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(rp, "list_repositories", lambda: [{"name": "public-ci-images/x"}])
     monkeypatch.setattr(rp, "list_artifacts", lambda repo: [_artifact(d, str(d)) for d in (1, 2, 3)])
-    monkeypatch.delenv("PUBLIC_ECCR_ROBOT_NAME", raising=False)
-    monkeypatch.delenv("PUBLIC_ECCR_ROBOT_TOKEN", raising=False)
+    monkeypatch.delenv("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", raising=False)
+    monkeypatch.delenv("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", raising=False)
     assert rp.main(["--delete"]) == 2
-    assert "needs PUBLIC_ECCR_ROBOT_NAME" in capsys.readouterr().err
+    assert "needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME" in capsys.readouterr().err
 
 
 def test_delete_removes_exactly_the_stale_digests(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,7 +85,7 @@ def test_delete_removes_exactly_the_stale_digests(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(rp, "list_repositories", lambda: [{"name": "public-ci-images/x"}])
     monkeypatch.setattr(rp, "list_artifacts", lambda repo: [_artifact(d, str(d)) for d in (1, 2, 3, 4)])
     monkeypatch.setattr(rp, "delete_artifact", lambda repo, digest, auth: deleted.append((repo, digest)))
-    monkeypatch.setenv("PUBLIC_ECCR_ROBOT_NAME", "robot")
-    monkeypatch.setenv("PUBLIC_ECCR_ROBOT_TOKEN", "t")
+    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", "robot")
+    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", "t")
     assert rp.main(["--delete"]) == 0
     assert deleted == [("x", _artifact(2)["digest"]), ("x", _artifact(1)["digest"])]

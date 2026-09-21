@@ -14,7 +14,7 @@ fills up and pushes start failing with "exceed the configured upper limit".
 
 Per repository the --keep most recently pushed artifacts stay, and so does
 anything tagged `latest` whatever its age. Reading is anonymous; --delete needs
-PUBLIC_ECCR_ROBOT_NAME / _TOKEN with delete permission on the project.
+PUBLIC_ECCR_CLEANUP_ROBOT_NAME / _TOKEN, a robot with artifact-delete permission.
 """
 
 from __future__ import annotations
@@ -108,9 +108,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.delete or not plan:
         return 0
 
-    name, token = os.environ.get("PUBLIC_ECCR_ROBOT_NAME", ""), os.environ.get("PUBLIC_ECCR_ROBOT_TOKEN", "")
+    name, token = (
+        os.environ.get("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", ""),
+        os.environ.get("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", ""),
+    )
     if not name or not token:
-        print("::error::--delete needs PUBLIC_ECCR_ROBOT_NAME and PUBLIC_ECCR_ROBOT_TOKEN", file=sys.stderr)
+        print(
+            "::error::--delete needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME and PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN",
+            file=sys.stderr,
+        )
         return 2
     failed = 0
     print("", file=sys.stderr)

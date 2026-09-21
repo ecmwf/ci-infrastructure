@@ -29,8 +29,8 @@ jobs:
         shell: bash
         env:
           # Only needed for --delete; the listing is anonymous.
-          PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
-          PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
+          PUBLIC_ECCR_CLEANUP_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_NAME }}
+          PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN }}
           DELETE: ${{ inputs.delete }}
         run: |
           set -euo pipefail

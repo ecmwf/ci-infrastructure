@@ -12,7 +12,7 @@ in images.yml removes them, hence this.
     scripts/registry_orphans.py --format md     # markdown, for a job summary
     scripts/registry_orphans.py --delete        # report, then delete
 
-Reading is anonymous. --delete needs PUBLIC_ECCR_ROBOT_NAME / _TOKEN with delete
+Reading is anonymous. --delete needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME / _TOKEN with delete
 permission on the project. Exit 0 whether or not orphans were found.
 
 Env overrides: REGISTRY, PROJECT, IMAGES_DIR (shared with build_image.py).
@@ -115,9 +115,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.delete or not orphans:
         return 0
 
-    name, token = os.environ.get("PUBLIC_ECCR_ROBOT_NAME", ""), os.environ.get("PUBLIC_ECCR_ROBOT_TOKEN", "")
+    name, token = (
+        os.environ.get("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", ""),
+        os.environ.get("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", ""),
+    )
     if not name or not token:
-        print("::error::--delete needs PUBLIC_ECCR_ROBOT_NAME and PUBLIC_ECCR_ROBOT_TOKEN", file=sys.stderr)
+        print(
+            "::error::--delete needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME and PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN",
+            file=sys.stderr,
+        )
         return 2
     failed = 0
     print("", file=sys.stderr)
