@@ -4,9 +4,12 @@
 
 name: Registry prune
 
-# images.yml already prunes after every publish on main; this is for a one-off,
-# e.g. a different --keep or a look at what would go.
+# Nightly it deletes all but the two newest versions per repository, keeping the
+# project under its quota. Dispatched, it only reports unless `delete` is ticked.
 on:
+  # 02:47 UTC: before images.yml's nightly build (03:17), so its pushes have room.
+  schedule:
+    - cron: '47 2 * * *'
   workflow_dispatch:
     inputs:
       delete:
@@ -35,8 +38,9 @@ jobs:
           # Only needed for --delete; the listing is anonymous.
           PUBLIC_ECCR_CLEANUP_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_NAME }}
           PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN }}
-          DELETE: ${{ inputs.delete }}
-          KEEP: ${{ inputs.keep }}
+          # A scheduled run has no inputs: it deletes, keeping the default.
+          DELETE: ${{ github.event_name == 'schedule' || inputs.delete }}
+          KEEP: ${{ inputs.keep || 2 }}
         run: |
           set -euo pipefail
           args=(--format md --keep "$KEEP")

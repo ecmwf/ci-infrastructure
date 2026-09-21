@@ -20,11 +20,6 @@ on:
         required: false
       PUBLIC_ECCR_ROBOT_TOKEN:
         required: false
-      # A separate robot that may delete but not push; only prune-registry sees it.
-      PUBLIC_ECCR_CLEANUP_ROBOT_NAME:
-        required: false
-      PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN:
-        required: false
       CI_PERMISSIONS_APP_CLIENT_ID:
         required: false
       CI_PERMISSIONS_APP_PRIVATE_KEY:
@@ -216,23 +211,3 @@ jobs:
             echo
             echo "[Watch the build]($url)"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # Keeps the project under its quota, only after every build published cleanly.
-  # A push refused for quota therefore needs the Registry prune workflow first.
-  prune-registry:
-    needs: [build-base, build-dependents]
-    # pull_request_target also reports refs/heads/main, hence the event check.
-    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && !startsWith(github.event_name, 'pull_request') }}
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - name: Prune all but the two newest versions per repository
-        shell: bash
-        env:
-          PUBLIC_ECCR_CLEANUP_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_NAME }}
-          PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN }}
-        run: |
-          set -euo pipefail
-          python3 scripts/registry_prune.py --delete --format md | tee -a "$GITHUB_STEP_SUMMARY"

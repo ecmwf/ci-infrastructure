@@ -394,12 +394,12 @@ count is on the report — before ticking it.
 
 Every publish adds a version and nothing else removes one, so without pruning the
 project's 100 GiB quota fills and pushes fail with *"exceed the configured upper
-limit"*. After the build jobs on `main` succeed, `images.yml` runs
-[`scripts/registry_prune.py`](scripts/registry_prune.py). It deletes all but the
-two most recently pushed versions of every repository, and never one tagged
-`latest`. It does not run after a failed build, so if a push was refused for
-quota, dispatch the **Registry prune** workflow with `delete` and re-run. That
-workflow otherwise only reports, and takes a different `keep`. Anything
+limit"*. The **Registry prune** workflow runs
+[`scripts/registry_prune.py`](scripts/registry_prune.py) nightly, before the
+nightly image build. It deletes all but the two most recently pushed versions of
+every repository, and never one tagged `latest`. If a push was refused for quota,
+dispatch it with `delete` and re-run the build; dispatched without `delete` it
+only reports, and it takes a different `keep`. Anything
 pinned to an older `<sha>` tag stops pulling once it has been pruned.
 
 ## Building by hand
