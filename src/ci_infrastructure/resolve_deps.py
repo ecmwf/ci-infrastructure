@@ -82,7 +82,6 @@ from . import job_names, s3_store
 from ._errors import CIError
 from ._github_api import (
     _OPTION_TOKEN_RE,
-    EXECUTION_HPC,
     EXECUTION_RUNNER,
     Execution,
     ManifestSchemaError,
@@ -99,6 +98,8 @@ from ._github_api import (
 )
 from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
+from .manifest import DepTable
+from .manifest import validate as validate_manifest
 from .runners import resolve_runner
 from .sync_branch import is_sync_branch
 
@@ -269,168 +270,54 @@ class DispatchPlan:
     lane: Execution
 
 
-def _parse_compiler_inputs(raw: object, context: str, allow_empty: bool) -> list[str]:
-    """Validate a 'compiler-inputs' list of matrix field names."""
-    if raw is None:
-        raise ValueError(
-            f"{context} must declare 'compiler-inputs' as a list of matrix field names "
-            '(e.g. ["cxx-compiler"] or ["cxx-compiler", "fortran-compiler"]'
-            + (" or [] for an uncompiled package)." if allow_empty else ").")
-        )
-    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
-        raise ValueError(f"{context}: 'compiler-inputs' must be a list of strings, got {raw!r}")
-    cleaned = [s.strip() for s in raw]
-    if any(not s for s in cleaned):
-        raise ValueError(f"{context}: 'compiler-inputs' contains an empty entry: {raw!r}")
-    if not cleaned and not allow_empty:
-        raise ValueError(
-            f"{context}: 'compiler-inputs' must be non-empty — every dep we fetch from upstream "
-            "has at least one compiler in its artifact name."
-        )
-    return cleaned
-
-
-def _parse_package(data: Mapping[str, Any], default_repo: str | None) -> PackageSpec:
-    pkg_data = data.get("package", {})
-    if not pkg_data.get("name") or not pkg_data.get("prefix"):
-        raise ValueError("manifest [package] must define both 'name' and 'prefix'")
-    repo = pkg_data.get("repo") or default_repo
-    if not repo:
-        raise ValueError("manifest [package] must define 'repo' (or pass --self-repo)")
-
-    pkg_compiler_inputs = _parse_compiler_inputs(
-        pkg_data.get("compiler-inputs"),
-        context=f"[package] '{pkg_data['name']}'",
-        allow_empty=True,
+def _to_dep_spec(t: DepTable) -> DepSpec:
+    return DepSpec(
+        repo=Repo(t.repo),
+        package=PackageName(t.package),
+        ref=Ref(t.ref),
+        compiler_inputs=list(t.compiler_inputs),
+        build_type_input=t.build_type_input,
+        platform_input=t.platform_input,
+        needs_python=t.needs_python,
+        python_version_input=t.python_version_input,
+        option=t.options,
+        options_input=t.options_input,
+        when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
     )
-
-    return PackageSpec(
-        name=str(pkg_data["name"]),
-        prefix=PackageName(str(pkg_data["prefix"])),
-        repo=as_repo(str(repo)),
-        compiler_inputs=pkg_compiler_inputs,
-    )
-
-
-def _parse_when(raw: Any, *, context: str) -> Mapping[str, frozenset[str]] | None:
-    """Parse a [[deps]] `when` predicate: matrix-field -> accepted value(s)."""
-    if raw is None:
-        return None
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError(
-            f"{context}: 'when' must be a non-empty table of matrix-field to accepted "
-            f'value(s), e.g. when = {{ options = ["extended"] }}; got {raw!r}'
-        )
-    parsed: dict[str, frozenset[str]] = {}
-    for field_name, accepted in raw.items():
-        values = accepted if isinstance(accepted, (list, tuple)) else [accepted]
-        if not values:
-            raise ValueError(f"{context}: 'when.{field_name}' must list at least one accepted value")
-        if any(isinstance(v, (dict, list, tuple)) for v in values):
-            raise ValueError(f"{context}: 'when.{field_name}' values must be scalars, got {accepted!r}")
-        parsed[str(field_name)] = frozenset(str(v) for v in values)
-    return parsed
-
-
-def _parse_deps(data: Mapping[str, Any]) -> list[DepSpec]:
-    deps: list[DepSpec] = []
-    for raw in data.get("deps", []):
-        if "repo" not in raw or "package" not in raw:
-            raise ValueError(f"each [[deps]] entry must define 'repo' and 'package': got {raw!r}")
-        if "ref" not in raw or not str(raw["ref"]).strip():
-            raise ValueError(
-                f"[[deps]] entry for package '{raw['package']}' must declare 'ref' "
-                '(e.g. "main", "master", a tag, or a 40-char SHA).'
-            )
-        compiler_inputs = _parse_compiler_inputs(
-            raw.get("compiler-inputs"),
-            context=f"[[deps]] entry for package '{raw['package']}'",
-            allow_empty=True,
-        )
-        option_literal = _as_option(raw.get("options"), context=f"[[deps]] entry for package '{raw['package']}'")
-        options_input = raw.get("options-input")
-        deps.append(
-            DepSpec(
-                repo=as_repo(str(raw["repo"])),
-                package=PackageName(str(raw["package"])),
-                ref=Ref(str(raw["ref"]).strip()),
-                compiler_inputs=compiler_inputs,
-                build_type_input=str(raw.get("build-type-input", "build-type")),
-                platform_input=str(raw.get("platform-input", "platform")),
-                needs_python=bool(raw.get("needs-python", False)),
-                python_version_input=str(raw.get("python-version-input", "python-version")),
-                option=option_literal,
-                options_input=str(options_input) if options_input is not None else None,
-                when=_parse_when(raw.get("when"), context=f"[[deps]] entry for package '{raw['package']}'"),
-            )
-        )
-    return deps
-
-
-def _parse_matrix(
-    data: Mapping[str, Any],
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], dict[str, CtestSpec], dict[str, Execution]]:
-    # Two passes: collect the raw blocks, then expand reuse-matrix against them.
-    raw_matrix: dict[str, dict[str, Any]] = {}
-    for job_name, job_block in data.get("matrix", {}).items():
-        if not isinstance(job_block, dict):
-            raise ValueError(f"[matrix.{job_name}] must be a table")
-        raw_matrix[str(job_name)] = job_block
-
-    matrix: dict[str, list[dict[str, Any]]] = {}
-    artifact_prefix_by_kind: dict[str, str] = {}
-    ctest_by_kind: dict[str, CtestSpec] = {}
-    execution_by_kind: dict[str, Execution] = {}
-    for job_name, job_block in raw_matrix.items():
-        try:
-            legs = resolve_reuse_matrix(job_name, job_block.get("include"), job_block.get("reuse-matrix"), raw_matrix)
-        except ManifestSchemaError as e:
-            raise ValueError(str(e)) from e
-        matrix[str(job_name)] = list(legs)
-        prefix_override = job_block.get("artifact-prefix")
-        if prefix_override is not None:
-            if not isinstance(prefix_override, str) or not prefix_override.strip():
-                raise ValueError(f"[matrix.{job_name}].artifact-prefix must be a non-empty string")
-            artifact_prefix_by_kind[str(job_name)] = prefix_override.strip()
-        ctest_by_kind[str(job_name)] = _parse_ctest(job_block, job_name)
-        # Two branches rather than a membership test so the Literal narrows.
-        execution = job_block.get("execution", EXECUTION_RUNNER)
-        if execution == EXECUTION_HPC:
-            execution_by_kind[str(job_name)] = EXECUTION_HPC
-        elif execution == EXECUTION_RUNNER:
-            execution_by_kind[str(job_name)] = EXECUTION_RUNNER
-        else:
-            raise ValueError(
-                f"[matrix.{job_name}].execution must be {EXECUTION_RUNNER!r} or {EXECUTION_HPC!r}, got {execution!r}"
-            )
-
-    return matrix, artifact_prefix_by_kind, ctest_by_kind, execution_by_kind
-
-
-def _parse_ctest(job_block: Mapping[str, Any], job_name: str) -> CtestSpec:
-    """Type-check `ctest` / `ctest-args`; the generator owns their semantic rules."""
-    enabled = job_block.get("ctest", False)
-    if not isinstance(enabled, bool):
-        raise ValueError(f"[matrix.{job_name}].ctest must be a boolean")
-    args = job_block.get("ctest-args", "")
-    if not isinstance(args, str):
-        raise ValueError(f"[matrix.{job_name}].ctest-args must be a string")
-    return CtestSpec(enabled=enabled, args=args.strip())
 
 
 def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     """Parse a TOML manifest string into a Manifest."""
-    data = tomllib.loads(text)
-    package = _parse_package(data, default_repo)
-    deps = _parse_deps(data)
-    matrix, artifact_prefix_by_kind, ctest_by_kind, execution_by_kind = _parse_matrix(data)
+    try:
+        raw = validate_manifest(tomllib.loads(text))
+    except ManifestSchemaError as e:
+        raise ValueError(str(e)) from e
+    repo = raw.package.repo or default_repo
+    if not repo:
+        raise ValueError("manifest [package] must define 'repo' (or pass --self-repo)")
+
+    blocks = {
+        k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw.matrix.items()
+    }
+    matrix: dict[str, list[dict[str, Any]]] = {}
+    for kind, body in raw.matrix.items():
+        try:
+            matrix[kind] = list(resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks))
+        except ManifestSchemaError as e:
+            raise ValueError(str(e)) from e
+
     return Manifest(
-        package=package,
-        deps=deps,
+        package=PackageSpec(
+            name=raw.package.name,
+            prefix=PackageName(raw.package.prefix),
+            repo=as_repo(repo),
+            compiler_inputs=list(raw.package.compiler_inputs),
+        ),
+        deps=[_to_dep_spec(d) for d in raw.deps],
         matrix=matrix,
-        artifact_prefix_by_kind=artifact_prefix_by_kind,
-        ctest_by_kind=ctest_by_kind,
-        execution_by_kind=execution_by_kind,
+        artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
+        ctest_by_kind={k: CtestSpec(enabled=b.ctest, args=b.ctest_args.strip()) for k, b in raw.matrix.items()},
+        execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
 

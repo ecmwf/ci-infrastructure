@@ -228,6 +228,7 @@ _CTEST_MANIFEST: Final = """
             """
             [package]
             name = "a"
+            prefix = "a"
             repo = "org/a"
             visibility = "secret"
             compiler-inputs = []
@@ -244,6 +245,7 @@ _CTEST_MANIFEST: Final = """
             """
             [package]
             name = "a"
+            prefix = "a"
             repo = "org/a"
             submodules = "yes"
             compiler-inputs = []
@@ -448,6 +450,7 @@ def test_parse_manifest_text_round_trip() -> None:
         """
         [package]
         name = "a"
+        prefix = "a"
         repo = "org/a"
         compiler-inputs = []
 
@@ -478,6 +481,7 @@ def test_parse_manifest_text_round_trip() -> None:
                 """
                 [package]
                 name = "a"
+                prefix = "a"
                 repo = "org/a"
                 compiler-inputs = []
                 [[trigger-downstream]]
@@ -514,6 +518,8 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         """
         if with_dep_back
         else ""
@@ -524,6 +530,7 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> None:
         f"""
         [package]
         name = "b"
+        prefix = "b"
         repo = "org/b"
         compiler-inputs = []
         {deps_block}
@@ -564,6 +571,8 @@ def test_trigger_cycle(tmp_path: Path) -> None:
             [[deps]]
             repo = "org/{other}"
             package = "{other}"
+            ref = "main"
+            compiler-inputs = []
 
             [[trigger-downstream]]
             repo = "org/{other}"
@@ -626,6 +635,8 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
@@ -660,6 +671,8 @@ def test_reachability_violation(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
@@ -697,6 +710,8 @@ def _make_chain_abc(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         [[trigger-downstream]]
         repo = "org/c"
         ref = "develop"
@@ -715,6 +730,8 @@ def _make_chain_abc(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/b"
         package = "b"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -783,11 +800,14 @@ def test_diamond_closure(tmp_path: Path) -> None:
             f"""
             [package]
             name = "{name}"
+            prefix = "{name}"
             repo = "org/{name}"
             compiler-inputs = []
             [[deps]]
             repo = "org/b"
             package = "b"
+            ref = "main"
+            compiler-inputs = []
             [[trigger-downstream]]
             repo = "org/e"
             ref = "main"
@@ -806,9 +826,13 @@ def test_diamond_closure(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/c"
         package = "c"
+        ref = "main"
+        compiler-inputs = []
         [[deps]]
         repo = "org/d"
         package = "d"
+        ref = "main"
+        compiler-inputs = []
         [matrix.test]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -851,6 +875,8 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -965,6 +991,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         f"""
         [package]
         name = "a"
+        prefix = "a"
         repo = "org/a"
         visibility = "{a_vis}"
         compiler-inputs = []
@@ -986,12 +1013,15 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         f"""
         [package]
         name = "b"
+        prefix = "b"
         repo = "org/b"
         visibility = "{b_vis}"
         compiler-inputs = []
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -1153,6 +1183,8 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
             [[deps]]
             repo = "org/a"
             package = "a"
+            ref = "main"
+            compiler-inputs = []
             [[trigger-downstream]]
             repo = "org/d"
             ref = "{ref}"
@@ -1171,9 +1203,13 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/b"
         package = "b"
+        ref = "main"
+        compiler-inputs = []
         [[deps]]
         repo = "org/c"
         package = "c"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -1218,6 +1254,8 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -1256,6 +1294,8 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         [[deps]]
         repo = "org/a"
         package = "a"
+        ref = "main"
+        compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -1296,6 +1336,7 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "b",
         '\n        [[deps]]\n        repo = "org/a"\n        package = "a"'
+        + '\n        ref = "main"\n        compiler-inputs = []'
         + kinds.format(build='["a/build"]', build_hpc='["a/build-hpc"]')
         + '        [[trigger-downstream]]\n        repo = "org/c"\n        ref = "main"\n',
     )
@@ -1303,6 +1344,7 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         tmp_path,
         "c",
         '\n        [[deps]]\n        repo = "org/b"\n        package = "b"'
+        + '\n        ref = "main"\n        compiler-inputs = []'
         + kinds.format(build='["b/build"]', build_hpc='["b/build-hpc"]'),
     )
 
@@ -1328,14 +1370,14 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
     """A leaf producer with one runnable kind on one lane."""
     if hpc:
         return (
-            f'[package]\nname = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
+            f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
             '[matrix.build-hpc]\nexecution = "hpc"\ntriggers = ["rebuild-request"]\n'
             'job-script = "./.ci/hpc/build.sh"\nneeds = []\n'
             '[[matrix.build-hpc.include]]\nruns-on = "hpc"\nsite = "hpc-batch"\n'
             'job-script = "./.ci/hpc/build.sh"\n'
         )
     return (
-        f'[package]\nname = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
+        f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
         '[matrix.build]\ntriggers = ["rebuild-request"]\naction = "./.github/actions/build"\n'
         'needs = []\n[[matrix.build.include]]\nruns-on = "ubuntu-latest"\n'
     )
@@ -1464,6 +1506,7 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
         f"""
         [package]
         name = "a"
+        prefix = "a"
         repo = "org/a"
         compiler-inputs = []
 {triggers}
@@ -1486,11 +1529,14 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
             f"""
             [package]
             name = "c{i}"
+            prefix = "c{i}"
             repo = "org/c{i}"
             compiler-inputs = []
             [[deps]]
             repo = "org/a"
             package = "a"
+            ref = "main"
+            compiler-inputs = []
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
             action = "./.github/actions/build"
@@ -1785,6 +1831,8 @@ _GATE_CONSUMER: Final = """
     [[deps]]
     repo = "org/a"
     package = "a"
+    ref = "main"
+    compiler-inputs = []
     [matrix.build]
     triggers = ["upstream-change"]
     action = "./.github/actions/build"
@@ -1954,6 +2002,7 @@ def _pkg(compiler_inputs: str, legs: str, publishes: bool = True) -> str:
     return f"""
         [package]
         name = "a"
+        prefix = "a"
         repo = "org/a"
         compiler-inputs = {compiler_inputs}
 

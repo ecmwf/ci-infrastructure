@@ -17,8 +17,8 @@
     `downstream/<lane>` commit status. A public->private edge is dispatched
     rather than called (see `_edge_needs_dispatch`).
 
-Manifest schema: the `_*Raw` pydantic models plus the `_check_*` graph
-invariants; a violation fails with exit 1 in TOML notation (`[matrix.build]`).
+Manifest schema: the `manifest` models plus the `_check_*` graph invariants; a
+violation fails with exit 1 in TOML notation (`[matrix.build]`).
 
 Usage:
 
@@ -51,7 +51,6 @@ from typing import Any, Final, Literal, TypeAlias, TypeVar
 
 import click
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ._errors import CIError
 from ._github_api import (
@@ -65,6 +64,15 @@ from ._github_api import (
     select_token,
 )
 from .hpc import jobscript
+from .manifest import (
+    TRIGGER_REBUILD_REQUEST,
+    TRIGGER_UPSTREAM_CHANGE,
+    VISIBILITY_PRIVATE,
+    VISIBILITY_PUBLIC,
+    MatrixKindTable,
+    Visibility,
+)
+from .manifest import validate as validate_manifest
 
 GENERATED_HEADER: Final = (
     "# GENERATED FILE - DO NOT EDIT.\n"
@@ -140,16 +148,6 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
     return out
 
 
-# [matrix.<kind>].triggers; an empty set keeps the kind out of cross-repo-trigger.yml.
-TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"
-TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"
-_VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQUEST})
-
-Visibility: TypeAlias = Literal["public", "private"]
-VISIBILITY_PUBLIC: Final[Visibility] = "public"
-VISIBILITY_PRIVATE: Final[Visibility] = "private"
-
-
 def _lane_label(lane: Execution) -> str:
     return "runner" if lane == EXECUTION_RUNNER else "HPC"
 
@@ -217,254 +215,8 @@ class Manifest:
     generated_header: str = ""
 
 
-_RESERVED_MATRIX_KEYS: Final = frozenset(
-    {
-        "include",
-        "defaults",
-        "triggers",
-        "needs",
-        "reuse-matrix",
-        "execution",
-        "action",
-        "job-script",
-        "forwarded-inputs",
-        "forwarded-deps-outputs",
-        "publishes",
-        "artifact-prefix",
-        "container-credentials",
-        "ctest",
-        "ctest-args",
-    }
-)
-# Outputs of actions/fetch-deps.
-_VALID_DEPS_OUTPUTS: Final = frozenset({"cmake-prefix-path"})
-_ACTION_PATH_RE: Final = re.compile(r"^\./\.github/actions/[A-Za-z0-9_-]+$")
-_ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-class _PackageRaw(BaseModel):
-    # resolve_deps owns the full [package] schema.
-    model_config = ConfigDict(extra="ignore")
-    name: str
-    repo: str
-    compiler_inputs: tuple[str, ...] = Field(default=(), alias="compiler-inputs")
-    # Fail closed: an unlabelled repo is private.
-    visibility: Visibility = VISIBILITY_PRIVATE
-    submodules: Literal["true", "recursive"] | None = None
-
-
-class _DepRefRaw(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    repo: str
-    package: str
-
-
-class _TriggerDownstreamRaw(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    repo: str
-    ref: str
-
-    @model_validator(mode="before")
-    @classmethod
-    def _exact_keys(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            raise ValueError(f"must be a table (got {type(data).__name__})")
-        if set(data.keys()) != {"repo", "ref"}:
-            raise ValueError(f"must define exactly 'repo' and 'ref' (got {sorted(data.keys())})")
-        return data
-
-    @field_validator("ref")
-    @classmethod
-    def _ref_nonempty(cls, v: str) -> str:
-        s = v.strip()
-        if not s:
-            raise ValueError("'ref' must be a non-empty string")
-        return s
-
-
-class _MatrixKindRaw(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    triggers: tuple[str, ...] = ()
-    needs: tuple[str, ...] = ()
-    reuse_matrix: str | None = Field(default=None, alias="reuse-matrix")
-    include: tuple[dict[str, Any], ...] = ()
-    defaults: dict[str, Any] = Field(default_factory=dict)
-    execution: Execution = EXECUTION_RUNNER
-    action: str = ""
-    job_script: str = Field(default="", alias="job-script")
-    forwarded_inputs: tuple[str, ...] = Field(default=(), alias="forwarded-inputs")
-    forwarded_deps_outputs: tuple[str, ...] = Field(default=(), alias="forwarded-deps-outputs")
-    publishes: bool = True
-    artifact_prefix: str | None = Field(default=None, alias="artifact-prefix")
-    container_credentials: bool = Field(default=False, alias="container-credentials")
-    ctest: bool = False
-    ctest_args: str = Field(default="", alias="ctest-args")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_unknown_keys(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            raise ValueError(f"must be a table (got {type(data).__name__})")
-        unknown = set(data.keys()) - _RESERVED_MATRIX_KEYS
-        if unknown:
-            raise ValueError(f"has unknown key(s) {sorted(unknown)}; allowed: {sorted(_RESERVED_MATRIX_KEYS)}")
-        return data
-
-    @field_validator("triggers")
-    @classmethod
-    def _triggers_valid(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        bad = [t for t in v if t not in _VALID_TRIGGERS]
-        if bad:
-            raise ValueError(f"triggers entries must be drawn from {sorted(_VALID_TRIGGERS)}; got unknown: {bad}")
-        if len(set(v)) != len(v):
-            raise ValueError(f"triggers must not contain duplicates: {list(v)}")
-        return v
-
-    @field_validator("action")
-    @classmethod
-    def _action_path_shape(cls, v: str) -> str:
-        # Required-when-triggered is checked in _resolve_matrices.
-        if v and not _ACTION_PATH_RE.fullmatch(v):
-            raise ValueError(f"action must be a local composite path like './.github/actions/<name>'; got {v!r}")
-        return v
-
-    @field_validator("forwarded_inputs")
-    @classmethod
-    def _forwarded_inputs_shape(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(v)) != len(v):
-            raise ValueError(f"forwarded-inputs must not contain duplicates: {list(v)}")
-        bad = [x for x in v if not x or x != x.strip()]
-        if bad:
-            raise ValueError(f"forwarded-inputs entries must be non-empty trimmed strings: {bad}")
-        return v
-
-    @field_validator("forwarded_deps_outputs")
-    @classmethod
-    def _forwarded_deps_outputs_valid(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        bad = [x for x in v if x not in _VALID_DEPS_OUTPUTS]
-        if bad:
-            raise ValueError(
-                f"forwarded-deps-outputs entries must be drawn from {sorted(_VALID_DEPS_OUTPUTS)}; got unknown: {bad}"
-            )
-        if len(set(v)) != len(v):
-            raise ValueError(f"forwarded-deps-outputs must not contain duplicates: {list(v)}")
-        return v
-
-    @field_validator("artifact_prefix")
-    @classmethod
-    def _artifact_prefix_shape(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("artifact-prefix must be a non-empty string (or omitted to inherit [package].prefix)")
-        if not _ARTIFACT_PREFIX_RE.fullmatch(stripped):
-            raise ValueError(
-                f"artifact-prefix must match {_ARTIFACT_PREFIX_RE.pattern!r} "
-                f"(letters, digits, hyphen, underscore); got {v!r}"
-            )
-        return stripped
-
-
-class _GeneratedRaw(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    header: str = ""
-
-    @field_validator("header")
-    @classmethod
-    def _comment_lines_only(cls, v: str) -> str:
-        for line in v.splitlines():
-            if line.strip() and not line.lstrip().startswith("#"):
-                raise ValueError(
-                    f"header lines must be YAML comments starting with '#'; got {line!r}. "
-                    "Anything else would land above the workflow document and corrupt it."
-                )
-        return v
-
-
-class _DownstreamGateRaw(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    label: str = Field(min_length=1)
-
-
-class _ManifestRaw(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-    package: _PackageRaw
-    deps: tuple[_DepRefRaw, ...] = ()
-    trigger_downstream: tuple[_TriggerDownstreamRaw, ...] = Field(default=(), alias="trigger-downstream")
-    downstream_gate: _DownstreamGateRaw | None = Field(default=None, alias="downstream-gate")
-    generated: _GeneratedRaw | None = None
-    matrix: dict[str, _MatrixKindRaw] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _no_duplicate_triggers(self) -> _ManifestRaw:
-        seen: set[str] = set()
-        for t in self.trigger_downstream:
-            if t.repo in seen:
-                raise ValueError(f"duplicate [[trigger-downstream]] for {t.repo!r}")
-            seen.add(t.repo)
-        return self
-
-
-def _format_validation_error(path: Path, exc: ValidationError) -> str:
-    """The first pydantic error as one line in TOML notation."""
-    err = exc.errors()[0]
-    loc: tuple[str | int, ...] = tuple(err["loc"])
-    # pydantic prefixes errors raised from our validators.
-    msg = err["msg"].removeprefix("Value error, ")
-    prefix = _format_loc(loc)
-    sep = " " if prefix and not prefix.endswith(" ") else ""
-    return f"{path}: {prefix}{sep}{msg}".rstrip()
-
-
-#: How a pydantic loc head renders in TOML notation. `array` heads are arrays of
-#: tables, so a numeric index becomes `[[deps]][2]`; `subtable` absorbs the next
-#: element into the table name (`[matrix.build]`); `table` is a plain table.
-_LOC_HEADS: Final = {
-    "trigger-downstream": "array",
-    "trigger_downstream": "array",
-    "deps": "array",
-    "matrix": "subtable",
-    "package": "table",
-    "generated": "table",
-}
-
-
-def _format_loc(loc: tuple[str | int, ...]) -> str:
-    """Convert a pydantic loc tuple into a TOML-ish prefix.
-
-    Examples:
-      ()                                -> ""
-      ("package",)                      -> "[package]"
-      ("package", "name")               -> "[package].name"
-      ("matrix", "build")               -> "[matrix.build]"
-      ("matrix", "build", "needs")      -> "[matrix.build].needs"
-      ("trigger-downstream", 0)         -> "[[trigger-downstream]][0]"
-      ("trigger-downstream", 1, "ref")  -> "[[trigger-downstream]][1].ref"
-      ("deps", 2, "package")            -> "[[deps]][2].package"
-    """
-    if not loc:
-        return ""
-    head, rest = str(loc[0]), loc[1:]
-    shape = _LOC_HEADS.get(head)
-    if shape is None:
-        return ".".join(str(p) for p in loc)
-    name = head.replace("_", "-")  # the field is trigger_downstream, the key is trigger-downstream
-    if shape == "array":
-        prefix = f"[[{name}]]"
-        if rest and isinstance(rest[0], int):
-            prefix, rest = f"{prefix}[{rest[0]}]", rest[1:]
-    elif shape == "subtable" and rest:
-        prefix, rest = f"[{name}.{rest[0]}]", rest[1:]
-    else:
-        prefix = f"[{name}]"
-    if rest:
-        prefix += "." + ".".join(str(p) for p in rest)
-    return prefix
-
-
 def parse_manifest(path: Path) -> Manifest:
-    """Parse only what the generator needs; resolve_deps owns the rest."""
+    """Parse the parts of the manifest the generator uses."""
     with path.open("rb") as fh:
         raw_dict = tomllib.load(fh)
     return _build_manifest(path, raw_dict)
@@ -477,9 +229,11 @@ def parse_manifest_text(text: str, path: Path) -> Manifest:
 
 def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
     try:
-        raw = _ManifestRaw.model_validate(raw_dict)
-    except ValidationError as exc:
-        raise SchemaError(_format_validation_error(path, exc)) from exc
+        raw = validate_manifest(raw_dict)
+    except ManifestSchemaError as exc:
+        raise SchemaError(f"{path}: {exc}") from exc
+    if raw.package.repo is None:
+        raise SchemaError(f"{path}: [package].repo is required")
 
     matrices = _resolve_matrices(path, raw.matrix)
 
@@ -499,7 +253,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
     )
 
 
-def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> dict[str, MatrixKind]:
+def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> dict[str, MatrixKind]:
     """Resolve reuse-matrix into legs and apply the cross-field rules."""
     blocks = {
         k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw_matrix.items()

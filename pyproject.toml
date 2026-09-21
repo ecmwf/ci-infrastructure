@@ -31,7 +31,7 @@ ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:ma
 [project.optional-dependencies]
 # One extra per heavy dependency; the module that needs it is noted beside it.
 s3 = ["boto3>=1.34"]                                              # s3_store
-schema = ["pydantic>=2"]                                          # generate_downstream_ci
+schema = ["pydantic>=2"]                                          # manifest
 hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
 all = ["ci-infrastructure[s3,schema,hpc]"]
 test = ["ci-infrastructure[all]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]

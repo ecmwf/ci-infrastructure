@@ -19,6 +19,7 @@ from ci_infrastructure._github_api import (
     Execution,
     canonical_option_segment,
 )
+from ci_infrastructure.manifest import DepTable
 from ci_infrastructure.resolve_deps import (
     ArtifactName,
     DepSpec,
@@ -32,12 +33,17 @@ from ci_infrastructure.resolve_deps import (
     ResolveError,
     Sha,
     _as_option,
-    _parse_deps,
     _resolve_own_sha,
+    _to_dep_spec,
     make_artifact_name,
     producer_can_build,
     resolve_leg,
 )
+
+
+def _parse_deps(data: dict[str, Any]) -> list[DepSpec]:
+    return [_to_dep_spec(DepTable.model_validate(d)) for d in data["deps"]]
+
 
 BRANCH_HEAD: Final = "a" * 40
 MERGE_COMMIT: Final = "b" * 40
@@ -413,10 +419,10 @@ platform = "ubuntu-24.04"
 {block}
 """
 
-    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest must be a boolean"):
+    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest Input should be a valid boolean"):
         resolve_deps.parse_manifest(manifest('ctest = "yes"'))
 
-    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args must be a string"):
+    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args Input should be a valid string"):
         resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
 
 
