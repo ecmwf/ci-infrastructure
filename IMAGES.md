@@ -11,7 +11,7 @@ Harbor registry **`eccr.ecmwf.int`**, project **`public-ci-images`**
 (world-readable). They are built and pushed by
 [`.github/workflows/images.yml`](.github/workflows/images.yml), which does its
 work through [`build-image.sh`](build-image.sh), the entry point for
-[`scripts/build_image.py`](scripts/build_image.py) (Python >= 3.11, stdlib only).
+[`scripts/build_image.py`](scripts/build_image.py) (Python >= 3.11.4, stdlib only).
 
 They live in this repo, next to the `ci_infrastructure` package the base image
 installs, so an image and the sources inside it can never drift apart. The

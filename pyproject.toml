@@ -6,7 +6,9 @@
 name = "ci-infrastructure"
 version = "0.1.0"
 description = "Shared CI orchestration scripts and actions"
-requires-python = ">=3.11"
+# Python 3.11.4 is the backport of the tarfile extraction filters (PEP 706).
+# And the tarfile extraction is used during the transfer test towards the HPC.
+requires-python = ">=3.11.4"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # Minimal: the check-ci-approval pre-commit hook installs only this.

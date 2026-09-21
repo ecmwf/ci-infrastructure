@@ -51,7 +51,7 @@ classification](https://github.com/ecmwf/codex/blob/main/Software%20Maturity/ind
 
 ## Installation
 
-Requires Python >= 3.11.
+Requires Python >= 3.11.4.
 
 ```bash
 pip install .
