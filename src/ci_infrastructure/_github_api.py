@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
 
 from ._errors import CIError
@@ -266,12 +267,22 @@ class WorkflowRuns(NamedTuple):
         return self.state == "running"
 
 
+# The generated workflows that build a package; any other workflow (a legacy CI stuck
+# in the queue, say) must not look like a build in flight.
+_BUILD_WORKFLOWS: Final = frozenset({"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc.yml"})
+
+
+def _is_build_workflow(run: Mapping[str, Any]) -> bool:
+    path = run.get("path")
+    return isinstance(path, str) and PurePosixPath(path.split("@", 1)[0]).name in _BUILD_WORKFLOWS
+
+
 def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
-    """Probe the workflow runs for `sha`; an in-progress run wins over a failed one."""
+    """Probe the build-workflow runs for `sha`; an in-progress run wins over a failed one."""
     data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
     if not isinstance(data, dict):
         return WorkflowRuns("none")
-    runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict)]
+    runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict) and _is_build_workflow(r)]
     if not runs:
         return WorkflowRuns("none")
     for run in runs:

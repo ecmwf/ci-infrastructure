@@ -24,11 +24,12 @@ from ci_infrastructure._github_api import (
 from ci_infrastructure.generate_downstream_ci import parse_manifest as generator_parse
 from ci_infrastructure.resolve_deps import parse_manifest as resolver_parse
 
-RUNNING: Final = {"status": "in_progress", "html_url": "https://gh/run/1"}
-QUEUED: Final = {"status": "queued", "html_url": "https://gh/run/2"}
-OK: Final = {"status": "completed", "conclusion": "success"}
-FAILED: Final = {"status": "completed", "conclusion": "failure"}
-CANCELLED: Final = {"status": "completed", "conclusion": "cancelled"}
+CI: Final = ".github/workflows/ci.yml"
+RUNNING: Final = {"path": CI, "status": "in_progress", "html_url": "https://gh/run/1"}
+QUEUED: Final = {"path": CI, "status": "queued", "html_url": "https://gh/run/2"}
+OK: Final = {"path": CI, "status": "completed", "conclusion": "success"}
+FAILED: Final = {"path": CI, "status": "completed", "conclusion": "failure"}
+CANCELLED: Final = {"path": CI, "status": "completed", "conclusion": "cancelled"}
 
 
 def _payload(monkeypatch: pytest.MonkeyPatch, data: Any) -> None:
@@ -43,6 +44,15 @@ def test_no_runs_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_absent_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _payload(monkeypatch, {})
+    assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
+
+
+def test_only_build_workflows_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    stuck_legacy = {**QUEUED, "path": ".github/workflows/old-ci.yml"}
+    trigger = {**OK, "path": ".github/workflows/cross-repo-trigger-hpc.yml@refs/heads/x"}
+    _payload(monkeypatch, {"workflow_runs": [stuck_legacy, trigger]})
+    assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
+    _payload(monkeypatch, {"workflow_runs": [stuck_legacy]})
     assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
 
 
@@ -80,7 +90,7 @@ def test_all_succeeded_is_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
 
 
-@pytest.mark.parametrize("bad", [FAILED, CANCELLED, {"status": "completed", "conclusion": "timed_out"}])
+@pytest.mark.parametrize("bad", [FAILED, CANCELLED, {**OK, "conclusion": "timed_out"}])
 def test_any_unsuccessful_conclusion_is_failure(monkeypatch: pytest.MonkeyPatch, bad: dict[str, str]) -> None:
     _payload(monkeypatch, {"workflow_runs": [OK, bad]})
     runs = probe_workflow_runs("o/r", "a" * 40, None)
