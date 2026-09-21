@@ -242,6 +242,22 @@ _CTEST_MANIFEST: Final = """
         ),
         pytest.param(
             """
+            [package]
+            name = "a"
+            repo = "org/a"
+            submodules = "yes"
+            compiler-inputs = []
+            [matrix.build]
+            triggers = ["rebuild-request"]
+            action = "./.github/actions/build"
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            """,
+            "submodules",
+            id="invalid-submodules",
+        ),
+        pytest.param(
+            """
             [generated]
             header = "name: not-a-comment"
             """,
@@ -985,6 +1001,34 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         {hpc_kind('["a/build-hpc"]')}
         """,
     )
+
+
+def _build_checkouts(tmp_path: Path, lane: Execution) -> list[dict[str, Any]]:
+    doc = yaml.safe_load(_consumer(tmp_path, "a", lane))
+    return [
+        step["with"]
+        for job in doc["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("uses") == "actions/checkout@v6" and "needs.resolve" in str(step["with"].get("ref"))
+    ]
+
+
+@pytest.mark.parametrize("lane", [EXECUTION_RUNNER, EXECUTION_HPC])
+def test_submodules_reach_the_build_checkout(tmp_path: Path, lane: Execution) -> None:
+    _make_chain_ab(tmp_path, hpc=True)
+    manifest = tmp_path / "a" / ".ci" / "manifest.toml"
+    manifest.write_text(
+        manifest.read_text().replace("compiler-inputs = []", 'compiler-inputs = []\nsubmodules = "recursive"', 1)
+    )
+    checkouts = _build_checkouts(tmp_path, lane)
+    assert checkouts and all(c["submodules"] == "recursive" for c in checkouts)
+
+
+def test_no_submodules_key_by_default(tmp_path: Path) -> None:
+    _make_chain_ab(tmp_path, hpc=True)
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+        checkouts = _build_checkouts(tmp_path, lane)
+        assert checkouts and not any("submodules" in c for c in checkouts)
 
 
 def test_visibility_parses_explicit_values(tmp_path: Path) -> None:

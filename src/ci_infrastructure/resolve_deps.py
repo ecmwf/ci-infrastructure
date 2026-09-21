@@ -16,6 +16,7 @@ Manifest schema:
     prefix = "cxxmath"                      # artifact-name prefix
     repo   = "owner/repo"
     compiler-inputs = ["cxx-compiler"]      # matrix fields identifying the OWN artifact; [] if uncompiled
+    submodules = "recursive"                # optional: actions/checkout `submodules` for the build jobs
 
     [[deps]]
     repo            = "owner/upstream"

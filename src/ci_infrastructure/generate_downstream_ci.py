@@ -206,6 +206,8 @@ class Manifest:
     repo: str
     compiler_inputs: tuple[str, ...] = ()
     visibility: Visibility = VISIBILITY_PRIVATE
+    # [package].submodules: forwarded to actions/checkout on the build jobs.
+    submodules: str | None = None
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
@@ -248,6 +250,7 @@ class _PackageRaw(BaseModel):
     compiler_inputs: tuple[str, ...] = Field(default=(), alias="compiler-inputs")
     # Fail closed: an unlabelled repo is private.
     visibility: Visibility = VISIBILITY_PRIVATE
+    submodules: Literal["true", "recursive"] | None = None
 
 
 class _DepRefRaw(BaseModel):
@@ -487,6 +490,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         repo=raw.package.repo,
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
+        submodules=raw.package.submodules,
         deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
@@ -1200,6 +1204,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                 "repository": m.repo,
                 "ref": "${{ needs.resolve.outputs.ref }}",
                 "token": "${{ steps.mint.outputs.token }}",
+                **({"submodules": m.submodules} if m.submodules else {}),
             },
         },
         _decode_step(mk),
