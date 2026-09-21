@@ -217,12 +217,12 @@ jobs:
             echo "[Watch the build]($url)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Keeps the project under its quota. Runs even when a build failed: a push
-  # refused for quota is exactly the case that needs it, and a re-run then fits.
-  # Never prunes `latest`, so a failed build leaves nothing unpullable.
+  # Keeps the project under its quota, only after every build published cleanly.
+  # A push refused for quota therefore needs the Registry prune workflow first.
   prune-registry:
     needs: [build-base, build-dependents]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    # pull_request_target also reports refs/heads/main, hence the event check.
+    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && !startsWith(github.event_name, 'pull_request') }}
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
