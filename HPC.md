@@ -211,7 +211,7 @@ base's content.
 
 | block | base content |
 |---|---|
-| `sbatch` | `--qos=nf`, `--nodes=1`, `--ntasks`, `--gres=ssdtmp:`, `--time` from the leg |
+| `sbatch` | `--qos=nf`, `--nodes=1`, `--ntasks`, `--cpus-per-task` and `--mem` if set, `--gres=ssdtmp:`, `--time` from the leg |
 | `preflight` | prints the compiler and cmake versions |
 | `configure` | `cmake --preset <options or ci> -S "$CI_SOURCE_DIR" -B "$build"`, plus build type, compilers, rpath, prefix path and install prefix |
 | `cmake_args` | empty, nested in `configure`; every line must end in ` \` |
@@ -248,6 +248,8 @@ wins. The defaults apply to every `.j2` recipe, not only to children of the base
 |---|---|
 | `time` | `01:00:00` |
 | `ntasks` | `8` |
+| `cpus-per-task` | unset (no `--cpus-per-task` line) |
+| `mem` | unset (no `--mem` line) |
 | `ssdtmp` | `20G` |
 | `tests` | `true` |
 | `ctest-args` | `""` |

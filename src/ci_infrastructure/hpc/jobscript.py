@@ -76,6 +76,8 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
     {
         "time": "01:00:00",
         "ntasks": 8,
+        "cpus_per_task": "",
+        "mem": "",
         "ssdtmp": "20G",
         "tests": True,
         "ctest_args": "",

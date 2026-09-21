@@ -32,7 +32,7 @@ EXECUTION_HPC: Final[Execution] = "hpc"
 #: in every hpc artifact name. Consumers load ci-infrastructure @main, so a template
 #: change reaches every repo without moving any sha and would otherwise be served
 #: from cache. 0 adds no segment.
-HPC_TEMPLATE_VERSION: Final = 0
+HPC_TEMPLATE_VERSION: Final = 1
 
 
 def template_version_for_lane(lane: Execution) -> int:

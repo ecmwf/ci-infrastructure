@@ -9,6 +9,12 @@
 #SBATCH --qos=nf
 #SBATCH --nodes=1
 #SBATCH --ntasks={{ ntasks }}
+{% if cpus_per_task %}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% endif %}
+{% if mem %}
+#SBATCH --mem={{ mem }}
+{% endif %}
 #SBATCH --gres=ssdtmp:{{ ssdtmp }}
 #SBATCH --time={{ time }}
 {% endblock %}
