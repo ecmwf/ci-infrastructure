@@ -4,7 +4,7 @@
 
 name: Pick downstream ref
 description: >
-  Emit `try-branch` when it is a sync branch (sync-branch/* / feature-sync/*)
+  Emit `try-branch` when it is a sync branch (`sync-branch/*` / `feature-sync/*`)
   that exists in `repo`, otherwise `fallback-ref`, so coordinated cross-repo PRs
   build against each other. Stdlib-only python, no bootstrap.
 

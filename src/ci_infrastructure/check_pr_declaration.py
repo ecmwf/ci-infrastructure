@@ -123,6 +123,8 @@ class LineDiff:
 
 @dataclass(frozen=True)
 class Result:
+    """The verdict on one pull request description."""
+
     verdict: Verdict
     headline: str
     """One sentence, safe to put in an annotation. Never contains raw body text."""

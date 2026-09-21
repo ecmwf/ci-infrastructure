@@ -17,3 +17,6 @@ build/
 uv.lock
 
 .vscode/
+
+docs/_build/
+docs/reference/_autosummary/

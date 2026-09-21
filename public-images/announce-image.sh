@@ -7,7 +7,7 @@
 # Say which image this job runs in, from inside the image and with no workflow
 # step to declare. Every base sets BASH_ENV to this file, and GitHub runs each
 # step as `bash --noprofile --norc -e -o pipefail`, which sources it. See
-# IMAGES.md.
+# docs/howto/images.md.
 #
 # stderr only: the first bash may be a command substitution, whose stdout is
 # captured. The ::notice annotation belongs to actions/announce-image.

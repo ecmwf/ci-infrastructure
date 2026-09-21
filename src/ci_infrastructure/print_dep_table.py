@@ -6,14 +6,15 @@
 
 """Render the OWN package and its resolved deps as a Markdown table in $GITHUB_STEP_SUMMARY.
 
-The input is one leg's whole `_resolved` block, so the key mapping lives here once:
+The input is one leg's whole `_resolved` block, so the key mapping lives here once::
 
   --resolved '{own-name, own-ref, own-sha, own-platform, own-compiler,
                own-build-type, own-python, own-deps-hash,
                deps: [{name, repo, ref, sha, platform, compiler, build-type,
                        python-version, deps-hash, source, ...}, ...], ...}'
 
-Usage:
+Usage::
+
     print_dep_table.py --resolved '<JSON>' [--own-repo o/r] [--own-source built]
                        [--title "..."]
 """

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Final
 
-# hpc-submit: ARC pods that submit SLURM jobs through troika; not on the cluster (see HPC.md).
+#: Class -> label. hpc-submit: ARC pods that submit SLURM jobs through troika; not on the cluster.
 RUNNER_CLASSES: Final[dict[str, str]] = {
     "hpc-submit": "arc-hpc-pet-vsphere-prod",
 }

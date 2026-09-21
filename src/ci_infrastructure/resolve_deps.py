@@ -9,7 +9,7 @@
 Runs once per workflow (a 'resolve' job); upstream manifests are fetched over the
 GitHub GraphQL API, one batched query per BFS layer.
 
-Manifest schema:
+An example manifest; `manifest` holds the schema::
 
     [package]
     name   = "cxxmath"
@@ -44,7 +44,7 @@ Manifest schema:
 within a distro release. `runs-on` may name a runner class from `runners.RUNNER_CLASSES`.
 The compiler segment joins the compiler-inputs values in alphabetical field-name order.
 
-Outputs (to $GITHUB_OUTPUT, or stdout):
+Outputs (to $GITHUB_OUTPUT, or stdout)::
 
     matrix-<name>=<JSON: {"include": [...]}>
         Each leg plus a '_resolved' object:
@@ -194,6 +194,8 @@ class CtestSpec:
 
 @dataclass
 class Manifest:
+    """What the resolver reads from one manifest."""
+
     package: PackageSpec
     deps: list[DepSpec] = field(default_factory=list)
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)

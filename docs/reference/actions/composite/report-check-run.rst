@@ -1,0 +1,1 @@
+.. autoaction:: report-check-run

@@ -20,7 +20,7 @@ description: >
   job reports Success; and the caller MUST listen for `synchronize`. Repository
   policy belongs on the gate job's own `if:`. Labelling needs only triage, so
   "who may label" is "who may approve". Needs bash, jq, gh and
-  `pull-requests: write`. See the README.
+  `pull-requests: write`. See docs/howto/fork-prs.md.
 
 inputs:
   label:

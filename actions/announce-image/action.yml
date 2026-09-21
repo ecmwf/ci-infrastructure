@@ -5,7 +5,7 @@
 name: Announce image
 description: >
   Print the CI image this job runs in (name, tag, build date, Dockerfile link,
-  from the baked CI_IMAGE_* env; see IMAGES.md) plus `extra`, as a notice and
+  from the baked `CI_IMAGE_*` env; see docs/howto/images.md) plus `extra`, as a notice and
   step summary. Pure bash with no dependencies, so it cannot fail for unrelated
   reasons. Silent when CI_IMAGE_NAME is unset.
 

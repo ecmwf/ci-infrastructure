@@ -5,7 +5,7 @@
 # Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-base
 # Shared foundation: every other public-images/ubuntu24.04/* image FROMs this, as
 # do the private images in ecmwf/ci-container-images.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -93,7 +93,7 @@ COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
 # Self-description: the OCI label facts as env, since a job inside the image
-# cannot read its labels (see IMAGES.md). Declared last, and repeated in EVERY
+# cannot read its labels (see docs/howto/images.md). Declared last, and repeated in EVERY
 # image: an inherited copy would announce the base's name.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""

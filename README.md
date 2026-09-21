@@ -21,8 +21,17 @@ testing ECMWF's downstream package graph. It provides:
   artifact fetch/publish, HPC build submission, check-run reporting, etc.)
   used to wire the above into workflow YAML.
 
-See [`HPC.md`](HPC.md) for details on the SLURM/HPC execution path, and
-[`IMAGES.md`](IMAGES.md) for the container images the CI jobs run inside.
+## Documentation
+
+The documentation lives in [`docs/`](docs): a tutorial, guides (HPC builds, the
+CI images, fork pull requests, the contributor declaration) and the reference
+for the manifest, the runners, the actions, the CLIs and the Python package.
+Build it with
+
+```bash
+pip install ".[docs]"
+sphinx-build -W --keep-going -n docs docs/_build/html
+```
 
 ## Scope
 
@@ -72,150 +81,6 @@ ci-infrastructure-hpc
 ci-infrastructure-check-ci-approval
 ci-infrastructure-check-declaration
 ```
-
-## Example Usage
-
-Resolve the dependency graph for a package and print it as a table:
-
-```bash
-ci-infrastructure-print-dep-table --resolved "$(jq -c '.include[0]._resolved' matrix.json)"
-```
-
-In a workflow, the same functionality is typically consumed through the
-composite actions in [`actions/`](actions), e.g.:
-
-```yaml
-- uses: ecmwf/ci-infrastructure/actions/resolve-deps@main
-  with:
-    config: deps.yml
-```
-
-### Actions never make you bootstrap
-
-That snippet is complete — there is no setup step to remember, and that is a
-guarantee rather than a coincidence:
-
-> **No action requires its caller to bootstrap.** An action that uses the
-> `ci_infrastructure` package runs `actions/ensure-infrastructure-present`
-> itself, as its first step. An action that does not use the package does not,
-> so it costs you no venv.
-
-`tests/test_action_conventions.py` enforces both halves, so it stays true as
-actions are added.
-
-Call `ensure-infrastructure-present` yourself only when a workflow runs
-`$CI_INFRASTRUCTURE_PYTHON` **directly** rather than through an action — as this
-repo's own `hpc-nightly-cleanup.yml` and `smoke-test-hpc.yml` do.
-
-Set `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in a job's `env:` to install from the
-checkout instead of a baked interpreter; see [`IMAGES.md`](IMAGES.md).
-
-## Enforcing the PR Contributor Declaration
-
-Public ECMWF repos inherit a PR template from
-[`ecmwf/.github`](https://github.com/ecmwf/.github/blob/main/.github/PULL_REQUEST_TEMPLATE.md)
-whose last section is the Contributor Declaration — the CLA affirmation plus the
-contributor checklist. To fail pull requests whose description does not end with
-that block verbatim, drop this file into a repo as
-`.github/workflows/contributor-declaration.yml`:
-
-```yaml
-name: Contributor Declaration
-
-on:
-  # pull_request_target runs the BASE branch's copy of this file, so a pull
-  # request cannot edit the gate that judges it. Safe here because nothing from
-  # the pull request is ever checked out or executed and no write token is used.
-  pull_request_target:
-    # `edited` is what makes the gate real: a description can be emptied with no
-    # push at all. `synchronize` is needed for a different reason — required
-    # checks are per-SHA, so a push without a run leaves the check pending.
-    types: [opened, edited, reopened, synchronize]
-
-permissions:
-  contents: read
-
-jobs:
-  contributor-declaration:
-    uses: ecmwf/ci-infrastructure/.github/workflows/check-pr-declaration.yml@main
-```
-
-No secrets, no tokens, and no configuration: the description is read from the
-event payload. A repo whose template has not yet converged on the org block can
-point the check at its own copy with
-`with: {declaration-file: .github/PULL_REQUEST_TEMPLATE.md}`, and dependabot-style
-bot PRs are skipped by default. See
-[`actions/check-pr-declaration`](actions/check-pr-declaration/action.yml) for the
-matching rules, the known gaps, and the full input list.
-
-## Letting fork pull requests onto self-hosted hardware
-
-What is at risk here is the hardware and the credentials that reach it — an HPC
-account, a GPU node, a registry robot, an object store key. A `pull_request` run
-from a fork gets none of them, which is why jobs that need them do not merely
-fail for outside contributors, they cannot work at all. `pull_request_target`
-hands them over — to anyone who opens a pull request, the moment the job checks
-their branch out and runs it.
-[`actions/require-ci-approval`](actions/require-ci-approval/action.yml) is what
-makes that trade payable: the branch runs only after someone with write access
-has read the diff and applied `approved-for-ci`.
-
-```yaml
-jobs:
-  ci-approval:
-    # bash, jq, and gh only to spend the label — no checkout, no Python, no
-    # network to reach a verdict, so the cheapest runner is the right one. The
-    # action says which tool is missing if an image turns out not to carry one.
-    runs-on: ubuntu-slim
-    permissions:
-      pull-requests: write   # only so the label can be deleted
-    steps:
-      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
-
-  build-on-hpc:
-    needs: ci-approval
-    runs-on: hpc
-    ...
-```
-
-The step succeeds exactly when the gated jobs may run, so `needs:` is the whole
-wiring — no `if:` on the dependants. Two properties are the point, and both are
-easy to lose by rewriting this into something that looks equivalent:
-
-- **It fails; it does not skip.** The obvious spelling — `if: contains(labels,
-  'approved-for-ci')` on each job — is wrong, because a job skipped by a
-  conditional reports *Success* to the merge box. An unapproved pull request
-  would show a row of green ticks meaning "these never ran", and a required
-  status check on them would enforce nothing.
-- **The label is a single-use token.** It is deleted the moment it is honoured,
-  so one approval buys one run and a contributor cannot earn approval on a
-  harmless diff and then replay it. Deleting it *then*, rather than on the next
-  push, is the whole point: consumers set `cancel-in-progress`, so a revocation
-  that waits for one particular run to reach its own gate step is one a
-  superseding run can cancel away. A `synchronize` or `reopened` still fails —
-  and still deletes — as the backstop for exactly that case, so the caller must
-  listen for `synchronize`.
-
-  The cost is that approval covers a run, not a commit: a GitHub *re-run* replays
-  the frozen event payload and still sees the label, but any new event needs a
-  fresh one. On a fork pull request that also wants the downstream fan-out, apply
-  `approved-for-ci` and `run-downstream-CI` together — the second label
-  re-triggers CI, and that run needs an approval of its own.
-
-It answers "may this contributor's code run on our hardware?", never "is this
-job worth running on this pull request?". Opt-in labels, paths filters and
-similar policy stay in the consuming repository, on the **gate job's own `if:`**
-— skipping the gate skips everything behind it, which is the right outcome when
-the jobs were not wanted anyway. The one thing that must not happen is that
-condition being folded into a per-job `if:` that also subsumes the approval
-decision.
-
-Two things it cannot do for you. Applying a label needs only *triage*
-permission, so a repository that hands triage to people it would not hand an
-HPC account has widened the gate — treat "who may label" as "who may approve".
-And a `pull_request_target` workflow always runs the base branch's copy of
-itself, so a pull request editing the gated workflow cannot test that edit; use
-`workflow_dispatch` on the branch.
 
 ## License
 

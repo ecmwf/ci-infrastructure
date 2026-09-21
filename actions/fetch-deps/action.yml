@@ -5,7 +5,7 @@
 name: Fetch resolved deps
 description: >
   Download each dep from resolve-deps into its install path from the S3 store
-  (location from ARTIFACT_S3_*, credentials from AWS_* in the job env) and emit
+  (location from `ARTIFACT_S3_*`, credentials from `AWS_*` in the job env) and emit
   the CMAKE_PREFIX_PATH covering them. publish-artifact is the counterpart.
 
 inputs:

@@ -33,7 +33,7 @@ carries a UTC date, <sha>-<YYYYMMDD>; a tag still names fixed bytes.
 
 --discover and build share compute_tag; keep it the only rebuild rule.
 
-Conventions (see IMAGES.md):
+Conventions (see docs/howto/images.md):
   - image ref  = <REGISTRY>/<PROJECT>/<platform>-<variant>:<tag>
   - also tagged  <REGISTRY>/<PROJECT>/<platform>-<variant>:latest  (on push)
   - tag        = git log -1 --format=%h over the tag paths (below)

@@ -14,7 +14,7 @@ inputs:
     default: '.ci/manifest.toml'
   current-branch:
     description: >
-      Branch currently being built. When it matches sync-branch/* or feature-sync/*, upstream
+      Branch currently being built. When it matches `sync-branch/*` or `feature-sync/*`, upstream
       repos are checked for a same-named branch and the resolver uses it where
       it exists (mirrors actions/pick-ref behavior).
     required: false

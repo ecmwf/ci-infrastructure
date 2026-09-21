@@ -1,0 +1,1 @@
+.. autoaction:: check-pr-declaration

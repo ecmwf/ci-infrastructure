@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 The container images the downstream-CI jobs run inside, hosted on the ECMWF
 Harbor registry **`eccr.ecmwf.int`**, project **`public-ci-images`**
 (world-readable). They are built and pushed by
-[`.github/workflows/images.yml`](.github/workflows/images.yml), which does its
-work through [`build-image.sh`](build-image.sh), the entry point for
-[`scripts/build_image.py`](scripts/build_image.py) (Python >= 3.11.4, stdlib only).
+[`.github/workflows/images.yml`](https://github.com/ecmwf/ci-infrastructure/blob/main/.github/workflows/images.yml), which does its
+work through [`build-image.sh`](https://github.com/ecmwf/ci-infrastructure/blob/main/build-image.sh), the entry point for
+[`scripts/build_image.py`](https://github.com/ecmwf/ci-infrastructure/blob/main/scripts/build_image.py) (Python >= 3.11.4, stdlib only).
 
 They live in this repo, next to the `ci_infrastructure` package the base image
 installs, so an image and the sources inside it can never drift apart. The
@@ -266,7 +266,7 @@ would build" — exactly the set worth validating.
 Every build job builds into the runner's docker daemon, runs
 `build-image.sh --test` against that image, and only then pushes it — on `main`
 only, and the very image that was tested, never a rebuild. `--test` runs
-[`public-images/verify-image.sh`](public-images/verify-image.sh) (the image
+[`public-images/verify-image.sh`](https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/verify-image.sh) (the image
 contract: baked `ci_infrastructure`, `CI_IMAGE_*`, cmake floor, the compilers the
 image's name promises and working OpenMP for each of them, the announcer) and
 then `pytest` over `tests/` against the
@@ -361,7 +361,7 @@ run — GitHub starts it with its own command, which is why every base here ends
 with `ENTRYPOINT []`.
 
 Under ARC's Kubernetes mode "Initialize containers" does not name the image; see
-[`runners/README.md`](runners/README.md).
+[Runner-side hooks](../reference/runners.md#runner-side-hooks).
 
 > **Inheritance cuts both ways.** Docker `ENV` is inherited, so an image that
 > `FROM`s one of these **must re-declare the whole `CI_IMAGE_*` `ARG`/`ENV`
@@ -390,7 +390,7 @@ Deleting the directory stops the image being built, but its repository stays in
 the registry serving `:latest`, so a reference to the old name keeps working
 silently instead of failing. Nothing prunes these.
 
-[`scripts/registry_cleanup.py`](scripts/registry_cleanup.py) `orphans` lists
+[`scripts/registry_cleanup.py`](https://github.com/ecmwf/ci-infrastructure/blob/main/scripts/registry_cleanup.py) `orphans` lists
 the repositories no Dockerfile here builds any more; the **Registry cleanup**
 workflow runs it on demand (task `orphans`), and deletes them when dispatched
 with `delete`. It never does so on its own schedule.

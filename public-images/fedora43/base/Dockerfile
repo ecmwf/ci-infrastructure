@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/fedora43-base
 # Shared foundation: every other public-images/fedora43/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
 FROM fedora:43
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1

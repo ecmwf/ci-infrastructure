@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Sample plain HPC recipe; see HPC.md. The wrapper exports $CMAKE_PREFIX_PATH,
+# Sample plain HPC recipe; see docs/howto/hpc.md. The wrapper exports $CMAKE_PREFIX_PATH,
 # $CI_INSTALL_PREFIX and $CI_INSTALL_ARCHIVE and appends the sentinel.
 # Plain #SBATCH lines: troika's site API ignores "# troika" directives.
 #SBATCH --qos=nf

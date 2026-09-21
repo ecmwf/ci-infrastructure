@@ -5,7 +5,7 @@
 name: Contributor Declaration
 
 # Callers own the triggers -- a reusable workflow cannot declare its own. Copy
-# the snippet from this repo's README verbatim; in particular the caller MUST
+# the snippet from docs/howto/contributor-declaration.md verbatim; in particular the caller MUST
 # listen for `edited`, because a description can be emptied with no push at all,
 # and `synchronize`, because required checks are per-SHA.
 on:

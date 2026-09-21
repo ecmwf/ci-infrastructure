@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/ubuntu22.04-gcc11-gfortran11-boost-qt6
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
 #
 # This variant installs its complete toolchain directly on the shared base. The
 # image workflow supports only base -> variant dependency chains.

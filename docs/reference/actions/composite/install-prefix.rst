@@ -1,0 +1,1 @@
+.. autoaction:: install-prefix

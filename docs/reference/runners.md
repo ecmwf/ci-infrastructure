@@ -4,12 +4,35 @@ SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Runner-side hooks
+# Runners
 
-Nothing here is baked into an image or fetched by a workflow. It is configuration
+## Labels
+
+| `runs-on` | Hosted by | Used for |
+|---|---|---|
+| `ubuntu-slim` | GitHub | Jobs that only talk to APIs and shuffle YAML: 1 CPU, unprivileged. The generated workflows use it for everything but the build legs. |
+| `ubuntu-latest`, `ubuntu-24.04` | GitHub | Linting and this repo's own tests. |
+| `arc-runner-normal`, `arc-runner-large`, `arc-runner-very-large` | ARC scale sets | Build legs. `smoke-test-runners.yml` reports each one's size and checks object-store and sccache access. |
+| `hpc-submit` | ARC (runner class) | HPC legs: the pod that submits the SLURM job through troika. It is not on the cluster; see [](../howto/hpc.md). |
+
+A fork pull request reaches the self-hosted rows only through {action}`require-ci-approval`; see [](../howto/fork-prs.md).
+
+## Runner classes
+
+A leg may name a runner class instead of a label; `ci-infrastructure-resolve`
+substitutes the label, so a scale set can be renamed in one place.
+
+```{eval-rst}
+.. autodata:: ci_infrastructure.runners.RUNNER_CLASSES
+   :no-index:
+```
+
+## Runner-side hooks
+
+Nothing in `runners/` is baked into an image or fetched by a workflow. It is configuration
 for the ARC runners themselves, kept next to the images so the two stay in step.
 
-## `container-hook-wrapper.js`
+### `container-hook-wrapper.js`
 
 Names the job's container image in the runner's own **"Initialize containers"**
 block, above every workflow step.
@@ -27,7 +50,7 @@ shell: /home/runner/externals/node20/bin/node {0}
 `index.js` is the container hook, so pointing the hook at this wrapper restores
 the line.
 
-### Wiring
+#### Wiring
 
 `ACTIONS_RUNNER_CONTAINER_HOOKS` names the executable the runner calls instead of
 doing container work itself. Point it at the wrapper; the wrapper then calls the
@@ -38,7 +61,7 @@ injects its default when you have not set the variable yourself
 (`charts/gha-runner-scale-set/templates/_helpers.tpl`, in
 `gha-runner-scale-set.kubernetes-mode-runner-container`):
 
-```gotemplate
+```text
 {{- if eq $env.name "ACTIONS_RUNNER_CONTAINER_HOOKS" }}
   {{- $setContainerHooks = 0 }}
 {{- end }}
@@ -96,7 +119,7 @@ scale set that enables it, including other teams' — a broken hook fails them a
 at "Initialize containers". Check that the block gained its line and that job
 start time is unchanged before widening.
 
-### Sources
+#### Sources
 
 - [Customizing the containers used by jobs](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/customize-containers)
   — what `ACTIONS_RUNNER_CONTAINER_HOOKS` is, and that the runner sends
@@ -116,7 +139,7 @@ start time is unchanged before widening.
 - [Deploying runner scale sets with ARC](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets)
   — kubernetes mode, and the `template.spec.containers[name: runner].env` form.
 
-### What it does and does not print
+#### What it does and does not print
 
 Only what the hook payload already carries: `args.container.image`, plus each
 `args.services[].image`. Hooks block job start and the runner applies no timeout
@@ -124,7 +147,7 @@ to them, so there is no registry lookup and no `kubectl` here. That also rules
 out the digest and the `CI_IMAGE_*` provenance — at `prepare_job` the pod does
 not exist, and those values are baked inside an image that has not started. The
 image announces those itself once it is running; see *Self-description* in
-[IMAGES.md](../IMAGES.md).
+[](../howto/images.md).
 
 It is a pass-through, not a `prepare_job` handler: the runner allows no partial
 opt-in (see [ADR 1891](https://github.com/actions/runner/blob/main/docs/adrs/1891-container-hooks.md)

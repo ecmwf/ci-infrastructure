@@ -1,0 +1,1 @@
+.. autoaction:: announce-image

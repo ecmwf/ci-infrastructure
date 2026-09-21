@@ -4,7 +4,7 @@
 
 """Conventions every action under actions/ satisfies.
 
-Bootstrap contract (README.md): an action that uses the ci_infrastructure package nests
+Bootstrap contract (docs/explanation/bootstrap.md): an action that uses the ci_infrastructure package nests
 ensure-infrastructure-present itself; an action that does not, does not.
 """
 
@@ -82,7 +82,7 @@ def test_action_bootstraps_exactly_when_it_needs_the_package(path: Path) -> None
         pytest.fail(
             f"{name} uses the ci_infrastructure package but does not nest "
             f"{BOOTSTRAP}, so its caller has to bootstrap -- which no action may "
-            "require (see the invariant in README.md)"
+            "require (see the invariant in docs/explanation/bootstrap.md)"
         )
     if nests and not needs:
         pytest.fail(

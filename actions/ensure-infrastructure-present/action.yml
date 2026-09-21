@@ -4,11 +4,11 @@
 
 name: Ensure ci-infrastructure infrastructure is present
 description: >
-  Usually nested by other actions (see README.md); call it directly only when a
+  Usually nested by other actions (see docs/explanation/bootstrap.md); call it directly only when a
   workflow runs $CI_INFRASTRUCTURE_PYTHON itself. Exposes a ci-infrastructure
-  interpreter as $CI_INFRASTRUCTURE_PYTHON: a baked image interpreter whose *.py
+  interpreter as $CI_INFRASTRUCTURE_PYTHON: a baked image interpreter whose `*.py`
   digest matches the checkout (a mismatch warns), else a content-keyed venv in
-  $RUNNER_TOOL_CACHE. Only *.py is hashed, so drift in data files is not detected.
+  $RUNNER_TOOL_CACHE. Only `*.py` is hashed, so drift in data files is not detected.
 
 inputs:
   force-reinstall:

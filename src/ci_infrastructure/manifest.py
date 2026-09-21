@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ._github_api import _OPTION_TOKEN_RE, EXECUTION_RUNNER, Execution, ManifestSchemaError
 
@@ -111,7 +111,8 @@ class DepTable(_Table):
         alias="python-version-input",
         description="Leg field selecting the upstream's Python version; read only with `needs-python`.",
     )
-    needs_python: StrictBool = Field(
+    needs_python: bool = Field(
+        strict=True,
         default=False,
         alias="needs-python",
         description="The artifact carries a wheel; fetch-deps installs it into the consumer's Python.",
@@ -253,7 +254,8 @@ class MatrixKindTable(_Table):
         alias="forwarded-deps-outputs",
         description="`fetch-deps` outputs passed to the action's `with:`; only `cmake-prefix-path`.",
     )
-    publishes: StrictBool = Field(
+    publishes: bool = Field(
+        strict=True,
         default=True,
         description="Upload the install tree as an artifact. `false` for test kinds, whose action gets "
         "`own-artifact-name` instead.",
@@ -263,13 +265,14 @@ class MatrixKindTable(_Table):
         alias="artifact-prefix",
         description="Publish under this prefix instead of `[package].prefix`, for a secondary artifact.",
     )
-    container_credentials: StrictBool = Field(
+    container_credentials: bool = Field(
+        strict=True,
         default=False,
         alias="container-credentials",
         description="Pull the leg's `container` with registry credentials.",
     )
-    ctest: StrictBool = Field(
-        default=False, description="Run ctest on the build tree before publishing; runner kinds only."
+    ctest: bool = Field(
+        strict=True, default=False, description="Run ctest on the build tree before publishing; runner kinds only."
     )
     ctest_args: str = Field(default="", alias="ctest-args", description="Extra ctest arguments; needs `ctest = true`.")
 

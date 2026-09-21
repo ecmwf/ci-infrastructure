@@ -1,0 +1,1 @@
+.. autoaction:: validate-generated-workflows
