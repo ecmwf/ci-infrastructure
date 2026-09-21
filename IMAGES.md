@@ -390,6 +390,18 @@ workflow runs it on demand, and deletes them when dispatched with `delete`.
 Deletion is irreversible, so check what still pulls a repository — Harbor's pull
 count is on the report — before ticking it.
 
+## Old versions and the project quota
+
+Every publish adds a version and nothing else removes one, so without pruning the
+project's 100 GiB quota fills and pushes fail with *"exceed the configured upper
+limit"*. After the build jobs on `main`, `images.yml` runs
+[`scripts/registry_prune.py`](scripts/registry_prune.py). It deletes all but the
+two most recently pushed versions of every repository, and never one tagged
+`latest`. It runs even when a build failed, so a push refused for quota succeeds
+on re-run. The **Registry prune** workflow does the same on demand; it only
+reports unless dispatched with `delete`, and takes a different `keep`. Anything
+pinned to an older `<sha>` tag stops pulling once it has been pruned.
+
 ## Building by hand
 
 The workflow and a workstation share one script, so both produce identical,
