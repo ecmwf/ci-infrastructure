@@ -2,22 +2,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Registry prune
+name: Registry cleanup
 
-# Nightly it deletes all but the two newest versions per repository, keeping the
-# project under its quota. Dispatched, it only reports unless `delete` is ticked.
+# Nightly: prune, deleting all but the two newest versions per repository, which
+# keeps the project under its quota. Dispatched: either task, report-only unless
+# `delete` is ticked. Orphans never run unattended -- deleting a repository
+# cannot be undone, so check its pull count on the report first.
 on:
   # 02:47 UTC: before images.yml's nightly build (03:17), so its pushes have room.
   schedule:
     - cron: '47 2 * * *'
   workflow_dispatch:
     inputs:
+      task:
+        description: 'prune: old versions; orphans: repositories no Dockerfile builds'
+        type: choice
+        options: [prune, orphans]
+        default: prune
       delete:
-        description: 'Delete the stale versions as well as reporting them'
+        description: 'Delete as well as report'
         type: boolean
         default: false
       keep:
-        description: 'Versions to keep per repository'
+        description: 'prune: versions to keep per repository'
         type: number
         default: 2
 
@@ -25,26 +32,27 @@ permissions:
   contents: read
 
 jobs:
-  prune:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - name: Prune
+      - name: Clean up
         shell: bash
         env:
           # Only needed for --delete; the listing is anonymous.
           PUBLIC_ECCR_CLEANUP_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_NAME }}
           PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN }}
-          # A scheduled run has no inputs: it deletes, keeping the default.
+          # A scheduled run has no inputs: it prunes and deletes, keeping the default.
+          TASK: ${{ inputs.task || 'prune' }}
           DELETE: ${{ github.event_name == 'schedule' || inputs.delete }}
           KEEP: ${{ inputs.keep || 2 }}
         run: |
           set -euo pipefail
-          args=(--format md --keep "$KEEP")
+          args=("$TASK" --format md --keep "$KEEP")
           if [ "$DELETE" = "true" ]; then
             args+=(--delete)
           fi
-          python3 scripts/registry_prune.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/registry_cleanup.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
