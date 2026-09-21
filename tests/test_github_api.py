@@ -174,6 +174,30 @@ def test_reuse_matrix_rejections(kind: str, include: Any, reuse: Any, expected: 
         resolve_reuse_matrix(kind, include, reuse, _BLOCKS)
 
 
+def test_defaults_fill_in_under_each_leg() -> None:
+    blocks = {"build": {"defaults": {"build-type": "RelWithDebInfo", "ntasks": 2}}}
+    legs = resolve_reuse_matrix("build", [{"a": "1"}, {"a": "2", "ntasks": 4}], None, blocks)
+    assert legs == (
+        {"build-type": "RelWithDebInfo", "ntasks": 2, "a": "1"},
+        {"build-type": "RelWithDebInfo", "ntasks": 4, "a": "2"},
+    )
+
+
+def test_reuse_takes_the_target_defaults_then_its_own() -> None:
+    blocks: dict[str, dict[str, Any]] = {
+        "build": {"include": [{"a": "1"}], "defaults": {"build-type": "Release", "tests": True}},
+        "test": {"reuse-matrix": "build", "defaults": {"build-type": "Debug", "extra": "x"}},
+    }
+    assert resolve_reuse_matrix("test", None, "build", blocks) == (
+        {"extra": "x", "build-type": "Release", "tests": True, "a": "1"},
+    )
+
+
+def test_defaults_must_be_a_table() -> None:
+    with pytest.raises(ManifestSchemaError, match=r"\[matrix.build.defaults\] must be a table"):
+        resolve_reuse_matrix("build", [{"a": "1"}], None, {"build": {"defaults": "x"}})
+
+
 def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) -> None:
     body = textwrap.dedent("""
         [package]
@@ -192,10 +216,12 @@ def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) 
         action = "./.github/actions/test-a"
         publishes = false
 
+        [matrix.build.defaults]
+        build-type = "Release"
+
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
         cxx-compiler = "clang++-18"
-        build-type = "Release"
         platform = "ubuntu-24.04"
     """)
     manifest_path = write_repo(tmp_path, "a", body)
@@ -206,3 +232,4 @@ def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) 
     for kind in ("build", "test"):
         assert [dict(leg) for leg in generated.matrices[kind].legs] == resolved.matrix[kind]
     assert resolved.matrix["test"] == resolved.matrix["build"] != []
+    assert resolved.matrix["build"][0]["build-type"] == "Release"

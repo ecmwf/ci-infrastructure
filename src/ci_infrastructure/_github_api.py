@@ -315,7 +315,9 @@ def resolve_reuse_matrix(
 ) -> tuple[dict[str, Any], ...]:
     """The legs of `[matrix.<kind>]` after `reuse-matrix = "X"` (share X's legs; no chaining).
 
-    Shared by the generator and the resolver, which must agree on every leg.
+    Each leg is laid over its matrix's `defaults` table; a reusing kind's own
+    `defaults` then go under X's. Shared by the generator and the resolver,
+    which must agree on every leg.
     """
     if reuse is not None and include:
         raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")
@@ -332,7 +334,16 @@ def resolve_reuse_matrix(
                 f"[matrix.{kind}].reuse-matrix = {str(reuse)!r} is itself a reuse-matrix; "
                 f"chained reuse is not supported"
             )
-        legs = target.get("include") or ()
+        legs = _with_defaults(str(reuse), target.get("include") or (), target.get("defaults"))
+    own = blocks.get(kind, {}).get("defaults")
+    return _with_defaults(kind, legs, own)
+
+
+def _with_defaults(kind: str, legs: object, defaults: object) -> tuple[dict[str, Any], ...]:
     if not isinstance(legs, (list, tuple)):
         raise ManifestSchemaError(f"[matrix.{kind}.include] must be an array of tables")
-    return tuple(dict(leg) for leg in legs)
+    if defaults is None:
+        defaults = {}
+    if not isinstance(defaults, Mapping):
+        raise ManifestSchemaError(f"[matrix.{kind}.defaults] must be a table")
+    return tuple({**defaults, **leg} for leg in legs)

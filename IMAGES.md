@@ -190,10 +190,11 @@ and `CI_INFRASTRUCTURE_BAKED_REF`, which records *which* commit was baked so a
 running job can tell whether the image is current.
 
 > `ensure-infrastructure-present` compares a digest of the baked package's `*.py`
-> against the checkout's and **fails on a mismatch**. On a pull request the
-> published image necessarily lags the branch under test, so any PR job running
-> inside one of these images must set `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in
-> the job's `env:` (an env var, because a nested `uses:` cannot forward an input).
+> against the checkout's and, on a mismatch, **warns and installs from the
+> checkout** into a venv. A PR job, or any job in the minutes after a merge to
+> main, sees this until `images.yml` republishes the image.
+> `CI_INFRASTRUCTURE_FORCE_REINSTALL=true` in the job's `env:` skips the baked
+> interpreter outright (an env var, because a nested `uses:` cannot forward an input).
 
 ## Tagging — `<sha>` + `latest`
 
