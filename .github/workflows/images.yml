@@ -53,8 +53,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Push for pushes to main; never for pull_request validation.
-  PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+  # Push for pushes to main; never for pull_request validation. Matched by prefix:
+  # under pull_request_target github.ref is the base branch, i.e. main.
+  PUSH: ${{ !startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
   # Validate dependents on pull requests against the base rebuilt in the same run.
   # 'false' validates only the bases, which is faster and misses broken variants.
@@ -77,7 +78,7 @@ jobs:
           persist-credentials: false
       - id: d
         env:
-          MODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && 'publish' || (env.VALIDATE_DEPENDENTS_ON_PR == 'true' && 'validate' || 'validate-bases') }}
+          MODE: ${{ (!startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main') && 'publish' || (env.VALIDATE_DEPENDENTS_ON_PR == 'true' && 'validate' || 'validate-bases') }}
           REBUILD: ${{ inputs.rebuild }}
         run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD"
 
@@ -179,7 +180,7 @@ jobs:
   notify-container-images:
     needs: [discover, build-base, build-dependents]
     if: ${{ !cancelled()
-            && github.event_name != 'pull_request'
+            && !startsWith(github.event_name, 'pull_request')
             && github.ref == 'refs/heads/main'
             && needs.discover.outputs.base-in-set == 'true'
             && needs.build-base.result == 'success'
