@@ -218,6 +218,7 @@ class Manifest:
 _RESERVED_MATRIX_KEYS: Final = frozenset(
     {
         "include",
+        "defaults",
         "triggers",
         "needs",
         "reuse-matrix",
@@ -284,6 +285,7 @@ class _MatrixKindRaw(BaseModel):
     needs: tuple[str, ...] = ()
     reuse_matrix: str | None = Field(default=None, alias="reuse-matrix")
     include: tuple[dict[str, Any], ...] = ()
+    defaults: dict[str, Any] = Field(default_factory=dict)
     execution: Execution = EXECUTION_RUNNER
     action: str = ""
     job_script: str = Field(default="", alias="job-script")
@@ -495,7 +497,9 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
 
 def _resolve_matrices(path: Path, raw_matrix: Mapping[str, _MatrixKindRaw]) -> dict[str, MatrixKind]:
     """Resolve reuse-matrix into legs and apply the cross-field rules."""
-    blocks = {k: {"reuse-matrix": b.reuse_matrix, "include": b.include} for k, b in raw_matrix.items()}
+    blocks = {
+        k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw_matrix.items()
+    }
 
     resolved: dict[str, MatrixKind] = {}
     for kind, body in raw_matrix.items():

@@ -7,7 +7,7 @@ description: >
   Usually nested by other actions (see README.md); call it directly only when a
   workflow runs $CI_INFRASTRUCTURE_PYTHON itself. Exposes a ci-infrastructure
   interpreter as $CI_INFRASTRUCTURE_PYTHON: a baked image interpreter whose *.py
-  digest matches the checkout (a mismatch is fatal), else a content-keyed venv in
+  digest matches the checkout (a mismatch warns), else a content-keyed venv in
   $RUNNER_TOOL_CACHE. Only *.py is hashed, so drift in data files is not detected.
 
 inputs:
@@ -107,8 +107,7 @@ runs:
             echo "ensure-infrastructure-present: reusing the baked interpreter $python (*.py digest $baked_hash matches the checkout)"
           else
             baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
-            echo "::error::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}). The images are rebuilt automatically by ecmwf/ci-infrastructure's images.yml on every push to main that changes what gets installed, so on a pull request -- or on a commit that just landed -- the image is EXPECTED to lag and this is not a fault: set CI_INFRASTRUCTURE_FORCE_REINSTALL=true in your job's env: to install from the checkout instead (or force-reinstall: true, if you call this action directly rather than through one that nests it). If the checkout is an already-published main commit, the publish failed or was skipped; re-run images.yml." >&2
-            exit 1
+            echo "::warning::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}); installing from the checkout instead. Expected on a pull request or just after a merge to main, until images.yml republishes the image; if it persists, check images.yml."
           fi
         fi
 

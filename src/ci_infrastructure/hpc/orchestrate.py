@@ -510,10 +510,9 @@ def submit_wait(
         run_id=run_id if ships_source else None,
         marker_wait_timeout=marker_wait_timeout,
     )
-    if jobscript.is_job_template(repo_script):
-        print(f"submit-wait: rendered {repo_script} for this leg:")
-        for line in recipe.splitlines():
-            print(f"  | {line}")
+    print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
+    print(rendered)
+    print("::endgroup::")
     # Render next to the repo script so troika's copy_script picks it up locally.
     script_path = repo_script.parent / f"job-{artifact_name}.sh"
     write_job_script(script_path, rendered)

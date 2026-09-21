@@ -254,6 +254,15 @@ wins. The defaults apply to every `.j2` recipe, not only to children of the base
 | `fc` | `""` (no Fortran compiler) |
 | `options` | `""` |
 
+To set a value once for every leg of one kind, put it in `[matrix.<kind>.defaults]`.
+This works for any matrix, not only HPC. A leg's own key still wins:
+
+```toml
+[matrix.build-hpc.defaults]
+build-type = "RelWithDebInfo"
+ntasks = 2
+```
+
 ### CMake presets
 
 The base configures with `cmake --preset <options>`, or `--preset ci` for a leg
