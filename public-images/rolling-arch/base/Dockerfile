@@ -52,7 +52,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
 # Install ci-infrastructure from the build context; see ubuntu24.04/base.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
+RUN pip install --no-cache-dir "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 # Advertise the interpreter ci-infrastructure was baked into.

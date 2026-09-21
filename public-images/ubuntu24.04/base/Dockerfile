@@ -68,7 +68,7 @@ RUN mkdir -p /etc/apt/keyrings \
 # editable: ensure-infrastructure-present hashes the installed *.py files.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN pip install "/opt/ci-infrastructure[all]" \
+RUN pip install "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 # ensure-infrastructure-present reuses this interpreter instead of a venv. It

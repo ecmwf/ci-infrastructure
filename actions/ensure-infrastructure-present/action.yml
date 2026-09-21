@@ -171,8 +171,8 @@ runs:
             start=$SECONDS
             # Not --quiet, so a stall is visible; timeouts make blocked egress fail fast.
             echo "  pip install ci-infrastructure from $repo_root ..."
-            # [all]: the base install is only what the pre-commit hook needs.
-            "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[all]"
+            # [runtime]: the base install is only what the pre-commit hook needs.
+            "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[runtime]"
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
           # mtime = last use, so the sweep below measures idleness.

@@ -53,7 +53,7 @@ RUN dnf -y install 'dnf-command(config-manager)' \
 # Install ci-infrastructure from the build context; see ubuntu24.04/base.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN python3.12 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
+RUN python3.12 -m pip install --no-cache-dir "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 # python3.12, not /usr/bin/python3 (3.6).

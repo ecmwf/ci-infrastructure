@@ -12,7 +12,7 @@ requires-python = ">=3.11.4"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 # Minimal: the check-ci-approval pre-commit hook installs only this.
-# The actions install `[all]`.
+# The actions install `[runtime]`.
 dependencies = [
     "click>=8.1",
     "PyYAML>=6",
@@ -35,9 +35,10 @@ ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:ma
 s3 = ["boto3>=1.34"]                                              # s3_store
 schema = ["pydantic>=2"]                                          # manifest
 hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
-all = ["ci-infrastructure[s3,schema,hpc]"]
-test = ["ci-infrastructure[all]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
+runtime = ["ci-infrastructure[s3,schema,hpc]"]
+test = ["ci-infrastructure[runtime]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
 docs = ["ci-infrastructure[schema]", "jinja2>=3.1", "sphinx>=8", "furo", "myst-parser>=4", "sphinx-click>=6"]
+all = ["ci-infrastructure[runtime,test,docs]"]
 
 [build-system]
 requires = ["setuptools>=77"]
