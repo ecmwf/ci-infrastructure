@@ -55,6 +55,16 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     assert 'tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"' in lines
 
 
+def test_cpus_per_task_and_mem_render_only_when_set() -> None:
+    bare = _render().splitlines()
+    assert not [line for line in bare if line.startswith(("#SBATCH --cpus-per-task", "#SBATCH --mem"))]
+    lines = _render(leg={"cpus-per-task": 64, "mem": "64GB"}).splitlines()
+    assert lines[lines.index("#SBATCH --ntasks=8") + 1 : lines.index("#SBATCH --gres=ssdtmp:20G")] == [
+        "#SBATCH --cpus-per-task=64",
+        "#SBATCH --mem=64GB",
+    ]
+
+
 def test_sbatch_block_stays_in_the_wrapped_header() -> None:
     wrapped = jobscript.render_job_script(
         repo_script=_render(), output_path="/o", cmake_prefix_path="/p", install_path="/i"
@@ -147,8 +157,8 @@ def test_repo_file_cannot_shadow_the_base(tmp_path: Path) -> None:
     assert "shadowed" not in _render(search_path=tmp_path)
 
 
-TEMPLATE_SHA256: Final = "ea812388d9d782220baa94311ee215c1f9f5ac56e83c729c7e0615aa409ad1c2"
-TEMPLATE_VERSION: Final = 0
+TEMPLATE_SHA256: Final = "9948b226aaeb3a61f484f0c0189efb0a2b66986ceb4f305f79514f2838c013cc"
+TEMPLATE_VERSION: Final = 1
 
 
 def test_base_template_change_bumps_the_template_version() -> None:

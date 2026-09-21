@@ -215,6 +215,7 @@ def ship_source(
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_source_dir), "."], check=True)
     _reset_staging_dir(conn, staging_dir=staging_dir, run_id=run_id)
     conn.sendfile(local_tgz, remote_tgz)
+    local_tgz.unlink()
     if remote_deps_dir is not None:
         for index, prefix in enumerate(local_prefixes):
             push_tree(
@@ -253,6 +254,7 @@ def fetch_tree(
     conn.getfile(remote_tgz, local_tgz)
     Path(local_dir).mkdir(parents=True, exist_ok=True)
     subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_dir)], check=True)
+    local_tgz.unlink()
 
 
 def push_tree(
@@ -280,6 +282,7 @@ def push_tree(
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_dir), "."], check=True)
     _run_remote(conn, ["mkdir", "-p", remote_dir], what=f"Remote mkdir of {remote_dir}")
     conn.sendfile(local_tgz, remote_tgz)
+    local_tgz.unlink()
     _run_remote(
         conn,
         ["bash", "-c", f"tar -xzf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)}"],
@@ -330,3 +333,4 @@ def fetch_install(
     conn.getfile(remote_tgz, local_tgz)
     Path(local_install_dir).mkdir(parents=True, exist_ok=True)
     _unzstd_into(local_tgz, Path(local_install_dir))
+    local_tgz.unlink()

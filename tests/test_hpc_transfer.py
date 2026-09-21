@@ -247,10 +247,12 @@ def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     remote = tmp_path / "remote" / "inputs" / "art"
     transfer.push_tree(conn, local_dir=str(src), remote_dir=str(remote), tar_dir=str(tmp_path / "stage"))
     assert (remote / "hello.txt").read_text() == "content-xyz"
+    assert not any((tmp_path / "stage").iterdir())
 
     fetched = tmp_path / "back"
     transfer.fetch_tree(conn, remote_dir=str(remote), local_dir=str(fetched), tar_dir=str(tmp_path / "stage2"))
     assert (fetched / "hello.txt").read_text() == "content-xyz"
+    assert not any((tmp_path / "stage2").iterdir())
 
     transfer.remove_tree(conn, remote_dir=str(remote))
     assert not remote.exists()
@@ -265,6 +267,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     )
     assert transfer.marker_exists(ShellConnection(), staging_dir=str(staging))
     assert not transfer.marker_exists(ShellConnection(), staging_dir=str(tmp_path))
+    assert not any((tmp_path / "stage").iterdir())
     unpacked = tmp_path / "unpacked"
     unpacked.mkdir()
     with tarfile.open(staging / "source.tgz") as tar:
@@ -277,6 +280,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
         conn, remote_install_dir=str(unpacked), local_install_dir=str(fetched), tar_dir=str(tmp_path / "stage2")
     )
     assert (fetched / "hello.txt").read_text() == "content-xyz"
+    assert not any((tmp_path / "stage2").iterdir())
 
 
 def test_fetch_install_fails_when_the_job_wrote_no_archive(tmp_path: Path) -> None:
