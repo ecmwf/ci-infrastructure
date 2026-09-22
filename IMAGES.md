@@ -111,36 +111,6 @@ compiles C++ against GCC's libstdc++ headers.
 source, so they install a toolchain and purge it again in the same image, ending
 up compiler-free like the others.
 
-### Legacy names — temporary, do not build on them
-
-Renaming a variant stops publishing its old name, and `eccodes`'s `develop` plus
-a long tail of open branches still name the pre-rename images in their
-`.ci/manifest.toml`. Those branches cannot all be edited at once, so the old
-names keep being published from directories of their own:
-
-| Legacy directory | Use instead |
-|---|---|
-| `public-images/ubuntu24.04/gfortran13` | `ubuntu24.04/gcc13-gfortran13` |
-| `public-images/ubuntu24.04/gfortran13-boost-qt6` | `ubuntu24.04/gcc13-gfortran13-boost-qt6` |
-| `public-images/ubuntu24.04/clang18-gfortran13` | `ubuntu24.04/clang18` |
-| `public-images/rocky8/gfortran8` | `rocky8/gcc8-gfortran8` |
-| `public-images/rocky8/gfortran8-boost-qt5` | `rocky8/gcc8-gfortran8-boost-qt5` |
-| `public-images/debian11/gfortran10` | `debian11/gcc10-gfortran10` |
-| `public-images/debian11/gfortran10-boost-qt5` | `debian11/gcc10-gfortran10-boost-qt5` |
-
-They are the old images, not aliases of the new ones: each installs the GNU
-toolchain the base carried before it was emptied, so a branch that pulls one
-gets what it got before the rename. `ubuntu24.04/clang18-gfortran13` is why
-aliasing was not an option — `eccodes`'s `develop` runs its `g++-13` leg *and*
-its `clang++-18` leg in that one image, and builds Fortran on both.
-
-So they break "the name is the whole toolchain", and `verify-image.sh` stands its
-forbid half down for exactly these seven names — every compiler they do name is
-still checked. Nothing new may name a legacy image, and `rolling-arch` got none,
-since nothing referenced those. Deleting the directory and the name from
-`verify-image.sh`'s `LEGACY_NAMES` is the whole revert; then
-`scripts/registry_cleanup.py orphans` reports the repositories to delete.
-
 ## Platforms
 
 Each platform carries the same three roles — `base`, a compiler variant, and a
