@@ -28,7 +28,8 @@ jobs:
       matrix:
         # The floor, so requires-python is a tested claim rather than an assertion,
         # and every interpreter an image bakes as CI_INFRASTRUCTURE_PYTHON. Bump
-        # the floor here and in pyproject together.
+        # the floor here and in pyproject together. "3.11" resolves to the newest
+        # 3.11.x, which satisfies the 3.11.4 floor.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     name: mypy + pytest (py${{ matrix.python-version }})
     steps:
