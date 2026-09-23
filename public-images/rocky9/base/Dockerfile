@@ -18,6 +18,8 @@ RUN dnf -y install dnf-plugins-core \
     git \
     bison \
     flex \
+    perl-FindBin \
+    perl-File-Compare \
     curl \
     wget \
     ca-certificates \
