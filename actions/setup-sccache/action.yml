@@ -18,8 +18,9 @@ description: >
   Silent pitfalls: sccache ignores the vendored CA root (SSL_CERT_FILE replaces
   the platform store, so point it at a superset bundle), and a bucket it can read
   but not write degrades to cache misses without failing the build;
-  scripts/probe_sccache.py catches that. Sets RUSTC_WRAPPER=sccache; the outputs
-  are CMake compiler launchers.
+  scripts/probe_sccache.py catches that. Sets RUSTC_WRAPPER=sccache and
+  CMAKE_C_COMPILER_LAUNCHER/CMAKE_CXX_COMPILER_LAUNCHER=sccache, which CMake
+  reads on first configure.
 
 inputs:
   cache-key-suffix:
@@ -78,7 +79,11 @@ runs:
       run: |
         backend="$BACKEND_INPUT"
         echo "Using sccache backend: $backend"
-        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        {
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
+        } >> "$GITHUB_ENV"
         case "$backend" in
           gha)
             echo "SCCACHE_GHA_ENABLED=on" >> "$GITHUB_ENV"
