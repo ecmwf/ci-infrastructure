@@ -1,0 +1,131 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CMake build
+description: >
+  Configures, builds and installs the CMake project in $GITHUB_WORKSPACE to
+  <install-prefix>/<package>, keeping the build tree for ctest. Uses sccache
+  when SCCACHE_BUCKET is set.
+
+inputs:
+  package:
+    description: 'Install subdirectory under the install prefix, and build tree name'
+    required: true
+  cmake-prefix-path:
+    description: 'Semicolon-separated prefixes of the resolved deps'
+    required: false
+    default: ''
+  c-compiler:
+    description: >
+      C compiler binary including version (e.g. clang-18, gcc-13). Must be the
+      same toolchain family as cxx-compiler: left unset CMake discovers
+      /usr/bin/cc, which is the image's gcc whatever the C++ compiler is, and a
+      mixed build then gets two OpenMP runtimes and two sets of flag spellings.
+      Empty leaves CMake to discover it.
+    required: false
+    default: ''
+  cxx-compiler:
+    description: 'C++ compiler binary including version (e.g. clang++-18, g++-13)'
+    required: false
+    default: ''
+  fortran-compiler:
+    description: 'Fortran compiler binary including version (e.g. gfortran-13)'
+    required: false
+    default: ''
+  build-type:
+    description: 'CMake build type (e.g. Release, Debug, RelWithDebInfo)'
+    required: true
+  preset:
+    description: 'Configure preset'
+    required: false
+    default: ci
+  cmake-args:
+    description: 'Extra configure arguments, one per line'
+    required: false
+    default: ''
+  sccache:
+    description: '"false" compiles without sccache even when SCCACHE_BUCKET is set'
+    required: false
+    default: 'true'
+  cache-key-suffix:
+    description: 'Appended to the sccache key <cxx-compiler>-<build-type>, for legs that differ in anything else'
+    required: false
+    default: ''
+
+outputs:
+  install-path:
+    description: 'Absolute path where the package is installed'
+    value: ${{ steps.set-paths.outputs.install-path }}
+  build-dir:
+    description: 'Absolute path of the build tree, for ctest'
+    value: ${{ steps.set-paths.outputs.build-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get install prefix
+      id: prefix
+      uses: ecmwf/ci-infrastructure/actions/install-prefix@main
+
+    - name: Set paths
+      id: set-paths
+      shell: bash
+      env:
+        BASE: ${{ steps.prefix.outputs.base }}
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        {
+          echo "install-path=$BASE/$PACKAGE"
+          echo "build-dir=$RUNNER_TEMP/_$PACKAGE-build"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Set up sccache
+      if: inputs.sccache == 'true' && env.SCCACHE_BUCKET != ''
+      uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
+      with:
+        cache-key-suffix: ${{ inputs.cxx-compiler }}-${{ inputs.build-type }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
+
+    - name: Note missing sccache
+      if: inputs.sccache == 'true' && env.SCCACHE_BUCKET == ''
+      shell: bash
+      run: echo "::notice::SCCACHE_BUCKET unset — compiling without sccache"
+
+    - name: Configure ${{ inputs.package }}
+      shell: bash
+      env:
+        PRESET: ${{ inputs.preset }}
+        BUILD_TYPE: ${{ inputs.build-type }}
+        INSTALL_PATH: ${{ steps.set-paths.outputs.install-path }}
+        BUILD_DIR: ${{ steps.set-paths.outputs.build-dir }}
+        CMAKE_PREFIX_PATH_IN: ${{ inputs.cmake-prefix-path }}
+        C_COMPILER: ${{ inputs.c-compiler }}
+        CXX_COMPILER: ${{ inputs.cxx-compiler }}
+        FC_COMPILER: ${{ inputs.fortran-compiler }}
+        CMAKE_ARGS: ${{ inputs.cmake-args }}
+      run: |
+        set -euo pipefail
+        args=(
+          --preset "$PRESET"
+          -S "$GITHUB_WORKSPACE"
+          -B "$BUILD_DIR"
+          -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+          -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH"
+        )
+        if [ -n "$CMAKE_PREFIX_PATH_IN" ]; then args+=( -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH_IN" ); fi
+        if [ -n "$C_COMPILER" ]; then args+=( -DCMAKE_C_COMPILER="$C_COMPILER" ); fi
+        if [ -n "$CXX_COMPILER" ]; then args+=( -DCMAKE_CXX_COMPILER="$CXX_COMPILER" ); fi
+        if [ -n "$FC_COMPILER" ]; then args+=( -DCMAKE_Fortran_COMPILER="$FC_COMPILER" ); fi
+        while IFS= read -r arg; do
+          if [ -n "$arg" ]; then args+=( "$arg" ); fi
+        done <<< "$CMAKE_ARGS"
+        cmake "${args[@]}"
+
+    - name: Build and install ${{ inputs.package }}
+      shell: bash
+      env:
+        BUILD_DIR: ${{ steps.set-paths.outputs.build-dir }}
+      run: |
+        set -euo pipefail
+        cmake --build "$BUILD_DIR" --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+        cmake --install "$BUILD_DIR"
