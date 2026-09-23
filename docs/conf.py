@@ -16,6 +16,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_click",
     "ghactions",
+    "clis",
     "manifest_schema",
 ]
 
