@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/rolling-arch-base
 # Shared foundation: every other public-images/rolling-arch/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 #
 # THE `rolling-` PREFIX IS LOAD-BEARING: scripts/build_image.py's is_rolling()
 # gives such platforms a date-suffixed tag and images.yml rebuilds them nightly.

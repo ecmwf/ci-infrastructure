@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/rocky8-base
 # Shared foundation: every other public-images/rocky8/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 FROM rockylinux/rockylinux:8
 
 # The rocky8 counterpart of ubuntu24.04/base; only rocky-specific answers here.

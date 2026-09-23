@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/rocky9-base
 # Shared foundation: every other public-images/rocky9/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 FROM rockylinux/rockylinux:9.7
 
 # Rocky 9's system Python is below ci-infrastructure's 3.11 floor. Python 3.12

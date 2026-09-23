@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/fedora43-gcc15-gfortran15
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 FROM eccr.ecmwf.int/public-ci-images/fedora43-base:latest
 
 RUN dnf -y install gcc gcc-c++ gcc-gfortran \

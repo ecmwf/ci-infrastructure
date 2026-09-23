@@ -4,7 +4,7 @@
 //
 // ACTIONS_RUNNER_CONTAINER_HOOKS wrapper: names the job's container image in the
 // runner's own "Initialize containers" block, above every workflow step. See
-// docs/reference/runners.md.
+// docs/reference/runners.rst.
 //
 // Prints, then delegates to the real hook (no partial opt-in exists). JS so the
 // runner's bundled node runs it; `node` is not on PATH.

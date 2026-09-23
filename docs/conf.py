@@ -15,7 +15,6 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
-    "myst_parser",
     "sphinx_click",
     "ghactions",
     "manifest_schema",
@@ -36,8 +35,6 @@ nitpick_ignore_regex = [
     ("py:class", r"(Repo|Ref|Sha|PackageName|ArtifactName|Step|NodeT|Execution|Visibility)"),
     ("py:class", r"ci_infrastructure\.\w+\.(Repo|Ref|Sha|PackageName|ArtifactName|Step|NodeT|Execution|Visibility)"),
 ]
-
-myst_heading_anchors = 3
 
 autodoc_mock_imports = ["troika", "boto3", "botocore"]
 autodoc_typehints = "description"

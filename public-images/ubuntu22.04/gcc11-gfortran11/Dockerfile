@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/ubuntu22.04-gcc11-gfortran11
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 FROM eccr.ecmwf.int/public-ci-images/ubuntu22.04-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive

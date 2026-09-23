@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 # Published as eccr.ecmwf.int/public-ci-images/debian12-gcc12-gfortran12-boost-qt6
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.md).
+# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
 #
 # This variant installs its complete toolchain directly on the shared base. The
 # image workflow supports only base -> variant dependency chains.

@@ -11,7 +11,7 @@
 # at the end is left by BASH_ENV on the way into this script.
 #
 # One token of the variant's name per toolchain, nothing inferred from another
-# token, and each must build and run an OpenMP program (see docs/howto/images.md):
+# token, and each must build and run an OpenMP program (see docs/howto/images.rst):
 #   gcc<N>       gcc-N and g++-N, major N
 #   clang<N>     clang-N and clang++-N, major N
 #   gfortran<N>  gfortran-N, major N

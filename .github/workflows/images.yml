@@ -4,7 +4,7 @@
 
 name: Images
 
-# Build and push the CI images under public-images/ (see docs/howto/images.md). An image is
+# Build and push the CI images under public-images/ (see docs/howto/images.rst). An image is
 # rebuilt exactly when its tag (short SHA of the last commit touching its build
 # inputs) is missing from the registry. scripts/build_image.py is the only
 # answer to that, so there is no `paths:` filter, git diff or image list here.
