@@ -27,7 +27,7 @@ Labels
      - ARC (runner class)
      - HPC legs: the pod that submits the SLURM job through troika. It is not on the cluster; see :doc:`../howto/hpc`.
 
-A fork pull request reaches the self-hosted rows only through :action:`require-ci-approval`; see :doc:`../howto/fork-prs`.
+A fork pull request reaches the self-hosted rows only through :action:`require-ci-approval`.
 
 Runner classes
 --------------

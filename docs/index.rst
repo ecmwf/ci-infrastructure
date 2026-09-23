@@ -22,7 +22,6 @@ GitHub Actions that wire it into workflow YAML.
 
    howto/hpc
    howto/images
-   howto/fork-prs
 
 .. toctree::
    :caption: Explanation
