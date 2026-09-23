@@ -23,7 +23,6 @@ GitHub Actions that wire it into workflow YAML.
    howto/hpc
    howto/images
    howto/fork-prs
-   howto/contributor-declaration
 
 .. toctree::
    :caption: Explanation
@@ -37,6 +36,5 @@ GitHub Actions that wire it into workflow YAML.
 
    reference/manifest
    reference/runners
-   reference/actions
+   reference/actions/index
    reference/cli
-   reference/python

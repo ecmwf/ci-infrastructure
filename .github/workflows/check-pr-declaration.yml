@@ -2,12 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# Fails a pull request whose description does not end with the Contributor
+# Declaration, running check-pr-declaration against the event payload.
+
 name: Contributor Declaration
 
-# Callers own the triggers -- a reusable workflow cannot declare its own. Copy
-# the snippet from docs/howto/contributor-declaration.rst verbatim; in particular the caller MUST
-# listen for `edited`, because a description can be emptied with no push at all,
-# and `synchronize`, because required checks are per-SHA.
+# Callers own the triggers -- a reusable workflow cannot declare its own. Call it
+# from `pull_request_target` with types [opened, edited, reopened, synchronize];
+# in particular the caller MUST listen for `edited`, because a description can be
+# emptied with no push at all, and `synchronize`, because required checks are per-SHA.
 on:
   workflow_call:
     inputs:

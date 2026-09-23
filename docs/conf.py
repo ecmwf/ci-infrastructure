@@ -13,7 +13,6 @@ copyright = "2026, European Centre for Medium-Range Weather Forecasts (ECMWF)"
 
 extensions = [
     "sphinx.ext.autodoc",
-    "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
     "sphinx_click",
     "ghactions",
@@ -21,7 +20,6 @@ extensions = [
 ]
 
 exclude_patterns = ["_build"]
-templates_path = ["_templates"]
 html_theme = "furo"
 
 # Docstrings and action descriptions write `code` in Markdown style.
@@ -40,7 +38,6 @@ autodoc_mock_imports = ["troika", "boto3", "botocore"]
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "all"
 autodoc_member_order = "bysource"
-autosummary_generate = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -52,6 +49,7 @@ intersphinx_mapping = {
 ghactions_repo = "ecmwf/ci-infrastructure"
 ghactions_ref = "main"
 ghactions_root = str(DOCS.parent)
+ghactions_workflows = [".github/workflows/check-pr-declaration.yml"]
 
 
 def _drop_model_signature(app, what, name, obj, options, signature, return_annotation):

@@ -33,10 +33,10 @@ The actions call these; run them by hand to debug a step locally.
 ci-infrastructure-check-ci-approval
 -----------------------------------
 
-The pre-commit hook; stdlib only, see :py:mod:`ci_infrastructure.check_ci_approval`.
+The pre-commit hook; stdlib only, see `src/ci_infrastructure/check_ci_approval.py`.
 
 ci-infrastructure-check-declaration
 -----------------------------------
 
 Local debugging of :action:`check-pr-declaration`; stdlib only, see
-:py:mod:`ci_infrastructure.check_pr_declaration`.
+`src/ci_infrastructure/check_pr_declaration.py`.

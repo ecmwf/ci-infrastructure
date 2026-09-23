@@ -8,7 +8,7 @@ Manifest
 Every repo in the graph describes itself in `.ci/manifest.toml`. Both
 `ci-infrastructure-generate` and `ci-infrastructure-resolve` validate it
 against the tables below and reject unknown keys; this page is generated from
-:py:mod:`ci_infrastructure.manifest`.
+`src/ci_infrastructure/manifest.py`.
 
 .. manifest-schema::
 

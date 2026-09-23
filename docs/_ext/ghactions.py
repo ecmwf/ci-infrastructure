@@ -4,10 +4,12 @@
 
 """Reference pages for the composite actions and reusable workflows, read from their YAML.
 
-``.. autoaction:: <name>`` renders ``actions/<name>/action.yml``; ``.. autoactions::``
-renders every action; ``.. autoworkflow:: <path>`` renders the ``workflow_call``
-interface of a reusable workflow, its directive content standing in for the
-description a workflow file cannot carry. ``:action:`<name>``` links to an action.
+``.. autoaction:: <name>`` renders ``actions/<name>/action.yml``; ``.. autoworkflow:: <path>``
+renders the ``workflow_call`` interface of a reusable workflow, its description being the
+comments between the licence header and ``on:``. ``:action:`<name>``` links to either.
+
+Like autosummary, the build writes one page per action and per workflow in
+``ghactions_workflows`` under ``reference/actions/{composite,workflows}/``.
 
 A missing description is a warning, so the ``-W`` docs build fails on it.
 """
@@ -122,28 +124,30 @@ class AutoAction(_Base):
         return rst, source
 
 
-class AutoActions(AutoAction):
-    required_arguments = 0
-
-    def run(self) -> list[nodes.Node]:
-        out: list[nodes.Node] = []
-        for path in sorted((self._root() / "actions").glob("*/action.yml")):
-            out += self._render(*self.action_rst(path.parent.name))
-        return out
+def _header_comments(text: str) -> list[str]:
+    """The comment lines after the SPDX header and before ``on:``, as paragraphs."""
+    out: list[str] = []
+    for line in text.split("\non:", 1)[0].splitlines():
+        if line.startswith("#") and "SPDX-" not in line and line.strip() != "#":
+            out.append(line[1:].strip())
+        elif out and out[-1]:
+            out.append("")
+    return out
 
 
 class AutoWorkflow(_Base):
     required_arguments = 1
-    has_content = True
 
     def run(self) -> list[nodes.Node]:
         rel = self.arguments[0]
         path = self._root() / rel
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        text = path.read_text(encoding="utf-8")
+        doc = yaml.load(text, Loader=yaml.BaseLoader)
         call = (doc.get("on") or {}).get("workflow_call") or {}
         source = str(path)
-        if not self.content:
-            logger.warning("%s: autoworkflow needs a description as its content", source, location=self.get_location())
+        description = _header_comments(text)
+        if not description:
+            logger.warning("%s: workflow has no header comment to describe it", source, location=self.get_location())
         name = Path(rel).name
         inputs = {k: {**v, "required": v.get("required") == "true"} for k, v in (call.get("inputs") or {}).items()}
         secrets = call.get("secrets") or {}
@@ -156,7 +160,7 @@ class AutoWorkflow(_Base):
             "",
             f"*{doc.get('name', name)}*",
             "",
-            *self.content,
+            *description,
             "",
             ".. code-block:: yaml",
             "",
@@ -172,12 +176,44 @@ class AutoWorkflow(_Base):
         return self._render(rst, source)
 
 
+def _write_pages(outdir: Path, title: str, intro: str, pages: dict[str, str]) -> None:
+    """Make ``outdir`` hold exactly ``pages`` plus an index, rewriting only what changed."""
+    outdir.mkdir(parents=True, exist_ok=True)
+    index = [title, "=" * len(title), "", intro, "", ".. toctree::", "   :maxdepth: 1", "", *(f"   {n}" for n in pages)]
+    wanted = {"index.rst": "\n".join(index) + "\n", **{f"{n}.rst": f"{d}\n" for n, d in pages.items()}}
+    for stale in {p.name for p in outdir.glob("*.rst")} - wanted.keys():
+        (outdir / stale).unlink()
+    for name, content in wanted.items():
+        path = outdir / name
+        if not path.exists() or path.read_text(encoding="utf-8") != content:
+            path.write_text(content, encoding="utf-8")
+
+
+def _generate(app: Sphinx) -> None:
+    root, ref, repo = Path(app.config.ghactions_root), app.config.ghactions_ref, app.config.ghactions_repo
+    out = Path(app.srcdir) / "reference" / "actions"
+    actions = sorted(p.parent.name for p in (root / "actions").glob("*/action.yml"))
+    _write_pages(
+        out / "composite",
+        "Composite actions",
+        f"Called as ``{repo}/actions/<name>@{ref}``.",
+        {n: f".. autoaction:: {n}" for n in actions},
+    )
+    _write_pages(
+        out / "workflows",
+        "Reusable workflows",
+        f"Called as the ``uses:`` of a job, ``{repo}/.github/workflows/<file>@{ref}``.",
+        {Path(w).stem: f".. autoworkflow:: {w}" for w in app.config.ghactions_workflows},
+    )
+
+
 def setup(app: Sphinx) -> dict[str, Any]:
     app.add_config_value("ghactions_repo", "", "env")
     app.add_config_value("ghactions_ref", "main", "env")
     app.add_config_value("ghactions_root", "", "env")
+    app.add_config_value("ghactions_workflows", [], "env")
     app.add_crossref_type("action", "action", indextemplate="pair: %s; action")
     app.add_directive("autoaction", AutoAction)
-    app.add_directive("autoactions", AutoActions)
     app.add_directive("autoworkflow", AutoWorkflow)
+    app.connect("builder-inited", _generate)
     return {"parallel_read_safe": True, "parallel_write_safe": True}
