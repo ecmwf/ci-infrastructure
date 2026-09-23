@@ -4,20 +4,16 @@
 
 name: CMake build
 description: >
-  Configures, builds and installs the already-checked-out CMake project in
-  $GITHUB_WORKSPACE to <install-prefix>/<package>, and leaves the build tree in
-  place so the caller can run ctest against it without reconfiguring. Compiles
-  through sccache when SCCACHE_BUCKET is set in the job environment.
-
-  The body of every repo's build-<package> action, which forwards its inputs
-  here and keeps only what is specific to that repo.
+  Configures, builds and installs the CMake project in $GITHUB_WORKSPACE to
+  <install-prefix>/<package>, keeping the build tree for ctest. Uses sccache
+  when SCCACHE_BUCKET is set.
 
 inputs:
   package:
     description: 'Install subdirectory under the install prefix, and build tree name'
     required: true
   cmake-prefix-path:
-    description: 'Semicolon-separated prefixes of the resolved deps (fetch-deps output)'
+    description: 'Semicolon-separated prefixes of the resolved deps'
     required: false
     default: ''
   c-compiler:
@@ -26,23 +22,22 @@ inputs:
       same toolchain family as cxx-compiler: left unset CMake discovers
       /usr/bin/cc, which is the image's gcc whatever the C++ compiler is, and a
       mixed build then gets two OpenMP runtimes and two sets of flag spellings.
-      The CI images ship only versioned binaries, so name it explicitly. Empty
-      leaves CMake to discover it.
+      Empty leaves CMake to discover it.
     required: false
     default: ''
   cxx-compiler:
-    description: 'C++ compiler binary including version (e.g. clang++-18, g++-13). Empty leaves CMake to discover it.'
+    description: 'C++ compiler binary including version (e.g. clang++-18, g++-13)'
     required: false
     default: ''
   fortran-compiler:
-    description: 'Fortran compiler binary including version (e.g. gfortran-13). Empty leaves CMake to discover it.'
+    description: 'Fortran compiler binary including version (e.g. gfortran-13)'
     required: false
     default: ''
   build-type:
     description: 'CMake build type (e.g. Release, Debug, RelWithDebInfo)'
     required: true
   preset:
-    description: 'Configure preset from the project CMakePresets.json'
+    description: 'Configure preset'
     required: false
     default: ci
   cmake-args:
@@ -80,7 +75,6 @@ runs:
         BASE: ${{ steps.prefix.outputs.base }}
         PACKAGE: ${{ inputs.package }}
       run: |
-        set -euo pipefail
         {
           echo "install-path=$BASE/$PACKAGE"
           echo "build-dir=$RUNNER_TEMP/_$PACKAGE-build"

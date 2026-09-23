@@ -52,14 +52,6 @@ inputs:
     required: false
     default: ''
 
-outputs:
-  cc-launcher:
-    description: 'Value to pass to CMAKE_C_COMPILER_LAUNCHER (sccache)'
-    value: sccache
-  cxx-launcher:
-    description: 'Value to pass to CMAKE_CXX_COMPILER_LAUNCHER (sccache)'
-    value: sccache
-
 runs:
   using: composite
   steps:
