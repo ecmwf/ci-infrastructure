@@ -23,9 +23,8 @@ testing ECMWF's downstream package graph. It provides:
 
 ## Documentation
 
-The documentation lives in [`docs/`](docs): a tutorial, guides (HPC builds, the
-CI images, fork pull requests, the contributor declaration) and the reference
-for the manifest, the runners, the actions, the CLIs and the Python package.
+The documentation lives in [`docs/`](docs): an introduction, a guide to HPC
+builds and the reference for the manifest, the runners, the actions and the CLIs.
 Build it with
 
 ```bash

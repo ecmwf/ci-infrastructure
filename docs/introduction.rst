@@ -2,20 +2,18 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-Tutorial
-========
-
+Introduction
+============
 
 Philosophy
 ----------
 
-The ECMWF software stack is a graph of packages that build on each other.
+The ECMWF software stack consists of several packages that build on each other.
 A change in eckit can break eccodes, and a change in ecbuild can break both.
-Testing a package in isolation therefore misses exactly the failures that matter most,
+Testing a package in isolation therefore misses some crucial failure modes,
 while rebuilding the whole graph for every commit is far too slow to be useful.
 ci-infrastructure sits between these two extremes.
-The following principles shaped its design, and they explain most of the decisions
-that may otherwise look arbitrary.
+The following principles shaped its design.
 
 Functions, not a framework
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -82,3 +80,8 @@ In this context, a missing decision is reported as *pending* rather than failed:
 :action:`require-label-decision` waits for a label instead of failing the pull request.
 In the same spirit, known transient states only warn,
 for example an image that is stale in the minutes after a merge.
+
+Tutorial
+--------
+
+Coming soon.
