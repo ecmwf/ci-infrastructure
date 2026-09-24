@@ -1,1 +1,0 @@
-.. autoaction:: check-pr-label

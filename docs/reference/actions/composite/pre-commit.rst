@@ -1,1 +1,0 @@
-.. autoaction:: pre-commit

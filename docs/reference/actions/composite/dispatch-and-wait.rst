@@ -1,1 +1,0 @@
-.. autoaction:: dispatch-and-wait

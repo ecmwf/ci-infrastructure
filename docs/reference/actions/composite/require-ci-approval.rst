@@ -1,1 +1,0 @@
-.. autoaction:: require-ci-approval

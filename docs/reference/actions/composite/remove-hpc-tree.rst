@@ -1,1 +1,0 @@
-.. autoaction:: remove-hpc-tree

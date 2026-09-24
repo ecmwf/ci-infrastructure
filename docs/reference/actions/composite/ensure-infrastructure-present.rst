@@ -1,1 +1,0 @@
-.. autoaction:: ensure-infrastructure-present

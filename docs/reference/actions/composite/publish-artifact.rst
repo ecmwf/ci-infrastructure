@@ -1,1 +1,0 @@
-.. autoaction:: publish-artifact

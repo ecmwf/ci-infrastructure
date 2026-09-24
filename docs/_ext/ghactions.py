@@ -176,11 +176,17 @@ class AutoWorkflow(_Base):
         return self._render(rst, source)
 
 
-def _write_pages(outdir: Path, title: str, intro: str, pages: dict[str, str]) -> None:
+def _write_pages(
+    outdir: Path, title: str, intro: str, pages: dict[str, str], groups: list[tuple[str, str, list[str]]] | None = None
+) -> None:
     """Make ``outdir`` hold exactly ``pages`` plus an index, rewriting only what changed."""
     outdir.mkdir(parents=True, exist_ok=True)
-    index = [title, "=" * len(title), "", intro, "", ".. toctree::", "   :maxdepth: 1", "", *(f"   {n}" for n in pages)]
-    wanted = {"index.rst": "\n".join(index) + "\n", **{f"{n}.rst": f"{d}\n" for n, d in pages.items()}}
+    index = [title, "=" * len(title), "", intro, ""]
+    for heading, blurb, names in groups or [(None, None, list(pages))]:
+        if heading:
+            index += [heading, "-" * len(heading), "", blurb, ""]
+        index += [".. toctree::", "   :maxdepth: 1", "", *(f"   {n}" for n in names), ""]
+    wanted = {"index.rst": "\n".join(index).rstrip("\n") + "\n", **{f"{n}.rst": f"{d}\n" for n, d in pages.items()}}
     for stale in {p.name for p in outdir.glob("*.rst")} - wanted.keys():
         (outdir / stale).unlink()
     for name, content in wanted.items():
@@ -193,11 +199,15 @@ def _generate(app: Sphinx) -> None:
     root, ref, repo = Path(app.config.ghactions_root), app.config.ghactions_ref, app.config.ghactions_repo
     out = Path(app.srcdir) / "reference" / "actions"
     actions = sorted(p.parent.name for p in (root / "actions").glob("*/action.yml"))
+    groups = app.config.ghactions_groups
+    for n in sorted(set(actions).difference(*(names for _, _, names in groups))):
+        logger.warning("action %r is in no ghactions_groups entry", n)
     _write_pages(
         out / "composite",
         "Composite actions",
         f"Called as ``{repo}/actions/<name>@{ref}``.",
         {n: f".. autoaction:: {n}" for n in actions},
+        groups,
     )
     _write_pages(
         out / "workflows",
@@ -212,6 +222,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
     app.add_config_value("ghactions_ref", "main", "env")
     app.add_config_value("ghactions_root", "", "env")
     app.add_config_value("ghactions_workflows", [], "env")
+    app.add_config_value("ghactions_groups", [], "env")
     app.add_crossref_type("action", "action", indextemplate="pair: %s; action")
     app.add_directive("autoaction", AutoAction)
     app.add_directive("autoworkflow", AutoWorkflow)

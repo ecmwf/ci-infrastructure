@@ -51,6 +51,40 @@ ghactions_repo = "ecmwf/ci-infrastructure"
 ghactions_ref = "main"
 ghactions_root = str(DOCS.parent)
 ghactions_workflows = [".github/workflows/check-pr-declaration.yml"]
+# (heading, one-line intro, actions): the sections of the composite-action index.
+ghactions_groups = [
+    (
+        "PR gates",
+        "Decide whether a pull request may run CI or downstream CI.",
+        ["require-ci-approval", "require-label-decision", "check-pr-label", "check-pr-declaration"],
+    ),
+    (
+        "Checkout and build",
+        "Get the right sources and build them.",
+        ["checkout-under-test", "pick-ref", "pre-commit", "cmake-build", "setup-sccache"],
+    ),
+    (
+        "Dependencies",
+        "Resolve the dependency tree. Move install trees through S3.",
+        ["resolve-deps", "fetch-deps", "publish-artifact", "install-prefix"],
+    ),
+    (
+        "HPC",
+        "Build on the cluster. Move trees to and from it. See :doc:`../../../howto/hpc`.",
+        ["build-on-hpc", "push-hpc-tree", "fetch-hpc-tree", "remove-hpc-tree"],
+    ),
+    (
+        "Downstream CI",
+        "Used by the generated workflows to fan out to other repos.",
+        ["resolve-dispatch-context", "dispatch-and-wait", "report-check-run", "validate-generated-workflows"],
+    ),
+    ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
+    (
+        "Internals",
+        "Nested by other actions. See :doc:`../../../explanation/bootstrap`.",
+        ["ensure-infrastructure-present"],
+    ),
+]
 
 
 def _drop_model_signature(app, what, name, obj, options, signature, return_annotation):

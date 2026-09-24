@@ -1,1 +1,0 @@
-.. autoaction:: fetch-deps

@@ -1,1 +1,0 @@
-.. autoaction:: checkout-under-test
