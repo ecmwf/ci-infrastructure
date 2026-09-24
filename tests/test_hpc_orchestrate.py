@@ -57,17 +57,15 @@ class LocalShell:
         return subprocess.Popen(command, stdout=stdout, stderr=stderr, env={**os.environ, **self.env})
 
 
-# === RemotePaths / resolve_remote_path ===
-def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps() -> None:
-    remote, locals_, deps_dir = plan_remote_prefixes("/run/a:/run/b;/run/c", "/scratch/ci/staging/art")
-    assert deps_dir == "/scratch/ci/staging/art/deps"
-    assert locals_ == ["/run/a", "/run/b", "/run/c"]
-    assert remote == "/scratch/ci/staging/art/deps/0:/scratch/ci/staging/art/deps/1:/scratch/ci/staging/art/deps/2"
-
-
-def test_plan_remote_prefixes_empty_yields_empty_prefix() -> None:
-    remote, locals_, deps_dir = plan_remote_prefixes("", "/scratch/ci/staging/art")
-    assert remote == "" and locals_ == [] and deps_dir == "/scratch/ci/staging/art/deps"
+@pytest.mark.parametrize(
+    ("spec", "remote", "locals_"),
+    [
+        ("", "", []),
+        ("/run/a:/run/b;/run/c", "/s/art/deps/0:/s/art/deps/1:/s/art/deps/2", ["/run/a", "/run/b", "/run/c"]),
+    ],
+)
+def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps(spec: str, remote: str, locals_: list[str]) -> None:
+    assert plan_remote_prefixes(spec, "/s/art") == (remote, locals_, "/s/art/deps")
 
 
 def test_remote_paths_derive_layout_under_the_work_dir() -> None:
@@ -108,7 +106,6 @@ def test_a_nested_remote_dir_is_accepted() -> None:
     _require_nested_remote_path("push-tree", "/scratch/transfer-e2e-1", "/scratch/transfer-e2e-1")
 
 
-# === find_active_job_by_name ===
 @pytest.mark.parametrize(
     ("stdout", "returncode", "expected"),
     [(b"777\n", 0, 777), (b"", 0, None), (b"", 1, None), (b"902\n811\n", 0, 811)],
@@ -119,7 +116,6 @@ def test_find_active_job_by_name(stdout: bytes, returncode: int, expected: int |
     assert find_active_job_by_name(conn, job_name="ci-art", user=None) == expected
 
 
-# === submit_or_reattach ===
 class _NoSubmitSite:
     def __init__(self) -> None:
         self._connection = SqueueConnection(b"777\n")
@@ -142,20 +138,20 @@ def test_reattach_submits_and_ships_nothing(tmp_path: Path) -> None:
     assert shipped == []
 
 
-# === wait_for_job ===
 @pytest.mark.parametrize("verdict", ["SUCCESS", "FAILURE"])
 def test_wait_returns_the_sentinel_verdict(verdict: Verdict) -> None:
     assert wait_for_job(sentinel_waiter=lambda _s: verdict, state_getter=lambda: "RUNNING") == verdict
 
 
-def test_wait_succeeds_after_one_timed_out_window() -> None:
+@pytest.mark.parametrize("state", ["RUNNING", None], ids=["still-queued", "late-sentinel"])
+def test_wait_succeeds_after_one_timed_out_window(state: str | None) -> None:
     calls: list[float] = []
 
     def waiter(seconds: float) -> Verdict | None:
         calls.append(seconds)
         return None if len(calls) == 1 else "SUCCESS"
 
-    assert wait_for_job(sentinel_waiter=waiter, state_getter=lambda: "RUNNING", guard_interval=1) == "SUCCESS"
+    assert wait_for_job(sentinel_waiter=waiter, state_getter=lambda: state, guard_interval=1) == "SUCCESS"
     assert len(calls) == 2
 
 
@@ -163,21 +159,10 @@ def test_wait_declares_vanished_when_job_gone_without_sentinel() -> None:
     assert wait_for_job(sentinel_waiter=lambda _s: None, state_getter=lambda: None, guard_interval=1) == "VANISHED"
 
 
-def test_wait_catches_late_sentinel_after_job_leaves_queue() -> None:
-    calls: list[float] = []
-
-    def waiter(seconds: float) -> Verdict | None:
-        calls.append(seconds)
-        return "SUCCESS" if len(calls) >= 2 else None
-
-    assert wait_for_job(sentinel_waiter=waiter, state_getter=lambda: None, guard_interval=1) == "SUCCESS"
-
-
 def test_wait_times_out() -> None:
     assert wait_for_job(sentinel_waiter=lambda _s: None, state_getter=lambda: "RUNNING", timeout=0) == "TIMEOUT"
 
 
-# === _remote_sentinel_waiter, run in a local shell ===
 def test_sentinel_waiter_does_not_report_success_for_a_missing_output(tmp_path: Path) -> None:
     wait = _remote_sentinel_waiter(LocalShell(), str(tmp_path / "not-created-yet.out"), 4242)
     assert wait(1.0) != "SUCCESS"
@@ -205,7 +190,6 @@ def test_sentinel_waiter_ignores_a_sentinel_from_another_job(tmp_path: Path) -> 
     assert _remote_sentinel_waiter(LocalShell(), str(output), 2222)(1.0) is None
 
 
-# === job-script rendering ===
 _REPO_BUILD: Final = """#!/bin/bash
 #SBATCH --partition=compute
 #SBATCH --time=00:30:00
@@ -296,7 +280,6 @@ def test_jobscript_exports_the_install_archive_path() -> None:
     assert jobscript.install_archive_path("/scratch/install/art") == "/scratch/install/art.install.tar.zst"
 
 
-# === gc ===
 def test_gc_sweeps_every_tree_a_build_creates() -> None:
     build_dirs = {str(PurePosixPath(p).parent) for p in RemotePaths.derive("/scratch/ci", "art")}
     swept = {f"/scratch/ci/{sub}" for sub in GC_SUBDIRS}
@@ -305,7 +288,6 @@ def test_gc_sweeps_every_tree_a_build_creates() -> None:
     assert swept - build_dirs == {"/scratch/ci/transfer-e2e"}
 
 
-# === CLI ===
 def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[str]) -> None:
     class _Boom:
         def execute(self, *args: object, **kwargs: object) -> object:

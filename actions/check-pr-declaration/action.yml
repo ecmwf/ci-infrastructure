@@ -4,11 +4,10 @@
 
 name: Check the PR Contributor Declaration
 description: >
-  Fail unless the PR description ENDS with the ECMWF Contributor Declaration,
-  verbatim after line normalisation; see src/ci_infrastructure/check_pr_declaration.py
-  for the rules and security notes. Bots in `exempt-authors` (user.type Bot) are
-  skipped. Runs stdlib-only with the runner's python3, no bootstrap. With the
-  default body-source, re-runs replay the old payload: edit the description instead.
+  Fail unless the PR description ENDS with the ECMWF Contributor Declaration
+  (rules in src/ci_infrastructure/check_pr_declaration.py). Stdlib-only python,
+  no bootstrap. With the default body-source, re-runs replay the old payload:
+  edit the description instead.
 
 inputs:
   pr-number:
@@ -27,9 +26,8 @@ inputs:
     default: ''
   exempt-authors:
     description: >
-      Comma-separated bot logins to skip, honoured only when the payload also
-      reports user.type == "Bot". Empty means the built-in list (dependabot,
-      renovate, pre-commit-ci, release-please, github-actions, copilot).
+      Comma-separated bot logins to skip, honoured only for user.type "Bot".
+      Empty means the built-in list.
     required: false
     default: ''
   token:

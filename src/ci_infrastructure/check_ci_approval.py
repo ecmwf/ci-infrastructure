@@ -4,29 +4,21 @@
 
 """Fail a workflow that can run fork code without hanging every job off the gate.
 
-Two trigger shapes hand an outside contributor's pull request something worth
-stealing, and both are checked:
+Checked trigger shapes:
 
-  - `pull_request_target` runs in the BASE repository's context, so `secrets.*`
-    are populated and GITHUB_TOKEN is read/write. That is true on GitHub-hosted
-    runners too -- the credentials are the prize, and unlike an ephemeral VM they
-    are reusable.
-  - `pull_request` withholds secrets from forks, but still puts the contributor's
-    code on whatever runner the job names. On this org's ARC and self-hosted
-    builders that is our hardware.
+  - `pull_request_target` runs with the base repo's secrets and a read/write
+    GITHUB_TOKEN, even on GitHub-hosted runners.
+  - `pull_request` puts fork code on whatever runner the job names; on ARC and
+    self-hosted builders that is our hardware.
 
-Also, any step opting in to `allow-unsafe-pr-checkout` must sit in a gated job,
-whatever the runners.
+Any step setting `allow-unsafe-pr-checkout` must also sit in a gated job.
 
-The gate is `actions/require-ci-approval`, and its contract is `needs:` and
-nothing else: a job skipped by an `if:` reports Success, so gating that way makes
-a required check green for a pull request that never ran. Hence this checks
-`needs:` membership directly, per job, rather than accepting a transitive path --
-one edge added later in the wrong place silently ungates the rest.
+The gate (`actions/require-ci-approval`) works through `needs:` only: a job
+skipped by an `if:` reports Success. So each job must list the gate directly;
+a transitive path is not accepted, as one misplaced edge would ungate the rest.
 
-A private or internal repo is skipped: forking it already needs access, so the
-author is not an outsider. Exemptions otherwise live in
-.github/ci-approval-allowlist.yml next to the workflows.
+Private and internal repos are skipped. Exemptions live in
+.github/ci-approval-allowlist.yml.
 """
 
 from __future__ import annotations
@@ -41,8 +33,7 @@ import yaml
 
 ALLOWLIST_NAME = "ci-approval-allowlist.yml"
 MANIFEST_PATH = (".ci", "manifest.toml")
-# Both spellings: the pinned remote one consumers use, and the local path
-# ci-infrastructure itself can use.
+# Remote (consumers) and local (ci-infrastructure itself) spellings.
 GATE_ACTIONS = (
     "ecmwf/ci-infrastructure/actions/require-ci-approval",
     "./actions/require-ci-approval",
@@ -90,7 +81,6 @@ def _is_github_hosted(runs_on: Any) -> bool:
 
 
 def _gate_reason(doc: dict[Any, Any], jobs: dict[str, Any]) -> str | None:
-    """Why this workflow needs the gate, or None if it does not."""
     triggers = _triggers(doc)
     if "pull_request_target" in triggers:
         return "pull_request_target runs with this repository's secrets"
@@ -138,11 +128,7 @@ def _needs(job: dict[str, Any]) -> set[str]:
 
 
 def _open_to_outsiders(workflow: Path) -> bool:
-    """False when forking this repo already requires access, so no fork is untrusted.
-
-    Read from [package].visibility in .ci/manifest.toml. A repo without a manifest
-    is treated as public: strict is the safe default to get wrong.
-    """
+    """From [package].visibility in .ci/manifest.toml; no (or broken) manifest counts as public."""
     manifest = workflow.parent.parent.parent.joinpath(*MANIFEST_PATH)
     if not manifest.is_file():
         return True
@@ -226,11 +212,7 @@ def _unsafe_checkout_problems(
     workflow: Path,
     pairs: set[tuple[str, str]],
 ) -> list[str]:
-    """Every job checking out a fork's code must reach the gate via `needs:`, whatever _gate_reason says.
-
-    Only under a pull request trigger: elsewhere (e.g. workflow_run orchestrators)
-    the gate always passes, so demanding it would be demanding an inert gate.
-    """
+    """Jobs checking out fork code must `needs:` the gate; only under PR triggers, elsewhere the gate is inert."""
     if not (_triggers(doc) & {"pull_request", "pull_request_target"}):
         return []
     problems = []

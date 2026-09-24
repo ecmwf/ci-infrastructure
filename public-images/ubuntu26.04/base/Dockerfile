@@ -2,18 +2,12 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu26.04-base
-# Shared foundation: every other public-images/ubuntu26.04/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Conventions: public-images/README.md
 FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Ubuntu 26.04 provides Python 3.14 and CMake 4.2, so the complete base
-# tools can come from the distribution repositories.
-# Keep compilers in named variants. The negative package selections prevent
-# python3-dev/pip recommendations from pulling build-essential back in.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -43,8 +37,6 @@ RUN apt-get update && apt-get install -y \
     g++- \
  && rm -rf /var/lib/apt/lists/*
 
-# Install GitHub CLI (gh) from its upstream apt repository rather than the older
-# package in the Ubuntu archive.
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -74,7 +66,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

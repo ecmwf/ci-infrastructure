@@ -3,19 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# verify-image.sh <platform>/<variant> -- the contract every CI image keeps, run
-# INSIDE the image: by build-image.sh --test before an image is published, and
-# by smoke-test-runners.yml against the published image on the ARC runners.
-#
-# Must be the first bash of its container or job: the announcer marker checked
-# at the end is left by BASH_ENV on the way into this script.
-#
-# One token of the variant's name per toolchain, nothing inferred from another
-# token, and each must build and run an OpenMP program (see IMAGES.md):
-#   gcc<N>       gcc-N and g++-N, major N
-#   clang<N>     clang-N and clang++-N, major N
-#   gfortran<N>  gfortran-N, major N
-#   gcc/gfortran (unversioned, rolling platforms) the same, without a version check
+# verify-image.sh <platform>/<variant>: checks the contract in public-images/README.md
+# from INSIDE the image (build-image.sh --test, smoke-test-runners.yml).
+# Must be the first bash of its container: BASH_ENV leaves the marker checked last.
 set -euo pipefail
 
 DECLARES="${1:?usage: verify-image.sh <platform>/<variant>}"
@@ -35,8 +25,7 @@ echo "python: $CI_INFRASTRUCTURE_PYTHON ($("$CI_INFRASTRUCTURE_PYTHON" -c 'impor
 : "${CI_IMAGE_TAG:?the image should record its own tag}"
 : "${CI_IMAGE_CREATED:?the image should record when it was built}"
 : "${CI_IMAGE_DOCKERFILE_URL:?the image should record a link to its Dockerfile}"
-# ENV is inherited, so a variant that failed to re-declare CI_IMAGE_* would
-# silently answer with its base's name.
+# Catches a variant that did not re-declare CI_IMAGE_*.
 [ "$CI_IMAGE_NAME" = "$DECLARES" ] || fail "image reports itself as '$CI_IMAGE_NAME'"
 echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED, ci-infrastructure $CI_INFRASTRUCTURE_BAKED_REF"
 

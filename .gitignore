@@ -17,3 +17,8 @@ build/
 uv.lock
 
 .vscode/
+
+docs/_build/
+docs/reference/actions/composite/
+docs/reference/actions/workflows/
+docs/reference/cli/

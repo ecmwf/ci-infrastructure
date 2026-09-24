@@ -4,11 +4,9 @@
 
 name: Require a label decision before merge
 description: >
-  Post a commit status that stays pending (not failed, so red stays meaning
-  broken) until the PR carries `label` (run) or `opt-out-label` (skip); both
-  means run. Make `context` a required check. Payload-only, so safe under
-  pull_request_target. `exempt-authors` (exact login, any account type) need no
-  decision, though a label on their PR is still honoured.
+  Post a commit status that stays pending (not failed) until the PR carries
+  `label` (run) or `opt-out-label` (skip); both means run. Make `context` a
+  required check. Payload-only, so safe under pull_request_target.
 
 inputs:
   label:
@@ -18,7 +16,7 @@ inputs:
     description: 'Label meaning "deliberately skip it".'
     required: true
   context:
-    description: 'Commit status context to post. Make THIS the required check.'
+    description: 'Commit status context to post (the required check).'
     required: true
   description-pending:
     description: 'Status description while undecided. Defaults to naming both labels.'
@@ -30,8 +28,8 @@ inputs:
     default: 'Decision recorded'
   exempt-authors:
     description: >
-      Comma-separated logins whose pull requests need no decision. Exact match,
-      any account type. Empty (default) exempts nobody.
+      Comma-separated logins (exact match, any account type) whose pull
+      requests need no decision; a label is still honoured.
     required: false
     default: ''
   description-exempt:
@@ -45,7 +43,7 @@ inputs:
 
 outputs:
   decision:
-    description: "'run', 'skip', 'exempt' or 'undecided' — for logs and for a caller that wants to branch on it."
+    description: "'run', 'skip', 'exempt' or 'undecided'."
     value: ${{ steps.gate.outputs.decision }}
 
 runs:
@@ -104,8 +102,7 @@ runs:
           decision=undecided
         fi
 
-        # Only ever turns "undecided" into "exempt": a label still wins. The list
-        # is split and compared in jq, so a login is never a shell glob.
+        # Compared in jq, so a login is never a shell glob.
         author="$(jq -r '.pull_request.user.login // empty' "$event")"
         if [ "$decision" = "undecided" ] && [ -n "$author" ] && [ -n "${EXEMPT_AUTHORS_INPUT:-}" ] &&
            jq -en --arg list "$EXEMPT_AUTHORS_INPUT" --arg who "$author" \

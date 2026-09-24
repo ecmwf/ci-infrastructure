@@ -17,8 +17,7 @@ on:
         default: false
 
 jobs:
-  # Pinned remote rather than ./actions/...: a local path resolves only after a
-  # checkout, and this job deliberately has none.
+  # Remote, not ./actions/...: a local path needs a checkout, and this job has none.
   ci-approval:
     runs-on: ubuntu-slim
     permissions:
@@ -26,20 +25,12 @@ jobs:
     steps:
       - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
 
-  # Two lanes for the same test. `arc` is an ARC pod that pulls the
-  # internal-tools image, where the cluster ssh identity (keys, the hpc-batch
-  # alias, known_hosts) lives; hence the registry credentials. `hpc` is a
-  # self-hosted runner carrying the same identity on the host with NO container,
-  # proving these actions don't depend on the image.
+  # `arc`: an ARC pod in the internal-tools image, which carries the cluster ssh
+  # identity. `hpc`: a self-hosted runner with that identity on the host and no
+  # container, proving the actions don't depend on the image.
   #
-  # `include` entries add runner/container to both of that lane's sites.
-  # ac-batch exercises a second cluster: the image's ssh config matches
-  # `Host hpc-* a?-*` and its known_hosts carries aa/ab/ac/ad/ag-batch.
-  #
-  # Emitted as JSON rather than a YAML anchor because an alias cannot be made
-  # conditional, and the default run is one combination rather than four. The
-  # reduced matrix drops the `hpc` include entry as well as the lane: an include
-  # whose `lane` matches no base value would ADD a row, here one with no site.
+  # JSON, since a YAML alias cannot be conditional. The reduced matrix drops the
+  # `hpc` include too: an unmatched include would ADD a row with no site.
   lanes:
     needs: ci-approval
     runs-on: ubuntu-slim
@@ -50,8 +41,7 @@ jobs:
         id: pick
         shell: bash
         env:
-          # A boolean workflow_dispatch input reaches the payload as a string;
-          # on every other event it is absent, so the default is the reduced set.
+          # A string in the payload; absent outside workflow_dispatch.
           FULL: ${{ github.event.inputs.full-matrix }}
         run: |
           set -euo pipefail
@@ -70,7 +60,6 @@ jobs:
     needs: [ci-approval, lanes]
     name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
     strategy: &hpc-lanes
-      # fail-fast off: which lane broke is the signal.
       fail-fast: false
       matrix: ${{ fromJSON(needs.lanes.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
@@ -89,10 +78,8 @@ jobs:
         run: |
           set -euo pipefail
           : "${HPC_CI_SSH_USER:?set the HPC_CI_SSH_USER secret to the HPC login user}"
-          # The site name doubles as the ssh alias: an entry in ~/.ssh/config with a matching
-          # known_hosts entry — baked into the image on the `arc` leg, present on
-          # the host on the `hpc` leg. BatchMode fails instead of prompting, so a
-          # missing key or unknown host is an error here rather than a hang.
+          # The site name is an ssh alias. BatchMode fails rather than hangs on a
+          # missing key or unknown host.
           ssh -o BatchMode=yes -o ConnectTimeout=20 \
             "${HPC_CI_SSH_USER}@${{ matrix.site }}" \
             'echo "connected to HPC"'
@@ -104,8 +91,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
     steps:
-      # Fork code in a trusted context, which every job here hangs off
-      # ci-approval to make payable.
+      # Fork code in a trusted context: safe only because every job needs ci-approval.
       - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
         with:
           allow-unsafe-pr-checkout: 'true'
@@ -139,8 +125,7 @@ jobs:
           site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
           local-dir: ${{ runner.temp }}/hpc-e2e/src
-          # Per leg, not just per run: four legs run concurrently and a shared
-          # remote dir would have them pushing and removing each other's trees.
+          # Per leg: concurrent legs must not remove each other's trees.
           remote-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}/transfer-e2e/${{ github.run_id }}-${{ matrix.lane }}-${{ matrix.site }}
 
       - name: Fetch the tree back from the cluster
@@ -159,9 +144,7 @@ jobs:
           diff -r "$RUNNER_TEMP/hpc-e2e/src" "$RUNNER_TEMP/hpc-e2e/back"
           echo "HPC round-trip OK"
 
-      # Dogfood remove-hpc-tree exactly as a consumer would: last step, no `if:`,
-      # so it runs only when the round-trip above succeeded and leaves the tree on
-      # scratch for debugging if anything failed.
+      # Last step, no `if:`: a failed run leaves the tree for debugging.
       - name: Remove the cluster scratch dir
         uses: ./actions/remove-hpc-tree
         with:
@@ -172,10 +155,8 @@ jobs:
   hpc-submit:
     needs: [ci-approval, lanes]
     name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
-    # Proves the half the transfer round-trip doesn't: troika submits, the
-    # compute node waits for the marker, unpacks, runs the recipe, and the runner
-    # reads the sentinel back. --no-publish skips S3 and the cache; the artifact
-    # name is unique per run+attempt so a re-run never reattaches.
+    # Submit, wait for the marker, run the recipe, read the sentinel back. The
+    # artifact name is unique per run+attempt, so a re-run never reattaches.
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
@@ -197,9 +178,8 @@ jobs:
           src="$RUNNER_TEMP/hpc-submit/src"
           mkdir -p "$src/.ci/hpc"
           echo "$GITHUB_RUN_ID" > "$src/shipped.txt"
-          # Resources are the smallest atos will schedule promptly: it selects on
-          # QoS rather than partition. No sentinel echo — ci-infrastructure
-          # appends that, and a recipe printing it itself would defeat the check.
+          # Smallest QoS atos schedules promptly. No sentinel echo: ci-infrastructure
+          # appends it, and printing it here would defeat the check.
           cat > "$src/.ci/hpc/smoke.sh" <<'RECIPE'
           #!/bin/bash
           #SBATCH --qos=nf
@@ -208,8 +188,7 @@ jobs:
           #SBATCH --ntasks=1
 
           echo "ci-smoke: on $(hostname)"
-          # The wrapper cds into the unpacked checkout, so the shipped file must
-          # be here; asserting it makes a silent no-op transfer a failure.
+          # Fails a silent no-op transfer.
           test -f shipped.txt
           test -n "$CI_INSTALL_PREFIX"
           mkdir -p "$CI_INSTALL_PREFIX"

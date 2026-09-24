@@ -2,18 +2,13 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/debian12-base
-# Shared foundation: every other public-images/debian12/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Conventions: public-images/README.md
 FROM debian:12
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Bookworm's Python is 3.11.2, below ci-infrastructure's 3.11.4 floor. Keep it
-# for distro tooling and install a pinned Python 3.11 alongside it below.
-# Its CMake 3.25 does not meet the 3.26 floor required by the submodules, so a
-# pinned CMake is installed with pip below and takes precedence from /usr/local.
-# build-essential is needed for CPython, then purged below; make and headers stay.
+# Bookworm's Python 3.11.2 and CMake 3.25 are below the 3.11.4 and 3.26 floors,
+# so both are installed below. build-essential is only for CPython.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
@@ -45,7 +40,6 @@ RUN apt-get update && apt-get install -y \
     libgdbm-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Build a stable, checksummed interpreter and leave /usr/bin/python3 untouched.
 ARG PYTHON_VERSION=3.11.16
 ARG PYTHON_SHA256=6c0bd76ab0ec7d94ed400b1497f01ac6c7751c8822615ee0855a3eb2d893ea76
 RUN cd /tmp \
@@ -61,7 +55,6 @@ RUN cd /tmp \
 
 RUN python3.11 -m pip install --no-cache-dir pytest cmake==3.31.6
 
-# Install GitHub CLI (gh) from its upstream apt repository.
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -74,15 +67,12 @@ RUN mkdir -p /etc/apt/keyrings \
  && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Install ci-infrastructure from the repository build context. Keep this
-# non-editable so the installed package remains after the source tree is removed.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
  && rm -rf /opt/ci-infrastructure
 
-# Last step that may need to compile. Match debian11/base: explicit removal
-# keeps the libraries needed by the headers and source-built Python installed.
+# Explicit names, not autoremove, which would take libraries still needed.
 RUN apt-get purge -y build-essential gcc g++ cpp gcc-12 g++-12 cpp-12 \
  && rm -rf /var/lib/apt/lists/* \
  && for b in cc c++ gcc g++; do ! command -v "$b" >/dev/null || exit 1; done
@@ -99,7 +89,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

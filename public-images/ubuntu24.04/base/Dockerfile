@@ -2,10 +2,7 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-base
-# Shared foundation: every other public-images/ubuntu24.04/* image FROMs this, as
-# do the private images in ecmwf/ci-container-images.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Conventions: public-images/README.md
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -68,16 +65,15 @@ RUN mkdir -p /etc/apt/keyrings \
 # editable: ensure-infrastructure-present hashes the installed *.py files.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN pip install "/opt/ci-infrastructure[all]" \
+RUN pip install "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 # ensure-infrastructure-present reuses this interpreter instead of a venv. It
 # lives outside _work, which ARC's Kubernetes mode overlays per job.
 ENV CI_INFRASTRUCTURE_PYTHON=/usr/bin/python3
 
-# Which ci-infrastructure commit got baked, readable inside a job (named in
-# ensure-infrastructure-present's mismatch error). Declared late to keep the pip
-# layer cached.
+# The baked commit, named in ensure-infrastructure-present's mismatch error.
+# Declared late to keep the pip layer cached.
 ARG SOURCE_REVISION=""
 ENV CI_INFRASTRUCTURE_BAKED_REF=${SOURCE_REVISION}
 
@@ -87,14 +83,12 @@ CMD []
 
 WORKDIR /workspace
 
-# Announce the image from the first bash step of any job: GitHub's step shell
-# sources $BASH_ENV. Inherited by every image built on this base.
+# GitHub's step shell sources $BASH_ENV, so every bash step announces the image.
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description: the OCI label facts as env, since a job inside the image
-# cannot read its labels (see IMAGES.md). Declared last, and repeated in EVERY
-# image: an inherited copy would announce the base's name.
+# A job cannot read the image's labels, hence env.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

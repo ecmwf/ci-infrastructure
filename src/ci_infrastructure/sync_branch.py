@@ -2,15 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Which branch names take part in cross-repo branch matching.
+"""Which branch names take part in cross-repo branch matching (resolve_deps and actions/pick-ref).
 
-The one rule for both directions: resolve_deps picks an upstream dependency's
-same-named branch, and actions/pick-ref picks a downstream consumer's, only for a
-sync branch. Any other name (master, develop, a feature branch) uses the manifest
-ref, so an unrelated same-named branch elsewhere is never built by accident.
-
-Stdlib-only: actions/pick-ref runs this with a stock interpreter.
-Exit status 0 when the argument is a sync branch, 1 otherwise.
+Other names use the manifest ref, so an unrelated same-named branch is never built.
+Stdlib-only: actions/pick-ref runs this with a stock interpreter. Exits 0 for a sync branch.
 """
 
 from __future__ import annotations

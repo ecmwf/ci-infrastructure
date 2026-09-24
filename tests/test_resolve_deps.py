@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict, Unpack
+from typing import Any, Final
 
 import pytest
 
@@ -56,24 +56,7 @@ def test_own_sha_requires_branch(monkeypatch: pytest.MonkeyPatch) -> None:
         _resolve_own_sha("owner/repo", "", token=None)
 
 
-class _DepOverrides(TypedDict, total=False):
-    name: PackageName
-    repo: Repo
-    ref: Ref
-    sha: Sha
-    artifact_name: ArtifactName
-    cached: bool
-    source: Literal["artifact", "triggered rebuild"]
-    needs_python: bool
-    install_path: Path
-    platform: str
-    compiler: str | None
-    build_type: str
-    python_version: str | None
-    deps_hash: str | None
-
-
-def _dep(**overrides: Unpack[_DepOverrides]) -> ResolvedDep:
+def _dep(**overrides: Any) -> ResolvedDep:
     base = ResolvedDep(
         name=PackageName("pkg"),
         repo=Repo("owner/pkg"),
@@ -93,28 +76,22 @@ def _dep(**overrides: Unpack[_DepOverrides]) -> ResolvedDep:
     return replace(base, **overrides)
 
 
-def test_to_json_carries_structured_fields() -> None:
+def test_to_json_carries_structured_fields_and_blanks_absent_optionals() -> None:
     j = _dep().to_json()
-    assert j["platform"] == "ubuntu-24.04"
-    assert j["compiler"] == "clang++-18"
-    assert j["build-type"] == "Release"
-    assert j["python-version"] == "3.11"
-    assert j["deps-hash"] == "abc12345"
-    assert j["ref"] == "main"
+    assert (j["platform"], j["compiler"], j["build-type"], j["ref"]) == (
+        "ubuntu-24.04",
+        "clang++-18",
+        "Release",
+        "main",
+    )
+    assert (j["python-version"], j["deps-hash"]) == ("3.11", "abc12345")
 
-
-def test_to_json_blanks_absent_optionals() -> None:
     j = _dep(compiler=None, python_version=None, deps_hash=None).to_json()
-    assert j["compiler"] == ""
-    assert j["python-version"] == ""
-    assert j["deps-hash"] == ""
-    assert j["platform"] == "ubuntu-24.04"
-    assert j["build-type"] == "Release"
+    assert (j["compiler"], j["python-version"], j["deps-hash"]) == ("", "", "")
+    assert (j["platform"], j["build-type"]) == ("ubuntu-24.04", "Release")
 
 
-# --- build-options axis -----------------------------------------------------
-
-SHA40: Final = Sha("a" * 40)
+SHA40: Final = Sha(BRANCH_HEAD)
 
 
 def test_option_segment_canonical() -> None:
@@ -125,27 +102,11 @@ def test_option_segment_canonical() -> None:
         canonical_option_segment("bad+token")
 
 
-def test_empty_option_adds_no_segment() -> None:
-    without = make_artifact_name(PackageName("cxxmath"), SHA40, None, "ubuntu-24.04", "clang++-18", "Release", None)
-    with_empty = make_artifact_name(
-        PackageName("cxxmath"), SHA40, None, "ubuntu-24.04", "clang++-18", "Release", None, option=""
-    )
-    assert without == with_empty
-    assert without == f"cxxmath-{SHA40}-ubuntu-24.04-clang++-18-Release"
-
-
-def test_artifact_name_option_segment_appended() -> None:
-    name = make_artifact_name(
-        PackageName("cxxmath"),
-        SHA40,
-        None,
-        "ubuntu-24.04",
-        "clang++-18",
-        "Release",
-        None,
-        option="stochastic-moments",
-    )
-    assert name == f"cxxmath-{SHA40}-ubuntu-24.04-clang++-18-Release-opts.stochastic-moments"
+def test_artifact_name_option_segment() -> None:
+    args = (PackageName("cxxmath"), SHA40, None, "ubuntu-24.04", "clang++-18", "Release", None)
+    plain = f"cxxmath-{SHA40}-ubuntu-24.04-clang++-18-Release"
+    assert make_artifact_name(*args) == make_artifact_name(*args, option="") == plain
+    assert make_artifact_name(*args, option="stochastic-moments") == f"{plain}-opts.stochastic-moments"
 
 
 def _producer(*legs: dict[str, Any]) -> Manifest:
@@ -161,65 +122,37 @@ def _producer(*legs: dict[str, Any]) -> Manifest:
     )
 
 
-_BASE_LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
+_LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
 
 
 def test_producer_can_build_matches_requested_option() -> None:
-    prod = _producer(_BASE_LEG, {**_BASE_LEG, "options": "stochastic-moments"})
-    assert producer_can_build(prod, {**_BASE_LEG, "options": ""})
-    assert producer_can_build(prod, {**_BASE_LEG, "options": "stochastic-moments"})
-    assert not producer_can_build(prod, {**_BASE_LEG, "options": "fastmath"})
+    prod = _producer(_LEG, {**_LEG, "options": "stochastic-moments"})
+    assert producer_can_build(prod, {**_LEG, "options": ""})
+    assert producer_can_build(prod, {**_LEG, "options": "stochastic-moments"})
+    assert not producer_can_build(prod, {**_LEG, "options": "fastmath"})
 
 
 def test_producer_plain_leg_cannot_satisfy_moments() -> None:
-    # No options is the empty config, not a wildcard.
-    prod = _producer(_BASE_LEG)
-    assert producer_can_build(prod, {**_BASE_LEG, "options": ""})
-    assert not producer_can_build(prod, {**_BASE_LEG, "options": "stochastic-moments"})
+    prod = _producer(_LEG)
+    assert producer_can_build(prod, {**_LEG, "options": ""})
+    assert not producer_can_build(prod, {**_LEG, "options": "stochastic-moments"})
+
+
+_DEP_BASE: Final = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
 
 
 def test_parse_deps_option_literal_and_input() -> None:
-    literal = _parse_deps(
-        {
-            "deps": [
-                {
-                    "repo": "o/x",
-                    "package": "x",
-                    "ref": "main",
-                    "compiler-inputs": ["cxx-compiler"],
-                    "options": "stochastic-moments",
-                }
-            ]
-        }
-    )[0]
-    assert literal.option == "stochastic-moments"
-    assert literal.options_input is None
+    [literal] = _parse_deps({"deps": [{**_DEP_BASE, "options": "stochastic-moments"}]})
+    assert (literal.option, literal.options_input) == ("stochastic-moments", None)
 
-    per_leg = _parse_deps(
-        {
-            "deps": [
-                {
-                    "repo": "o/x",
-                    "package": "x",
-                    "ref": "main",
-                    "compiler-inputs": ["cxx-compiler"],
-                    "options-input": "x-options",
-                }
-            ]
-        }
-    )[0]
-    assert per_leg.option == ""
-    assert per_leg.options_input == "x-options"
+    [per_leg] = _parse_deps({"deps": [{**_DEP_BASE, "options-input": "x-options"}]})
+    assert (per_leg.option, per_leg.options_input) == ("", "x-options")
 
 
-def test_as_option_rejects_bad_token() -> None:
-    with pytest.raises(ResolveError, match="invalid build option"):
-        _as_option("bad+token", context="test")
-
-
-def test_as_option_rejects_list() -> None:
-    with pytest.raises(ResolveError, match="scalar config name"):
-        _as_option(["stochastic-moments"], context="test")
+@pytest.mark.parametrize(("value", "match"), [("bad+token", "invalid build option"), (["x"], "scalar config name")])
+def test_as_option_rejects(value: Any, match: str) -> None:
+    with pytest.raises(ResolveError, match=match):
+        _as_option(value, context="test")
 
 
 def _own(name: str) -> PackageSpec:
@@ -267,9 +200,6 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
 
 
-_LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
-
-
 @pytest.mark.usefixtures("offline")
 def test_options_do_not_propagate_and_ripple_via_deps_hash() -> None:
     """An upstream option renames the dep and, via deps-hash, us; we get no opts segment."""
@@ -299,29 +229,27 @@ def test_template_version_marks_hpc_lane_names_only(
     assert resolved_own.artifact_name.endswith(tail)
 
 
-def test_parse_deps_when_predicate() -> None:
-    """`when` accepts a scalar or a list, and defaults to None (applies to every leg)."""
-    base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
-
-    assert _parse_deps({"deps": [base]})[0].when is None
-
-    listed = _parse_deps({"deps": [{**base, "when": {"options": ["extended", "full"]}}]})[0]
-    assert listed.when == {"options": frozenset({"extended", "full"})}
-
-    # A bare scalar is sugar for a one-element list.
-    scalar = _parse_deps({"deps": [{**base, "when": {"build-type": "Debug"}}]})[0]
-    assert scalar.when == {"build-type": frozenset({"Debug"})}
-
-    # Multiple keys must ALL match; values compare as strings.
-    multi = _parse_deps({"deps": [{**base, "when": {"platform": "ubuntu-24.04", "python-version": 3.12}}]})[0]
-    assert multi.when == {"platform": frozenset({"ubuntu-24.04"}), "python-version": frozenset({"3.12"})}
+@pytest.mark.parametrize(
+    ("when", "expected"),
+    [
+        (None, None),
+        ({"options": ["extended", "full"]}, {"options": frozenset({"extended", "full"})}),
+        ({"build-type": "Debug"}, {"build-type": frozenset({"Debug"})}),
+        (
+            {"platform": "ubuntu-24.04", "python-version": 3.12},
+            {"platform": frozenset({"ubuntu-24.04"}), "python-version": frozenset({"3.12"})},
+        ),
+    ],
+)
+def test_parse_deps_when_predicate(when: Any, expected: Any) -> None:
+    dep = _DEP_BASE if when is None else {**_DEP_BASE, "when": when}
+    assert _parse_deps({"deps": [dep]})[0].when == expected
 
 
 @pytest.mark.parametrize("bad", [{}, [], "options", {"options": []}, {"options": [["nested"]]}])
 def test_parse_deps_when_rejects_bad_shape(bad: Any) -> None:
-    base = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
     with pytest.raises(ValueError, match="when"):
-        _parse_deps({"deps": [{**base, "when": bad}]})
+        _parse_deps({"deps": [{**_DEP_BASE, "when": bad}]})
 
 
 def test_applies_to_requires_every_key_and_ignores_missing_fields() -> None:
@@ -349,8 +277,6 @@ def test_when_scopes_dep_out_of_identity_of_nonmatching_legs() -> None:
     assert plain_own.artifact_name == without_scoped.artifact_name
     assert plain_own.deps_hash == without_scoped.deps_hash
 
-
-# --- [matrix.<kind>] ctest / ctest-args: read by hand-written ci.yml via matrix._resolved ---
 
 _CTEST_MANIFEST: Final = """
 [package]
@@ -381,26 +307,12 @@ ctest-args = '-j "$(nproc)"'
 """
 
 
-def test_ctest_parsed_per_kind() -> None:
+def test_ctest_parsed_per_kind_verbatim_and_not_inherited_through_reuse_matrix() -> None:
     kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
 
     assert kinds["build"] == resolve_deps.CtestSpec(enabled=True, args="-L nightly -E 's_test|s_zombies' -j 8")
-    # HPC job-scripts run ctest themselves.
     assert kinds["build-hpc"] == resolve_deps.CtestSpec(enabled=False, args="")
-
-
-def test_ctest_is_per_kind_not_inherited_through_reuse_matrix() -> None:
-    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
-
-    assert kinds["test"].args == '-j "$(nproc)"'
-    assert kinds["test"].args != kinds["build"].args
-
-
-def test_ctest_args_survive_shell_metacharacters_verbatim() -> None:
-    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
-
-    assert "'s_test|s_zombies'" in kinds["build"].args
-    assert '"$(nproc)"' in kinds["test"].args
+    assert kinds["test"] == resolve_deps.CtestSpec(enabled=True, args='-j "$(nproc)"')
 
 
 def test_ctest_rejects_wrong_types() -> None:

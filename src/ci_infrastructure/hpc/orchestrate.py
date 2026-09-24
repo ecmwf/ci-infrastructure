@@ -4,16 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Submit / wait / cancel a SLURM build job via troika (as a library).
-
-This is the HPC counterpart of the runner build step. It is invoked by the
-``build-on-hpc`` composite action on the `hpc` self-hosted runner:
-
-    python -m ci_infrastructure.hpc submit-wait --site hpc-batch \\
-        --job-script ./.ci/hpc/build-gnu.sh --artifact-name <name> \\
-        --remote-work-dir '$SCRATCH/github-ci' --local-install-path <local>/install/<name> \\
-        --source-dir <workspace> --run-id <run>-<attempt> \\
-        --tar-dir <local>/hpc-tars --cmake-prefix-path <prefix>
+"""Submit / wait / cancel a SLURM build job via troika (as a library); used by ``build-on-hpc``.
 
 ``submit-wait`` is idempotent: a cache hit skips, an active job with the same
 name is reattached, otherwise a fresh job is submitted. The output sentinel,
@@ -43,14 +34,12 @@ from .._github_api import write_outputs
 from . import jobscript, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
-# Anything else — or the job having vanished from squeue — means it is no
-# longer running.
 ACTIVE_STATES: Final = frozenset(
     {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "RESIZING", "SUSPENDED", "REQUEUED"}
 )
 
-_DEFAULT_GUARD_INTERVAL: Final = 120  # seconds between squeue liveness checks
-_DEFAULT_WAIT_TIMEOUT: Final = 6 * 60 * 60  # 6h hard ceiling on a single job wait
+_DEFAULT_GUARD_INTERVAL: Final = 120
+_DEFAULT_WAIT_TIMEOUT: Final = 6 * 60 * 60
 _GRACE_SECONDS: Final = 10  # last look for a late-flushed sentinel after the job leaves the queue
 _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we give up on the tail itself
 
@@ -58,7 +47,6 @@ Verdict = Literal["SUCCESS", "FAILURE", "VANISHED", "TIMEOUT"]
 
 
 def _parse_matrix_leg(raw: str) -> dict[str, Any]:
-    """Parse ``--matrix-leg``; empty means no leg was passed."""
     if not raw.strip():
         return {}
     try:
@@ -71,7 +59,6 @@ def _parse_matrix_leg(raw: str) -> dict[str, Any]:
 
 
 def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) -> str:
-    """Read a job-script as plain shell, rendering it first when it is a `.j2` template."""
     source = repo_script.read_text()
     if not jobscript.is_job_template(repo_script):
         return source
@@ -94,16 +81,13 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
         raise CIError(str(exc)) from exc
 
 
-# === The cluster-side layout ===
 def write_job_script(path: Path, rendered: str) -> None:
-    """Write a rendered job script, executable so a leftover can be run by hand."""
+    """Executable, so a leftover can be run by hand."""
     path.write_text(rendered)
     path.chmod(0o755)
 
 
 class RemotePaths(NamedTuple):
-    """Where one artifact's build lives under the (resolved) cluster work dir, on the shared filesystem."""
-
     output: str
     install: str
     staging: str
@@ -122,22 +106,17 @@ class RemotePaths(NamedTuple):
 
 
 def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str, list[str], str]:
-    """Map runner-local dep prefixes to ``<staging_dir>/deps/<i>``.
-
-    Returns (cluster ``CMAKE_PREFIX_PATH``, local prefixes to ship, remote deps dir).
-    """
+    """Map runner-local dep prefixes to ``<staging_dir>/deps/<i>``: (cluster prefix path, local prefixes, deps dir)."""
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
     remote_prefixes = [f"{remote_deps_dir}/{index}" for index in range(len(local_prefixes))]
     return ":".join(remote_prefixes), local_prefixes, remote_deps_dir
 
 
-# === Reattach lookup (the scheduler is the shared, cross-runner job store) ===
 def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> int | None:
-    """Lowest jid of an active SLURM job named ``job_name`` (the cross-runner reattach key), or None.
+    """Lowest active jid named ``job_name``, or None (also when ``squeue`` fails).
 
-    Only the name is read back, never the job's ``--comment``: sites rewrite it
-    (ECMWF's sbatch appends ``;Gres=...``). A failing ``squeue`` yields None.
+    Never the ``--comment``: sites rewrite it (ECMWF's sbatch appends ``;Gres=...``).
     """
     states = ",".join(sorted(ACTIVE_STATES))
     argv = ["squeue", "-h", "-n", job_name, "-t", states, "-o", "%i"]
@@ -165,7 +144,6 @@ def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> in
     return jids[0]
 
 
-# === Submit / reattach / wait / cancel ===
 def submit_or_reattach(
     *,
     site: SlurmSiteLike,
@@ -176,7 +154,7 @@ def submit_or_reattach(
     after_submit: Callable[[], None] | None = None,
     dryrun: bool = False,
 ) -> tuple[int, Literal["submitted", "reattached", "dryrun"]]:
-    """Reattach to an active job named ``job_name``, else submit and run ``after_submit``. jid is -1 on a dry run."""
+    """Reattach to an active job named ``job_name``, else submit and run ``after_submit``."""
     if not dryrun:
         found = find_active_job_by_name(site._connection, job_name=job_name, user=user)
         if found is not None:
@@ -204,10 +182,7 @@ def wait_for_job(
     guard_interval: float = _DEFAULT_GUARD_INTERVAL,
     jitter: float = 0.1,
 ) -> Verdict:
-    """Block until the output sentinel appears, the job leaves the queue, or ``timeout``.
-
-    The scheduler is consulted once per jittered ``guard_interval``.
-    """
+    """Block until the sentinel appears, the job leaves the queue, or ``timeout``."""
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -231,7 +206,6 @@ def cancel_job(
     jid: int,
     dryrun: bool = False,
 ) -> tuple[int, str | None]:
-    """Cancel a running job (troika has no restart verb; restart == resubmit)."""
     return site.kill(str(script_path), None, output, jid=jid, dryrun=dryrun)
 
 
@@ -239,13 +213,11 @@ def cancel_job(
 _SAFE_RUN_ID: Final = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-# === Cleanup (nightly GC of the cluster work dir) ===
 #: Swept at maxdepth 1 by age. "transfer-e2e" holds smoke-test-hpc.yml's trees.
 GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "locks", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
-    """Remove per-artifact trees under the remote work dir older than N days (``dryrun`` lists them)."""
     action = "-print" if dryrun else "-exec rm -rf {} +"
     for sub in GC_SUBDIRS:
         base = f"{remote_work_dir.rstrip('/')}/{sub}"
@@ -265,7 +237,6 @@ def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: boo
 
 
 def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str, jid: int) -> None:
-    """Scancel the SLURM job when GitHub cancels the step (SIGINT/SIGTERM), then exit non-zero."""
 
     def handler(signum: int, frame: FrameType | None) -> None:
         print(f"submit-wait: received signal {signum}; cancelling HPC job {jid}...")
@@ -280,10 +251,9 @@ def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str,
 
 
 def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float], Verdict | None]:
-    """Sentinel waiter over one remote ``timeout N tail -F | grep -m1`` of the job output.
+    """Fails closed: only a sentinel naming ``jid`` counts.
 
-    Fails closed: only a printed sentinel naming ``jid`` is a verdict. The window
-    is bounded remotely, since killing the local process would leave tail/grep alive.
+    The window is bounded remotely: killing the local process would leave tail/grep alive.
     """
     pattern = jobscript.sentinel_regex(jid)
     quoted_output = shlex.quote(output)
@@ -311,9 +281,7 @@ def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float
     return wait
 
 
-# === CLI ===
 def _echo_remote_output(conn: Any, output: str) -> None:
-    """Print the job's whole cluster output to the runner log, best-effort."""
     try:
         proc = conn.execute(["cat", output], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout, _ = proc.communicate()
@@ -327,10 +295,7 @@ def _echo_remote_output(conn: Any, output: str) -> None:
 
 
 def _stream_job_output(conn: Any, output: str, jid: int) -> Any:
-    """Live-stream the job's output (display only) until a sentinel; return the streamer process.
-
-    troika sends ``stdout=None`` to /dev/null, so the runner's stdout is passed explicitly.
-    """
+    """Display only. troika sends ``stdout=None`` to /dev/null, so pass the runner's stdout."""
     ceiling = int(_DEFAULT_WAIT_TIMEOUT + _WAITER_GRACE_SECONDS)
     quoted_output = shlex.quote(output)
     sed_quit = f"/{jobscript.sentinel_regex(jid)}/q"
@@ -341,7 +306,6 @@ def _stream_job_output(conn: Any, output: str, jid: int) -> Any:
 
 
 def _stop_stream(proc: Any) -> None:
-    """Best-effort stop the live-output streamer (it may already have quit at the sentinel)."""
     try:
         if proc.poll() is None:
             proc.terminate()
@@ -355,7 +319,6 @@ def _stop_stream(proc: Any) -> None:
 
 
 def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
-    """The troika-site options every subcommand takes."""
     for option in reversed(
         [
             click.option("--site", "site_name", required=True, help="Troika site name (see troika-config.yml)"),
@@ -370,7 +333,6 @@ def _site_options(command: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _resolve_reported(command: str, conn: Any, remote_dir: str) -> str:
-    """Expand a cluster path spec and log the result when it changed."""
     resolved = resolve_remote_path(conn, remote_dir)
     if resolved != remote_dir:
         print(f"{command}: remote dir {remote_dir!r} -> {resolved}")
@@ -387,7 +349,6 @@ def main() -> None:
 @click.option("--matrix-leg", "matrix_leg", default="", help="The matrix leg as JSON (the render context)")
 @click.option("--artifact-name", "artifact_name", default="", help="Value for the template's `artifact_name`")
 def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
-    """Print the rendered recipe, without the SLURM wrapper that needs cluster paths."""
     path = Path(job_script)
     if not path.is_file():
         raise CIError(f"--job-script does not exist: {path}")
@@ -442,9 +403,7 @@ def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
     "no_publish",
     is_flag=True,
     default=False,
-    help="Test-only mode: run the job for its pass/fail (sentinel) but produce no artifact — "
-    "skip the artifact cache short-circuit (a test must run every time) and skip fetching the "
-    "install tree on success. For pure-test HPC legs that have nothing to build or publish.",
+    help="Test-only: run the job for its pass/fail, skip the artifact cache check and fetch no install tree.",
 )
 def submit_wait(
     site_name: str,
@@ -471,7 +430,6 @@ def submit_wait(
         )
 
     def cache_hit() -> bool:
-        # A --no-publish test writes no artifact, so it must run every time.
         if dryrun or no_publish or not s3_store.object_exists(artifact_name):
             return False
         print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
@@ -524,11 +482,7 @@ def submit_wait(
         return True
 
     def ship_for(this_run_id: str) -> None:
-        """Stage source and deps unless a peer has; never reset a staging dir a running job reads.
-
-        Safe to skip: the artifact name embeds the source SHA and deps hash. The
-        unlocked check is the fast path; the locked one closes the race.
-        """
+        """Never reset a staging dir a running job reads; skipping is safe as the name embeds SHA and deps hash."""
         if shipped():
             return
         with transfer.ship_lock(site._connection, staging_dir=paths.staging, run_id=this_run_id):
@@ -660,7 +614,7 @@ def gc(
 
 
 def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
-    """Refuse a resolved path directly under / (usually an unset HPC_CI_REMOTE_WORK_DIR). fetch-tree only reads."""
+    """Refuse a path directly under / (usually an unset HPC_CI_REMOTE_WORK_DIR); fetch-tree only reads."""
     if resolved.strip("/").count("/") >= 1:
         return
     detail = f"{resolved!r}" if resolved == remote_dir else f"{resolved!r} (from {remote_dir!r})"

@@ -37,14 +37,11 @@ def _payload(monkeypatch: pytest.MonkeyPatch, data: Any) -> None:
     monkeypatch.setattr(_github_api, "gh_api_rest", lambda path, token: data)
 
 
-def test_no_runs_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _payload(monkeypatch, {"workflow_runs": []})
-    assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
-
-
-def test_absent_key_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _payload(monkeypatch, {})
-    assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
+@pytest.mark.parametrize("data", [{"workflow_runs": []}, {}, None], ids=["no-runs", "no-key", "api-failed"])
+def test_nothing_to_report_is_none(monkeypatch: pytest.MonkeyPatch, data: Any) -> None:
+    _payload(monkeypatch, data)
+    runs = probe_workflow_runs("o/r", "a" * 40, None)
+    assert (runs.state, runs.conclusion) == ("none", None)
 
 
 def test_only_build_workflows_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,14 +51,6 @@ def test_only_build_workflows_count(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
     _payload(monkeypatch, {"workflow_runs": [stuck_legacy]})
     assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
-
-
-def test_failed_api_call_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    # gh_api_rest returns None on a non-zero exit.
-    _payload(monkeypatch, None)
-    runs = probe_workflow_runs("o/r", "a" * 40, None)
-    assert runs.state == "none"
-    assert runs.conclusion is None
 
 
 def test_in_progress_run_reports_detail_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,7 +92,7 @@ def test_non_dict_entries_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_workflow_runs("o/r", "a" * 40, None).conclusion == "success"
 
 
-# === make_artifact_name — the format IS the cache key, so it is pinned literally. ===
+#: The artifact name is the cache key, so its format is pinned literally.
 SHA: Final = "a" * 40
 
 
@@ -144,7 +133,6 @@ def test_only_the_hpc_lane_carries_the_template_version(monkeypatch: pytest.Monk
     assert template_version_for_lane("runner") == 0
 
 
-# === resolve_reuse_matrix — the generator and the resolver must agree on legs ===
 _BLOCKS: dict[str, dict[str, Any]] = {
     "build": {"include": [{"cxx-compiler": "clang++-18"}]},
     "test": {"reuse-matrix": "build"},

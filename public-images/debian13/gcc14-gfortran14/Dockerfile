@@ -2,22 +2,18 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/debian13-gcc14-gfortran14
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 FROM eccr.ecmwf.int/public-ci-images/debian13-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Trixie's native compiler generation, exposed under the versioned names used by
-# downstream manifests.
 RUN apt-get update && apt-get install -y \
     gcc-14 \
     g++-14 \
     gfortran-14 \
  && rm -rf /var/lib/apt/lists/*
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

@@ -2,17 +2,11 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu22.04-gcc11-gfortran11-boost-qt6
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
-#
-# This variant installs its complete toolchain directly on the shared base. The
-# image workflow supports only base -> variant dependency chains.
 FROM eccr.ecmwf.int/public-ci-images/ubuntu22.04-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Jammy names the Qt 6 module development packages after their libraries rather
-# than using the qt6-<module>-dev convention found in newer Ubuntu releases.
+# Jammy names Qt 6 module packages libqt6<module>6-dev, not qt6-<module>-dev.
 RUN apt-get update && apt-get install -y \
     gcc-11 \
     g++-11 \
@@ -24,7 +18,7 @@ RUN apt-get update && apt-get install -y \
     libqt6charts6-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

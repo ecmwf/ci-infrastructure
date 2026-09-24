@@ -6,23 +6,26 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from ci_infrastructure.runners import RUNNER_CLASSES, resolve_runner
 
 
-def test_hpc_submit_maps_to_its_label() -> None:
+@pytest.mark.parametrize(
+    ("label", "resolved"),
+    [
+        ("hpc-submit", RUNNER_CLASSES["hpc-submit"]),
+        ("arc-runner-very-large", "arc-runner-very-large"),
+        (["self-hosted", "hpc-submit"], ["self-hosted", RUNNER_CLASSES["hpc-submit"]]),
+        (None, None),
+        (7, 7),
+    ],
+)
+def test_resolve_runner(label: Any, resolved: Any) -> None:
+    assert resolve_runner(label) == resolved
+
+
+def test_hpc_submit_label() -> None:
     assert RUNNER_CLASSES["hpc-submit"] == "arc-hpc-pet-vsphere-prod"
-    assert resolve_runner("hpc-submit") == "arc-hpc-pet-vsphere-prod"
-
-
-def test_unknown_label_passes_through() -> None:
-    assert resolve_runner("arc-runner-very-large") == "arc-runner-very-large"
-    assert resolve_runner("ubuntu-24.04") == "ubuntu-24.04"
-
-
-def test_label_array_is_mapped_elementwise() -> None:
-    assert resolve_runner(["self-hosted", "hpc-submit"]) == ["self-hosted", "arc-hpc-pet-vsphere-prod"]
-
-
-def test_non_string_is_returned_unchanged() -> None:
-    assert resolve_runner(None) is None
-    assert resolve_runner(7) == 7

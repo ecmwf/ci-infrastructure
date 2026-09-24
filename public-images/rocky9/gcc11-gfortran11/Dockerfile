@@ -2,20 +2,16 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky9-gcc11-gfortran11
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
 FROM eccr.ecmwf.int/public-ci-images/rocky9-base:latest
 
 RUN dnf -y install gcc gcc-c++ gcc-gfortran \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# Rocky packages expose unversioned compiler names. Add the versioned names used
-# by downstream manifests while retaining the distro defaults.
 RUN for t in gcc g++ gfortran cpp; do \
       ln -s /usr/bin/$t /usr/local/bin/$t-11; \
     done
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

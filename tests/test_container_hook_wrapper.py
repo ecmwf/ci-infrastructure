@@ -39,7 +39,6 @@ PREPARE_JOB: Final[dict[str, Any]] = {
 
 
 def _run(tmp_path: Path, payload: str, exit_code: int = 0) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Drive the wrapper against a fake hook; return the result and what the fake received."""
     received = tmp_path / "received.json"
     fake = tmp_path / "fake-hook.js"
     fake.write_text(
@@ -58,9 +57,11 @@ def _run(tmp_path: Path, payload: str, exit_code: int = 0) -> tuple[subprocess.C
     return proc, received.read_text() if received.exists() else ""
 
 
-def test_prepare_job_names_the_job_and_service_images(tmp_path: Path) -> None:
-    proc, _ = _run(tmp_path, json.dumps(PREPARE_JOB))
+def test_prepare_job_names_the_images_and_passes_the_payload_through_byte_identically(tmp_path: Path) -> None:
+    payload = json.dumps(PREPARE_JOB)
+    proc, received = _run(tmp_path, payload)
     assert proc.returncode == 0
+    assert received == payload
     assert "job container: eccr.ecmwf.int/public-ci-images/rocky8-gcc8-gfortran8-boost-qt5:latest" in proc.stdout
     assert "service container: redis:7" in proc.stdout
 
@@ -71,12 +72,6 @@ def test_other_commands_print_nothing(tmp_path: Path) -> None:
     proc, _ = _run(tmp_path, payload)
     assert proc.returncode == 0
     assert proc.stdout == ""
-
-
-def test_payload_reaches_the_real_hook_byte_identically(tmp_path: Path) -> None:
-    payload = json.dumps(PREPARE_JOB)
-    _, received = _run(tmp_path, payload)
-    assert received == payload
 
 
 @pytest.mark.parametrize("code", [0, 7])

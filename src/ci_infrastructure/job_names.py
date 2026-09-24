@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The job display name of a matrix leg, shared by a repo's ci.yml and the generated lanes.
-
-resolve_deps evaluates it into `_resolved.job-name`; both lanes then write
-
-    name: build+test (${{ matrix._resolved['job-name'] }})
-
-Only the parenthesised suffix is returned; the lane owns the prefix.
-"""
+"""The parenthesised job-name suffix of a matrix leg (`_resolved.job-name`), shared by ci.yml and generated lanes."""
 
 from __future__ import annotations
 
@@ -22,7 +15,6 @@ _OPTIONS_FIELD = "options"
 
 
 def _leg_values(legs: Sequence[Mapping[str, Any]], key: str) -> set[Any]:
-    """The distinct values legs give `key` (lists as tuples)."""
     return {tuple(v) if isinstance(v, list) else v for v in (leg.get(key) for leg in legs)}
 
 
@@ -77,7 +69,7 @@ def display_fields(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[
 
 
 def _render(value: Any) -> str:
-    """Render like a GitHub expression: None → "", bools lowercase."""
+    """Render like a GitHub expression."""
     if value is None:
         return ""
     if isinstance(value, bool):

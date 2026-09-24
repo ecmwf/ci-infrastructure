@@ -2,13 +2,10 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky10-base
-# Shared foundation: every other public-images/rocky10/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see IMAGES.md).
+# Conventions: public-images/README.md
 FROM rockylinux/rockylinux:10.1
 
-# Rocky 10's system Python 3.12 and CMake 3.31 meet the repository floors. CRB
-# supplies Ninja and the static Boost libraries used by the UI variant.
+# CRB supplies ninja and the UI variant's static Boost.
 RUN dnf -y install dnf-plugins-core \
  && dnf config-manager --set-enabled crb \
  && dnf -y install \
@@ -37,13 +34,10 @@ RUN dnf -y install dnf-plugins-core \
 
 RUN python3 -m pip install --no-cache-dir pytest
 
-# Install GitHub CLI (gh) from its upstream RPM repository.
 RUN dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo \
  && dnf -y install gh \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# Install ci-infrastructure from the repository build context. Keep this
-# non-editable so the installed package remains after the source tree is removed.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
@@ -61,7 +55,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

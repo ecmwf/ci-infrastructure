@@ -6,7 +6,6 @@
 
 """Build, test and push the CI images under public-images/.
 
-Image discovery, tagging and OCI labels for images.yml and for hand builds alike.
 Run it as ./build-image.sh. Stdlib only, and outside src/ (a tag path of every image).
 
 Usage:
@@ -16,33 +15,22 @@ Usage:
   ./build-image.sh --push-built <platform>/<variant> [--force] [--require-clean]
   ./build-image.sh --print-tag <platform>/<variant>
 
-A build lands in the local docker daemon. images.yml runs --test against that
-image and then --push-built, so what reaches the registry is exactly what was
-tested; `<name> --push` is the untested shortcut for use by hand.
+A build lands in the local docker daemon; --push-built pushes exactly what
+--test tested. `<name> --push` is the untested shortcut for use by hand.
 
 BASE_IMAGE=<ref> builds a dependent on a base loaded into the local daemon
 instead of the published :latest, and makes --test prove that it did.
 
-THERE IS EXACTLY ONE ANSWER TO "DOES THIS IMAGE NEED REBUILDING?"
+An image is rebuilt exactly when its tag is not in the registry. The tag is the
+short SHA of the last commit touching its build inputs, plus a UTC date
+(<sha>-<YYYYMMDD>) for rolling platforms (public-images/rolling-*/).
 
-  tag = short SHA of the last commit touching the image's build inputs
-  rebuild <=> that tag is not in the registry
-
-ROLLING PLATFORMS (public-images/rolling-*/) track upstream, so their tag also
-carries a UTC date, <sha>-<YYYYMMDD>; a tag still names fixed bytes.
-
---discover and build share compute_tag; keep it the only rebuild rule.
-
-Conventions (see IMAGES.md):
+Conventions (see public-images/README.md):
   - image ref  = <REGISTRY>/<PROJECT>/<platform>-<variant>:<tag>
   - also tagged  <REGISTRY>/<PROJECT>/<platform>-<variant>:latest  (on push)
   - tag        = git log -1 --format=%h over the tag paths (below)
-  - dependents = Dockerfiles that FROM a locally-published image; detected by
-                 the FROM line referencing REGISTRY/PROJECT. They FROM :latest,
-                 and their base's directory is part of their own identity.
-
-TAG PATHS. An image's own directory, its base's if a dependent, and every
-context path a Dockerfile reads (EXTRA_TAG_PATHS). Over-approximating is safe.
+  - dependents = Dockerfiles that FROM REGISTRY/PROJECT/...:latest
+  - tag paths  = the image's directory, its base's, and EXTRA_TAG_PATHS
 
 Env overrides: REGISTRY, PROJECT, IMAGES_DIR, IMAGE_TAG, IMAGE_SOURCE_REPO,
   BUILDX_BUILDER, BASE_IMAGE, PUBLIC_ECCR_ROBOT_NAME, PUBLIC_ECCR_ROBOT_TOKEN
@@ -93,7 +81,7 @@ def _env(name: str) -> str:
 
 
 def _run(cmd: list[str], stdin: str | None = None) -> None:
-    """Run with output streaming to ours; a failing command ends the script with its code."""
+    """Run with streamed output; exit with the command's code on failure."""
     rc = subprocess.run(cmd, input=stdin, text=True, check=False).returncode
     if rc != 0:
         raise SystemExit(rc)
@@ -109,7 +97,7 @@ def _git(*args: str) -> str:
 
 
 def enumerate_images() -> list[str]:
-    """All images as "platform/variant", sorted. Adding a directory with a Dockerfile adds an image."""
+    """All images as "platform/variant", sorted."""
     root = REPO_ROOT / IMAGES_DIR
     return sorted(f"{d.parent.name}/{d.name}" for d in root.glob("*/*") if (d / "Dockerfile").is_file())
 
@@ -134,7 +122,7 @@ def first_from(name: str) -> str:
 
 
 def resolve_base(name: str) -> str:
-    """The "platform/variant" this image FROMs when it is one of ours; "" for an upstream base."""
+    """The "platform/variant" this image FROMs if it is ours, else ""."""
     from_line = first_from(name)
     if not from_line.startswith(f"{REPO_PREFIX}/"):
         if from_line.startswith(f"{REGISTRY}/"):
@@ -171,8 +159,7 @@ def tag_paths(name: str) -> list[str]:
 
 
 def git_identity(name: str, fmt: str) -> str:
-    """`git log -1` over the tag paths -- committed content, never HEAD, so a hand
-    rebuild yields the SAME tag and a base and its dependents agree on the base's tag."""
+    """`git log -1` over the tag paths: committed content, never HEAD."""
     out = _git("log", "-1", f"--format={fmt}", "--", *tag_paths(name))
     if not out:
         die(f"could not determine the tag for {name} (shallow checkout? run with fetch-depth: 0)")
@@ -180,14 +167,13 @@ def git_identity(name: str, fmt: str) -> str:
 
 
 def is_rolling(name: str) -> bool:
-    """A platform named `rolling` or `rolling-<distro>`; the prefix, so a second one needs no change here."""
+    """A platform named `rolling` or `rolling-<distro>`."""
     platform = name.split("/", 1)[0]
     return "/" in name and (platform == "rolling" or platform.startswith("rolling-"))
 
 
 def compute_tag(name: str) -> str:
-    """IMAGE_TAG wins outright: images.yml pins the tag discover computed, so a run
-    crossing midnight UTC cannot discover <sha>-20260902 and publish <sha>-20260903."""
+    """The only rebuild rule. IMAGE_TAG wins, so a run crossing midnight keeps its tag."""
     if pinned := _env("IMAGE_TAG"):
         return pinned
     tag = git_identity(name, "%h")
@@ -212,8 +198,7 @@ _ABSENT: Final = ("not found", "NAME_UNKNOWN", "MANIFEST_UNKNOWN", "manifest unk
 
 
 def image_exists(ref: str) -> bool:
-    """Queried straight from the registry. A missing tag and an unreachable registry
-    must not look alike: absent => rebuild, anything else => hard error."""
+    """Absent => False; an unreachable registry is a hard error, not a rebuild."""
     proc = subprocess.run(
         ["docker", "buildx", "imagetools", "inspect", ref],
         stdout=subprocess.PIPE,
@@ -248,8 +233,7 @@ def require_buildx() -> None:
 
 
 def discover(mode: Mode, rebuild: str) -> dict[str, object]:
-    """The GitHub matrices for the images whose tag is not in the registry. On a pull
-    request nothing is pushed, so "missing" means "what a merge would build"."""
+    """The GitHub matrices for the images whose tag is not in the registry."""
     require_buildx()
 
     images = enumerate_images()
@@ -281,7 +265,6 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
                 f"{name} FROMs {base}, which is itself a dependent; images.yml builds all dependents in one "
                 "parallel matrix, so chains deeper than base->variant are not supported"
             )
-        # Otherwise it builds on the rebuilt base, handed over by images.yml.
         if mode == "validate-bases" and base in missing:
             note(f"skipping {name}: its base {base} is being rebuilt in this run (mode validate-bases)")
             continue
@@ -323,7 +306,6 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
         f"base-in-set={'true' if bases else 'false'}",
     ]
     say("\n".join(lines))
-    # Append, never truncate: $GITHUB_OUTPUT is shared with every other step in the job.
     if github_output := _env("GITHUB_OUTPUT"):
         with open(github_output, "a") as fh:
             fh.write("\n".join(lines) + "\n")
@@ -342,8 +324,7 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
 
 # --- build --------------------------------------------------------------------
 
-# The label facts again, as build args baked into CI_IMAGE_* for jobs inside the image.
-# Passed only to Dockerfiles that declare them; not identity.
+# Baked into CI_IMAGE_*; passed only to Dockerfiles that declare them.
 BUILD_ARGS: Final = ("SOURCE_REVISION", "IMAGE_NAME", "IMAGE_TAG", "IMAGE_CREATED", "IMAGE_DOCKERFILE_URL")
 
 
@@ -431,8 +412,7 @@ def build(name: str, *, push: bool, force: bool, require_clean: bool) -> None:
 
 
 def check_clean(name: str, *, require_clean: bool) -> None:
-    """The tag is a function of committed content but the build uses the working
-    tree, so a dirty tree can mint a tag whose content is not what is committed."""
+    """Warn (or die) when the tag paths differ from the committed content."""
     paths = tag_paths(name)
     diff = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "diff", "--quiet", "HEAD", "--", *paths],
@@ -454,8 +434,7 @@ def _require_local(ref: str) -> None:
 
 
 def push_built(name: str, *, force: bool, require_clean: bool) -> None:
-    """Push the image a previous build loaded, never a rebuild of it: a rebuild of a
-    rolling image, or of anything installing unpinned packages, is not what was tested."""
+    """Push the image a previous build loaded, never a rebuild: that is what was tested."""
     require_buildx()
     ref = image_ref(name, compute_tag(name))
     latest_ref = image_ref(name, "latest")
@@ -493,8 +472,7 @@ _IN_IMAGE_PYTEST: Final = """
 
 
 def test_image(name: str) -> None:
-    """The image contract and the test suite, inside the locally built image, with the
-    checkout mounted read-only."""
+    """Run the image contract and the test suite inside the locally built image."""
     require_buildx()
     ref = image_ref(name, compute_tag(name))
     _require_local(ref)

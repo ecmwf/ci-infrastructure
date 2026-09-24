@@ -42,9 +42,7 @@ from ci_infrastructure.check_pr_declaration import (
 ROOT: Final = Path(__file__).resolve().parents[1]
 MODULE_PATH: Final = ROOT / "src" / "ci_infrastructure" / "check_pr_declaration.py"
 
-#: ecmwf/.github/.github/PULL_REQUEST_TEMPLATE.md, byte for byte as the API serves
-#: it: CRLF throughout, two blank lines under "### Description", and a final
-#: space-only line. 518 bytes, asserted below.
+#: ecmwf/.github's PULL_REQUEST_TEMPLATE.md byte for byte as the API serves it.
 ORG_TEMPLATE: Final = (
     "### Description\r\n"
     "\r\n"
@@ -62,8 +60,7 @@ ORG_TEMPLATE: Final = (
     " \r\n"
 )
 
-#: The one-line variant ecmwf/anemoi-core and ecmwf/ellem ship today. It must
-#: fail until those repos converge on the org block.
+#: The one-line variant anemoi-core and ellem ship; must fail.
 ANEMOI_TAIL: Final = (
     "By opening this pull request, I affirm that all authors agree to the "
     "[Contributor License Agreement.]"
@@ -120,8 +117,6 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureF
     return _run
 
 
-# === Stdlib purity ===
-
 STDLIB_ALLOWLIST: Final = frozenset(
     {
         "__future__",
@@ -154,9 +149,6 @@ def test_module_imports_only_stdlib() -> None:
     assert imported <= STDLIB_ALLOWLIST, f"non-stdlib imports: {sorted(imported - STDLIB_ALLOWLIST)}"
 
 
-# === Real data ===
-
-
 def test_org_template_passes_unmodified() -> None:
     """CRLF and a trailing space-only line, as GitHub serves it."""
     assert check_body(ORG_TEMPLATE).verdict is Verdict.OK
@@ -166,9 +158,19 @@ def test_rstrip_happens_before_trailing_blanks_are_dropped() -> None:
     assert normalize(ORG_TEMPLATE)[-1] == "* I have run all existing tests and confirmed they pass."
 
 
-def test_anemoi_variant_fails() -> None:
-    result = check_body("## Description\n\nwork\n\n" + ANEMOI_TAIL)
-    assert result.verdict is Verdict.HEADING_MISSING
+@pytest.mark.parametrize(
+    ("text", "verdict"),
+    [
+        ("## Description\n\nwork\n\n" + ANEMOI_TAIL, Verdict.HEADING_MISSING),
+        ("## Description\n\njust some prose\n", Verdict.HEADING_MISSING),
+        (body() + "\n<!-- preview: https://example.invalid -->\n", Verdict.NOT_AT_END),
+        ("<!--\n" + body(), Verdict.HIDDEN_BLOCK),
+        ("<details><summary>logs</summary>\n\n" + body(), Verdict.HIDDEN_BLOCK),
+    ],
+    ids=["anemoi-variant", "no-heading", "comment-after-block", "unclosed-comment", "unclosed-details"],
+)
+def test_rejected_bodies(text: str, verdict: Verdict) -> None:
+    assert check_body(text).verdict is verdict
 
 
 def test_canonical_block_shape() -> None:
@@ -178,35 +180,38 @@ def test_canonical_block_shape() -> None:
     assert "project's" in DECLARATION_LINES[5], "the apostrophe must stay ASCII U+0027"
 
 
-# === Normalization ===
-
-
 def test_normalize_is_idempotent() -> None:
     once = normalize(ORG_TEMPLATE)
     assert normalize("\n".join(once)) == once
 
 
-@pytest.mark.parametrize("eol", ["\n", "\r", "\r\n"], ids=["lf", "cr", "crlf"])
-def test_any_line_ending_passes(eol: str) -> None:
-    assert check_body(body().replace("\n", eol)).verdict is Verdict.OK
-
-
-def test_per_line_trailing_whitespace_ignored() -> None:
-    padded = "\n".join(line + "   \t" for line in body().split("\n"))
-    assert check_body(padded).verdict is Verdict.OK
-
-
-@pytest.mark.parametrize("count", [1, 5, 50])
-def test_trailing_blank_lines_ignored(count: int) -> None:
-    assert check_body(body() + "\n" * count).verdict is Verdict.OK
-
-
-def test_trailing_whitespace_only_lines_ignored() -> None:
-    assert check_body(body() + "   \n\t\n \n").verdict is Verdict.OK
-
-
-def test_leading_bom_ignored() -> None:
-    assert check_body(chr(0xFEFF) + body()).verdict is Verdict.OK
+@pytest.mark.parametrize(
+    "text",
+    [
+        body(),
+        body().replace("\n", "\r"),
+        body().replace("\n", "\r\n"),
+        "\n".join(line + "   \t" for line in body().split("\n")),
+        body() + "\n" * 50,
+        body() + "   \n\t\n \n",
+        chr(0xFEFF) + body(),
+        "<!-- a note -->\n" + body(),
+        "<details><summary>logs</summary>\n\nboring output\n\n</details>\n\n" + CANONICAL_DECLARATION,
+    ],
+    ids=[
+        "lf",
+        "cr",
+        "crlf",
+        "trailing-ws",
+        "trailing-blanks",
+        "trailing-ws-lines",
+        "bom",
+        "closed-comment",
+        "closed-details",
+    ],
+)
+def test_harmless_variations_pass(text: str) -> None:
+    assert check_body(text).verdict is Verdict.OK
 
 
 def test_indented_bullet_fails() -> None:
@@ -223,9 +228,6 @@ def test_unicode_line_separator_does_not_split_lines() -> None:
     assert check_body(tampered).verdict is Verdict.DIVERGED
 
 
-# === Verdicts ===
-
-
 @pytest.mark.parametrize("text", ["", "   \n\t\n", "\n\n\n"])
 def test_empty_body(text: str) -> None:
     result = check_body(text)
@@ -236,10 +238,6 @@ def test_empty_body(text: str) -> None:
 def test_null_body_from_event_is_empty() -> None:
     assert body_from_event(event(None)) == ""
     assert check_body(body_from_event(event(None))).verdict is Verdict.EMPTY_BODY
-
-
-def test_heading_absent() -> None:
-    assert check_body("## Description\n\njust some prose\n").verdict is Verdict.HEADING_MISSING
 
 
 def test_loose_heading_is_diagnosed_as_diverged() -> None:
@@ -254,31 +252,6 @@ def test_text_after_block() -> None:
     result = check_body(body() + "\nFixes #12\n")
     assert result.verdict is Verdict.NOT_AT_END
     assert result.trailing == ("Fixes #12",)
-
-
-def test_html_comment_after_block_is_not_exempt() -> None:
-    result = check_body(body() + "\n<!-- preview: https://example.invalid -->\n")
-    assert result.verdict is Verdict.NOT_AT_END
-
-
-def test_unclosed_comment_before_block_is_hidden() -> None:
-    """The one hole in a pure ends-with rule: green check, invisible declaration."""
-    result = check_body("<!--\n" + body())
-    assert result.verdict is Verdict.HIDDEN_BLOCK
-
-
-def test_balanced_comment_before_block_passes() -> None:
-    assert check_body("<!-- a note -->\n" + body()).verdict is Verdict.OK
-
-
-def test_unclosed_details_before_block_is_hidden() -> None:
-    result = check_body("<details><summary>logs</summary>\n\n" + body())
-    assert result.verdict is Verdict.HIDDEN_BLOCK
-
-
-def test_closed_details_before_block_passes() -> None:
-    prefix = "<details><summary>logs</summary>\n\nboring output\n\n</details>\n\n"
-    assert check_body(prefix + CANONICAL_DECLARATION).verdict is Verdict.OK
 
 
 def test_bullet_reworded_reports_line_and_content() -> None:
@@ -314,17 +287,14 @@ def test_truncated_block_reports_missing_line() -> None:
     assert result.diff.column == 0
 
 
-def test_smart_apostrophe_reports_codepoints() -> None:
-    result = check_body(body().replace("project's", "project" + chr(0x2019) + "s"))
+@pytest.mark.parametrize(
+    ("old", "new", "codepoints"),
+    [("project's", "project\u2019s", ("U+0027", "U+2019")), ("I affirm", "I\u00a0affirm", ("U+00A0",))],
+)
+def test_lookalike_characters_report_codepoints(old: str, new: str, codepoints: tuple[str, ...]) -> None:
+    result = check_body(body().replace(old, new))
     assert result.verdict is Verdict.DIVERGED
-    assert "U+0027" in result.headline
-    assert "U+2019" in result.headline
-
-
-def test_nbsp_reports_codepoints() -> None:
-    result = check_body(body().replace("I affirm", "I" + chr(0xA0) + "affirm"))
-    assert result.verdict is Verdict.DIVERGED
-    assert "U+00A0" in result.headline
+    assert all(c in result.headline for c in codepoints)
 
 
 def test_describe_char_diff_names_end_of_line() -> None:
@@ -340,9 +310,6 @@ def test_last_heading_wins() -> None:
     assert result.diff.index == 8
 
 
-# === Declaration source override ===
-
-
 def test_declaration_file_override() -> None:
     custom = "### Contributor Declaration\n\nI agree to everything.\n"
     assert check_body("prose\n\n" + custom, expected_lines(custom)).verdict is Verdict.OK
@@ -356,9 +323,6 @@ def test_declaration_source_is_sliced_from_the_heading() -> None:
 
 def test_declaration_source_without_heading_is_used_whole() -> None:
     assert expected_lines("just this line\n") == ["just this line"]
-
-
-# === Event payload and the bot allowlist ===
 
 
 def test_body_from_event_requires_a_pull_request() -> None:
@@ -382,9 +346,6 @@ def test_exemption_requires_the_bot_account_type() -> None:
 def test_parse_exempt_authors() -> None:
     assert parse_exempt_authors("") == DEFAULT_EXEMPT_AUTHORS
     assert parse_exempt_authors("  a[bot] , b[bot] ") == ("a[bot]", "b[bot]")
-
-
-# === Output safety ===
 
 
 def test_error_annotation_is_a_single_escaped_line() -> None:
@@ -426,9 +387,6 @@ def test_main_only_writes_a_fixed_verdict_to_the_output_file(run: Runner) -> Non
     assert output.splitlines() == ["verdict=not-at-end"]
 
 
-# === CLI ===
-
-
 def test_main_passes_on_a_compliant_body(run: Runner) -> None:
     code, out, summary, output = run(body=ORG_TEMPLATE)
     assert code == 0
@@ -468,19 +426,12 @@ def test_main_uses_the_body_file_and_the_event_file_together(run: Runner) -> Non
     assert output.splitlines() == ["verdict=bot-exempt"]
 
 
-def test_main_requires_a_source(capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_usage_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 2
-
-
-def test_main_reports_a_missing_body_file(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--body-file", "/nonexistent/body.md"]) == 2
     assert "::error" in capsys.readouterr().err
-
-
-def test_main_rejects_invalid_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    event_file = tmp_path / "event.json"
-    event_file.write_text("{not json", encoding="utf-8")
-    assert main(["--event-file", str(event_file)]) == 2
+    (tmp_path / "event.json").write_text("{not json", encoding="utf-8")
+    assert main(["--event-file", str(tmp_path / "event.json")]) == 2
     assert "::error" in capsys.readouterr().err
 
 
@@ -526,9 +477,6 @@ def test_cli_contract_via_subprocess(tmp_path: Path) -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert "::error" not in completed.stdout
-
-
-# === Shipped YAML and the repo's own template ===
 
 
 def test_vendored_pr_template_passes() -> None:

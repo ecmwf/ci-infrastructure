@@ -191,9 +191,6 @@ def test_manifest_visibility(tmp_path: Path, visibility: str, gated: bool) -> No
     assert bool(check(wf)) is gated
 
 
-# --- allow-unsafe-pr-checkout ------------------------------------------------
-
-
 def _unsafe_wf(tmp_path: Path, needs: str = "", value: str = "'true'") -> Path:
     return write_wf(
         tmp_path,
@@ -221,30 +218,18 @@ def test_unsafe_checkout_behind_the_gate_is_fine(tmp_path: Path) -> None:
 
 def test_unsafe_checkout_without_the_gate_is_rejected(tmp_path: Path) -> None:
     """Hosted `pull_request` needs no gate, but the opt-in goes live under pull_request_target."""
-    problems = check(_unsafe_wf(tmp_path))
-    assert len(problems) == 1, problems
-    assert "allow-unsafe-pr-checkout" in problems[0]
-    assert "'build'" in problems[0]
+    (problem,) = check(_unsafe_wf(tmp_path))
+    assert "allow-unsafe-pr-checkout" in problem
+    assert "'build'" in problem
 
 
-def test_unsafe_checkout_detected_unquoted(tmp_path: Path) -> None:
-    """`true` parses as a bool, `'true'` as a str; both are the same opt-in."""
-    assert len(check(_unsafe_wf(tmp_path, value="true"))) == 1
-
-
-def test_a_false_value_is_not_an_opt_in(tmp_path: Path) -> None:
-    assert check(_unsafe_wf(tmp_path, value="'false'")) == []
+@pytest.mark.parametrize(("value", "problems"), [("true", 1), ("'false'", 0)])
+def test_unsafe_checkout_value(tmp_path: Path, value: str, problems: int) -> None:
+    assert len(check(_unsafe_wf(tmp_path, value=value))) == problems
 
 
 def test_unsafe_checkout_respects_a_job_exemption(tmp_path: Path) -> None:
-    write_allowlist(
-        tmp_path,
-        """
-        exempt:
-          - workflow: ci.yml
-            jobs: [build]
-        """,
-    )
+    write_allowlist(tmp_path, "exempt:\n  - workflow: ci.yml\n    jobs: [build]\n")
     assert check(_unsafe_wf(tmp_path)) == []
 
 
@@ -294,9 +279,6 @@ def test_both_rules_fire_independently(tmp_path: Path) -> None:
     assert any("must list 'ci-approval' in `needs:`" in p for p in problems)
 
 
-# --- the light-install contract ----------------------------------------------
-
-#: Kept out of the base dependency set, which is all the pre-commit hook installs.
 _OPTIONAL_DEPS = {"boto3", "botocore", "pydantic", "jinja2", "troika"}
 
 
@@ -310,8 +292,4 @@ def test_the_linter_imports_nothing_optional() -> None:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             imported.add(node.module.split(".")[0])
 
-    assert not (imported & _OPTIONAL_DEPS), (
-        f"check_ci_approval imports {sorted(imported & _OPTIONAL_DEPS)}, which pyproject.toml "
-        "keeps in an extra. Either drop the import or the pre-commit hook gets heavy again."
-    )
-    assert not (imported & {"ci_infrastructure"}), imported
+    assert not imported & (_OPTIONAL_DEPS | {"ci_infrastructure"}), imported

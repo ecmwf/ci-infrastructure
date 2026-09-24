@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13
 FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
 RUN apt-get update && apt-get install -y \
@@ -11,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     gfortran-13 \
  && rm -rf /var/lib/apt/lists/*
 
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

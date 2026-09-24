@@ -4,8 +4,8 @@
 
 name: Run pre-commit
 description: >
-  Run `pre-commit run --all-files`. Needs a Python on the runner, a prior
-  actions/checkout, and job-level FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'.
+  Run `pre-commit run --all-files`. Needs Python, a prior checkout, and
+  job-level FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'.
 
 runs:
   using: composite

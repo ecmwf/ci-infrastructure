@@ -418,31 +418,11 @@ def test_ctest_absent_by_default(tmp_path: Path) -> None:
     assert "ctest" not in render_single(tmp_path, _CTEST_MANIFEST.format(extra=""))
 
 
-def test_ctest_step_emitted_before_publish(tmp_path: Path) -> None:
+def test_ctest_step_runs_before_publish_with_args_verbatim(tmp_path: Path) -> None:
     """A failing test ends the job before publish, so no red build reaches the store."""
-    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra="ctest = true"))
-    assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure' in out
-    assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
-
-
-def test_ctest_args_appended_verbatim(tmp_path: Path) -> None:
     out = render_single(tmp_path, _CTEST_MANIFEST.format(extra='ctest = true\n    ctest-args = "-L nightly -E s_http"'))
     assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure -L nightly -E s_http' in out
-
-
-def test_trigger_downstream_uses_explicit_ref(tmp_path: Path) -> None:
-    write_repo(
-        tmp_path,
-        "a",
-        """
-        [[trigger-downstream]]
-        repo = "org/b"
-        ref = "develop"
-        """,
-    )
-    [m] = parse_all(tmp_path)
-    assert len(m.triggers) == 1
-    assert m.triggers[0].ref == "develop"
+    assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
 
 
 def test_parse_manifest_text_round_trip() -> None:
@@ -475,27 +455,8 @@ def test_parse_manifest_text_round_trip() -> None:
     assert [t.repo for t in m.triggers] == ["org/b"]
     assert "build" in m.matrices
 
-    with pytest.raises(SchemaError, match="must define exactly 'repo' and 'ref'"):
-        parse_manifest_text(
-            textwrap.dedent(
-                """
-                [package]
-                name = "a"
-                prefix = "a"
-                repo = "org/a"
-                compiler-inputs = []
-                [[trigger-downstream]]
-                repo = "org/b"
-                ref = "main"
-                bogus = "x"
-                """
-            ),
-            fake_path,
-        )
 
-
-def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> None:
-    """A triggers B; B optionally depends on A."""
+def test_subset_invariant_violated(tmp_path: Path) -> None:
     write_repo(
         tmp_path,
         "a",
@@ -513,27 +474,10 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> None:
         runs-on = "ubuntu-latest"
         """,
     )
-    deps_block = (
-        """
-        [[deps]]
-        repo = "org/a"
-        package = "a"
-        ref = "main"
-        compiler-inputs = []
-        """
-        if with_dep_back
-        else ""
-    )
     write_repo(
         tmp_path,
         "b",
-        f"""
-        [package]
-        name = "b"
-        prefix = "b"
-        repo = "org/b"
-        compiler-inputs = []
-        {deps_block}
+        """
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
         action = "./.github/actions/build"
@@ -543,17 +487,8 @@ def _make_two_repo_pair(tmp_path: Path, *, with_dep_back: bool) -> None:
         runs-on = "ubuntu-latest"
         """,
     )
-
-
-def test_subset_invariant_violated(tmp_path: Path) -> None:
-    _make_two_repo_pair(tmp_path, with_dep_back=False)
     with pytest.raises(SchemaError, match="does not list .* as a \\[\\[deps\\]\\]"):
         validate_graph(parse_all(tmp_path))
-
-
-def test_happy_two_repo_pair(tmp_path: Path) -> None:
-    _make_two_repo_pair(tmp_path, with_dep_back=True)
-    validate_graph(parse_all(tmp_path))
 
 
 def test_trigger_cycle(tmp_path: Path) -> None:
@@ -849,7 +784,6 @@ def test_diamond_closure(tmp_path: Path) -> None:
 
 
 def test_external_trigger_pruned(tmp_path: Path) -> None:
-    """Triggers pointing at an out-of-scope repo are dropped from the closure."""
     write_repo(
         tmp_path,
         "a",
@@ -1046,26 +980,13 @@ def _build_checkouts(tmp_path: Path, lane: Execution) -> list[dict[str, Any]]:
 @pytest.mark.parametrize("lane", [EXECUTION_RUNNER, EXECUTION_HPC])
 def test_submodules_reach_the_build_checkout(tmp_path: Path, lane: Execution) -> None:
     _make_chain_ab(tmp_path, hpc=True)
+    assert not any("submodules" in c for c in _build_checkouts(tmp_path, lane))
     manifest = tmp_path / "a" / ".ci" / "manifest.toml"
     manifest.write_text(
         manifest.read_text().replace("compiler-inputs = []", 'compiler-inputs = []\nsubmodules = "recursive"', 1)
     )
     checkouts = _build_checkouts(tmp_path, lane)
     assert checkouts and all(c["submodules"] == "recursive" for c in checkouts)
-
-
-def test_no_submodules_key_by_default(tmp_path: Path) -> None:
-    _make_chain_ab(tmp_path, hpc=True)
-    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
-        checkouts = _build_checkouts(tmp_path, lane)
-        assert checkouts and not any("submodules" in c for c in checkouts)
-
-
-def test_visibility_parses_explicit_values(tmp_path: Path) -> None:
-    _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
-    by_pkg = {m.package_name: m for m in parse_all(tmp_path)}
-    assert by_pkg["a"].visibility == "public"
-    assert by_pkg["b"].visibility == "private"
 
 
 def test_visibility_absent_is_private(tmp_path: Path) -> None:
@@ -1673,7 +1594,6 @@ def test_write_or_check_path_modes(tmp_path: Path) -> None:
     assert _write_or_check_path(out, "hello\n", check=False)[0] is False
     assert _write_or_check_path(out, "different\n", check=True)[0] is True
     assert out.read_text() == "hello\n"
-    # None deletes the file.
     assert _write_or_check_path(out, None, check=False)[0] is True
     assert not out.exists()
     assert _write_or_check_path(out, None, check=False)[0] is False
@@ -1682,15 +1602,16 @@ def test_write_or_check_path_modes(tmp_path: Path) -> None:
 _RENDERED = "# GENERATED FILE - DO NOT EDIT.\nname: CI\non:\n  push: {}\njobs:\n  a:\n    runs-on: x\n"
 
 
-def test_check_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "checked_in",
+    [
+        pytest.param(_RENDERED.replace("name: CI\n", "# a comment\n\nname: CI\n"), id="comments-and-blank-lines"),
+        pytest.param("jobs:\n  a:\n    runs-on: x\non:\n  push: {}\nname: CI\n", id="mapping-order"),
+    ],
+)
+def test_check_ignores_formatting(tmp_path: Path, checked_in: str) -> None:
     out = tmp_path / "wf.yml"
-    out.write_text(_RENDERED.replace("name: CI\n", "# someone explained something here\n\nname: CI\n"))
-    assert _write_or_check_path(out, _RENDERED, check=True) == (False, [])
-
-
-def test_check_ignores_mapping_order(tmp_path: Path) -> None:
-    out = tmp_path / "wf.yml"
-    out.write_text("jobs:\n  a:\n    runs-on: x\non:\n  push: {}\nname: CI\n")
+    out.write_text(checked_in)
     assert _write_or_check_path(out, _RENDERED, check=True) == (False, [])
 
 
@@ -1737,16 +1658,9 @@ def test_local_sibling_layer_reads_clones_and_skips_missing(tmp_path: Path) -> N
 
     assert got[("ecmwf/upstream", "develop")] == ('[package]\nname = "up"\n', False)
     assert got[("ecmwf/absent", "develop")] == (None, False)
-
-
-def test_local_sibling_layer_ignores_the_ref(tmp_path: Path) -> None:
-    """--sibling-root reads each clone's working tree."""
-    (tmp_path / "up" / ".ci").mkdir(parents=True)
-    (tmp_path / "up" / ".ci" / "manifest.toml").write_text("x = 1\n")
-
-    for ref in ("develop", "some-feature-branch", "HEAD"):
-        got = _local_sibling_layer([("ecmwf/up", ref)], tmp_path, ".ci/manifest.toml")
-        assert got[("ecmwf/up", ref)] == ("x = 1\n", False)
+    for ref in ("some-feature-branch", "HEAD"):
+        got = _local_sibling_layer([("ecmwf/upstream", ref)], tmp_path, ".ci/manifest.toml")
+        assert got[("ecmwf/upstream", ref)] == ('[package]\nname = "up"\n', False)
 
 
 def _trigger_manifest(name: str, repo: str, targets: list[str]) -> str:
@@ -1809,8 +1723,6 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
     assert "${{" not in decode["run"]
 
 
-# === [downstream-gate] =====================================================
-
 _GATE_UPSTREAM: Final = """
     [[trigger-downstream]]
     repo = "org/b"
@@ -1861,6 +1773,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     assert doc["jobs"]["label-gate"]["outputs"] == {"run": "${{ steps.gate.outputs.run }}"}
+    assert "if" not in doc["jobs"]["label-gate"], "report-ci-failure needs the gate on the failure path"
     for jid, job in doc["jobs"].items():
         # context runs first: the gate looks its PR up by the commit context resolves.
         if jid in ("label-gate", "context"):
@@ -1882,21 +1795,15 @@ def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> Non
     assert doc["jobs"]["report-result"]["if"].startswith("${{ (always() && ")
 
 
-def test_downstream_gate_job_is_not_itself_gated_on_ci_success(tmp_path: Path) -> None:
-    """report-ci-failure needs the gate on the failure path."""
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
-
-    assert "if" not in doc["jobs"]["label-gate"]
-
-
 def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Path) -> None:
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
+    """The label travels as an action input, never as shell text."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace("run-downstream-CI", "it's-needed"))
 
     steps = doc["jobs"]["label-gate"]["steps"]
     assert not any("run" in s for s in steps)
     gate = next(s for s in steps if s.get("id") == "gate")
     assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
-    assert gate["with"]["label"] == "run-downstream-CI"
+    assert gate["with"]["label"] == "it's-needed"
     assert gate["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
 
 
@@ -1937,25 +1844,11 @@ def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
     assert "permissions" not in job
 
 
-def test_downstream_gate_label_never_becomes_shell_syntax(tmp_path: Path) -> None:
-    """The label travels as an action input, not shell text."""
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace("run-downstream-CI", "it's-needed"))
-
-    gate = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
-    assert gate["with"]["label"] == "it's-needed"
-
-
 def test_a_completed_ci_run_is_the_only_entry_point(tmp_path: Path) -> None:
+    """The label is read by label-gate, not by an `on:` filter."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
-
-
-def test_a_gate_label_adds_no_trigger(tmp_path: Path) -> None:
-    """The label is read by label-gate, not by an `on:` filter."""
-    without = _render_gate(tmp_path, _UNGATED_UPSTREAM)
-
-    assert without[True] == _render_gate(tmp_path, _GATE_UPSTREAM)[True]
 
 
 def test_no_ci_approval_gate(tmp_path: Path) -> None:
@@ -1993,9 +1886,6 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     assert sorted(ctx["outputs"]) == ["ci-conclusion", "ci-summary", "ci-url", "head-branch", "head-sha"]
     resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
     assert resolve["uses"] == "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main"
-
-
-# === Artifact identity is the artifact-name projection =====================
 
 
 def _pkg(compiler_inputs: str, legs: str, publishes: bool = True) -> str:

@@ -74,8 +74,7 @@ runs:
           gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
             -f "head_sha=${head_sha}" -f status=completed -f per_page=100 > "$runs"
 
-          # The API returns newest first, so the first match is the run whose
-          # verdict currently stands for this commit -- including a re-run.
+          # Newest first: the first match is the standing verdict, re-runs included.
           match=$(jq -r --arg w "$CI_WORKFLOW_INPUT" \
             'first(.workflow_runs[] | select(.name == $w)) // empty' "$runs")
           if [ -n "$match" ]; then

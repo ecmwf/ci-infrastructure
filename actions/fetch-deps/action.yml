@@ -4,15 +4,12 @@
 
 name: Fetch resolved deps
 description: >
-  Download each dep from resolve-deps into its install path from the S3 store
-  (location from ARTIFACT_S3_*, credentials from AWS_* in the job env) and emit
-  the CMAKE_PREFIX_PATH covering them. publish-artifact is the counterpart.
+  Download each resolved dep from the S3 store (`ARTIFACT_S3_*`, `AWS_*` in the
+  job env) into its install path and emit the CMAKE_PREFIX_PATH covering them.
 
 inputs:
   deps-json:
-    description: >
-      JSON array of resolved deps (the `_resolved.deps` field from a matrix
-      entry produced by resolve-deps).
+    description: 'JSON array of resolved deps (a matrix leg''s `_resolved.deps`).'
     required: true
     default: '[]'
   token:
@@ -55,7 +52,6 @@ runs:
         elif [ -n "${pythonLocation:-}" ]; then
           args+=(--consumer-python "${pythonLocation}/bin/python")
         fi
-        # -u: unbuffered progress.
         "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.fetch_deps "${args[@]}"
 
     - name: Compose CMAKE_PREFIX_PATH from deps-json

@@ -4,11 +4,8 @@
 
 name: Publish package artifact
 description: >
-  Tars the install-path produced by the local build step and uploads it to the
-  S3 artifact store under its artifact name. Skips the tar and the upload when
-  `found` says the artifact was already in the store.
-
-  Needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job environment.
+  Tar install-path and upload it to the S3 artifact store under artifact-name,
+  unless `found`. Needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the job env.
 
 inputs:
   install-path:
@@ -87,8 +84,6 @@ runs:
       env:
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
         INSTALL_PATH: ${{ inputs.install-path }}
-
-    # No actions/cache: artifacts go through the object store.
 
     - name: Create artifact tar
       if: inputs.found != 'true'

@@ -4,13 +4,13 @@
 
 name: Pick downstream ref
 description: >
-  Emit `try-branch` when it is a sync branch (sync-branch/* / feature-sync/*)
+  Emit `try-branch` when it is a sync branch (`sync-branch/*` / `feature-sync/*`)
   that exists in `repo`, otherwise `fallback-ref`, so coordinated cross-repo PRs
   build against each other. Stdlib-only python, no bootstrap.
 
 inputs:
   repo:
-    description: 'owner/repo to probe (typically github.repository — the consumer repo).'
+    description: 'owner/repo to probe (usually the consumer repo).'
     required: true
   try-branch:
     description: 'Branch name to probe; usually the upstream-side branch we were called from.'
@@ -25,7 +25,7 @@ inputs:
 
 outputs:
   ref:
-    description: 'The chosen ref: try-branch if it is a sync branch that exists in `repo`, otherwise fallback-ref.'
+    description: 'The chosen ref.'
     value: ${{ steps.pick.outputs.ref }}
 
 runs:

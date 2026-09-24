@@ -4,7 +4,7 @@
 
 name: CMake build
 description: >
-  Configures, builds and installs the CMake project in $GITHUB_WORKSPACE to
+  Configure, build and install the CMake project in $GITHUB_WORKSPACE to
   <install-prefix>/<package>, keeping the build tree for ctest. Uses sccache
   when SCCACHE_BUCKET is set.
 
@@ -18,11 +18,9 @@ inputs:
     default: ''
   c-compiler:
     description: >
-      C compiler binary including version (e.g. clang-18, gcc-13). Must be the
-      same toolchain family as cxx-compiler: left unset CMake discovers
-      /usr/bin/cc, which is the image's gcc whatever the C++ compiler is, and a
-      mixed build then gets two OpenMP runtimes and two sets of flag spellings.
-      Empty leaves CMake to discover it.
+      C compiler binary including version (e.g. clang-18, gcc-13), of the same
+      family as cxx-compiler. Empty lets CMake find /usr/bin/cc (the image's
+      gcc), which mixes toolchains.
     required: false
     default: ''
   cxx-compiler:

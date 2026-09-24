@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for `execution = "hpc"` kinds in generate_downstream_ci."""
+"""`execution = "hpc"` kinds in generate_downstream_ci."""
 
 from __future__ import annotations
 
@@ -42,14 +42,27 @@ def hpc_yaml(tmp_path: Path) -> str:
     return render_single(tmp_path, _HPC_MANIFEST, EXECUTION_HPC)
 
 
-def test_hpc_job_uses_build_on_hpc_action(hpc_yaml: str) -> None:
-    yaml = hpc_yaml
-    assert "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main" in yaml
-    assert "matrix.job-script || './.ci/hpc/build.sh'" in yaml
-    assert "site: ${{ matrix.site }}" in yaml
-    assert "Fetch resolved deps" in yaml
-    assert "actions/fetch-deps@main" in yaml
-    assert "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}" in yaml
+@pytest.mark.parametrize(
+    "line",
+    [
+        "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main",
+        "matrix.job-script || './.ci/hpc/build.sh'",
+        "site: ${{ matrix.site }}",
+        "actions/fetch-deps@main",
+        "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}",
+        "troika-user: ${{ secrets.HPC_CI_SSH_USER }}",
+        "install-python-deps: 'false'",
+        "runs-on: ${{ matrix['runs-on'] }}",
+        "image: ${{ matrix.container || '' }}",
+    ],
+)
+def test_hpc_job_renders(hpc_yaml: str, line: str) -> None:
+    assert line in hpc_yaml
+
+
+@pytest.mark.parametrize("absent", ["actions/setup-python", "actions/publish-artifact@main", "credentials:"])
+def test_hpc_job_omits(hpc_yaml: str, absent: str) -> None:
+    assert absent not in hpc_yaml
 
 
 def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> None:
@@ -110,39 +123,15 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
     assert "name: Run on HPC" in yaml
 
 
-def test_hpc_step_uses_hpc_ci_ssh_user_secret(hpc_yaml: str) -> None:
-    assert "troika-user: ${{ secrets.HPC_CI_SSH_USER }}" in hpc_yaml
-
-
-def test_hpc_fetch_step_stages_python_wheels_without_installing(hpc_yaml: str) -> None:
-    """No setup-python on an HPC leg, so there is no consumer interpreter."""
-    assert "install-python-deps: 'false'" in hpc_yaml
-    assert "actions/setup-python" not in hpc_yaml
-
-
-def test_hpc_job_threads_the_leg_container(hpc_yaml: str) -> None:
-    """The cluster ssh identity lives in the image; an empty image falls back to host mode."""
-    assert "runs-on: ${{ matrix['runs-on'] }}" in hpc_yaml
-    assert "container:" in hpc_yaml
-    assert "image: ${{ matrix.container || '' }}" in hpc_yaml
-
-
 def test_container_credentials_are_opt_in(tmp_path: Path) -> None:
-    assert "credentials:" not in render_single(tmp_path / "plain", _HPC_MANIFEST, EXECUTION_HPC)
-
     yaml = render_single(
-        tmp_path / "creds",
+        tmp_path,
         _HPC_MANIFEST.replace('execution = "hpc"', 'execution = "hpc"\ncontainer-credentials = true'),
         EXECUTION_HPC,
     )
     assert "credentials:" in yaml
     assert "username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}" in yaml
     assert "password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}" in yaml
-
-
-def test_hpc_job_has_no_separate_publish_step(hpc_yaml: str) -> None:
-    """build-on-hpc publishes internally."""
-    assert "actions/publish-artifact@main" not in hpc_yaml
 
 
 def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
@@ -174,28 +163,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
     )
     with pytest.raises(SchemaError, match="differ only in"):
         validate_graph(parse_all(tmp_path))
-
-
-def test_hpc_leg_accepts_list_runs_on(tmp_path: Path) -> None:
-    yaml = render_single(
-        tmp_path,
-        """
-        [matrix.build-hpc]
-        execution = "hpc"
-        triggers = ["rebuild-request"]
-        job-script = "./.ci/hpc/build.sh"
-        needs = []
-
-        [[matrix.build-hpc.include]]
-        runs-on = ["self-hosted", "linux", "hpc"]
-        site = "hpc-batch"
-        compiler = "gnu-12"
-        build-type = "Release"
-        platform = "hpc-atos-gnu"
-        """,
-        EXECUTION_HPC,
-    )
-    assert "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main" in yaml
 
 
 @pytest.mark.parametrize(
@@ -272,13 +239,10 @@ def test_schema_rejects(tmp_path: Path, body: str, match: str | None) -> None:
         parse_all(tmp_path)
 
 
-# === Templated recipes (.j2) ===============================================
-
-
-def _hpc_repo(tmp_path: Path, body: str, recipe: str | None = None, name: str = "build.sh.j2") -> Path:
+def _hpc_repo(tmp_path: Path, body: str, recipe: str | None = None) -> Path:
     manifest = write_repo(tmp_path, "pkg", body)
     if recipe is not None:
-        script = manifest.parents[1] / ".ci" / "hpc" / name
+        script = manifest.parents[1] / ".ci" / "hpc" / "build.sh.j2"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(recipe)
     return manifest
@@ -297,53 +261,6 @@ _TEMPLATED_MANIFEST = """
     triggers = ["rebuild-request"]
     needs = []
 """
-
-
-def test_hpc_step_forwards_the_matrix_leg(tmp_path: Path) -> None:
-    yaml = render_single(tmp_path, _TEMPLATED_MANIFEST, EXECUTION_HPC, name="pkg")
-    assert "matrix-leg: ${{ toJSON(matrix) }}" in yaml
-
-
-def test_templated_recipe_reading_only_declared_keys_validates(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ cc }}\n")
-    validate_job_templates(parse_manifest(m))
-
-
-def test_templated_recipe_reading_an_undeclared_key_is_rejected(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\nexport FC={{ fortran }}\n")
-    with pytest.raises(SchemaError, match="fortran"):
-        validate_job_templates(parse_manifest(m))
-
-
-def test_missing_templated_recipe_is_rejected(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST)
-    with pytest.raises(SchemaError, match="does not exist"):
-        validate_job_templates(parse_manifest(m))
-
-
-def test_templated_recipe_syntax_error_names_its_line(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, "#!/bin/bash\n{% for x in %}\n")
-    with pytest.raises(SchemaError, match=r"build\.sh\.j2:2"):
-        validate_job_templates(parse_manifest(m))
-
-
-def test_a_plain_sh_job_script_is_never_read_from_disk(tmp_path: Path) -> None:
-    m = write_repo(
-        tmp_path,
-        "pkg",
-        """
-        [[matrix.build.include]]
-        platform = "hpc-atos-gnu"
-        [matrix.build]
-        execution = "hpc"
-        job-script = "./.ci/hpc/nowhere.sh"
-        triggers = ["rebuild-request"]
-        needs = []
-        """,
-    )
-    validate_job_templates(parse_manifest(m))
-
-
 _BASE_MANIFEST = """
     [[matrix.build.include]]
     platform = "hpc-atos-gnu"
@@ -360,21 +277,38 @@ _BASE_MANIFEST = """
 _EXTENDS = '{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n'
 
 
-def test_recipe_extending_the_base_validates_on_defaults(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _BASE_MANIFEST, _EXTENDS)
-    validate_job_templates(parse_manifest(m))
+def test_hpc_step_forwards_the_matrix_leg(tmp_path: Path) -> None:
+    yaml = render_single(tmp_path, _TEMPLATED_MANIFEST, EXECUTION_HPC, name="pkg")
+    assert "matrix-leg: ${{ toJSON(matrix) }}" in yaml
 
 
-def test_child_block_reading_an_undeclared_key_is_rejected(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _BASE_MANIFEST, _EXTENDS + "{% block preflight %}{{ boost_root }}{% endblock %}\n")
-    with pytest.raises(SchemaError, match="boost_root"):
-        validate_job_templates(parse_manifest(m))
+@pytest.mark.parametrize(
+    ("body", "recipe"),
+    [
+        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ cc }}\n"),
+        (_BASE_MANIFEST, _EXTENDS),
+        (_TEMPLATED_MANIFEST.replace("build.sh.j2", "nowhere.sh"), None),
+    ],
+    ids=["declared-keys", "extends-base", "plain-sh-never-read"],
+)
+def test_templated_recipe_validates(tmp_path: Path, body: str, recipe: str | None) -> None:
+    validate_job_templates(parse_manifest(_hpc_repo(tmp_path, body, recipe)))
 
 
-def test_key_the_base_reads_is_still_required_of_the_leg(tmp_path: Path) -> None:
-    m = _hpc_repo(tmp_path, _TEMPLATED_MANIFEST, _EXTENDS)
-    with pytest.raises(SchemaError, match="modules"):
-        validate_job_templates(parse_manifest(m))
+@pytest.mark.parametrize(
+    ("body", "recipe", "match"),
+    [
+        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport FC={{ fortran }}\n", "fortran"),
+        (_TEMPLATED_MANIFEST, None, "does not exist"),
+        (_TEMPLATED_MANIFEST, "#!/bin/bash\n{% for x in %}\n", r"build\.sh\.j2:2"),
+        (_BASE_MANIFEST, _EXTENDS + "{% block preflight %}{{ boost_root }}{% endblock %}\n", "boost_root"),
+        (_TEMPLATED_MANIFEST, _EXTENDS, "modules"),
+    ],
+    ids=["undeclared-key", "missing", "syntax-error", "child-block-undeclared", "base-key-required"],
+)
+def test_templated_recipe_rejected(tmp_path: Path, body: str, recipe: str | None, match: str) -> None:
+    with pytest.raises(SchemaError, match=match):
+        validate_job_templates(parse_manifest(_hpc_repo(tmp_path, body, recipe)))
 
 
 def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:

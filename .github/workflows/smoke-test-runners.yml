@@ -4,11 +4,8 @@
 
 name: Smoke test runners
 
-# Manual smoke test of each ARC scale set on the public base image: job
-# scheduling, object-store access (scripts/probe_object_store.py) and an sccache
-# round trip through the bucket (scripts/probe_sccache.py). Both use the env names
-# s3_store reads, so the scripts run the same by hand. ARTIFACT_S3_BUCKET and
-# SCCACHE_BUCKET must differ.
+# Smoke test of each ARC scale set: scheduling, object-store access and an
+# sccache round trip. ARTIFACT_S3_BUCKET and SCCACHE_BUCKET must differ.
 on:
   workflow_dispatch:
 
@@ -19,7 +16,6 @@ jobs:
         id-token: write
 
     strategy:
-      # Report every scale set; one failing leg must not mask the others.
       fail-fast: false
       matrix:
         runner: [arc-runner-normal, arc-runner-large, arc-runner-very-large]
@@ -82,7 +78,6 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      # Exercises actions/setup-sccache as downstream builds use it.
       - uses: ./actions/setup-sccache
         with:
           cache-key-suffix: smoke-${{ matrix.runner }}
@@ -95,14 +90,12 @@ jobs:
       - name: Prove sccache is served by the object store
         shell: bash
         env:
-          # boto3 lists the bucket independently of sccache to confirm where objects landed.
           ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
           ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           CXX: clang++-18
-          # The daemon downgrades a failed read to a plain cache miss with only
-          # a warning, so without this log a broken bucket looks like a cold one.
+          # Without it a broken bucket looks like a cold cache.
           SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-server.log
           # info, not debug: sccache logs the bucket and endpoint at debug.
           SCCACHE_LOG: info

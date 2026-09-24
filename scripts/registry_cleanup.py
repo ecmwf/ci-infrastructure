@@ -10,16 +10,11 @@
     scripts/registry_cleanup.py <task> --delete   # report, then delete
     scripts/registry_cleanup.py <task> --format md
 
-prune: every push adds a version and nothing else removes one, so the project
-quota fills and pushes fail with "exceed the configured upper limit". Per
-repository the --keep most recently pushed versions stay, and so does anything
-tagged `latest` whatever its age.
+prune keeps the project under quota ("exceed the configured upper limit"); it
+never deletes a version tagged `latest`. orphans are repositories whose
+Dockerfile is gone but which still serve a stale `:latest`.
 
-orphans: a repository whose Dockerfile was renamed or deleted keeps serving
-`:latest`, so a reference to it keeps working silently until the image goes stale.
-
-Reading is anonymous. --delete needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME / _TOKEN, a
-robot with artifact delete (prune) and repository delete (orphans) permission.
+Reading is anonymous. --delete needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME / _TOKEN.
 
 Env overrides: REGISTRY, PROJECT, IMAGES_DIR (shared with build_image.py).
 """
@@ -84,7 +79,7 @@ def list_artifacts(repo: str) -> list[dict[str, Any]]:
 
 
 def short_name(repository: str) -> str:
-    """Harbor reports "<project>/<name>"; the name alone is what a Dockerfile maps to."""
+    """ "<project>/<name>" -> "<name>"."""
     return repository.split("/", 1)[1] if "/" in repository else repository
 
 
