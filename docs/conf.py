@@ -45,7 +45,7 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "click": ("https://click.palletsprojects.com/en/stable", None),
     "jinja2": ("https://jinja.palletsprojects.com/en/stable", None),
-    "pydantic": ("https://docs.pydantic.dev/latest", None),
+    "pydantic": ("https://pydantic.dev/docs/validation/latest", None),
 }
 
 ghactions_repo = "ecmwf/ci-infrastructure"
@@ -72,7 +72,13 @@ ghactions_groups = [
     (
         "Downstream CI",
         "Used by the generated workflows to fan out to other repos.",
-        ["resolve-dispatch-context", "dispatch-and-wait", "report-check-run", "validate-generated-workflows"],
+        [
+            "resolve-dispatch-context",
+            "dispatch-and-wait",
+            "report-check-run",
+            "validate-generated-workflows",
+            "regenerate-workflows-pr",
+        ],
     ),
     (
         "PR gates",
