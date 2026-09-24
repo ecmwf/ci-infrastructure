@@ -11,6 +11,7 @@ Called as ``ecmwf/ci-infrastructure/actions/<name>@main``.
    check-pr-declaration
    check-pr-label
    checkout-under-test
+   cmake-build
    dispatch-and-wait
    ensure-infrastructure-present
    fetch-deps
