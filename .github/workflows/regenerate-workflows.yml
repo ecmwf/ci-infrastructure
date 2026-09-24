@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Regenerate downstream-CI workflows
+
+# Callers own the triggers: push to the default branch, a schedule (drift also
+# comes from sibling manifests and the generator) and workflow_dispatch.
+on:
+  workflow_call:
+    inputs:
+      labels:
+        description: 'Comma-separated labels for a newly opened PR.'
+        type: string
+        required: false
+        default: ''
+      branch:
+        description: 'Branch the regenerated files are pushed to.'
+        type: string
+        required: false
+        default: 'ci/regenerate-workflows'
+    secrets:
+      CI_PERMISSIONS_APP_CLIENT_ID:
+        required: false
+      CI_PERMISSIONS_APP_PRIVATE_KEY:
+        required: false
+      REGENERATE_WORKFLOWS_APP_CLIENT_ID:
+        required: false
+      REGENERATE_WORKFLOWS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      # Rolled out org-wide, so a repo without a manifest is not an error.
+      - id: manifest
+        shell: bash
+        run: |
+          if [ -f .ci/manifest.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Regenerate workflows::No .ci/manifest.toml; nothing to regenerate."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: read
+        if: steps.manifest.outputs.present == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - id: write
+        if: steps.manifest.outputs.present == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.REGENERATE_WORKFLOWS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REGENERATE_WORKFLOWS_APP_PRIVATE_KEY }}
+
+      # @main: a relative `uses` in a reusable workflow resolves in the caller's repo.
+      - if: steps.manifest.outputs.present == 'true'
+        uses: ecmwf/ci-infrastructure/actions/regenerate-workflows-pr@main
+        with:
+          read-token: ${{ steps.read.outputs.token }}
+          write-token: ${{ steps.write.outputs.token }}
+          app-slug: ${{ steps.write.outputs.app-slug }}
+          branch: ${{ inputs.branch }}
+          labels: ${{ inputs.labels }}
