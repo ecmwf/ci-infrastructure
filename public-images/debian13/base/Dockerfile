@@ -2,18 +2,12 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/debian13-base
-# Shared foundation: every other public-images/debian13/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
+# Conventions: public-images/README.md
 FROM debian:13
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Debian 13 provides Python 3.13 and CMake 3.31, so the shared base tools
-# can come from the distribution repositories.
-# Keep compilers in named variants. The negative package selections prevent
-# python3-dev/pip recommendations from pulling build-essential back in.
 # flex recommends libfl-dev, which pulls PCC and registers it as /usr/bin/cc.
 RUN apt-get update && apt-get install -y \
     sudo \
@@ -44,7 +38,6 @@ RUN apt-get update && apt-get install -y \
     pcc- \
  && rm -rf /var/lib/apt/lists/*
 
-# Install GitHub CLI (gh) from its upstream apt repository.
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
@@ -57,8 +50,6 @@ RUN mkdir -p /etc/apt/keyrings \
  && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Install ci-infrastructure from the repository build context. Keep this
-# non-editable so the installed package remains after the source tree is removed.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
@@ -76,7 +67,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

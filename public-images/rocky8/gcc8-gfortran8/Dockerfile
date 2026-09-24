@@ -2,25 +2,19 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky8-gcc8-gfortran8
 FROM eccr.ecmwf.int/public-ci-images/rocky8-base:latest
 
-# Rocky 8's OWN gcc, 8.5, not an SCL toolset under /opt/rh. That is the compiler
-# this platform exists to test: it is the distro default, and it is what the
-# Atos HPC GNU builds target, so a rocky 8 leg on anything newer tests a
-# combination nobody ships. The base carries no compiler; the toolchain is named
-# here instead.
+# Rocky 8's own gcc 8.5, not an SCL toolset: the Atos HPC GNU builds target it.
 RUN dnf -y install gcc gcc-c++ gcc-gfortran \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# ubuntu and debian name compilers <tool>-<version>; the rocky RPMs do not, so
-# `g++-8` -- what every manifest asks CMake for -- resolves nowhere. Match the
-# convention, and keep the version in the artifact name, where a compiler bump
-# invalidates the cache on its own.
+# Manifests ask for <tool>-<version>; the RPMs (here and on fedora) ship only
+# unversioned names.
 RUN for t in gcc g++ gfortran cpp; do \
       ln -s /usr/bin/$t /usr/local/bin/$t-8; \
     done
 
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

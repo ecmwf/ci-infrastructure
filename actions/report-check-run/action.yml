@@ -6,8 +6,8 @@ name: Report a check run back to the dispatcher
 description: >
   Post a check run on the dispatcher's commit so a private dispatched run reports
   pass/fail on a public PR without exposing its logs (details_url needs repo
-  access). phase=start creates it in progress; phase=finish completes it, or
-  creates a completed one if start failed.
+  access). phase=start creates it in progress; phase=finish completes
+  (or creates) it.
 
 inputs:
   token:
@@ -23,7 +23,7 @@ inputs:
     description: 'Check run name, e.g. "cxxmath/build (clang++-18, ubuntu-24.04)".'
     required: true
   details-url:
-    description: 'URL the check links to — this (private) run. Behind auth.'
+    description: 'URL the check links to (this private run).'
     required: true
   phase:
     description: 'start | finish'
@@ -81,7 +81,6 @@ runs:
               -f details_url="$DETAILS_URL" >/dev/null 2>&1 \
               || echo "::warning title=check-run::Could not update check $CHECK_RUN_ID on $HEAD_REPO."
           else
-            # No id from start: create a terminal check instead.
             gh api -X POST "repos/$HEAD_REPO/check-runs" \
               -f name="$CHECK_NAME" \
               -f head_sha="$HEAD_SHA" \

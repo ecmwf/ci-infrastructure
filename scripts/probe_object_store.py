@@ -4,8 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Round-trip an object through every configured bucket, so a bad endpoint or
-credential fails in the smoke test rather than in a downstream publish.
+"""Round-trip an object through every configured bucket.
 
     ARTIFACT_S3_ENDPOINT   required: object store URL
     ARTIFACT_S3_BUCKET     artifact bucket, probed when set
@@ -14,19 +13,15 @@ credential fails in the smoke test rather than in a downstream publish.
     AWS_ACCESS_KEY_ID      required, read by boto3 itself
     AWS_SECRET_ACCESS_KEY
 
-The two bucket fingerprints should differ. At least one bucket must be set.
-
-The S3 error code is the point of the output:
+The two bucket fingerprints should differ. What the S3 error code means:
 
     InvalidAccessKeyId     key unknown to THIS store (wrong store, or revoked)
     SignatureDoesNotMatch  key known, secret wrong or the two halves swapped
     AccessDenied           pair valid, but no rights on this bucket
     NoSuchBucket           auth fine, bucket absent from this store
 
-A bare HTTP status ("404") instead means the reply did not come from the store;
-the printed server and request id say who answered.
-
-No secret value is printed, only truncated digests.
+A bare HTTP status means the reply did not come from the store. Secrets are
+printed only as truncated digests.
 """
 
 from __future__ import annotations
@@ -53,7 +48,7 @@ def _env(name: str) -> str:
 
 
 def _fingerprint(value: str) -> str:
-    """Short digest, to compare values across environments without printing them."""
+    """Short digest, comparable without printing the value."""
     return hashlib.sha256(value.encode()).hexdigest()[:8] if value else "<unset>"
 
 
@@ -71,10 +66,10 @@ def _describe_response(exc: ClientError) -> str:
 
 
 def round_trip(client: Any, role: str, bucket: str, key: str) -> str | None:
-    """PUT/GET/DELETE one bucket; a failure summary, or None if it passed.
+    """PUT/GET/DELETE one bucket; a failure summary, or None.
 
     Needs its own client: a rejected ``Expect: 100-continue`` PUT leaves the pooled
-    connection undrained, and a shared pool would hand its reply to the next bucket.
+    connection undrained for the next bucket.
     """
     print(f"::group::{role} bucket")
     print(f"  bucket fingerprint: {_fingerprint(bucket)}")

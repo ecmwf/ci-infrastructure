@@ -2,15 +2,8 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky10-gcc14-gfortran14-boost-qt6
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
-#
-# This variant installs its complete toolchain directly on the shared base. The
-# image workflow supports only base -> variant dependency chains.
 FROM eccr.ecmwf.int/public-ci-images/rocky10-base:latest
 
-# Rocky 10 provides Qt 6, including Charts for ECFLOW_LOGVIEW and Core5Compat
-# for APIs retained from Qt 5. Static Boost libraries come from CRB.
 RUN dnf -y install \
     gcc \
     gcc-c++ \
@@ -27,7 +20,7 @@ RUN for t in gcc g++ gfortran cpp; do \
       ln -s /usr/bin/$t /usr/local/bin/$t-14; \
     done
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

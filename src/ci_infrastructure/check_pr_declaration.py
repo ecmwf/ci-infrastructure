@@ -6,17 +6,14 @@
 
 The checker behind ``actions/check-pr-declaration``.
 
-STDLIB ONLY, AND AN OLDER PYTHON THAN THE REST OF THE PACKAGE, ON PURPOSE: the
-action runs it with the runner's bare ``python3``. So no ``click``, ``pydantic`` or
-``._errors`` imports (``tests/test_check_pr_declaration.py`` walks the AST), and no
-syntax newer than the oldest runner (``pyproject.toml`` disables the ruff rules
-that would push it in).
+STDLIB ONLY, OLDER PYTHON, ON PURPOSE: the action runs it with the runner's bare
+``python3`` (``tests/test_check_pr_declaration.py`` enforces the imports).
 
-The verdict is tail equality of the normalized line lists (plus HIDDEN_BLOCK on
-the passing path); everything else only explains a failure.
+The verdict is tail equality of the normalized line lists (plus HIDDEN_BLOCK);
+everything else only explains a failure.
 
 SECURITY. The PR body is attacker-controlled: it is never printed raw, and
-``$GITHUB_OUTPUT`` only receives a fixed ``Verdict`` value. See the rendering helpers.
+``$GITHUB_OUTPUT`` only receives a fixed ``Verdict`` value.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Final
 
-#: The heading that opens the declaration. Matched exactly, as a whole line.
+#: Matched exactly, as a whole line.
 DECLARATION_HEADING: Final = "### Contributor Declaration"
 
 #: Vendored from ecmwf/.github/.github/PULL_REQUEST_TEMPLATE.md, stored LF without the
@@ -66,7 +63,6 @@ DEFAULT_EXEMPT_AUTHORS: Final = (
 #: body anywhere near this is not a real description.
 MAX_BODY_CHARS: Final = 200_000
 
-#: Per-excerpt cap for the step summary.
 SUMMARY_EXCERPT_LIMIT: Final = 2000
 
 _LOOSE_HEADING: Final = re.compile(r"#{1,6}\s*contributor\s+declaration\s*$", re.IGNORECASE)
@@ -76,7 +72,6 @@ _SUMMARY_OPEN: Final = re.compile(r"<summary\b", re.IGNORECASE)
 _SUMMARY_CLOSE: Final = re.compile(r"</summary\s*>", re.IGNORECASE)
 _BACKTICK_RUN: Final = re.compile(r"`+")
 
-#: Per-verdict fix for the annotation.
 _HINTS: Final = {
     "empty-body": "Paste the declaration from the job summary at the end of the description.",
     "heading-missing": "Copy the block from the job summary and paste it at the end of the description.",
@@ -102,8 +97,6 @@ class Verdict(str, Enum):
 
 @dataclass(frozen=True)
 class LineDiff:
-    """Where and how the body first departs from the declaration."""
-
     index: int
     """0-based position within the declaration block."""
 
@@ -123,8 +116,6 @@ class LineDiff:
 
 @dataclass(frozen=True)
 class Result:
-    """The verdict on one pull request description."""
-
     verdict: Verdict
     headline: str
     """One sentence, safe to put in an annotation. Never contains raw body text."""
@@ -139,9 +130,6 @@ class Result:
     @property
     def ok(self) -> bool:
         return self.verdict in (Verdict.OK, Verdict.BOT_EXEMPT)
-
-
-# === Normalization ===
 
 
 def normalize(text: str) -> list[str]:
@@ -173,9 +161,6 @@ def expected_lines(source: str | None = None) -> list[str]:
     return lines
 
 
-# === Event payload ===
-
-
 def body_from_event(payload: Mapping[str, Any]) -> str:
     """The PR body from a ``pull_request``/``pull_request_target`` payload; null becomes ``""``."""
     pull_request = payload.get("pull_request")
@@ -189,7 +174,6 @@ def body_from_event(payload: Mapping[str, Any]) -> str:
 
 
 def author_from_event(payload: Mapping[str, Any]) -> tuple[str, str]:
-    """Return ``(login, type)`` for the PR author, ``("", "")`` when absent."""
     pull_request = payload.get("pull_request")
     if not isinstance(pull_request, dict):
         return ("", "")
@@ -207,12 +191,9 @@ def is_exempt(login: str, kind: str, exempt: Sequence[str]) -> bool:
 
 
 def parse_exempt_authors(raw: str) -> tuple[str, ...]:
-    """Parse a comma-separated allowlist; empty input means the default list."""
+    """Empty input means the default list."""
     entries = tuple(part.strip() for part in raw.split(",") if part.strip())
     return entries if entries else DEFAULT_EXEMPT_AUTHORS
-
-
-# === Locating and diffing the block ===
 
 
 def find_block_start(lines: Sequence[str], loose: bool = False) -> int | None:
@@ -289,9 +270,6 @@ def _hidden_reason(lines: Sequence[str], block_start: int) -> str | None:
     return None
 
 
-# === The check ===
-
-
 def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
     """Judge ``body``; only the tail-equality comparison decides, the rest explains."""
     declaration = list(expected) if expected is not None else expected_lines()
@@ -349,9 +327,6 @@ def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
     return Result(Verdict.DIVERGED, headline, diff=diff, block_start=found + 1)
 
 
-# === Rendering ===
-
-
 def _strip_control(text: str) -> str:
     """Drop C0/C1 control characters (ANSI sequences) and lone surrogates (would raise on write)."""
     stripped = "".join(char for char in text if unicodedata.category(char) != "Cc")
@@ -364,7 +339,6 @@ def _escape_command(text: str) -> str:
 
 
 def render_error(result: Result) -> str:
-    """The single-line ``::error::`` annotation for a failing result."""
     hint = _HINTS.get(result.verdict.value, "")
     return f"::error title=Contributor Declaration::{_escape_command(result.headline)} {_escape_command(hint)} {_escape_command(_EDIT_HINT)}"
 
@@ -428,9 +402,6 @@ def render_summary(result: Result, expected: Sequence[str]) -> str:
     return "\n".join(parts)
 
 
-# === CLI ===
-
-
 def _read_text(path: Path) -> str:
     """Read ``path`` verbatim: no newline translation, invalid UTF-8 kept as surrogates."""
     with path.open("r", encoding="utf-8", errors="surrogateescape", newline="") as handle:
@@ -438,7 +409,6 @@ def _read_text(path: Path) -> str:
 
 
 def _append(env_var: str, text: str) -> None:
-    """Append to a GitHub file-command target, if we are running under Actions."""
     path = os.environ.get(env_var)
     if not path:
         return
@@ -480,7 +450,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Return 0 when the description is compliant or the author is an exempt bot."""
     args = _build_parser().parse_args(argv)
 
     if not args.body_file and not args.event_file:

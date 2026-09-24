@@ -2,14 +2,10 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rocky9-base
-# Shared foundation: every other public-images/rocky9/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
+# Conventions: public-images/README.md
 FROM rockylinux/rockylinux:9.7
 
-# Rocky 9's system Python is below ci-infrastructure's 3.11 floor. Python 3.12
-# is available as a parallel package, so keep the system interpreter untouched
-# and use python3.12 for the baked package and its test runner.
+# The system Python is below the 3.11 floor; python3.12 is a parallel package.
 RUN dnf -y install dnf-plugins-core \
  && dnf config-manager --set-enabled crb \
 # The minimal base ships curl-minimal, which conflicts with full curl.
@@ -39,13 +35,10 @@ RUN dnf -y install dnf-plugins-core \
 
 RUN python3.12 -m pip install --no-cache-dir pytest
 
-# Install GitHub CLI (gh) from its upstream RPM repository.
 RUN dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo \
  && dnf -y install gh \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# Install ci-infrastructure from the repository build context. Keep this
-# non-editable so the installed package remains after the source tree is removed.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3.12 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
@@ -63,7 +56,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

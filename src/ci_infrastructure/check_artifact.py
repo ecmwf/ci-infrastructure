@@ -4,11 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve a ref to a SHA, check whether its artifact exists, and report run state if not.
-
-Outputs are the ``Outputs`` keys; run-status and run-conclusion follow
-``_github_api.WorkflowRuns`` and are empty when the artifact was found.
-"""
+"""Resolve a ref to a SHA, check whether its artifact exists, and report run state if not."""
 
 from typing import Literal, TypeAlias, TypedDict
 
@@ -30,7 +26,7 @@ from ._github_api import (
 RunStatus: TypeAlias = Literal["running", "completed", "none"]
 RunConclusion: TypeAlias = Literal["success", "failure"]
 
-# Functional syntax: the keys are hyphenated $GITHUB_OUTPUT names.
+# Functional syntax: hyphenated keys.
 Outputs = TypedDict(
     "Outputs",
     {

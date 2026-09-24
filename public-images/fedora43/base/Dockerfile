@@ -2,15 +2,11 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/fedora43-base
-# Shared foundation: every other public-images/fedora43/* image FROMs this.
-# Built/pushed by .github/workflows/images.yml (see docs/howto/images.rst).
+# Conventions: public-images/README.md
 FROM fedora:43
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Fedora 43 provides Python 3.14, CMake 3.31, and GitHub CLI directly from its
-# repositories, so the shared base tools use distribution packages.
 RUN dnf -y install \
     sudo \
     git \
@@ -37,8 +33,6 @@ RUN dnf -y install \
     gh \
  && dnf clean all && rm -rf /var/cache/dnf
 
-# Install ci-infrastructure from the repository build context. Keep this
-# non-editable so the installed package remains after the source tree is removed.
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
 RUN python3 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
@@ -56,7 +50,7 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Self-description must be re-declared by every descendant image.
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

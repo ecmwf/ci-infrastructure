@@ -4,14 +4,13 @@
 
 name: Announce image
 description: >
-  Print the CI image this job runs in (name, tag, build date, Dockerfile link,
-  from the baked `CI_IMAGE_*` env; see docs/howto/images.rst) plus `extra`, as a notice and
-  step summary. Pure bash with no dependencies, so it cannot fail for unrelated
-  reasons. Silent when CI_IMAGE_NAME is unset.
+  Print the CI image this job runs in (from the baked `CI_IMAGE_*` env; see
+  public-images/README.md) plus `extra`, as a notice and step summary, once per
+  job. Pure bash. Silent when CI_IMAGE_NAME is unset.
 
 inputs:
   extra:
-    description: 'Free text printed with the image facts (resolved deps, compiler, leg). Multi-line is fine.'
+    description: 'Free text (may be multi-line) printed with the image facts.'
     required: false
     default: ''
   title:
@@ -36,7 +35,6 @@ runs:
           exit 0
         fi
 
-        # Once per job.
         if [ -n "${CI_IMAGE_ANNOUNCED:-}" ]; then
           exit 0
         fi

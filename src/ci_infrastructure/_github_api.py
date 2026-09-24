@@ -29,10 +29,8 @@ Execution: TypeAlias = Literal["runner", "hpc"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
 EXECUTION_HPC: Final[Execution] = "hpc"
 
-#: Version of the shared HPC base template (hpc/templates/cmake-build.sh.j2), carried
-#: in every hpc artifact name. Consumers load ci-infrastructure @main, so a template
-#: change reaches every repo without moving any sha and would otherwise be served
-#: from cache. 0 adds no segment.
+#: Version of hpc/templates/cmake-build.sh.j2, in every hpc artifact name: consumers load
+#: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
 HPC_TEMPLATE_VERSION: Final = 1
 
 
@@ -41,7 +39,7 @@ def template_version_for_lane(lane: Execution) -> int:
 
 
 def lane_suffix(lane: Execution) -> str:
-    """Generated-workflow filename suffix: '' for the runner lane, '-hpc' for hpc."""
+    """Generated-workflow filename suffix."""
     return "" if lane == EXECUTION_RUNNER else "-hpc"
 
 
@@ -54,7 +52,6 @@ _SHA_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _alias(s: str) -> str:
-    """Make a string safe for GraphQL field aliases."""
     return _ALIAS_SAFE_RE.sub("_", s)
 
 
@@ -82,7 +79,6 @@ def gh_api_rest(path: str, token: str | None) -> JSON | None:
 
 
 def gh_api_graphql(query: str, token: str | None) -> JSON | None:
-
     rc, out, err = _gh(["gh", "api", "graphql", "-f", f"query={query}"], token)
     if rc != 0:
         print(f"::warning::GraphQL call failed: {err.strip()}", file=sys.stderr)
@@ -94,7 +90,6 @@ def gh_api_graphql(query: str, token: str | None) -> JSON | None:
 
 
 def select_token() -> str | None:
-    """First non-empty of GH_TOKEN, ORG_READ_TOKEN, GITHUB_TOKEN, else None."""
     for var in ("GH_TOKEN", "ORG_READ_TOKEN", "GITHUB_TOKEN"):
         val = os.environ.get(var)
         if val:
@@ -180,11 +175,7 @@ def canonical_option_segment(option: str) -> str:
 
 
 def compute_platform_slug(platform: str) -> str:
-    """The required `platform` (a binary-compatibility class), verbatim, as the artifact-name slot.
-
-    ABI-compatible images declaring the same platform share artifacts. Raises when
-    empty, or when the first segment is 8 hex chars (would read as deps-hash8).
-    """
+    """`platform` verbatim; rejects empty, or a first segment that reads as deps-hash8."""
     slug = platform.strip()
     if not slug:
         raise ValueError("platform is required: every matrix leg must declare a 'platform' (e.g. ubuntu-24.04).")
@@ -222,12 +213,7 @@ def make_artifact_name(
     *,
     template_version: int = 0,
 ) -> str:
-    """The single definition of an artifact's name.
-
-        <prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-hpcv<N>][-opts.<name>]
-
-    None / empty / zero drops the optional segment.
-    """
+    """<prefix>-<sha>[-<deps-hash8>]-<platform>[-<compiler>][-py<ver>]-<build-type>[-hpcv<N>][-opts.<name>]"""
     parts = [prefix, sha]
     if deps_hash8:
         parts.append(deps_hash8)
@@ -245,17 +231,12 @@ def make_artifact_name(
     return "-".join(parts)
 
 
-#: Run conclusions that mean "this run did not succeed". `cancelled` counts:
-#: a cancelled producer never published, so a consumer must not keep waiting.
+#: `cancelled` counts: a cancelled producer never published, so a consumer must not keep waiting.
 _FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "action_required", "startup_failure"})
 
 
 class WorkflowRuns(NamedTuple):
-    """What the workflow runs for one commit SHA say.
-
-    detail and url describe the first in-progress run (state 'running' only);
-    conclusion is set only for 'completed'.
-    """
+    """detail/url: first in-progress run (state 'running'); conclusion: only for 'completed'."""
 
     state: Literal["running", "completed", "none"]
     detail: str | None = None
@@ -267,8 +248,7 @@ class WorkflowRuns(NamedTuple):
         return self.state == "running"
 
 
-# The generated workflows that build a package; any other workflow (a legacy CI stuck
-# in the queue, say) must not look like a build in flight.
+# Any other workflow (e.g. a legacy CI stuck in the queue) must not look like a build in flight.
 _BUILD_WORKFLOWS: Final = frozenset({"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc.yml"})
 
 
@@ -299,7 +279,7 @@ def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
 
 
 def write_outputs(outputs: Mapping[str, object]) -> None:
-    """Append `key=value` lines to $GITHUB_OUTPUT (or print them); None becomes "", multi-line values are delimited."""
+    """Append to $GITHUB_OUTPUT (or print); None becomes ""."""
     lines: list[str] = []
     for key, raw in outputs.items():
         value = "" if raw is None else str(raw)
@@ -324,11 +304,9 @@ class ManifestSchemaError(Exception):
 def resolve_reuse_matrix(
     kind: str, include: Sequence[Any] | None, reuse: object, blocks: Mapping[str, Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
-    """The legs of `[matrix.<kind>]` after `reuse-matrix = "X"` (share X's legs; no chaining).
+    """The legs of `[matrix.<kind>]`, over `defaults`, after `reuse-matrix = "X"` (no chaining).
 
-    Each leg is laid over its matrix's `defaults` table; a reusing kind's own
-    `defaults` then go under X's. Shared by the generator and the resolver,
-    which must agree on every leg.
+    A reusing kind's own `defaults` go under X's.
     """
     if reuse is not None and include:
         raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")

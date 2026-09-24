@@ -22,7 +22,7 @@ inputs:
 
 outputs:
   run:
-    description: "'true' or 'false' — whether the lane should run for this commit."
+    description: "'true' when the lane should run for this commit, else 'false'."
     value: ${{ steps.gate.outputs.run }}
 
 runs:

@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Enable ``python -m ci_infrastructure.hpc`` to reach the click CLI."""
-
 from __future__ import annotations
 
 from .orchestrate import main

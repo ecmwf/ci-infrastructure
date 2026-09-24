@@ -2,15 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Fails a pull request whose description does not end with the Contributor
-# Declaration, running check-pr-declaration against the event payload.
+# Fails a pull request whose description does not end with the Contributor Declaration.
 
 name: Contributor Declaration
 
-# Callers own the triggers -- a reusable workflow cannot declare its own. Call it
-# from `pull_request_target` with types [opened, edited, reopened, synchronize];
-# in particular the caller MUST listen for `edited`, because a description can be
-# emptied with no push at all, and `synchronize`, because required checks are per-SHA.
+# Call from `pull_request_target` with types [opened, edited, reopened, synchronize]:
+# `edited` because a description can change without a push, `synchronize`
+# because required checks are per-SHA.
 on:
   workflow_call:
     inputs:
@@ -21,9 +19,8 @@ on:
         default: ubuntu-latest
       declaration-file:
         description: >
-          Path in the consumer repo of a file holding the declaration to
-          require; empty uses the text vendored in ci-infrastructure. Setting
-          this adds an actions/checkout step.
+          Path in the consumer repo of the declaration to require; empty uses
+          the vendored text. Setting it adds an actions/checkout step.
         type: string
         required: false
         default: ''
@@ -49,8 +46,7 @@ permissions:
   contents: read
 
 jobs:
-  # FROZEN NAME: it is the required-check context in every ECMWF repo
-  # (asserted by tests/test_check_pr_declaration.py).
+  # FROZEN NAME: the required-check context in every ECMWF repo.
   contributor-declaration:
     runs-on: ${{ inputs.runs-on }}
     steps:

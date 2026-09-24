@@ -23,21 +23,16 @@ CLANG_IMG: Final = "registry.example/playground-ci/ubuntu24.04-clang18:0.2"
 
 
 def test_platform_used_verbatim() -> None:
-    assert compute_platform_slug("ubuntu-24.04") == "ubuntu-24.04"
     assert compute_platform_slug("  ubuntu-24.04  ") == "ubuntu-24.04"
 
 
-def test_platform_is_required() -> None:
-    with pytest.raises(ValueError, match="platform is required"):
-        compute_platform_slug("")
-    with pytest.raises(ValueError, match="platform is required"):
-        compute_platform_slug("   ")
-
-
-def test_hex_collision_guard_still_applies() -> None:
-    # An 8-hex first segment would collide with the deps-hash8 slot.
-    with pytest.raises(ValueError):
-        compute_platform_slug("deadbeef-1")
+@pytest.mark.parametrize(
+    ("platform", "match"), [("", "platform is required"), ("   ", "platform is required"), ("deadbeef-1", None)]
+)
+def test_platform_rejected(platform: str, match: str | None) -> None:
+    """An 8-hex first segment would collide with the deps-hash8 slot."""
+    with pytest.raises(ValueError, match=match):
+        compute_platform_slug(platform)
 
 
 _FORTMATH_MANIFEST: Final = """

@@ -4,9 +4,7 @@
 
 """The schema of `.ci/manifest.toml`: one model per TOML table.
 
-The generator and the resolver both validate through `validate`. The rules that
-span several manifests (the `needs` graph, trigger cycles) live in
-`generate_downstream_ci`.
+Cross-manifest rules (the `needs` graph, trigger cycles) live in `generate_downstream_ci`.
 """
 
 from __future__ import annotations
@@ -404,9 +402,7 @@ def _format_validation_error(exc: ValidationError) -> str:
     return f"{prefix}{sep}{msg}".rstrip()
 
 
-#: How a pydantic loc head renders in TOML notation. `array` heads are arrays of
-#: tables, so a numeric index becomes `[[deps]][2]`; `subtable` absorbs the next
-#: element into the table name (`[matrix.build]`); `table` is a plain table.
+#: `array`: `[[deps]][2]`; `subtable` absorbs the next element: `[matrix.build]`.
 _LOC_HEADS: Final = {
     "trigger-downstream": "array",
     "deps": "array",
@@ -418,18 +414,7 @@ _LOC_HEADS: Final = {
 
 
 def _format_loc(loc: tuple[str | int, ...]) -> str:
-    """Convert a pydantic loc tuple into a TOML-ish prefix.
-
-    Examples:
-      ()                                -> ""
-      ("package",)                      -> "[package]"
-      ("package", "name")               -> "[package].name"
-      ("matrix", "build")               -> "[matrix.build]"
-      ("matrix", "build", "needs")      -> "[matrix.build].needs"
-      ("trigger-downstream", 0)         -> "[[trigger-downstream]][0]"
-      ("trigger-downstream", 1, "ref")  -> "[[trigger-downstream]][1].ref"
-      ("deps", 2, "package")            -> "[[deps]][2].package"
-    """
+    """E.g. ("deps", 2, "package") -> "[[deps]][2].package"."""
     if not loc:
         return ""
     head, rest = str(loc[0]), loc[1:]

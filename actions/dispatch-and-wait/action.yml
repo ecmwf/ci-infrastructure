@@ -5,35 +5,34 @@
 name: Dispatch a cross-repo run and wait
 description: >
   Dispatch another repo's cross-repo-trigger.yml, surface the run URL, then wait
-  for `artifact-names` to appear in the S3 store (recovery path: build output
-  only, not trailing tests) and/or, with `wait-for-run-conclusion`, for the run
-  to succeed (public upstream gating on a private consumer).
+  for `artifact-names` in the S3 store and/or, with `wait-for-run-conclusion`,
+  for the run to succeed.
 
 inputs:
   consumer-repo:
-    description: 'owner/repo of the target to dispatch (the repo whose cross-repo-trigger.yml fires)'
+    description: 'owner/repo to dispatch'
     required: true
   workflow-file:
     description: 'Workflow filename in the target repo'
     required: false
     default: 'cross-repo-trigger.yml'
   ref:
-    description: 'Ref the target should check out (matches the orchestrator-side fallback)'
+    description: 'Ref the target should check out'
     required: true
   from-repo:
-    description: 'Forwarded as workflow_dispatch input from-repo (the dispatcher)'
+    description: 'Forwarded as from-repo (the dispatcher)'
     required: true
   from-sha:
-    description: 'Forwarded as workflow_dispatch input from-sha (the dispatcher commit)'
+    description: 'Forwarded as from-sha (the dispatcher commit)'
     required: true
   from-jobs:
     description: 'Forwarded as from-jobs: JSON array of originator "<package>/<kind>" coordinates.'
     required: true
   branch:
-    description: 'Forwarded as workflow_dispatch input branch (used by pick-ref)'
+    description: 'Forwarded as branch (for pick-ref)'
     required: true
   fallback-ref:
-    description: 'Forwarded as workflow_dispatch input fallback-ref'
+    description: 'Forwarded as fallback-ref'
     required: false
     default: 'main'
   token:
@@ -48,11 +47,11 @@ inputs:
     required: false
     default: 'false'
   poll-interval:
-    description: 'Seconds between artifact-store polls (mapped to ARTIFACT_POLL_INTERVAL)'
+    description: 'Seconds between polls'
     required: false
     default: '20'
   wait-timeout:
-    description: 'Max seconds to wait for the artifacts before giving up (mapped to ARTIFACT_WAIT_TIMEOUT)'
+    description: 'Max seconds to wait for the artifacts or the run'
     required: false
     default: '1800'
   dispatch-discovery-timeout:
@@ -188,7 +187,6 @@ runs:
       run: |
         set -euo pipefail
         echo "::notice title=$CONSUMER_REPO dispatched run::$RUN_URL"
-        # `--`: otherwise printf reads a leading "- " as an option.
         {
           printf -- '## Dispatched cross-repo run\n\n'
           printf -- '- Target: `%s`\n' "$CONSUMER_REPO"
@@ -198,7 +196,6 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Surface fallback URL when run could not be discovered
-      # Dispatch failed or the run was never found: point at the Actions tab.
       if: failure() && steps.discover.outcome != 'success'
       shell: bash
       env:
@@ -229,14 +226,13 @@ runs:
         ARTIFACT_WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
       run: |
         set -euo pipefail
-        # Fails fast if the producer run ends without the artifact.
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.wait_for_artifacts \
           --repo "$CONSUMER_REPO" \
           --ref "$REF" \
           --artifact-names "$ARTIFACT_NAMES"
 
     - name: Wait for dispatched run to conclude
-      # Run STATUS only, never logs: no private log content enters this run.
+      # Status only, never logs: no private log content enters this run.
       if: inputs.wait-for-run-conclusion == 'true'
       shell: bash
       env:

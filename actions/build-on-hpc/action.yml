@@ -4,10 +4,9 @@
 
 name: Build a package on HPC via SLURM
 description: >
-  HPC counterpart of the runner build: submit .ci/hpc/build-<toolchain>.sh via
-  troika/SLURM, ship source and deps, wait, and publish the install tree to S3.
-  Drop-in for the build step after fetch-deps (download-only). Restartable: a
-  cache hit skips, and a running job with the same artifact name is reattached.
+  Submit .ci/hpc/build-<toolchain>.sh via troika/SLURM, ship source and deps,
+  wait, and publish the install tree to S3. Restartable: a cache hit skips, and
+  a running job with the same artifact name is reattached.
 
 inputs:
   site:
@@ -18,13 +17,12 @@ inputs:
     required: true
   matrix-leg:
     description: >
-      The matrix leg as JSON (pass toJSON of the matrix); render context for a
-      .j2 job-script, ignored otherwise. Never write the expression delimiters
-      here: descriptions are evaluated and `matrix` breaks loading.
+      The matrix leg as JSON; render context for a .j2 job-script, ignored
+      otherwise.
     required: false
     default: ''
   artifact-name:
-    description: 'Canonical artifact name (build identity; also the job-name + cache key)'
+    description: 'Canonical artifact name (also the SLURM job name and cache key)'
     required: true
   cmake-prefix-path:
     description: 'Semicolon/colon-separated dependency prefixes from the download-only step'
@@ -40,8 +38,8 @@ inputs:
     default: ''
   remote-work-dir:
     description: >
-      Absolute cluster dir visible to compute nodes, writable by the troika user.
-      May name cluster variables (e.g. "$SCRATCH/github-ci"), expanded remotely.
+      Cluster dir visible to compute nodes and writable by the troika user; a
+      quoted $SCRATCH is expanded remotely.
     required: true
   marker-wait-timeout:
     description: 'Seconds the SLURM job waits for the source-transfer marker before failing.'
@@ -86,7 +84,7 @@ inputs:
 
 outputs:
   install-path:
-    description: 'Absolute path of the built package install tree (for a downstream publish/print step)'
+    description: 'Absolute path of the built package install tree'
     value: ${{ steps.submit.outputs.install-path }}
   cache-hit:
     description: '"true" if the artifact already existed and no job was submitted'
@@ -138,13 +136,11 @@ runs:
           echo "::error::remote-work-dir is empty. Set vars.HPC_CI_REMOTE_WORK_DIR (e.g. '\$SCRATCH/github-ci')." >&2
           exit 1
         fi
-        # Local (runner) scratch: shipped/fetched tarball staging, fetched install.
         work_dir="${WORK_DIR_INPUT:-$RUNNER_TEMP}"
         tar_dir="$work_dir/hpc-tars"
         local_install_path="$work_dir/install/$ARTIFACT_NAME"
         mkdir -p "$tar_dir"
-        # Unique per submission; names the TRANSFER_COMPLETED marker and is stamped
-        # into the job's --comment so a reattaching run can find which run shipped.
+        # Names the transfer marker; a reattaching run finds its shipper by it.
         run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         # Verbatim: '$SCRATCH/...' is expanded on the cluster, not here.
         args=(
@@ -159,16 +155,13 @@ runs:
           --tar-dir "$tar_dir"
           --cmake-prefix-path "$CMAKE_PREFIX_PATH_INPUT"
         )
-        # Only for a .j2 job-script; a plain recipe ignores it. Through the array,
-        # so quoting and $(...) inside a manifest string stay inert.
+        # Through the array, so $(...) in a manifest string stays inert.
         if [ -n "$MATRIX_LEG" ]; then args+=(--matrix-leg "$MATRIX_LEG"); fi
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
-        # -u: unbuffered so the wait progress can't hide behind block buffering.
         "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
-    # Skipped on a cache hit (found) and in test-only mode.
     - name: Publish
       if: ${{ inputs.publish != 'false' }}
       uses: ecmwf/ci-infrastructure/actions/publish-artifact@main

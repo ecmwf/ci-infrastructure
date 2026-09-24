@@ -5,12 +5,12 @@
 name: Check out the commit under test
 description: >
   actions/checkout of the PR merge commit when the event has one (also under
-  pull_request_target, whose default is the base branch), else the default.
-  This repository only; cross-repo matching is actions/pick-ref.
+  pull_request_target), else the default ref. This repository only; cross-repo
+  matching is actions/pick-ref.
 
 inputs:
   ref:
-    description: 'Check out this instead — e.g. a workflow_run orchestrator passing the tested head sha.'
+    description: 'Check out this ref instead, e.g. the tested head sha in a workflow_run orchestrator.'
     required: false
     default: ''
   token:

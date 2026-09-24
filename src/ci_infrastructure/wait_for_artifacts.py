@@ -4,18 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Block until named artifacts appear in the S3 artifact store.
-
-Used by `dispatch-and-wait`: waits only for the artifacts, not the whole dispatched
-run. Polling is `fetch_deps.poll_for_artifact`.
-
-Usage:
-    wait_for_artifacts.py --repo owner/repo --ref <branch|tag|sha> \\
-                          --artifact-names "<name1> <name2> ..."
-
-Exits 0 only when every named artifact is present; otherwise prints an ::error::
-listing the artifacts that never appeared and exits 1.
-"""
+"""Block until named artifacts appear in the S3 store (used by `dispatch-and-wait`)."""
 
 from __future__ import annotations
 

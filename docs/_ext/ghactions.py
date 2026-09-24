@@ -7,11 +7,8 @@
 ``.. autoaction:: <name>`` renders ``actions/<name>/action.yml``; ``.. autoworkflow:: <path>``
 renders the ``workflow_call`` interface of a reusable workflow, its description being the
 comments between the licence header and ``on:``. ``:action:`<name>``` links to either.
-
-Like autosummary, the build writes one page per action and per workflow in
-``ghactions_workflows`` under ``reference/actions/{composite,workflows}/``.
-
-A missing description is a warning, so the ``-W`` docs build fails on it.
+The build writes one page per action and per ``ghactions_workflows`` entry under
+``reference/actions/{composite,workflows}/``. A missing description is a warning.
 """
 
 from __future__ import annotations

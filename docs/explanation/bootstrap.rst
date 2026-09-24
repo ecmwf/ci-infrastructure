@@ -21,4 +21,5 @@ Call ``ensure-infrastructure-present`` yourself only when a workflow runs
 repo's own ``hpc-nightly-cleanup.yml`` and ``smoke-test-hpc.yml`` do.
 
 Set ``CI_INFRASTRUCTURE_FORCE_REINSTALL=true`` in a job's ``env:`` to install from the
-checkout instead of a baked interpreter; see :doc:`../howto/images`.
+checkout instead of a baked interpreter.
+A stale baked package already warns and reinstalls on its own.

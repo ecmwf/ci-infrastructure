@@ -43,34 +43,23 @@ def _dep(**overrides: str) -> dict[str, str]:
     return base
 
 
-def test_compiler_less_dep_keeps_build_type_in_its_column() -> None:
-    row = _row_from_dep(_dep(compiler=""))
-    assert row["platform"] == "ubuntu-24.04"
-    assert row["build_type"] == "Release"
-    assert row["compiler"] == ""
-    assert row["python"] == ""
+@pytest.mark.parametrize("python", ["", "3.11"])
+def test_compiler_less_dep_keeps_each_field_in_its_column(python: str) -> None:
+    row = _row_from_dep(_dep(compiler="", **{"python-version": python}))
+    assert (row["platform"], row["compiler"], row["build_type"], row["python"]) == (
+        "ubuntu-24.04",
+        "",
+        "Release",
+        python,
+    )
 
 
-def test_compiler_less_python_dep_splits_all_columns() -> None:
-    row = _row_from_dep(_dep(compiler="", **{"python-version": "3.11"}))
-    assert row["platform"] == "ubuntu-24.04"
-    assert row["python"] == "3.11"
-    assert row["build_type"] == "Release"
-    assert row["compiler"] == ""
-
-
-def test_ref_column_shows_branch_but_blanks_pinned_sha() -> None:
-    assert _row_from_dep(_dep(ref="main"))["ref"] == "main"
-    assert _row_from_dep(_dep(ref="release-1.x"))["ref"] == "release-1.x"
-    assert _row_from_dep(_dep(ref=SHA))["ref"] == ""
-    assert _row_from_dep(_dep(ref="abc1234"))["ref"] == ""
-
-
-def test_looks_like_sha() -> None:
-    assert _looks_like_sha("a" * 40)
-    assert _looks_like_sha("abc1234")
-    assert not _looks_like_sha("main")
-    assert not _looks_like_sha("release-1.x")
+@pytest.mark.parametrize(
+    ("ref", "shown"), [("main", "main"), ("release-1.x", "release-1.x"), (SHA, ""), ("abc1234", "")]
+)
+def test_ref_column_shows_branch_but_blanks_pinned_sha(ref: str, shown: str) -> None:
+    assert _row_from_dep(_dep(ref=ref))["ref"] == shown
+    assert _looks_like_sha(ref) == (not shown)
     assert not _looks_like_sha("")
 
 
@@ -84,7 +73,6 @@ def test_md_table_has_ref_as_second_column() -> None:
 
 
 def _resolved(deps: Sequence[Mapping[str, Any]], **own: object) -> str:
-    """A `_resolved` block as the resolver emits it, ready for --resolved."""
     block: dict[str, Any] = {
         "own-name": "eckit",
         "own-ref": "develop",
@@ -124,7 +112,6 @@ def test_own_row_is_projected_out_of_the_resolved_block() -> None:
 
 
 def test_main_orders_own_first_then_deps_downstream_to_upstream() -> None:
-    # _resolved.deps arrives upstream→downstream.
     deps = [_dep(name="A"), _dep(name="B"), _dep(name="E")]
     result = CliRunner().invoke(
         print_dep_table.main,

@@ -2,11 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Moving trees between the runner and the cluster over troika's connection.
-
-Trees move as a single tarball because the connection transfers one file at a
-time. None of this needs a scheduler, so it also works against ``direct`` sites.
-"""
+"""Move trees between runner and cluster over troika's connection, one tarball each (it sends one file at a time)."""
 
 from __future__ import annotations
 
@@ -23,8 +19,6 @@ from . import jobscript
 
 
 class Connection(Protocol):
-    """The subset of troika's connection API the transfers rely on."""
-
     def execute(self, command: Any, stdout: Any = ..., stderr: Any = ..., dryrun: bool = ...) -> Any: ...
 
     def sendfile(self, src: Any, dst: Any, dryrun: bool = ...) -> None: ...
@@ -33,7 +27,6 @@ class Connection(Protocol):
 
 
 def _run_remote(conn: Connection, argv: list[str], *, what: str, dryrun: bool = False) -> None:
-    """Run a command on the remote and raise CIError on a non-zero exit."""
     proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, dryrun=dryrun)
     if dryrun:
         return
@@ -44,17 +37,13 @@ def _run_remote(conn: Connection, argv: list[str], *, what: str, dryrun: bool = 
 
 
 def _probe_remote(conn: Connection, argv: list[str]) -> int:
-    """Run a command on the remote and return its exit code instead of raising."""
     proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     proc.communicate()
     return int(proc.returncode)
 
 
 def truncate_remote_file(conn: Connection, *, path: str) -> None:
-    """Create ``path`` (and its parent) on the remote, emptying it if it exists.
-
-    The output path is per-artifact, so a re-run would otherwise read the previous attempt's sentinel.
-    """
+    """Create or empty ``path``: it is per-artifact, so a re-run would otherwise read the previous sentinel."""
     parent = str(PurePosixPath(path).parent)
     _run_remote(conn, ["mkdir", "-p", parent], what=f"Remote mkdir of {parent}")
     _run_remote(conn, ["sh", "-c", f": > {shlex.quote(path)}"], what=f"Remote truncate of {path}")
@@ -65,7 +54,6 @@ def _marker_path(staging_dir: str) -> str:
 
 
 def marker_exists(conn: Connection, *, staging_dir: str) -> bool:
-    """Whether a completed source transfer is present in the (per-artifact) staging dir."""
     return _probe_remote(conn, ["test", "-f", _marker_path(staging_dir)]) == 0
 
 
@@ -83,7 +71,7 @@ def _ship_lock_path(staging_dir: str) -> str:
 
 
 def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
-    """One atomic non-``-p`` ``mkdir`` claim on ``lock_dir``, breaking it if older than ``stale_minutes``."""
+    """One atomic ``mkdir`` (no ``-p``) claim, breaking a lock older than ``stale_minutes``."""
     q_lock = shlex.quote(lock_dir)
     q_owner = shlex.quote(f"{lock_dir}/owner")
     q_parent = shlex.quote(str(PurePosixPath(lock_dir).parent))
@@ -114,7 +102,6 @@ def ship_lock(
     stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
     dryrun: bool = False,
 ) -> Iterator[None]:
-    """Cluster-wide lock on a staging dir while shipping, so only one shipper resets it at a time."""
     with remote_lock(
         conn,
         lock_dir=_ship_lock_path(staging_dir),
@@ -142,10 +129,7 @@ def remote_lock(
     stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
     dryrun: bool = False,
 ) -> Iterator[None]:
-    """Hold an exclusive lock on ``lock_dir`` on the shared cluster filesystem for the block.
-
-    ``what`` and ``subject`` only label log messages.
-    """
+    """Exclusive lock on the shared cluster filesystem; ``what`` and ``subject`` only label logs."""
     if dryrun:
         yield
         return
@@ -173,10 +157,7 @@ def remote_lock(
 
 
 def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> None:
-    """Empty the staging dir via rename-aside (no ``ENOTEMPTY`` races); call only under :func:`ship_lock`.
-
-    Only the final ``mkdir -p`` can fail the reset.
-    """
+    """Rename-aside, avoiding ``ENOTEMPTY`` races; call only under :func:`ship_lock`."""
     trash = f"{staging_dir.rstrip('/')}.trash.{run_id}"
     parent = str(PurePosixPath(staging_dir).parent)
     q_staging, q_trash, q_parent = (shlex.quote(p) for p in (staging_dir, trash, parent))
@@ -204,7 +185,7 @@ def ship_source(
 ) -> None:
     """Reset ``staging_dir``, ship the checkout and dep prefixes (to ``<remote_deps_dir>/<i>``), then the marker.
 
-    The job unpacks the source tarball itself; the marker comes last so it never sees a partial copy.
+    The marker comes last so the job never sees a partial copy.
     """
     if dryrun:
         return
@@ -238,7 +219,6 @@ def fetch_tree(
     tarball_suffix: str = "fetch",
     dryrun: bool = False,
 ) -> None:
-    """Tar a directory on the cluster and unpack it into ``local_dir`` on the runner."""
     if dryrun:
         return
     remote = PurePosixPath(remote_dir)
@@ -267,10 +247,7 @@ def push_tree(
     local_tar_name: str | None = None,
     dryrun: bool = False,
 ) -> None:
-    """Tar ``local_dir`` on the runner and unpack it into ``remote_dir`` on the cluster.
-
-    ``local_tar_name`` renames the runner-side tarball; an empty ``tarball_suffix`` gives ``<dir>.tgz``.
-    """
+    """An empty ``tarball_suffix`` gives ``<dir>.tgz``."""
     if dryrun:
         return
     name = PurePosixPath(remote_dir).name
@@ -291,7 +268,7 @@ def push_tree(
 
 
 def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> None:
-    """Remove a directory and its leftover transfer tarballs on the cluster; the caller guards top-level paths."""
+    """Also removes leftover transfer tarballs; the caller guards top-level paths."""
     if dryrun:
         return
     base = remote_dir.rstrip("/")
@@ -303,7 +280,7 @@ def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> N
 
 
 def _unzstd_into(archive: Path, dest: Path) -> None:
-    """Stream a .tar.zst into ``dest`` via the zstd binary (portable across GNU tar and bsdtar)."""
+    """Via the zstd binary: portable across GNU tar and bsdtar."""
     dec = subprocess.Popen(["zstd", "-dc", str(archive)], stdout=subprocess.PIPE)
     try:
         untar = subprocess.run(["tar", "-xf", "-", "-C", str(dest)], stdin=dec.stdout)
@@ -323,7 +300,7 @@ def fetch_install(
     tar_dir: str,
     dryrun: bool = False,
 ) -> None:
-    """Fetch the archive the job must write at ``CI_INSTALL_ARCHIVE`` and unpack it into ``local_install_dir``."""
+    """Fetch and unpack the archive the job wrote at ``CI_INSTALL_ARCHIVE``."""
     if dryrun:
         return
     remote_tgz = jobscript.install_archive_path(remote_install_dir)

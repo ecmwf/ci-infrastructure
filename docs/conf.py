@@ -27,7 +27,6 @@ html_theme = "sphinxawesome_theme"
 default_role = "literal"
 nitpicky = True
 nitpick_ignore_regex = [
-    # No inventories.
     ("py:class", r"(yaml|troika|boto3|botocore|mypy_boto3_s3)\..*"),
     # NewType aliases and private helpers named in public signatures.
     ("py:class", r"ci_infrastructure\.(\w+\.)*_\w+"),

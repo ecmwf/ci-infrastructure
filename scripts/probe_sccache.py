@@ -5,14 +5,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Compile a small C++ project twice and prove the second compile was served from
-the object store. Runs by hand exactly as in CI:
+the object store. By hand:
 
     AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \\
     ARTIFACT_S3_ENDPOINT='https://...' \\
     SCCACHE_BUCKET='gh-runners-sccache' \\
     python scripts/probe_sccache.py
 
-Configuration, in the same names the smoke test already passes:
+Configuration:
 
     SCCACHE_BUCKET         required: the sccache bucket
     ARTIFACT_S3_ENDPOINT   required: object store URL (or SCCACHE_ENDPOINT)
@@ -24,15 +24,14 @@ Configuration, in the same names the smoke test already passes:
 
 --use-ambient-config takes SCCACHE_* as actions/setup-sccache left them (CI).
 
-sccache silently falls back to a local disk cache when S3 is unreachable, so
-"compile twice, expect a hit" proves nothing. Three checks instead:
+sccache silently falls back to local disk when S3 is unreachable, so it checks:
 
     1. backend identity  sccache must report an S3 backend, not local disk
     2. write proof       objects must appear in THAT bucket, per boto3
     3. read proof        with the local cache erased, a hit can only be remote
 
-Objects go under a per-run key prefix, deleted afterwards unless --keep.
-No secret value is printed, only truncated digests.
+Objects go under a per-run key prefix, deleted unless --keep. Secrets are
+printed only as truncated digests.
 """
 
 from __future__ import annotations
@@ -55,7 +54,6 @@ from ci_infrastructure import s3_store
 
 _SAMPLE_DIR = Path(__file__).resolve().parent.parent / "samples" / "sccache"
 
-# Tried in order when CXX is unset.
 _COMPILER_CANDIDATES = ("clang++-18", "clang++", "g++")
 
 # Our own port, so a hand run leaves the developer's sccache server alone.
@@ -68,12 +66,11 @@ def _env(name: str) -> str:
 
 
 def _fingerprint(value: str) -> str:
-    """Short digest, to compare values across environments without printing them."""
+    """Short digest, comparable without printing the value."""
     return hashlib.sha256(value.encode()).hexdigest()[:8] if value else "<unset>"
 
 
 def _fail(message: str) -> None:
-
     print(f"::error::{message}")
 
 
@@ -90,7 +87,6 @@ def _run(cmd: list[str], env: dict[str, str], check: bool = True) -> subprocess.
 
 
 def _which_or_fail(tool: str) -> str:
-
     found = shutil.which(tool)
     if not found:
         raise RuntimeError(f"{tool} is not on PATH -- install it, or run this where it is available")
@@ -127,14 +123,14 @@ def _error_total(stats: dict[str, Any]) -> int:
 
 
 def _show_stats(sccache: str, env: dict[str, str]) -> dict[str, Any]:
-    """The whole stats document: callers need both "cache_location" and "stats"."""
+    """The whole stats document."""
     proc = _run([sccache, "--show-stats", "--stats-format=json"], env)
     payload = json.loads(proc.stdout)
     return payload if isinstance(payload, dict) else {}
 
 
 def _counters(payload: dict[str, Any]) -> dict[str, Any]:
-    "The counter mapping, which some versions nest under 'stats' and some do not."
+    "The counters, nested under 'stats' or not depending on the version."
     stats = payload.get("stats", payload)
     return stats if isinstance(stats, dict) else {}
 
@@ -178,7 +174,6 @@ _STARTUP_PROBE_KEY = ".sccache_check"
 
 
 def _list_keys(client: Any, bucket: str, prefix: str) -> list[str]:
-
     keys: list[str] = []
     token: str | None = None
     while True:
@@ -193,7 +188,6 @@ def _list_keys(client: Any, bucket: str, prefix: str) -> list[str]:
 
 
 def _delete_prefix(client: Any, bucket: str, prefix: str) -> int:
-
     keys = _list_keys(client, bucket, prefix)
     for start in range(0, len(keys), 1000):
         batch = keys[start : start + 1000]
@@ -202,7 +196,7 @@ def _delete_prefix(client: Any, bucket: str, prefix: str) -> int:
 
 
 def _sccache_env(base: dict[str, str], key_prefix: str, cache_dir: Path, ambient: bool) -> dict[str, str]:
-    """The sccache server environment; outside ambient mode derived from the artifact-store names."""
+    """The sccache server environment."""
     env = dict(base)
     if not ambient:
         endpoint = _env("SCCACHE_ENDPOINT") or _env("ARTIFACT_S3_ENDPOINT")
@@ -211,7 +205,6 @@ def _sccache_env(base: dict[str, str], key_prefix: str, cache_dir: Path, ambient
         env["SCCACHE_REGION"] = _env("SCCACHE_REGION") or _env("ARTIFACT_S3_REGION") or "RegionOne"
         env["SCCACHE_S3_USE_SSL"] = _env("ARTIFACT_S3_USE_SSL") or ("true" if endpoint.startswith("https") else "false")
 
-    # Always ours: a fresh prefix, a disposable cache dir, our own server.
     env["SCCACHE_S3_KEY_PREFIX"] = key_prefix
     env["SCCACHE_DIR"] = str(cache_dir)
     env.setdefault("SCCACHE_SERVER_PORT", _DEFAULT_SERVER_PORT)
@@ -230,7 +223,7 @@ def _restart_server(sccache: str, env: dict[str, str]) -> None:
 
 
 def _build(cmake: str, sccache: str, cxx: str, build_dir: Path, env: dict[str, str]) -> dict[str, Any]:
-    """Configure, zero the stats (so CMake's compiler probes do not count), build; returns the stats."""
+    """Configure, zero stats (skipping CMake's probes), build; return the stats."""
     _run(
         [
             cmake,
@@ -307,7 +300,6 @@ def main() -> int:
         # 1. Backend identity, chosen once at daemon start.
         payload = _show_stats(sccache, env)
         print("::group::sccache backend")
-        # Dumped (bucket redacted) as evidence when the stats schema moves.
         print(json.dumps(_redacted(payload), indent=2, sort_keys=True))
         print("::endgroup::")
         backend = _backend_of(payload)

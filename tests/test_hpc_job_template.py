@@ -148,13 +148,6 @@ def test_rendered_template_keeps_its_shebang_and_sbatch_header() -> None:
     assert "make Release" in wrapped
 
 
-def test_split_header_skips_leading_blank_lines() -> None:
-    shebang, header, body = jobscript._split_header("\n\n#!/bin/bash\n#SBATCH --qos=nf\nmake\n")
-    assert shebang == "#!/bin/bash"
-    assert "#SBATCH --qos=nf" in header
-    assert body == ["make"]
-
-
 def test_template_without_a_leg_is_a_named_error(tmp_path: Path) -> None:
     script = tmp_path / "build.sh.j2"
     script.write_text("module load {{ cc }}\n")

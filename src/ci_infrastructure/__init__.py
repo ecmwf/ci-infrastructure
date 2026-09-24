@@ -2,11 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ci-infrastructure: shared CI orchestration scripts and Composite Actions.
+"""Shared CI orchestration CLIs.
 
-Each module here is a CLI; `pyproject.toml`'s `[project.scripts]` is the list.
-The composite actions in `actions/` do not use those console scripts, though:
-they invoke `$CI_INFRASTRUCTURE_PYTHON -m ci_infrastructure.<module>`, where
-`$CI_INFRASTRUCTURE_PYTHON` is the venv interpreter provisioned by the
-`ensure-infrastructure-present` composite.
+Composite actions run them as `$CI_INFRASTRUCTURE_PYTHON -m ci_infrastructure.<module>`
+(the venv from `ensure-infrastructure-present`), not via the console scripts.
 """

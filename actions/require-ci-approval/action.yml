@@ -5,40 +5,33 @@
 name: Require CI approval for fork pull requests
 description: >
   Fail unless a fork pull request has been approved to run CI, so a
-  `pull_request_target` workflow cannot put an outside contributor's code onto
-  this repository's self-hosted hardware -- or near the credentials that reach
-  it -- until someone with write access has read the diff.
+  `pull_request_target` workflow cannot run outside code on self-hosted
+  hardware or near its credentials before a maintainer has read the diff.
 
-  Approved: anything that is not a pull request; a head branch in the base
-  repository, since pushing to it already needed write access; or a fork
-  carrying `label`. Otherwise the step fails.
+  Approved: a non-PR event, a head branch in the base repository, or a fork
+  carrying `label`. The label is single-use: deleted when honoured;
+  `synchronize`/`reopened` of a fork PR fails and deletes it too.
 
-  The label is single-use: deleted the moment it is honoured, so one approval
-  buys one run. `synchronize`/`reopened` of a fork PR fails and deletes it too.
-
-  Gate jobs with `needs:` only. It FAILS rather than skipping, because a skipped
-  job reports Success; and the caller MUST listen for `synchronize`. Repository
-  policy belongs on the gate job's own `if:`. Labelling needs only triage, so
-  "who may label" is "who may approve". Needs bash, jq, gh and
-  `pull-requests: write`.
+  Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
+  job reports Success. The caller MUST listen for `synchronize`. Labelling
+  needs only triage, so "who may label" is "who may approve". Needs bash, jq,
+  gh and `pull-requests: write`.
 
 inputs:
   label:
-    description: 'Label that grants approval. Applied by a maintainer, spent by the run that honours it.'
+    description: 'Label that grants approval for one run.'
     required: false
     default: 'approved-for-ci'
   consume-label:
     description: >
-      'true' (default): delete the label as soon as it is honoured, and fail
-      `synchronize`/`reopened` of a fork pull request. Needs
-      `pull-requests: write`. Turning it off makes one approval cover every
-      future event on that branch, pushes included.
+      'true': delete the label when honoured and fail `synchronize`/`reopened`
+      of a fork PR. 'false' makes one approval cover every future push.
     required: false
     default: 'true'
   trust-same-repo:
     description: >
-      'true' (default) treats a head branch in the base repository as approved.
-      Set 'false' to demand the label from everyone.
+      'true' treats a head branch in the base repository as approved; 'false'
+      demands the label from everyone.
     required: false
     default: 'true'
   token:
@@ -49,8 +42,8 @@ inputs:
 outputs:
   reason:
     description: >
-      Why the step passed: not-a-pull-request, same-repo or approved. For logs
-      only -- do NOT gate jobs on it, or unapproved pull requests go green again.
+      Why the step passed: not-a-pull-request, same-repo or approved. Logs only;
+      gating jobs on it lets unapproved pull requests go green.
 
 runs:
   using: composite
@@ -67,8 +60,7 @@ runs:
 
         label="${LABEL_INPUT:-approved-for-ci}"
 
-        # Tri-state parse, so a typo ("yes", "True ") stops the workflow rather
-        # than silently picking the permissive branch of a security gate.
+        # A typo must fail, not pick the permissive branch.
         parse_bool() {
           case "$2" in
             ''|true|TRUE|True) printf 'true' ;;
@@ -88,9 +80,7 @@ runs:
           exit 0
         }
 
-        # Fails loudly. A deletion that silently did not happen leaves a live
-        # approval on a pull request whose next event nobody will re-read, which
-        # is the exact hole this action exists to close.
+        # Fails loudly: a silently kept label is a live approval for the next push.
         spend_label() {
           # @uri, not the raw name: labels may contain spaces and slashes.
           local encoded
@@ -115,9 +105,7 @@ runs:
 
         pr_number="$(jq -r '.pull_request.number // empty' "$event")"
 
-        # No pull request in the payload: schedule, workflow_dispatch, push and
-        # merge_group have no fork to distrust, and gating them would strand the
-        # nightly run behind a label nobody can apply.
+        # schedule, workflow_dispatch, push and merge_group have no fork to distrust.
         if [ -z "$pr_number" ]; then
           pass not-a-pull-request
         fi
@@ -128,15 +116,12 @@ runs:
         has_label="$(jq -r --arg l "$label" \
           '[.pull_request.labels[]?.name] | index($l) | if . == null then "no" else "yes" end' "$event")"
 
-        # A deleted fork leaves head.repo null. Treat unknown provenance as a
-        # fork -- the fail-closed direction.
+        # A deleted fork leaves head.repo null: treated as a fork (fail closed).
         if [ -n "$head_repo" ] && [ "$head_repo" = "$base_repo" ] && [ "$trust_same_repo" = "true" ]; then
           pass same-repo
         fi
 
-        # Reaching this with the label still applied means the run that should
-        # have spent it never got to its gate step. Delete first, so the label is
-        # gone even if the failure message below is never read.
+        # A label still here was never spent; delete it before failing.
         if [ "$consume" = "true" ] && { [ "$action" = "synchronize" ] || [ "$action" = "reopened" ]; }; then
           if [ "$has_label" = "yes" ]; then
             spend_label "Removed a leftover approval label from #$pr_number: the head commit changed before it was spent."

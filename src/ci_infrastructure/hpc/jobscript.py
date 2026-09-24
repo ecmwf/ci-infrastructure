@@ -2,14 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rendering the SLURM job script from a repo's ``.ci/hpc/build-<toolchain>.sh[.j2]`` recipe.
+"""Render the SLURM job script from a repo's ``.ci/hpc/build-<toolchain>.sh[.j2]`` recipe.
 
-The recipe keeps its leading ``#SBATCH`` block; the wrapper adds the output path,
-the dependency environment and the verdict sentinel. Flow is submit-then-poll:
-the runner submits first, then ships the source and touches ``TRANSFER_COMPLETED``
-in the per-artifact staging dir; the job waits for that marker, unpacks into
-node-local ``$TMPDIR`` and builds. A ``.j2`` recipe is rendered against its matrix
-leg first, so the manifest and the script cannot disagree.
+The runner submits first, then ships the source and touches ``TRANSFER_COMPLETED``;
+the job waits for that marker, unpacks into node-local ``$TMPDIR`` and builds.
 """
 
 from __future__ import annotations
@@ -31,7 +27,6 @@ SENTINEL_JOB_ID: Final = "${SLURM_JOB_ID:-unknown}"
 
 
 def sentinel_echo(sentinel: str) -> str:
-    """The shell command a job runs to publish ``sentinel`` as its verdict."""
     return f'echo "{sentinel} {SENTINEL_JOB_ID}"'
 
 
@@ -56,22 +51,18 @@ def install_archive_path(install_path: str) -> str:
 
 
 def job_name_for(artifact_name: str) -> str:
-    """SLURM job name for an artifact: the cross-runner reattach key."""
+    """The cross-runner reattach key."""
     return f"ci-{artifact_name}"
 
 
-#: Recipes with this suffix are rendered with Jinja; others are used verbatim.
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-#: Names the context supplies on top of the leg's own fields.
 _CONTEXT_EXTRAS: Final = ("leg", "artifact_name")
 
-#: Prefix under which ci-infrastructure's own recipes load, e.g.
-#: ``{% extends "ci-infrastructure/cmake-build.sh.j2" %}``.
+#: E.g. ``{% extends "ci-infrastructure/cmake-build.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
 
-#: Names a recipe may read without its leg declaring them: the optional knobs of the
-#: shared base template. A leg's own value always wins.
+#: Optional knobs of the shared base template; a leg's own value wins.
 JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
     {
         "time": "01:00:00",
@@ -92,17 +83,15 @@ class JobTemplateError(Exception):
 
 
 def is_job_template(path: str | Path) -> bool:
-    """Whether this job-script is rendered rather than read verbatim."""
     return str(path).endswith(JOB_TEMPLATE_SUFFIX)
 
 
 def template_var(field: str) -> str:
-    """``cxx-compiler`` -> ``cxx_compiler``: a leg key as a Jinja (and shell) name."""
+    """``cxx-compiler`` -> ``cxx_compiler``."""
     return field.replace("-", "_")
 
 
 def job_template_environment(search_path: Path | None = None) -> jinja2.Environment:
-    """The Jinja environment a `.j2` recipe is rendered in."""
     # The shared templates come first, so a repo file cannot shadow them.
     loaders: list[jinja2.BaseLoader] = [
         jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: jinja2.PackageLoader("ci_infrastructure.hpc", "templates")})
@@ -127,10 +116,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
 
 
 def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -> dict[str, Any]:
-    """The names a `.j2` recipe may reference: normalised leg keys, ``leg``, ``artifact_name`` and defaults.
-
-    ``_resolved`` is absent: its runner-local paths are invalid on the cluster.
-    """
+    """``_resolved`` is left out: its runner-local paths are invalid on the cluster."""
     context: dict[str, Any] = {}
     origin: dict[str, str] = {}
     for key, value in leg.items():
@@ -157,17 +143,13 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
 
 
 def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
-    """Every top-level name a template may reference for this leg."""
     return {template_var(k) for k in leg if k != "_resolved"} | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
 
 def undeclared_template_names(
     template_source: str, leg: Mapping[str, Any], *, template_name: str, search_path: Path | None = None
 ) -> set[str]:
-    """Names the template (or anything it extends/includes) reads that this leg does not supply.
-
-    Static, so it also sees untaken branches, but not ``leg['x']``.
-    """
+    """Names the template (or what it extends/includes) reads that the leg lacks; static, so misses ``leg['x']``."""
     env = job_template_environment(search_path)
     assert env.loader is not None
     names: set[str] = set()
@@ -205,7 +187,6 @@ def render_job_template(
     artifact_name: str = "",
     search_path: Path | None = None,
 ) -> str:
-    """Render a `.j2` recipe into the plain shell recipe render_job_script wraps."""
     env = job_template_environment(search_path)
     try:
         template = env.from_string(template_source)
@@ -226,7 +207,7 @@ def render_job_template(
 
 
 def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:
-    """Split a build.sh into (shebang, leading blank/``#`` block, body); leading blank lines are skipped."""
+    """(shebang, leading blank/``#`` block, body)."""
     lines = repo_script.splitlines()
     shebang = ""
     start = 0
@@ -281,7 +262,6 @@ def render_job_script(
     marker_wait_timeout: int = DEFAULT_MARKER_WAIT_TIMEOUT,
     env: Mapping[str, str] | None = None,
 ) -> str:
-    """Wrap a repo's build.sh into the final submittable SLURM script."""
     shebang, header, body = _split_header(repo_script)
 
     out: list[str] = [shebang or "#!/bin/bash"]

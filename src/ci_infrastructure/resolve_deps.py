@@ -4,45 +4,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve the transitive dependency tree of every matrix leg in .ci/manifest.toml.
+"""Resolve the transitive dependency tree of every matrix leg in .ci/manifest.toml (schema: `manifest`).
 
-Runs once per workflow (a 'resolve' job); upstream manifests are fetched over the
-GitHub GraphQL API, one batched query per BFS layer.
-
-An example manifest; `manifest` holds the schema::
-
-    [package]
-    name   = "cxxmath"
-    prefix = "cxxmath"                      # artifact-name prefix
-    repo   = "owner/repo"
-    compiler-inputs = ["cxx-compiler"]      # matrix fields identifying the OWN artifact; [] if uncompiled
-    submodules = "recursive"                # optional: actions/checkout `submodules` for the build jobs
-
-    [[deps]]
-    repo            = "owner/upstream"
-    package         = "fortmath"            # the upstream's prefix
-    ref             = "main"                # branch / tag / 40-char SHA; sync-branch override applies
-    compiler-inputs = ["fortran-compiler"]  # must match the upstream's; [] if compiler-independent
-    build-type-input  = "build-type"        # default
-    platform-input    = "platform"          # default
-    needs-python      = false               # default
-    when = { options = ["extended"] }       # optional leg predicate: every key must match.
-                                            # A scoped-out dep is absent from the leg's
-                                            # cmake-prefix-path AND its deps-hash8. `options`
-                                            # does not propagate, so a `when` on it in a repo
-                                            # with consumers can make both sides disagree.
-
-    [[matrix.build.include]]
-    cxx-compiler        = "clang++-18"
-    fortran-compiler    = "gfortran-14"
-    build-type          = "Release"
-    platform            = "ubuntu-24.04"      # required: binary-compatibility class
-    runs-on             = "arc-sandbox-cci2"  # scheduling only
-    container           = "registry.example/playground-ci/ubuntu24.04-clang18:latest"  # scheduling only
-
-`platform` is the artifact-name platform slot, verbatim; bump it when the ABI changes
-within a distro release. `runs-on` may name a runner class from `runners.RUNNER_CLASSES`.
-The compiler segment joins the compiler-inputs values in alphabetical field-name order.
+Upstream manifests are fetched with one batched GraphQL query per BFS layer.
 
 Outputs (to $GITHUB_OUTPUT, or stdout)::
 
@@ -117,7 +81,7 @@ _MATRIX_DISCRIMINATORS: Final = frozenset(
 
 
 def _as_option(raw: Any, context: str) -> str:
-    """Validate a scalar build-option name ('' if absent); one name maps to one CMake preset."""
+    """'' if absent; one name maps to one CMake preset."""
     if raw is None or raw == "":
         return ""
     if isinstance(raw, (list, tuple)):
@@ -132,9 +96,9 @@ def _as_option(raw: Any, context: str) -> str:
     return raw
 
 
-Repo = NewType("Repo", str)  # "owner/name"
-PackageName = NewType("PackageName", str)  # the [package].prefix string
-Ref = NewType("Ref", str)  # branch / tag / SHA the user wrote
+Repo = NewType("Repo", str)
+PackageName = NewType("PackageName", str)  # the [package].prefix
+Ref = NewType("Ref", str)
 Sha = NewType("Sha", str)
 ArtifactName = NewType("ArtifactName", str)
 
@@ -151,8 +115,6 @@ class ResolveError(Exception):
 
 @dataclass(frozen=True)
 class DepSpec:
-    """A dep entry from a manifest, before resolution."""
-
     repo: Repo
     package: PackageName
     ref: Ref
@@ -165,10 +127,11 @@ class DepSpec:
     # leg field to read it from; both empty consumes the plain build.
     option: str = ""
     options_input: str | None = None
+    # `options` does not propagate, so a `when` on it in a repo with consumers can make both sides disagree.
     when: Mapping[str, frozenset[str]] | None = None
 
     def applies_to(self, leg: Mapping[str, Any]) -> bool:
-        """True when every `when` field has an accepted value on the leg (compared as str; missing never matches)."""
+        """Compared as str; a missing field never matches."""
         if self.when is None:
             return True
         return all(str(leg.get(field, "")) in accepted for field, accepted in self.when.items())
@@ -176,8 +139,6 @@ class DepSpec:
 
 @dataclass(frozen=True)
 class PackageSpec:
-    """A manifest's [package] block."""
-
     name: str
     prefix: PackageName
     repo: Repo
@@ -186,16 +147,12 @@ class PackageSpec:
 
 @dataclass(frozen=True)
 class CtestSpec:
-    """A kind's `ctest` / `ctest-args` as written in [matrix.<kind>]."""
-
     enabled: bool = False
     args: str = ""
 
 
 @dataclass
 class Manifest:
-    """What the resolver reads from one manifest."""
-
     package: PackageSpec
     deps: list[DepSpec] = field(default_factory=list)
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -208,11 +165,9 @@ class Manifest:
 
 @dataclass(frozen=True)
 class ResolvedDep:
-    """A fully resolved dep for one matrix leg."""
-
     name: PackageName
     repo: Repo
-    ref: Ref  # sync-branch or pinned
+    ref: Ref
     sha: Sha
     artifact_name: ArtifactName
     cached: bool  # already in the S3 store at resolve time
@@ -249,8 +204,6 @@ class ResolvedDep:
 
 @dataclass(frozen=True)
 class ResolvedOwn:
-    """The OWN package's artifact name plus the fields that compose it."""
-
     artifact_name: ArtifactName
     platform: str
     compiler: str | None
@@ -289,7 +242,6 @@ def _to_dep_spec(t: DepTable) -> DepSpec:
 
 
 def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
-    """Parse a TOML manifest string into a Manifest."""
     try:
         raw = validate_manifest(tomllib.loads(text))
     except ManifestSchemaError as e:
@@ -324,22 +276,18 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
 
 
 def resolve_ref_to_sha(repo: Repo, ref: Ref, token: str | None) -> Sha:
-    """`_github_api.resolve_ref_to_sha` in this module's NewType vocabulary."""
     return Sha(_resolve_ref_to_sha(repo, ref, token))
 
 
 def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> Sha:
-    """Own artifact SHA = head of --current-branch, never GITHUB_SHA (a PR merge commit no consumer can resolve)."""
+    """Never GITHUB_SHA: a PR merge commit no consumer can resolve."""
     if not current_branch:
         raise ResolveError("Cannot determine own artifact SHA: --current-branch is required")
     return resolve_ref_to_sha(Repo(own_repo), Ref(current_branch), token)
 
 
 def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, Any]) -> bool:
-    """True if some producer leg (any kind) matches the request on the discriminators both declare, and on options.
-
-    An empty producer matrix counts as buildable.
-    """
+    """True if some producer leg matches on the discriminators both declare, and on options."""
     if not producer_manifest.matrix:
         return True
     # Unlike the other discriminators, an omitted `options` is the concrete plain config.
@@ -360,7 +308,7 @@ def is_normal_ref(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
 ) -> bool:
-    """True iff `ref` is the dep's declared ref or a valid sync-branch override (only then is auto-dispatch allowed)."""
+    """Declared ref or a valid sync-branch override; only then is auto-dispatch allowed."""
     if sync_branch and sync_exists_by_repo.get(spec.repo, False):
         return ref == sync_branch
     return ref == spec.ref
@@ -447,7 +395,6 @@ def make_artifact_name(
     *,
     template_version: int = 0,
 ) -> ArtifactName:
-    """`_github_api.make_artifact_name` in this module's NewType vocabulary."""
     return ArtifactName(
         _make_artifact_name(
             prefix,
@@ -473,7 +420,7 @@ def _join_compilers(
     matrix_entry: Mapping[str, Any],
     context: str,
 ) -> str | None:
-    """Join the named fields' values with '-' in alphabetical field-name order; None if no inputs."""
+    """In alphabetical field-name order."""
     if not compiler_inputs:
         return None
     parts: list[str] = []
@@ -508,11 +455,7 @@ def _classify_orphan_pin(
     lane: Execution,
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
 ) -> Literal["triggered rebuild"]:
-    """Triage an orphan pin (artifact missing, no producer CI in flight).
-
-    Raises on a matrix mismatch, a divergent ref, or when dispatch is impossible;
-    otherwise (timing skew) records a DispatchPlan.
-    """
+    """Artifact missing, no producer CI in flight: raise, or (timing skew) record a DispatchPlan."""
     producer_manifest = manifest_cache.get((spec.repo, ref))
     if producer_manifest is not None and not producer_can_build(producer_manifest, matrix_entry):
         # Only the fields the producer discriminates on are negotiable.
@@ -578,7 +521,7 @@ def resolve_leg(
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     own_prefix_override: str | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
-    """Resolve the transitive deps of one matrix entry (leaves first) and the OWN artifact."""
+    """Transitive deps (leaves first) and the OWN artifact of one matrix entry."""
     visited: dict[PackageName, ResolvedDep] = {}
     order: list[PackageName] = []
 
@@ -730,7 +673,7 @@ def bfs_load_manifests(
     manifest_path: str,
     max_depth: int = 8,
 ) -> tuple[dict[tuple[Repo, Ref], Manifest], dict[Repo, bool]]:
-    """Walk the dep graph one GraphQL query per layer; returns (manifests, sync_branch exists per repo)."""
+    """Returns (manifests, sync_branch exists per repo)."""
     manifest_cache: dict[tuple[Repo, Ref], Manifest] = {}
     sync_exists: dict[Repo, bool] = {}
     queue: list[tuple[Repo, Ref]] = [(d.repo, d.ref) for d in root_deps]
@@ -751,7 +694,6 @@ def bfs_load_manifests(
                     next_queue.append((repo, sync_branch))
                     continue
             if text is None:
-                # No manifest: a leaf.
                 manifest_cache[(repo, ref)] = Manifest(
                     package=PackageSpec(
                         name=repo.split("/", 1)[1],

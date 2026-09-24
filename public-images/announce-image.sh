@@ -4,19 +4,14 @@
 #
 # shellcheck shell=bash
 #
-# Say which image this job runs in, from inside the image and with no workflow
-# step to declare. Every base sets BASH_ENV to this file, and GitHub runs each
-# step as `bash --noprofile --norc -e -o pipefail`, which sources it. See
-# docs/howto/images.rst.
-#
+# Sourced via BASH_ENV by every bash step: says which image the job runs in.
 # stderr only: the first bash may be a command substitution, whose stdout is
-# captured. The ::notice annotation belongs to actions/announce-image.
+# captured.
 
 __ci_announce_image() {
   [ -n "${CI_IMAGE_NAME:-}" ] || return 0
 
-  # actions/announce-image owns the step it runs in: it prints the same facts
-  # plus an annotation and whatever `extra` its caller passed.
+  # actions/announce-image prints these itself, plus an annotation.
   [ -n "${CI_IMAGE_ANNOUNCE_ACTION:-}" ] && return 0
 
   # GITHUB_ENV reaches later steps; the file covers nested bash within this one.

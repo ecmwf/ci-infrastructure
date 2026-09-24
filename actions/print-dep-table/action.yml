@@ -10,11 +10,11 @@ description: >
 inputs:
   resolved:
     description: >
-      The matrix leg's _resolved block as JSON (toJSON of matrix._resolved).
-      Rejected when empty, since an undeclared input also arrives empty.
+      The matrix leg's _resolved block as JSON. Rejected when empty, since an
+      undeclared input also arrives empty.
     required: true
   own-repo:
-    description: 'owner/repo of the OWN package. Not in _resolved — it is the calling workflow.'
+    description: 'owner/repo of the own package (not in _resolved).'
     required: false
     default: ${{ github.repository }}
   own-source:

@@ -4,11 +4,10 @@
 
 name: Images
 
-# Build and push the CI images under public-images/ (see docs/howto/images.rst). An image is
-# rebuilt exactly when its tag (short SHA of the last commit touching its build
-# inputs) is missing from the registry. scripts/build_image.py is the only
-# answer to that, so there is no `paths:` filter, git diff or image list here.
-# On a pull request nothing is pushed.
+# Build and push the CI images under public-images/ (see public-images/README.md).
+# An image is rebuilt exactly when scripts/build_image.py finds its tag missing
+# from the registry, so there is no `paths:` filter or image list here. Pull
+# requests push nothing.
 on:
   workflow_call:
     # Named explicitly rather than taking `secrets: inherit` from the caller:
@@ -57,8 +56,7 @@ env:
   # under pull_request_target github.ref is the base branch, i.e. main.
   PUSH: ${{ !startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
-  # Validate dependents on pull requests against the base rebuilt in the same run.
-  # 'false' validates only the bases, which is faster and misses broken variants.
+  # 'false' validates only the bases on pull requests: faster, misses broken variants.
   VALIDATE_DEPENDENTS_ON_PR: 'true'
 
 jobs:
@@ -98,7 +96,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          persist-credentials: false   # see the discover job -- no git push here
+          persist-credentials: false
       - name: Build ${{ matrix.name }}
         run: ./build-image.sh "$IMAGE"
       - name: Test ${{ matrix.name }}
@@ -125,15 +123,13 @@ jobs:
           # step: nothing the image or the tests run can see them.
           PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
-        # --require-clean: the tag is a function of committed content, so a
-        # published image must never come from a tree that differs from it.
+        # The tag is a function of committed content, so publish only a clean tree.
         run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
   build-dependents:
     needs: [discover, build-base]
-    # Not gated on build-base succeeding as a whole: one broken base must not
-    # hold back every other platform. A dependent whose base failed has no
-    # artifact to load and fails there, so it can never build on a stale base.
+    # One broken base must not hold back every platform; a dependent whose base
+    # failed has no artifact to load and fails there.
     if: ${{ !cancelled()
             && needs.discover.result == 'success'
             && needs.discover.outputs.dependent-matrix != '{"include":[]}' }}
@@ -144,7 +140,7 @@ jobs:
     name: build ${{ matrix.name }}
     env:
       IMAGE: ${{ matrix.name }}
-      IMAGE_TAG: ${{ matrix.tag }}   # see build-base
+      IMAGE_TAG: ${{ matrix.tag }}
       # Set when the base was rebuilt in this run; empty means the published
       # :latest is current and is what the dependent builds on.
       BASE_IMAGE: ${{ matrix.base_ref }}
@@ -152,7 +148,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          persist-credentials: false   # see the discover job -- no git push here
+          persist-credentials: false
       - if: ${{ matrix.base_ref != '' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

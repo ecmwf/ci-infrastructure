@@ -14,27 +14,24 @@ inputs:
     default: '.ci/manifest.toml'
   current-branch:
     description: >
-      Branch currently being built. When it matches `sync-branch/*` or `feature-sync/*`, upstream
-      repos are checked for a same-named branch and the resolver uses it where
-      it exists (mirrors actions/pick-ref behavior).
+      Branch being built. A sync branch is used in each upstream repo where it
+      exists, as in actions/pick-ref.
     required: false
     default: ''
   matrix:
     description: >
-      Comma-separated list of [matrix.<name>] blocks to expand from the
-      manifest. Each one is emitted as a separate matrix-<name> output that
-      a downstream job consumes via `fromJSON()`.
+      Comma-separated [matrix.<name>] blocks to expand; each becomes a
+      matrix-<name> output.
     required: false
     default: 'build'
   upstream-manifest-path:
-    description: 'Where to look for manifests in upstream repos (default: same as local)'
+    description: 'Manifest path in upstream repos'
     required: false
     default: '.ci/manifest.toml'
   token:
     description: >
-      GitHub token with contents:read and actions:read on every repo named in
-      the manifest graph. Use a GitHub App token (via actions/create-github-app-token)
-      for higher rate limits.
+      Token with contents:read and actions:read on every repo in the manifest
+      graph (an App token has higher rate limits).
     required: false
     default: ''
   client-id:
@@ -74,7 +71,7 @@ inputs:
 
 outputs:
   matrix-build:
-    description: 'Resolved matrix for [matrix.build]. Consume via fromJSON().'
+    description: 'Resolved matrix for [matrix.build].'
     value: ${{ steps.r.outputs.matrix-build }}
   matrix-build-hpc:
     description: 'Resolved matrix for [matrix.build-hpc] (SLURM builds).'
@@ -98,7 +95,7 @@ outputs:
     description: 'Resolved matrix for [matrix.ci].'
     value: ${{ steps.r.outputs.matrix-ci }}
   json:
-    description: 'Full resolved tree across all requested matrix blocks (object keyed by matrix name).'
+    description: 'Full resolved tree, keyed by matrix name.'
     value: ${{ steps.r.outputs.json }}
   app-token:
     description: 'App-minted token, same job only (masked values arrive empty through job outputs).'

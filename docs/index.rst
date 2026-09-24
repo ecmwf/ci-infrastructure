@@ -21,7 +21,6 @@ GitHub Actions that wire it into workflow YAML.
    :maxdepth: 1
 
    howto/hpc
-   howto/images
 
 .. toctree::
    :caption: Explanation

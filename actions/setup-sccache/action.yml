@@ -4,9 +4,9 @@
 
 name: Set up sccache
 description: >
-  Installs sccache with an s3 (default), gha or redis (SCCACHE_REDIS) backend.
-  S3 credentials come from the job environment. Bucket and endpoint have no
-  default; empty inputs fall back to the job environment:
+  Install sccache with an s3, gha or redis backend and set RUSTC_WRAPPER and
+  CMAKE_<LANG>_COMPILER_LAUNCHER. S3 credentials come from the job env; empty
+  inputs fall back to:
 
     s3-bucket    <- SCCACHE_BUCKET
     s3-endpoint  <- SCCACHE_ENDPOINT, then ARTIFACT_S3_ENDPOINT
@@ -15,24 +15,21 @@ description: >
 
   Artifacts and sccache share endpoint and credentials, never the bucket.
 
-  Silent pitfalls: sccache ignores the vendored CA root (SSL_CERT_FILE replaces
-  the platform store, so point it at a superset bundle), and a bucket it can read
-  but not write degrades to cache misses without failing the build;
-  scripts/probe_sccache.py catches that. Sets RUSTC_WRAPPER=sccache and
-  CMAKE_C_COMPILER_LAUNCHER/CMAKE_CXX_COMPILER_LAUNCHER=sccache, which CMake
-  reads on first configure.
+  Silent pitfalls: sccache ignores the vendored CA root (SSL_CERT_FILE must be a
+  superset bundle), and a read-only bucket degrades to cache misses;
+  scripts/probe_sccache.py catches that.
 
 inputs:
   cache-key-suffix:
-    description: 'Cache key namespace suffix unique to the compiler and build config, e.g. "clang-18-Release".'
+    description: 'Cache key suffix unique to the compiler and build config, e.g. "clang-18-Release".'
     required: false
     default: ''
   backend:
-    description: '"s3" (default) | "gha" | "redis"'
+    description: '"s3" | "gha" | "redis"'
     required: false
     default: 's3'
   redis-url:
-    description: 'Redis connection URL (used when backend=redis). Defaults to SCCACHE_REDIS env/var.'
+    description: 'Redis URL (backend=redis). Empty falls back to SCCACHE_REDIS.'
     required: false
     default: ''
   s3-bucket:
@@ -106,7 +103,6 @@ runs:
             {
               echo "SCCACHE_BUCKET=$bucket"
               echo "SCCACHE_ENDPOINT=$endpoint"
-              # sccache reads SCCACHE_REGION; aws-cli reads AWS_REGION.
               echo "SCCACHE_REGION=$region"
               echo "AWS_REGION=$region"
               echo "SCCACHE_S3_USE_SSL=$use_ssl"

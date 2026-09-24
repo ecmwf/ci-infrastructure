@@ -4,20 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render the OWN package and its resolved deps as a Markdown table in $GITHUB_STEP_SUMMARY.
-
-The input is one leg's whole `_resolved` block, so the key mapping lives here once::
-
-  --resolved '{own-name, own-ref, own-sha, own-platform, own-compiler,
-               own-build-type, own-python, own-deps-hash,
-               deps: [{name, repo, ref, sha, platform, compiler, build-type,
-                       python-version, deps-hash, source, ...}, ...], ...}'
-
-Usage::
-
-    print_dep_table.py --resolved '<JSON>' [--own-repo o/r] [--own-source built]
-                       [--title "..."]
-"""
+"""Render one leg's `_resolved` block (OWN package and deps) as a Markdown table in $GITHUB_STEP_SUMMARY."""
 
 from __future__ import annotations
 
@@ -60,7 +47,6 @@ def _looks_like_sha(ref: str) -> bool:
 
 
 def _row_from_dep(dep: Mapping[str, Any]) -> Row:
-
     name = str(dep.get("name", ""))
     repo = str(dep.get("repo", ""))
     sha = str(dep.get("sha", ""))

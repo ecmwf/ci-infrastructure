@@ -40,12 +40,10 @@ class SlurmSiteLike(Protocol):
 
 
 def default_config_path() -> Path:
-    """Path to the troika-config.yml shipped alongside this package."""
     return Path(str(resources.files("ci_infrastructure.hpc").joinpath("troika-config.yml")))
 
 
 def load_site(site_name: str, *, config_path: str | Path | None = None, user: str | None = None) -> SlurmSiteLike:
-    """Build a troika site object for ``site_name`` from the given (or packaged) config."""
     resolved = Path(config_path) if config_path is not None else default_config_path()
     config = get_config(str(resolved))
     site: Any = get_site(config, site_name, user)
@@ -61,17 +59,14 @@ def ensure_batch_site(site: SlurmSiteLike, site_name: str) -> None:
         )
 
 
-#: A work-dir spec may only name variables and path characters. Anything else
-#: (quotes, backticks, `;`, spaces, `$(`) would let the spec run commands on the
-#: cluster once we hand it to a remote shell below.
+#: Anything else (quotes, backticks, `;`, `$(`) could run commands in the remote shell below.
 _SAFE_SPEC: Final = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
 
 
 def resolve_remote_path(conn: Any, spec: str) -> str:
-    """Expand a work-dir ``spec`` (e.g. ``$SCRATCH/github-ci``) on the cluster to a literal path.
+    """Expand a work-dir ``spec`` (e.g. ``$SCRATCH/github-ci``) on the cluster.
 
-    troika quotes every argv element, so cluster variables must be expanded here.
-    A login shell is needed because ``$SCRATCH`` comes from ``/etc/profile.d``.
+    troika quotes argv, so expand here; login shell because ``$SCRATCH`` is set in ``/etc/profile.d``.
     """
     if not _SAFE_SPEC.match(spec):
         raise CIError(

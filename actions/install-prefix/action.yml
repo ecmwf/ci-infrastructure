@@ -4,8 +4,7 @@
 
 name: Install prefix
 description: >
-  Outputs the canonical base install directory used across all CI packages.
-  Change this one file to relocate all CI install trees.
+  Output the base install directory shared by all CI packages.
 
 outputs:
   base:

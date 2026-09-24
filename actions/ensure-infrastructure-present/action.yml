@@ -4,18 +4,17 @@
 
 name: Ensure ci-infrastructure infrastructure is present
 description: >
-  Usually nested by other actions (see docs/explanation/bootstrap.rst); call it directly only when a
-  workflow runs $CI_INFRASTRUCTURE_PYTHON itself. Exposes a ci-infrastructure
-  interpreter as $CI_INFRASTRUCTURE_PYTHON: a baked image interpreter whose `*.py`
-  digest matches the checkout (a mismatch warns), else a content-keyed venv in
-  $RUNNER_TOOL_CACHE. Only `*.py` is hashed, so drift in data files is not detected.
+  Expose a ci-infrastructure interpreter as $CI_INFRASTRUCTURE_PYTHON: the
+  baked image one when its `*.py` digest matches the checkout (a mismatch
+  warns), else a content-keyed venv in $RUNNER_TOOL_CACHE. Usually nested by
+  other actions (see docs/explanation/bootstrap.rst).
 
 inputs:
   force-reinstall:
     description: >
       'true' ignores any baked interpreter or cached venv and installs from the
-      checkout. CI_INFRASTRUCTURE_FORCE_REINSTALL=true in the job env does the same
-      for nested calls. Needed on PR jobs inside a published image, which lags the branch.
+      checkout; CI_INFRASTRUCTURE_FORCE_REINSTALL=true in the job env does the
+      same for nested calls.
     required: false
     default: ''
 
@@ -36,10 +35,7 @@ runs:
 
         rel="src/ci_infrastructure/__init__.py"
 
-        # Digest of a package's *.py files, keyed on paths relative to the package
-        # dir so an installed tree and a source tree are comparable. LC_ALL=C
-        # fixes the ordering; __pycache__ is pruned because a pip install leaves
-        # one behind in the _actions checkout on a persistent self-hosted runner.
+        # Relative paths, so an installed tree and a source tree compare equal.
         pkg_py_hash() {
           local dir="$1" list
           [ -d "$dir" ] || return 1
@@ -49,9 +45,7 @@ runs:
           ( cd "$dir" && printf '%s\n' "$list" | xargs sha256sum | sha256sum | cut -c1-16 )
         }
 
-        # The job workspace wins when it is a ci-infrastructure checkout, so this
-        # repo tests the branch under test. Probe for the file rather than
-        # re-anchoring action_path: a local `uses: ./actions/...` has no /_actions/.
+        # The workspace wins when it is a ci-infrastructure checkout (this repo's CI).
         cands=()
         if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -f "$GITHUB_WORKSPACE/$rel" ] \
            && grep -qE '^name[[:space:]]*=[[:space:]]*"ci-infrastructure"' "$GITHUB_WORKSPACE/pyproject.toml" 2>/dev/null; then
@@ -95,7 +89,6 @@ runs:
         checkout_hash="$(pkg_py_hash "$repo_root/src/ci_infrastructure")" \
           || { echo "::error::ensure-infrastructure-present: no *.py under $repo_root/src/ci_infrastructure" >&2; exit 1; }
 
-        # Fast path: a baked interpreter, only if its *.py digest matches the checkout.
         python="${CI_INFRASTRUCTURE_PYTHON:-}"
         baked_ok=false
         if ! $force_reinstall && [ -n "$python" ] && [ -x "$python" ] \
@@ -113,7 +106,6 @@ runs:
 
         if ! $baked_ok; then
           ref="${GITHUB_ACTION_REF:-main}"
-          # Sorted by path and without build leftovers, so unchanged sources hash the same.
           src_hash="$(cd "$repo_root" && find pyproject.toml src \
             \( -name '__pycache__' -o -name '*.egg-info' \) -prune -o \
             -type f -exec sha256sum {} + | sort -k 2 | sha256sum | cut -c1-16)"
@@ -136,8 +128,7 @@ runs:
             echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
-            # Prefer a system interpreter over the consumer's setup-python one.
-            # The version gate must match requires-python.
+            # A system interpreter, not the consumer's setup-python one; gate = requires-python.
             bootstrap_path="$PATH"
             if [ -n "${pythonLocation:-}" ]; then
               exclude="${pythonLocation}/bin"
@@ -175,9 +166,8 @@ runs:
             "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[runtime]"
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
-          # mtime = last use, so the sweep below measures idleness.
+          # mtime = last use; drop venvs idle a week.
           touch "$venv"
-          # Content keys accumulate on a persistent tool cache; drop venvs idle a week.
           find "$venv_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
         fi
         echo "CI_INFRASTRUCTURE_PYTHON=$python" >> "$GITHUB_ENV"

@@ -4,10 +4,9 @@
 
 name: Validate generated downstream-CI workflows
 description: >
-  Re-render this repo's generated cross-repo-trigger / trigger-downstream
-  workflows from the manifests and report checked-in files that drifted
-  (compared as parsed YAML). Drift warns unless fail-on-drift; a schema or graph
-  violation always fails.
+  Re-render this repo's generated downstream-CI workflows from the manifests and
+  report drift from the checked-in files. Drift warns unless fail-on-drift; a
+  schema or graph violation always fails.
 
 inputs:
   token:
@@ -15,7 +14,7 @@ inputs:
     required: false
     default: ''
   self-path:
-    description: 'Path to the repo root being validated (almost always ".").'
+    description: 'Path to the repo root being validated.'
     required: false
     default: '.'
   manifest-path:
@@ -23,7 +22,7 @@ inputs:
     required: false
     default: '.ci/manifest.toml'
   fail-on-drift:
-    description: "'true' fails on drift; default 'false' only warns, so one unregenerated repo does not withhold downstream CI."
+    description: "'true' fails on drift; 'false' only warns, so one unregenerated repo does not withhold downstream CI."
     required: false
     default: 'false'
 

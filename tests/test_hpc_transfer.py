@@ -106,7 +106,6 @@ def _make_tree(root: Path, name: str, body: str) -> Path:
     return root
 
 
-# === ship_source ===
 def test_ship_source_ships_and_unpacks_dep_prefixes(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
     dep0 = _make_tree(tmp_path / "dep0", "libfoo.a", "x")
@@ -163,7 +162,6 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
-# === truncate_remote_file ===
 def test_truncate_remote_file_empties_a_previous_attempts_output(tmp_path: Path) -> None:
     output = tmp_path / "hpc-jobs" / "art.out"
     output.parent.mkdir(parents=True)
@@ -178,7 +176,6 @@ def test_truncate_remote_file_creates_the_output_and_its_parent(tmp_path: Path) 
     assert output.is_file()
 
 
-# === ship_lock ===
 def test_ship_lock_creates_the_lock_parent_before_claiming(tmp_path: Path) -> None:
     """A first-ever build has no `staging/` yet, and the claim `mkdir` is not `-p`."""
     lock = tmp_path / "work" / "staging" / ("art" + transfer.SHIP_LOCK_SUFFIX)
@@ -222,7 +219,6 @@ def test_ship_lock_releases_when_the_ship_fails(tmp_path: Path) -> None:
     assert not Path(transfer._ship_lock_path(str(staging))).exists()
 
 
-# === dryrun ===
 def test_dryrun_transfers_nothing_and_writes_no_local_tarball(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
     stage = str(tmp_path / "stage")
@@ -240,7 +236,6 @@ def test_dryrun_transfers_nothing_and_writes_no_local_tarball(tmp_path: Path) ->
     assert not (tmp_path / "out").exists()
 
 
-# === round trips ===
 def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "inputs", "hello.txt", "content-xyz")
     conn = CopyingConnection()
@@ -293,7 +288,6 @@ def test_fetch_install_fails_when_the_job_wrote_no_archive(tmp_path: Path) -> No
         )
 
 
-# === The packaged troika site config ===
 # Kept in step with ecmwf/build-package-hpc's config.yml.
 BATCH_SITES: Final = ["hpc-batch", "aa-batch", "ab-batch", "ac-batch", "ad-batch", "ag-batch", "lumi"]
 DIRECT_SITES: Final = ["hpc-login", "lumi-login", "local-direct"]

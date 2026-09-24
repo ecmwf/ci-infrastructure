@@ -4,10 +4,10 @@
 
 name: Remove HPC tree
 description: >
-  rm -rf a cluster directory and its .push.tgz / .fetch.tgz tarballs over
-  troika's connection. Make it the LAST step, without if: always(), so trees
-  survive failures for debugging (the nightly GC reclaims them). Quote a
-  $SCRATCH spec; it is expanded on the cluster. Refuses top-level paths.
+  rm -rf a cluster directory and its transfer tarballs over troika's
+  connection. Make it the LAST step, without if: always(), so trees survive
+  failures for debugging (the nightly GC reclaims them). Refuses top-level
+  paths.
 
 inputs:
   site:
@@ -25,7 +25,7 @@ inputs:
     required: false
     default: ''
   dryrun:
-    description: 'Resolve the remote path but remove nothing. Set to any non-empty value to enable.'
+    description: 'Any non-empty value resolves the remote path but removes nothing.'
     required: false
     default: ''
 

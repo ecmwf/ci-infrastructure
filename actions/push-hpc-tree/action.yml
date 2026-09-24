@@ -4,9 +4,8 @@
 
 name: Push HPC tree
 description: >
-  Copy a runner-local directory to shared scratch on the cluster over troika's
-  connection (no scheduler, no S3). Quote a $SCRATCH spec; it is expanded on the
-  cluster.
+  Copy a runner-local directory to the cluster over troika's connection (no
+  scheduler, no S3). A quoted $SCRATCH is expanded on the cluster.
 
 inputs:
   site:

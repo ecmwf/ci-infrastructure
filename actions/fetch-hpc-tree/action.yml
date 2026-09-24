@@ -4,9 +4,8 @@
 
 name: Fetch HPC tree
 description: >
-  Copy a cluster directory (on scratch the login node can read) back to the
-  runner over troika's connection (no scheduler, no S3). Quote a $SCRATCH spec;
-  it is expanded on the cluster.
+  Copy a cluster directory back to the runner over troika's connection (no
+  scheduler, no S3). A quoted $SCRATCH is expanded on the cluster.
 
 inputs:
   site:

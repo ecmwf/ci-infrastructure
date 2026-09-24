@@ -17,14 +17,11 @@ from ci_infrastructure._errors import CIError
 
 @pytest.fixture(autouse=True)
 def _configured_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Endpoint and bucket have no defaults."""
     monkeypatch.setenv("ARTIFACT_S3_ENDPOINT", "https://s3.test.invalid")
     monkeypatch.setenv("ARTIFACT_S3_BUCKET", "test-bucket")
 
 
 class FakeS3:
-    """Minimal stand-in for a boto3 S3 client: an in-memory key -> bytes map."""
-
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
 
@@ -89,22 +86,13 @@ def test_non_404_client_error_propagates(tmp_path: Path) -> None:
         s3_store.object_exists("pkg", client=Denied())
 
 
-def test_list_with_prefix_strips_suffix(fake: FakeS3, tmp_path: Path) -> None:
-    for name in ("cxxmath-a", "cxxmath-b", "fortmath-c"):
+def test_list_with_prefix_strips_suffix_and_respects_limit(fake: FakeS3, tmp_path: Path) -> None:
+    for name in ("cxxmath-a", "cxxmath-b", "cxxmath-c", "fortmath-c"):
         tar = tmp_path / f"{name}.tar.gz"
         tar.write_bytes(b"x")
         s3_store.upload(name, tar, client=fake)
-
-    found = s3_store.list_with_prefix("cxxmath", client=fake)
-    assert found == ["cxxmath-a", "cxxmath-b"]
-
-
-def test_list_with_prefix_respects_limit(fake: FakeS3, tmp_path: Path) -> None:
-    for i in range(5):
-        tar = tmp_path / f"pkg-{i}.tar.gz"
-        tar.write_bytes(b"x")
-        s3_store.upload(f"pkg-{i}", tar, client=fake)
-    assert len(s3_store.list_with_prefix("pkg", limit=3, client=fake)) == 3
+    assert s3_store.list_with_prefix("cxxmath", client=fake) == ["cxxmath-a", "cxxmath-b", "cxxmath-c"]
+    assert len(s3_store.list_with_prefix("cxxmath", limit=2, client=fake)) == 2
 
 
 def test_ca_bundle_explicit_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

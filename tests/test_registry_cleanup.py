@@ -61,7 +61,6 @@ def _names(artifacts: list[dict[str, Any]]) -> list[str]:
     return [",".join(rc.tag_names(a)) for a in artifacts]
 
 
-# === orphans ===
 def test_a_repository_with_no_dockerfile_is_an_orphan() -> None:
     orphans = rc.find_orphans(["ubuntu24.04/base"], REPOS)
     assert [rc.short_name(o["name"]) for o in orphans] == ["rocky8-old", "ubuntu24.04-gfortran13"]
@@ -76,14 +75,12 @@ def test_orphans_are_reported_newest_touched_first() -> None:
     assert [o["update_time"] for o in orphans] == sorted((r["update_time"] for r in REPOS), reverse=True)
 
 
-# === prune ===
 def test_keeps_the_newest_by_push_time_whatever_the_order() -> None:
     arts = [_artifact(3, "c"), _artifact(10, "latest", "j"), _artifact(7, "g"), _artifact(1, "a")]
     assert _names(rc.stale_versions(arts, 2)) == ["c", "a"]
 
 
 def test_latest_is_never_deleted_even_when_old() -> None:
-    # A tag moved by hand, or a push that failed after tagging, can leave latest behind.
     arts = [_artifact(9, "i"), _artifact(8, "h"), _artifact(2, "latest", "b"), _artifact(1, "a")]
     assert _names(rc.stale_versions(arts, 2)) == ["a"]
 
@@ -98,7 +95,6 @@ def test_nothing_to_prune_at_or_below_keep(count: int) -> None:
     assert rc.stale_versions([_artifact(d + 1, str(d)) for d in range(count)], 2) == []
 
 
-# === report ===
 @pytest.mark.parametrize(("task", "empty"), [("orphans", "No orphans"), ("prune", "Nothing to prune")])
 @pytest.mark.parametrize("fmt", ["text", "md"])
 def test_an_empty_plan_says_so_rather_than_printing_an_empty_table(task: str, empty: str, fmt: str) -> None:
@@ -114,7 +110,12 @@ def test_both_formats_name_every_row(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "rocky8-old" in rendered and "ubuntu24.04-gfortran13" in rendered
 
 
-# === delete ===
+@pytest.fixture
+def _robot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", "robot")
+    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", "t")
+
+
 def _prune_repo(monkeypatch: pytest.MonkeyPatch, days: tuple[int, ...]) -> list[str]:
     requests: list[str] = []
     monkeypatch.setattr(rc, "list_repositories", lambda: [{"name": "public-ci-images/x"}])
@@ -131,22 +132,20 @@ def test_delete_needs_credentials(monkeypatch: pytest.MonkeyPatch, capsys: pytes
     assert "needs PUBLIC_ECCR_CLEANUP_ROBOT_NAME" in capsys.readouterr().err
 
 
+@pytest.mark.usefixtures("_robot")
 def test_prune_deletes_exactly_the_stale_digests(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = _prune_repo(monkeypatch, (1, 2, 3, 4))
-    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", "robot")
-    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", "t")
     assert rc.main(["prune", "--delete"]) == 0
     base = f"{rc.API}/projects/{rc.PROJECT}/repositories/x/artifacts"
     assert requests == [f"DELETE {base}/{_artifact(2)['digest']}", f"DELETE {base}/{_artifact(1)['digest']}"]
 
 
+@pytest.mark.usefixtures("_robot")
 def test_orphans_deletes_the_whole_repository(monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[str] = []
     monkeypatch.setattr(rc, "enumerate_images", lambda: ["ubuntu24.04/base", "ubuntu24.04/gfortran13"])
     monkeypatch.setattr(rc, "list_repositories", lambda: REPOS)
     monkeypatch.setattr(rc, "_request", lambda method, url, auth=None: requests.append(f"{method} {url}"))
-    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_NAME", "robot")
-    monkeypatch.setenv("PUBLIC_ECCR_CLEANUP_ROBOT_TOKEN", "t")
     assert rc.main(["orphans", "--delete"]) == 0
     assert requests == [f"DELETE {rc.API}/projects/{rc.PROJECT}/repositories/rocky8-old"]
 

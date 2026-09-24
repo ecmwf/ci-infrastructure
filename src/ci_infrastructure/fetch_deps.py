@@ -4,23 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Download each resolved dep into its install path.
+"""Download each resolved dep (`_resolved.deps`) into its install path.
 
-A dep not cached at resolve time is re-queried, waiting while an upstream run is in
-flight (ARTIFACT_WAIT_TIMEOUT, default 1800s; ARTIFACT_POLL_INTERVAL, default 60s).
-The tar.gz stays at $RUNNER_TEMP/<artifact-name>.tar.gz for re-upload.
-
-`needs-python` wheels go into `--consumer-python` (the test interpreter), never into
-this script's own venv; without it we fail. `--no-python-install` only stages the
-wheels (e.g. for an HPC job script to install on the compute node).
-
-Usage:
-    fetch_deps.py --deps-json '<JSON list of dep objects>' \\
-                  [--consumer-python /path/to/test-interpreter/bin/python] \\
-                  [--no-python-install]
-
-The JSON must be the `_resolved.deps` array from resolve_deps.py output:
-    [{name, repo, ref, sha, artifact-name, cached, source, install-path}, ...]
+An uncached dep is re-polled while an upstream run is in flight (ARTIFACT_WAIT_TIMEOUT,
+ARTIFACT_POLL_INTERVAL). The tar.gz stays at $RUNNER_TEMP/<artifact-name>.tar.gz for re-upload.
 """
 
 from __future__ import annotations
@@ -45,7 +32,6 @@ _DEFAULT_WAIT_TIMEOUT: Final = 1800
 
 
 def _human_bytes(n: int) -> str:
-    """E.g. '122.5 MiB'."""
     size = float(n)
     for unit in ("B", "KiB", "MiB"):
         if size < 1024:
@@ -55,7 +41,6 @@ def _human_bytes(n: int) -> str:
 
 
 def _fmt_duration(seconds: float) -> str:
-    """'Mm Ns', or 'Ns' under a minute."""
     secs = int(round(seconds))
     if secs < 60:
         return f"{secs}s"
@@ -63,7 +48,6 @@ def _fmt_duration(seconds: float) -> str:
 
 
 def _run_phase(detail: str | None) -> str:
-    """Whether a run status means queueing or building."""
     if detail == "in_progress":
         return "building"
     if detail in IN_PROGRESS_STATUSES:
@@ -182,7 +166,6 @@ def download_from_store(artifact_name: str, install_path: Path) -> Path | None:
 
 
 def pip_install_wheel(install_path: Path, consumer_python: Path) -> bool:
-    """Pip-install the (first) .whl in install_path into the consumer's interpreter."""
     if not install_path.is_dir():
         return False
     whls = [f.name for f in install_path.iterdir() if f.name.endswith(".whl")]
@@ -213,7 +196,6 @@ def pip_install_wheel(install_path: Path, consumer_python: Path) -> bool:
 
 
 def _download_and_report(dep: Dep) -> bool:
-    """Download a dep, logging its size and the time taken."""
     start = time.monotonic()
     tar = download_from_store(dep["artifact_name"], dep["install_path"])
     if tar is None:
@@ -228,7 +210,7 @@ def _download_and_report(dep: Dep) -> bool:
 def fetch_one(
     dep: Dep, token: str | None, consumer_python: Path | None
 ) -> Literal["artifact", "artifact-after-wait", "fail"]:
-    """Fetch one dep; `consumer_python` None means stage wheels only (validated by main)."""
+    """`consumer_python` None means stage wheels only."""
     source: Literal["artifact", "artifact-after-wait"] | None = None
     if dep["cached"]:
         if _download_and_report(dep):
@@ -268,9 +250,8 @@ def fetch_one(
     "consumer_python_arg",
     default=None,
     help=(
-        "Absolute path to the consumer's Python interpreter (the one running pytest). "
-        "Required when any dep has needs-python=true; ignored otherwise. The fetch-deps "
-        "action populates this from $pythonLocation/bin/python (set by actions/setup-python)."
+        "The consumer's Python interpreter (the one running pytest), never this tool's venv. "
+        "Required when any dep has needs-python=true."
     ),
 )
 @click.option(
@@ -278,9 +259,8 @@ def fetch_one(
     "python_install",
     default=True,
     help=(
-        "Whether to pip-install needs-python deps' wheels into --consumer-python. "
-        "--no-python-install stages each wheel in its install path and installs nothing, "
-        "for HPC legs whose job script installs them on the compute node instead."
+        "Pip-install needs-python wheels into --consumer-python. --no-python-install only "
+        "stages them, e.g. for an HPC job script to install on the compute node."
     ),
 )
 def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) -> None:

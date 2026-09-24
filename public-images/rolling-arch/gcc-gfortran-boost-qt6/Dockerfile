@@ -2,16 +2,8 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Published as eccr.ecmwf.int/public-ci-images/rolling-arch-gcc-gfortran-boost-qt6
 FROM eccr.ecmwf.int/public-ci-images/rolling-arch-base:latest
 
-# Qt6 here, matching ubuntu24.04-gcc13-gfortran13-boost-qt6 rather than the Qt5 the
-# rocky8 and debian11 variants are stuck with:
-#   qt6-base      Widgets, Gui, Network   (required components)
-#   qt6-svg       Svg                     (required component)
-#   qt6-5compat   Core5Compat             (required component)
-#   qt6-charts    Charts                  (optional; its presence is what
-#                                          switches ECFLOW_LOGVIEW on)
 RUN pacman -Syu --noconfirm --disable-sandbox \
     gcc \
     gcc-fortran \
@@ -22,6 +14,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     qt6-charts \
  && pacman -Scc --noconfirm
 
+# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

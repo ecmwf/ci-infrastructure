@@ -4,10 +4,9 @@
 
 name: Registry cleanup
 
-# Nightly: prune, deleting all but the two newest versions per repository, which
-# keeps the project under its quota. Dispatched: either task, report-only unless
-# `delete` is ticked. Orphans never run unattended -- deleting a repository
-# cannot be undone, so check its pull count on the report first.
+# Nightly: prune all but the two newest versions per repository (quota).
+# Dispatched: either task, report-only unless `delete` is ticked. Orphans never
+# run unattended: deleting a repository cannot be undone.
 on:
   # 02:47 UTC: before images.yml's nightly build (03:17), so its pushes have room.
   schedule:

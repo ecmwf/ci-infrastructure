@@ -74,7 +74,9 @@ Accessing the HPC requires an HPC image **and** the HPC runner group (see above)
 To add/modify a public image, open a PR in ci-infrastructure.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
 The ``base`` image of each platform shows what an image is expected to supply.
-See :doc:`../howto/images`.
+The rules for images are in
+`public-images/README.md <https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/README.md>`__.
+In a hand-written ``ci.yml``, make :action:`announce-image` the first step of every job with a ``container:``.
 To add/modify a private image, contact the maintainers of `ci-infrastructure <https://github.com/ecmwf/ci-infrastructure>`__ .
 
 Currently the following public images are supported.
