@@ -21,7 +21,7 @@ extensions = [
 ]
 
 exclude_patterns = ["_build"]
-html_theme = "furo"
+html_theme = "sphinxawesome_theme"
 
 # Docstrings and action descriptions write `code` in Markdown style.
 default_role = "literal"

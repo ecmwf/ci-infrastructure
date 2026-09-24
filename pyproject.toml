@@ -37,7 +37,7 @@ schema = ["pydantic>=2"]                                          # manifest
 hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
 runtime = ["ci-infrastructure[s3,schema,hpc]"]
 test = ["ci-infrastructure[runtime]", "pytest>=7", "mypy", "boto3-stubs[s3]", "types-PyYAML"]
-docs = ["ci-infrastructure[schema]", "jinja2>=3.1", "sphinx>=8", "furo", "sphinx-click>=6"]
+docs = ["ci-infrastructure[schema]", "jinja2>=3.1", "sphinx>=8", "sphinxawesome-theme>=5", "sphinx-click>=6"]
 all = ["ci-infrastructure[runtime,test,docs]"]
 
 [build-system]
