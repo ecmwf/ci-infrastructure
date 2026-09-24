@@ -22,6 +22,8 @@ extensions = [
 
 exclude_patterns = ["_build"]
 html_theme = "sphinxawesome_theme"
+html_static_path = ["_static"]
+html_css_files = ["tables.css"]
 
 # Docstrings and action descriptions write `code` in Markdown style.
 default_role = "literal"

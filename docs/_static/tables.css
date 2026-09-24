@@ -1,0 +1,10 @@
+/*
+ * SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Rows below a rowspan cell start with a data cell, which the theme would left-align flush. */
+table.grouped tbody td:first-child:not([rowspan]) {
+  padding-left: calc(var(--spacing) * 2);
+}
