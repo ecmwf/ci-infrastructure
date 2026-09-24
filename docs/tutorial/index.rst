@@ -25,17 +25,13 @@ Each composite action and each command-line tool does one thing:
 :action:`resolve-deps` resolves the dependency graph, :action:`fetch-deps` downloads the
 resolved artifacts, and :action:`publish-artifact` uploads the result.
 They are called from the repository's own workflow, in the order it chooses.
-Only the cross-repository glue, ``trigger-downstream.yml`` and ``cross-repo-trigger.yml``,
-is generated, because it has to agree across all repositories in the graph.
 
 Your ``ci.yml`` stays yours
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The people who write a package know best how it has to be tested.
-Hence, the ``ci.yml`` of each repository is written by hand and chooses its own jobs,
+The people who write a package know best how it has to be built and tested.
+Hence, the ``ci.yml`` of each repository is written by hand and can choose its own jobs,
 build steps, test commands and container images.
-eckit, for example, builds with its own ``./.github/actions/build-eckit``,
-and an HPC build runs a recipe the repository owns, ``.ci/hpc/build-<toolchain>.sh``.
 ci-infrastructure only provides what surrounds the build:
 the dependencies before it, and the published artifact after it.
 
@@ -43,16 +39,12 @@ Tight boundaries for artifact reuse
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Reusing a build is only safe if it is exactly the build that is needed.
-The artifact name therefore contains everything that distinguishes one build from another:
-the commit, a hash of the dependencies' artifact names, the platform, the compiler,
-the build type and the options.
-Since the dependencies enter the name through their own names, a change anywhere upstream
-changes every name below it, in the same way as a Merkle tree.
-Scheduling, on the other hand, does not count:
-``runs-on`` and ``container`` decide *where* a build runs, not *what* it produces,
-and stay out of the name.
-Thus, a dependency is downloaded instead of rebuilt only if nothing that matters has changed.
+While there is high flexibility in each ``ci.yml``, across repository boundaries the
+artifacts have to be precisely defined.
+This is done in a ``.ci/manifest.toml``, from which every artifact gets a name:
+its commit, a hash of its dependencies' names, and the build configuration.
 The fields that enter the name are listed in :doc:`../reference/manifest`.
+Thus, a dependency is downloaded instead of rebuilt only if nothing that matters has changed.
 
 Don't overdo DRY in a build system
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -63,7 +55,8 @@ optional features, test labels, Python wheels and HPC toolchains.
 A shared build step that absorbs all of these differences turns into a framework
 with a hundred inputs, which nobody dares to change.
 The shared pieces are therefore kept deliberately small:
-:action:`cmake-build` covers the plain case, and a repository that needs more writes its own step.
+:action:`cmake-build` covers the plain case, and a repository that needs more writes its own step
+or overrides parts of it through ``preset`` and ``cmake-args``.
 Some repetition across repositories is the cheaper choice.
 
 Only a fast CI is actually used
@@ -76,6 +69,9 @@ Several parts of ci-infrastructure exist only for speed:
 (c) the official images have ci-infrastructure baked in, so no job waits for a pip install, and
 (d) matrix legs run in parallel with ``fail-fast: false``, so one broken leg does not hide the others.
 
+Downstream CI, finally, rebuilds the dependent repositories and therefore runs only
+when a pull request asks for it with the ``run-downstream-CI`` label.
+
 Only a CI that is green by default has diagnostic value
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -86,5 +82,3 @@ In this context, a missing decision is reported as *pending* rather than failed:
 :action:`require-label-decision` waits for a label instead of failing the pull request.
 In the same spirit, known transient states only warn,
 for example an image that is stale in the minutes after a merge.
-Downstream CI, finally, runs only when a pull request asks for it
-with the ``run-downstream-CI`` label.
