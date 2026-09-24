@@ -11,10 +11,10 @@ generate the downstream workflows and submit builds to HPC, and the composite
 GitHub Actions that wire it into workflow YAML.
 
 .. toctree::
-   :caption: Tutorial
+   :caption: Introduction
    :maxdepth: 2
 
-   tutorial/index
+   introduction
 
 .. toctree::
    :caption: How-to guides
