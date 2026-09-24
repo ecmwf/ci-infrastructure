@@ -30,85 +30,7 @@ Naming — platform / variant
 The ``/`` becomes ``-`` because Harbor supports only two-level repository paths
 (``project/repository``).
 
-.. list-table::
-   :header-rows: 1
-
-   * - Directory
-     - Image
-   * - ``public-images/ubuntu22.04/base``
-     - ``…/ubuntu22.04-base``
-   * - ``public-images/ubuntu22.04/gcc11-gfortran11``
-     - ``…/ubuntu22.04-gcc11-gfortran11``
-   * - ``public-images/ubuntu22.04/gcc11-gfortran11-boost-qt6``
-     - ``…/ubuntu22.04-gcc11-gfortran11-boost-qt6``
-   * - ``public-images/ubuntu24.04/base``
-     - ``…/ubuntu24.04-base``
-   * - ``public-images/ubuntu24.04/gcc13-gfortran13``
-     - ``…/ubuntu24.04-gcc13-gfortran13``
-   * - ``public-images/ubuntu24.04/clang18``
-     - ``…/ubuntu24.04-clang18``
-   * - ``public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6``
-     - ``…/ubuntu24.04-gcc13-gfortran13-boost-qt6``
-   * - ``public-images/ubuntu26.04/base``
-     - ``…/ubuntu26.04-base``
-   * - ``public-images/ubuntu26.04/gcc15-gfortran15``
-     - ``…/ubuntu26.04-gcc15-gfortran15``
-   * - ``public-images/ubuntu26.04/gcc15-gfortran15-boost-qt6``
-     - ``…/ubuntu26.04-gcc15-gfortran15-boost-qt6``
-   * - ``public-images/rocky8/base``
-     - ``…/rocky8-base``
-   * - ``public-images/rocky8/gcc8-gfortran8``
-     - ``…/rocky8-gcc8-gfortran8``
-   * - ``public-images/rocky8/gcc8-gfortran8-boost-qt5``
-     - ``…/rocky8-gcc8-gfortran8-boost-qt5``
-   * - ``public-images/rocky9/base``
-     - ``…/rocky9-base``
-   * - ``public-images/rocky9/gcc11-gfortran11``
-     - ``…/rocky9-gcc11-gfortran11``
-   * - ``public-images/rocky9/gcc11-gfortran11-boost-qt5``
-     - ``…/rocky9-gcc11-gfortran11-boost-qt5``
-   * - ``public-images/rocky10/base``
-     - ``…/rocky10-base``
-   * - ``public-images/rocky10/gcc14-gfortran14``
-     - ``…/rocky10-gcc14-gfortran14``
-   * - ``public-images/rocky10/gcc14-gfortran14-boost-qt6``
-     - ``…/rocky10-gcc14-gfortran14-boost-qt6``
-   * - ``public-images/debian11/base``
-     - ``…/debian11-base``
-   * - ``public-images/debian11/gcc10-gfortran10``
-     - ``…/debian11-gcc10-gfortran10``
-   * - ``public-images/debian11/gcc10-gfortran10-boost-qt5``
-     - ``…/debian11-gcc10-gfortran10-boost-qt5``
-   * - ``public-images/debian12/base``
-     - ``…/debian12-base``
-   * - ``public-images/debian12/gcc12-gfortran12``
-     - ``…/debian12-gcc12-gfortran12``
-   * - ``public-images/debian12/gcc12-gfortran12-boost-qt6``
-     - ``…/debian12-gcc12-gfortran12-boost-qt6``
-   * - ``public-images/debian13/base``
-     - ``…/debian13-base``
-   * - ``public-images/debian13/gcc14-gfortran14``
-     - ``…/debian13-gcc14-gfortran14``
-   * - ``public-images/debian13/gcc14-gfortran14-boost-qt6``
-     - ``…/debian13-gcc14-gfortran14-boost-qt6``
-   * - ``public-images/fedora43/base``
-     - ``…/fedora43-base``
-   * - ``public-images/fedora43/gcc15-gfortran15``
-     - ``…/fedora43-gcc15-gfortran15``
-   * - ``public-images/fedora43/gcc15-gfortran15-boost-qt6``
-     - ``…/fedora43-gcc15-gfortran15-boost-qt6``
-   * - ``public-images/fedora44/base``
-     - ``…/fedora44-base``
-   * - ``public-images/fedora44/gcc16-gfortran16``
-     - ``…/fedora44-gcc16-gfortran16``
-   * - ``public-images/fedora44/gcc16-gfortran16-boost-qt6``
-     - ``…/fedora44-gcc16-gfortran16-boost-qt6``
-   * - ``public-images/rolling-arch/base``
-     - ``…/rolling-arch-base``
-   * - ``public-images/rolling-arch/gcc-gfortran``
-     - ``…/rolling-arch-gcc-gfortran``
-   * - ``public-images/rolling-arch/gcc-gfortran-boost-qt6``
-     - ``…/rolling-arch-gcc-gfortran-boost-qt6``
+The current images are listed in :doc:`../reference/runners`.
 
 ``base`` is the shared foundation (system packages, ``cmake``, ``make``, ``gh``, Python
 with its development headers, OpenSSL headers, and the ``ci_infrastructure``
@@ -492,7 +414,7 @@ run — GitHub starts it with its own command, which is why every base here ends
 with ``ENTRYPOINT []``.
 
 Under ARC's Kubernetes mode "Initialize containers" does not name the image; see
-:ref:`Runner-side hooks <runner-side-hooks>`.
+`runners/container-hook-wrapper.js <https://github.com/ecmwf/ci-infrastructure/blob/main/runners/container-hook-wrapper.js>`__.
 
    **Inheritance cuts both ways.** Docker ``ENV`` is inherited, so an image that
    ``FROM``\ s one of these **must re-declare the whole** ``CI_IMAGE_*`` ``ARG``/``ENV``

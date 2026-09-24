@@ -5,170 +5,196 @@
 Runners
 =======
 
-Labels
-------
+Runner groups
+-------------
+
+The following runner groups for the CI exist on the self-hosted Kubernetes cluster.
 
 .. list-table::
    :header-rows: 1
 
    * - ``runs-on``
-     - Hosted by
-     - Used for
-   * - ``ubuntu-slim``
-     - GitHub
-     - Jobs that only talk to APIs and shuffle YAML: 1 CPU, unprivileged. The generated workflows use it for everything but the build legs.
-   * - ``ubuntu-latest``, ``ubuntu-24.04``
-     - GitHub
-     - Linting and this repo's own tests.
-   * - ``arc-runner-normal``, ``arc-runner-large``, ``arc-runner-very-large``
-     - ARC scale sets
-     - Build legs. ``smoke-test-runners.yml`` reports each one's size and checks object-store and sccache access.
-   * - ``hpc-submit``
-     - ARC (runner class)
-     - HPC legs: the pod that submits the SLURM job through troika. It is not on the cluster; see :doc:`../howto/hpc`.
+     - CPU (request / limit)
+     - memory (request / limit)
+     - disk
+   * - ``arc-runner-normal``
+     - 2 / 4
+     - 2 / 8 GiB
+     - 50 GiB
+   * - ``arc-runner-large``
+     - 4 / 8
+     - 8 / 16 GiB
+     - 50 GiB
+   * - ``arc-runner-very-large``
+     - 4 / 16
+     - 8 / 32 GiB
+     - 50 GiB
+   * - ``arc-hpc-pet-vsphere-prod`` or ``hpc-submit``
+     - —
+     - —
+     - 50 GiB
 
-A fork pull request reaches the self-hosted rows only through :action:`require-ci-approval`.
+The HPC is reached through the runner class ``hpc-submit``.
+It resolves to ``arc-hpc-pet-vsphere-prod``.
+These runners are small and cheap and are not meant for heavy lifting.
+They ship sources and dependencies to the HPC and submit the job to the queue.
+Afterwards they copy the artifacts back and store it in S3.
+See :doc:`../howto/hpc`.
+To access the HPC you need to run on the HPC runner group and also need an HPC image (see below).
 
-Runner classes
---------------
+If you suspect a problem with the runners, trigger
+`smoke-test-runners.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/smoke-test-runners.yml>`__.
+It checks each group's S3 object-store and sccache access.
 
-A leg may name a runner class instead of a label; ``ci-infrastructure-resolve``
-substitutes the label, so a scale set can be renamed in one place.
+`GitHub-hosted runners <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>`__
+can incur a cost.
+It depends on the kind of runner and the visibility of the repository.
+Public repos run for free on small Linux runners.
+Prefer the self-hosted Kubernetes cluster.
 
-.. autodata:: ci_infrastructure.runners.RUNNER_CLASSES
-   :no-index:
+A fork pull request shall reach the self-hosted runners only through :action:`require-ci-approval`.
 
-.. _runner-side-hooks:
+Images
+------
 
-Runner-side hooks
------------------
+- You can use your own images, for example from `Docker Hub <https://hub.docker.com>`__
+  or ECMWF's `ECCR Harbor <https://eccr.ecmwf.int>`__.
+- There is also a list of official images with typical compiler toolchains.
+  They are hosted at
+  `public-ci-images <https://eccr.ecmwf.int/harbor/projects/548/repositories>`__
+  (``eccr.ecmwf.int/public-ci-images/<name>:<tag>``) and
+  `private-ci-images <https://eccr.ecmwf.int/harbor/projects/549/repositories>`__
+  (``eccr.ecmwf.int/private-ci-images/<name>:<tag>``).
 
-Nothing in ``runners/`` is baked into an image or fetched by a workflow. It is configuration
-for the ARC runners themselves, kept next to the images so the two stay in step.
+The public images need no authentication.
+The private images are needed to connect to the HPC.
+They require credentials.
+Accessing the HPC requires an HPC image **and** the HPC runner group (see above).
 
-``container-hook-wrapper.js``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To add/modify a public image, open a PR in ci-infrastructure.
+Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
+The ``base`` image of each platform shows what an image is expected to supply.
+See :doc:`../howto/images`.
+To add/modify a private image, contact the maintainers of `ci-infrastructure <https://github.com/ecmwf/ci-infrastructure>`__ .
 
-Names the job's container image in the runner's own **"Initialize containers"**
-block, above every workflow step.
+Currently the following public images are supported.
+Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 
-On a GitHub-hosted runner that block prints the image and its digest. Under ARC's
-Kubernetes mode it prints three lines of boilerplate:
++------------------+-------------------------------------------+
+| Platform         | Image                                     |
++==================+===========================================+
+| ``ubuntu22.04``  | `ubuntu22.04-base`_                       |
+|                  +-------------------------------------------+
+|                  | `ubuntu22.04-gcc11-gfortran11`_           |
+|                  +-------------------------------------------+
+|                  | `ubuntu22.04-gcc11-gfortran11-boost-qt6`_ |
++------------------+-------------------------------------------+
+| ``ubuntu24.04``  | `ubuntu24.04-base`_                       |
+|                  +-------------------------------------------+
+|                  | `ubuntu24.04-gcc13-gfortran13`_           |
+|                  +-------------------------------------------+
+|                  | `ubuntu24.04-clang18`_                    |
+|                  +-------------------------------------------+
+|                  | `ubuntu24.04-gcc13-gfortran13-boost-qt6`_ |
++------------------+-------------------------------------------+
+| ``ubuntu26.04``  | `ubuntu26.04-base`_                       |
+|                  +-------------------------------------------+
+|                  | `ubuntu26.04-gcc15-gfortran15`_           |
+|                  +-------------------------------------------+
+|                  | `ubuntu26.04-gcc15-gfortran15-boost-qt6`_ |
++------------------+-------------------------------------------+
+| ``rocky8``       | `rocky8-base`_                            |
+|                  +-------------------------------------------+
+|                  | `rocky8-gcc8-gfortran8`_                  |
+|                  +-------------------------------------------+
+|                  | `rocky8-gcc8-gfortran8-boost-qt5`_        |
++------------------+-------------------------------------------+
+| ``rocky9``       | `rocky9-base`_                            |
+|                  +-------------------------------------------+
+|                  | `rocky9-gcc11-gfortran11`_                |
+|                  +-------------------------------------------+
+|                  | `rocky9-gcc11-gfortran11-boost-qt5`_      |
++------------------+-------------------------------------------+
+| ``rocky10``      | `rocky10-base`_                           |
+|                  +-------------------------------------------+
+|                  | `rocky10-gcc14-gfortran14`_               |
+|                  +-------------------------------------------+
+|                  | `rocky10-gcc14-gfortran14-boost-qt6`_     |
++------------------+-------------------------------------------+
+| ``debian11``     | `debian11-base`_                          |
+|                  +-------------------------------------------+
+|                  | `debian11-gcc10-gfortran10`_              |
+|                  +-------------------------------------------+
+|                  | `debian11-gcc10-gfortran10-boost-qt5`_    |
++------------------+-------------------------------------------+
+| ``debian12``     | `debian12-base`_                          |
+|                  +-------------------------------------------+
+|                  | `debian12-gcc12-gfortran12`_              |
+|                  +-------------------------------------------+
+|                  | `debian12-gcc12-gfortran12-boost-qt6`_    |
++------------------+-------------------------------------------+
+| ``debian13``     | `debian13-base`_                          |
+|                  +-------------------------------------------+
+|                  | `debian13-gcc14-gfortran14`_              |
+|                  +-------------------------------------------+
+|                  | `debian13-gcc14-gfortran14-boost-qt6`_    |
++------------------+-------------------------------------------+
+| ``fedora43``     | `fedora43-base`_                          |
+|                  +-------------------------------------------+
+|                  | `fedora43-gcc15-gfortran15`_              |
+|                  +-------------------------------------------+
+|                  | `fedora43-gcc15-gfortran15-boost-qt6`_    |
++------------------+-------------------------------------------+
+| ``fedora44``     | `fedora44-base`_                          |
+|                  +-------------------------------------------+
+|                  | `fedora44-gcc16-gfortran16`_              |
+|                  +-------------------------------------------+
+|                  | `fedora44-gcc16-gfortran16-boost-qt6`_    |
++------------------+-------------------------------------------+
+| ``rolling-arch`` | `rolling-arch-base`_                      |
+|                  +-------------------------------------------+
+|                  | `rolling-arch-gcc-gfortran`_              |
+|                  +-------------------------------------------+
+|                  | `rolling-arch-gcc-gfortran-boost-qt6`_    |
++------------------+-------------------------------------------+
 
-::
+.. _ubuntu22.04-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu22.04/base/Dockerfile
+.. _ubuntu22.04-gcc11-gfortran11: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu22.04/gcc11-gfortran11/Dockerfile
+.. _ubuntu22.04-gcc11-gfortran11-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu22.04/gcc11-gfortran11-boost-qt6/Dockerfile
+.. _ubuntu24.04-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/base/Dockerfile
+.. _ubuntu24.04-gcc13-gfortran13: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13/Dockerfile
+.. _ubuntu24.04-clang18: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/clang18/Dockerfile
+.. _ubuntu24.04-gcc13-gfortran13-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6/Dockerfile
+.. _ubuntu26.04-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/base/Dockerfile
+.. _ubuntu26.04-gcc15-gfortran15: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15/Dockerfile
+.. _ubuntu26.04-gcc15-gfortran15-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15-boost-qt6/Dockerfile
+.. _rocky8-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky8/base/Dockerfile
+.. _rocky8-gcc8-gfortran8: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky8/gcc8-gfortran8/Dockerfile
+.. _rocky8-gcc8-gfortran8-boost-qt5: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky8/gcc8-gfortran8-boost-qt5/Dockerfile
+.. _rocky9-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky9/base/Dockerfile
+.. _rocky9-gcc11-gfortran11: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky9/gcc11-gfortran11/Dockerfile
+.. _rocky9-gcc11-gfortran11-boost-qt5: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky9/gcc11-gfortran11-boost-qt5/Dockerfile
+.. _rocky10-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky10/base/Dockerfile
+.. _rocky10-gcc14-gfortran14: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky10/gcc14-gfortran14/Dockerfile
+.. _rocky10-gcc14-gfortran14-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky10/gcc14-gfortran14-boost-qt6/Dockerfile
+.. _debian11-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian11/base/Dockerfile
+.. _debian11-gcc10-gfortran10: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian11/gcc10-gfortran10/Dockerfile
+.. _debian11-gcc10-gfortran10-boost-qt5: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian11/gcc10-gfortran10-boost-qt5/Dockerfile
+.. _debian12-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian12/base/Dockerfile
+.. _debian12-gcc12-gfortran12: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian12/gcc12-gfortran12/Dockerfile
+.. _debian12-gcc12-gfortran12-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian12/gcc12-gfortran12-boost-qt6/Dockerfile
+.. _debian13-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian13/base/Dockerfile
+.. _debian13-gcc14-gfortran14: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian13/gcc14-gfortran14/Dockerfile
+.. _debian13-gcc14-gfortran14-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/debian13/gcc14-gfortran14-boost-qt6/Dockerfile
+.. _fedora43-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora43/base/Dockerfile
+.. _fedora43-gcc15-gfortran15: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora43/gcc15-gfortran15/Dockerfile
+.. _fedora43-gcc15-gfortran15-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora43/gcc15-gfortran15-boost-qt6/Dockerfile
+.. _fedora44-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora44/base/Dockerfile
+.. _fedora44-gcc16-gfortran16: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora44/gcc16-gfortran16/Dockerfile
+.. _fedora44-gcc16-gfortran16-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/fedora44/gcc16-gfortran16-boost-qt6/Dockerfile
+.. _rolling-arch-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rolling-arch/base/Dockerfile
+.. _rolling-arch-gcc-gfortran: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rolling-arch/gcc-gfortran/Dockerfile
+.. _rolling-arch-gcc-gfortran-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rolling-arch/gcc-gfortran-boost-qt6/Dockerfile
 
-   ##[group]Run '/home/runner/k8s/index.js'
-   shell: /home/runner/externals/node20/bin/node {0}
-   ##[endgroup]
-
-— which makes it the one place a job does *not* say what it is running in. That
-``index.js`` is the container hook, so pointing the hook at this wrapper restores
-the line.
-
-Wiring
-^^^^^^
-
-``ACTIONS_RUNNER_CONTAINER_HOOKS`` names the executable the runner calls instead of
-doing container work itself. Point it at the wrapper; the wrapper then calls the
-chart's ``index.js``, so nothing about how jobs run changes.
-
-**Overriding it is a supported path, not a fight with the chart.** The chart only
-injects its default when you have not set the variable yourself
-(``charts/gha-runner-scale-set/templates/_helpers.tpl``, in
-``gha-runner-scale-set.kubernetes-mode-runner-container``):
-
-.. code:: text
-
-   {{- if eq $env.name "ACTIONS_RUNNER_CONTAINER_HOOKS" }}
-     {{- $setContainerHooks = 0 }}
-   {{- end }}
-   ...
-   {{- if $setContainerHooks }}
-     - name: ACTIONS_RUNNER_CONTAINER_HOOKS
-       value: /home/runner/k8s/index.js
-   {{- end }}
-
-So declaring it in ``template.spec.containers[name: runner].env`` replaces the
-default cleanly — no duplicate env, and ``containerMode.type: kubernetes`` stays on.
-
-Deliver the file either by baking it into the runner image, or — with no image
-rebuild — from a ConfigMap in the runner namespace:
-
-.. code:: sh
-
-   kubectl -n <runner-namespace> create configmap ci-container-hook \
-     --from-file=container-hook-wrapper.js=runners/container-hook-wrapper.js
-
-.. code:: yaml
-
-   # gha-runner-scale-set values
-   containerMode:
-     type: kubernetes          # unchanged
-   template:
-     spec:
-       volumes:
-         - name: ci-container-hook
-           configMap:
-             name: ci-container-hook
-       containers:
-         - name: runner
-           image: ghcr.io/actions/actions-runner:latest
-           command: ["/home/runner/run.sh"]
-           volumeMounts:
-             - name: ci-container-hook
-               mountPath: /home/runner/hooks
-               readOnly: true
-           env:
-             # Replaces the chart default above.
-             - name: ACTIONS_RUNNER_CONTAINER_HOOKS
-               value: /home/runner/hooks/container-hook-wrapper.js
-             # What the wrapper delegates to. Optional -- this is its default.
-             # Set it if the real hook moves, or to the docker-mode hook.
-             - name: CI_REAL_CONTAINER_HOOK
-               value: /home/runner/k8s/index.js
-
-Redeploy the scale set; runners pick it up as pods recycle. To undo, drop the two
-env entries and the chart's default returns.
-
-**Roll out to one scale set first.** This runs at the start of every job on a
-scale set that enables it, including other teams' — a broken hook fails them all
-at "Initialize containers". Check that the block gained its line and that job
-start time is unchanged before widening.
-
-Sources
-^^^^^^^
-
-- `Customizing the containers used by jobs <https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/customize-containers>`__
-  — what ``ACTIONS_RUNNER_CONTAINER_HOOKS`` is, and that the runner sends
-  ``prepare_job``, ``cleanup_job``, ``run_container_step`` and ``run_script_step``.
-- `ADR 1891, container hooks <https://github.com/actions/runner/blob/main/docs/adrs/1891-container-hooks.md>`__
-  — the stdin protocol (``command``, ``responseFile``, ``args``, ``state``), that "all
-  text written to stdout or stderr should appear in the job or step logs", and
-  that a handler must implement every command.
-- `actions/runner-container-hooks <https://github.com/actions/runner-container-hooks>`__
-  — the k8s hook this wrapper delegates to;
-  `examples/prepare-job.json <https://github.com/actions/runner-container-hooks/blob/main/examples/prepare-job.json>`__
-  is the payload shape, with the image at ``args.container.image``.
-- `gha-runner-scale-set values.yaml <https://github.com/actions/actions-runner-controller/blob/master/charts/gha-runner-scale-set/values.yaml>`__
-  — where the runner container env lives, and the kubernetes-mode defaults
-  (``ACTIONS_RUNNER_CONTAINER_HOOKS``, ``ACTIONS_RUNNER_POD_NAME``,
-  ``ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER``).
-- `Deploying runner scale sets with ARC <https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/deploy-runner-scale-sets>`__
-  — kubernetes mode, and the ``template.spec.containers[name: runner].env`` form.
-
-What it does and does not print
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Only what the hook payload already carries: ``args.container.image``, plus each
-``args.services[].image``. Hooks block job start and the runner applies no timeout
-to them, so there is no registry lookup and no ``kubectl`` here. That also rules
-out the digest and the ``CI_IMAGE_*`` provenance — at ``prepare_job`` the pod does
-not exist, and those values are baked inside an image that has not started. The
-image announces those itself once it is running; see *Self-description* in
-:doc:`../howto/images`.
-
-It is a pass-through, not a ``prepare_job`` handler: the runner allows no partial
-opt-in (see `ADR 1891 <https://github.com/actions/runner/blob/main/docs/adrs/1891-container-hooks.md>`__
-— the handler must implement every command), so it prints, then replays the
-payload to the real hook and exits with its status. ``responseFile`` is left
-entirely to the real hook.
+The one private image is ``eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools``.
+It lives in `ecmwf/ci-container-images <https://github.com/ecmwf/ci-container-images>`__.
