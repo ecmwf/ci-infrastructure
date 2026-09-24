@@ -54,11 +54,6 @@ ghactions_workflows = [".github/workflows/check-pr-declaration.yml"]
 # (heading, one-line intro, actions): the sections of the composite-action index.
 ghactions_groups = [
     (
-        "PR gates",
-        "Decide whether a pull request may run CI or downstream CI.",
-        ["require-ci-approval", "require-label-decision", "check-pr-label", "check-pr-declaration"],
-    ),
-    (
         "Checkout and build",
         "Get the right sources and build them.",
         ["checkout-under-test", "pick-ref", "pre-commit", "cmake-build", "setup-sccache"],
@@ -77,6 +72,11 @@ ghactions_groups = [
         "Downstream CI",
         "Used by the generated workflows to fan out to other repos.",
         ["resolve-dispatch-context", "dispatch-and-wait", "report-check-run", "validate-generated-workflows"],
+    ),
+    (
+        "PR gates",
+        "Decide whether a pull request may run CI or downstream CI.",
+        ["require-ci-approval", "require-label-decision", "check-pr-label", "check-pr-declaration"],
     ),
     ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
     (
