@@ -67,6 +67,9 @@ def _normalise_header(header: str) -> str:
 
 # 1-CPU, unprivileged, cheap: only for jobs that talk to APIs and shuffle YAML.
 SLIM_RUNNER: Final = "ubuntu-slim"
+# For short jobs that run the ci_infrastructure package: baked in, so no pip install from PyPI.
+BASE_IMAGE_RUNNER: Final = "arc-runner-normal"
+BASE_IMAGE: Final = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
 
 
 Step: TypeAlias = dict[str, Any]
@@ -697,9 +700,11 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
         outputs[f"matrix-{kind}"] = f"${{{{ steps.r.outputs.matrix-{kind} }}}}"
     return {
         "if": cond,
-        "runs-on": SLIM_RUNNER,
+        "runs-on": BASE_IMAGE_RUNNER,
+        "container": {"image": BASE_IMAGE},
         "outputs": outputs,
         "steps": [
+            _announce_image_step(),
             _mint_step(),
             {
                 "id": "pick",
@@ -1338,8 +1343,10 @@ def _validate_job() -> dict[str, Any]:
     """allow-unsafe-pr-checkout is safe only because nothing checked out is executed; never copy it."""
     return {
         "if": _SUCCESS_GATE,
-        "runs-on": SLIM_RUNNER,
+        "runs-on": BASE_IMAGE_RUNNER,
+        "container": {"image": BASE_IMAGE},
         "steps": [
+            _announce_image_step(),
             _mint_step(),
             {
                 "uses": "actions/checkout@v6",
