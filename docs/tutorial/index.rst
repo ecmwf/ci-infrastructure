@@ -3,7 +3,7 @@
 .. SPDX-License-Identifier: Apache-2.0
 
 Tutorial
-========
+++++++++
 
 This tutorial brings a repository onto ci-infrastructure, step by step.
 eckit serves as the running example.

@@ -5,45 +5,80 @@
 Write your ci.yml
 =================
 
-First and foremost you can always simply write your own CI.
-&put good tutorial to Github actions&
+First and foremost, a repository can always simply write its own CI.
+ci-infrastructure does not replace GitHub Actions, it only adds building blocks to it;
+especially for reusing other artifacts from the ECMWF stack.
+If GitHub Actions is new to you, start with
+`Understanding GitHub Actions <https://docs.github.com/en/actions/get-started/understand-github-actions>`__
+and keep the
+`workflow syntax <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax>`__
+at hand.
 
-A simple example for a python project would be.
+A minimal example
+-----------------
 
-name: CI
-on:
-    pull_request:
+A small Python project could test itself with the following ``.github/workflows/ci.yml``:
 
-run on the normal runner group :doc:`../reference/runners`
+.. code:: yaml
 
-announce-image
-pre-commit:
-pip install
-pytest
+   name: CI
 
-name is necessary for downstream CI, it starts once a job CI finished successfully.
-If you don't have it or want it, name freely.
+   on:
+     push:
+       branches: [main]
+     pull_request:
 
-pull request does not run for for fork pull requests.
-refer to section fork pull requests.
+   permissions:
+     contents: read
 
-run on the normal runner group :doc:`../reference/runners`
+   jobs:
+     pre-commit:
+       runs-on: ubuntu-slim
+       steps:
+         - uses: actions/checkout@v6
+         - uses: ecmwf/ci-infrastructure/actions/pre-commit@main
 
-typical jobs in sequence.
-use a checkout python as example.
+     test:
+       needs: pre-commit
+       runs-on: arc-runner-normal
+       container:
+         image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/announce-image@main
+         - uses: actions/checkout@v6
+         - run: |
+             python3 -m venv .venv
+             .venv/bin/pip install . pytest
+             .venv/bin/python -m pytest
 
-Whatever you do in your CI is up to you.
-Only if you want to use other ECMWF repos or to be used by them, you need to declare the contents and dependencies of your package.
-For this see the manifest section next.
+The jobs run in sequence, and the tests start only if :action:`pre-commit` succeeded.
+It rejects formatting and lint errors cheaply,
+on the small GitHub-hosted ``ubuntu-slim`` runner,
+before the actual tests occupy a larger runner.
+The tests run on the self-hosted ``arc-runner-normal`` group inside one of the official images;
+the runner groups and images to choose from are listed in :doc:`../reference/runners`.
+:action:`announce-image` comes first in every job with a ``container:``,
+so that the log states which image the job ran in.
+The virtual environment keeps the project's packages apart from ci-infrastructure,
+which is installed into the same interpreter.
 
+The workflow's name matters
+---------------------------
 
+The name ``CI`` is not arbitrary.
+Downstream CI starts once a workflow named exactly ``CI`` has completed successfully,
+so a repository that wants to use the downstream CI has to use that name.
+A repository that does not take part is free to name its workflows as it likes.
 
+What comes next
+---------------
 
-The ``ci.yml`` is written by hand and calls the actions in order.
+Whatever a repository does in its ``ci.yml`` is up to it.
+Only a repository that uses other ECMWF packages, or is used by them,
+has to declare its contents and dependencies; this is the subject of :doc:`manifest`.
 
-- ``ci-approval`` and ``pre-commit`` first
-- ``resolve``: :action:`checkout-under-test`, then :action:`resolve-deps` emits the matrix
-- ``build``: :action:`fetch-deps`, your own build step or :action:`cmake-build`, ctest
-- :action:`publish-artifact` uploads the install tree, :action:`print-dep-table` shows what was used
-- :action:`announce-image` first in every job with a ``container:``
-- the runner groups and images to choose from, see
+Fork pull requests
+------------------
+
+This code would not run with fork PRs.
+How to make this possible and the security implications see :doc:`fork-pull-requests`.
