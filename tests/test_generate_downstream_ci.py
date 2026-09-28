@@ -18,6 +18,8 @@ from conftest import parse_all, render_single, write_repo
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
+    BASE_IMAGE,
+    BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     SLIM_RUNNER,
@@ -1191,8 +1193,8 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     assert doc["jobs"]["b"]["name"] == "b"
 
 
-def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
-    """Jobs that only call APIs use SLIM_RUNNER; kind jobs keep the leg's runs-on."""
+def test_job_runners(tmp_path: Path) -> None:
+    """API-only jobs use SLIM_RUNNER, package jobs the base image, kind jobs the leg's runs-on."""
     write_repo(
         tmp_path,
         "a",
@@ -1226,9 +1228,14 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         """,
     )
     consumer = yaml.safe_load(_consumer(tmp_path, "b"))
-    assert consumer["jobs"]["resolve"]["runs-on"] == SLIM_RUNNER
     assert consumer["jobs"]["b__build"]["runs-on"] == "${{ matrix['runs-on'] }}"
-    assert yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["runs-on"] == SLIM_RUNNER
+    orch = yaml.safe_load(_orch(tmp_path))["jobs"]
+    assert orch["context"]["runs-on"] == SLIM_RUNNER
+    validate = orch["validate"]
+    for job in (consumer["jobs"]["resolve"], validate):
+        assert job["runs-on"] == BASE_IMAGE_RUNNER
+        assert job["container"] == {"image": BASE_IMAGE}
+        assert job["steps"][0]["name"] == "Announce image"
 
 
 def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
