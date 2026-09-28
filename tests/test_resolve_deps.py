@@ -17,6 +17,7 @@ from ci_infrastructure._github_api import (
     EXECUTION_HPC,
     EXECUTION_RUNNER,
     Execution,
+    WorkflowRuns,
     canonical_option_segment,
 )
 from ci_infrastructure.manifest import DepTable
@@ -35,7 +36,10 @@ from ci_infrastructure.resolve_deps import (
     _as_option,
     _resolve_own_sha,
     _to_dep_spec,
+    bfs_load_manifests,
     make_artifact_name,
+    parse_manifest,
+    parse_pin,
     producer_can_build,
     resolve_leg,
 )
@@ -174,14 +178,19 @@ def _dep_spec(package: str, **overrides: Any) -> DepSpec:
 
 
 def _resolve(
-    own: PackageSpec, deps: list[DepSpec], leg: dict[str, str], lane: Execution = EXECUTION_RUNNER
+    own: PackageSpec,
+    deps: list[DepSpec],
+    leg: dict[str, str],
+    lane: Execution = EXECUTION_RUNNER,
+    manifest_cache: dict[tuple[Repo, Ref], Manifest] | None = None,
+    pins: dict[Repo, Ref] | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     return resolve_leg(
         own=own,
         own_deps=deps,
         own_sha=Sha("d" * 40),
         matrix_entry=leg,
-        manifest_cache={},
+        manifest_cache=manifest_cache or {},
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
@@ -191,6 +200,7 @@ def _resolve(
         can_dispatch=False,
         lane=lane,
         dispatch_plans={},
+        pins=pins,
     )
 
 
@@ -358,3 +368,70 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
         )
 
     assert sorted(p.lane for p in plans.values()) == ["hpc", "runner"]
+
+
+_PINNED: Final = Ref("a" * 40)
+_MIDDLE_MANIFEST: Final = """
+[package]
+name = "middle"
+prefix = "middle"
+repo = "o/middle"
+compiler-inputs = ["cxx-compiler"]
+
+[[deps]]
+repo = "o/base"
+package = "base"
+ref = "main"
+compiler-inputs = []
+"""
+
+
+@pytest.mark.usefixtures("offline")
+def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_package() -> None:
+    """Downstream CI builds against the commit under test, not the pinned repo's default branch."""
+    own = _own("top")
+    base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
+    cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST)}
+
+    unpinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache)
+    pinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache, pins={Repo("o/base"): _PINNED})
+
+    by_name = {d.name: d for d in pinned}
+    assert by_name["base"].sha == _PINNED
+    assert by_name["middle"].sha == "c" * 40
+    assert by_name["middle"].deps_hash != {d.name: d for d in unpinned}["middle"].deps_hash
+
+
+def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
+    with pytest.raises(ResolveError, match="the commit under test"):
+        _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins={Repo("o/base"): _PINNED})
+
+
+def test_bfs_reads_pinned_manifests_at_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested: list[tuple[str, str]] = []
+
+    def layer(
+        repos_refs: Any, sync_branch: Any, token: Any, path: Any
+    ) -> dict[tuple[str, str], tuple[str | None, bool]]:
+        requested.extend(repos_refs)
+        return {rr: (_MIDDLE_MANIFEST if rr[0] == "o/middle" else None, False) for rr in repos_refs}
+
+    monkeypatch.setattr(resolve_deps, "fetch_manifests_layer", layer)
+    bfs_load_manifests([_dep_spec("middle")], None, None, ".ci/manifest.toml", pins={Repo("o/base"): _PINNED})
+    assert requested == [("o/middle", "main"), ("o/base", _PINNED)]
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"),
+    [("", {}), (f"o/base@{'a' * 40}", {Repo("o/base"): Ref("a" * 40)})],
+)
+def test_parse_pin(pin: str, expected: dict[Repo, Ref]) -> None:
+    assert parse_pin(pin) == expected
+
+
+@pytest.mark.parametrize("pin", ["o/base", "o/base@main", f"base@{'a' * 40}"])
+def test_parse_pin_rejects(pin: str) -> None:
+    with pytest.raises((ResolveError, ValueError)):
+        parse_pin(pin)

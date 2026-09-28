@@ -1529,6 +1529,15 @@ def test_generated_header_round_trips_through_check(tmp_path: Path) -> None:
     assert _write_or_check_path(out, rendered, check=True) == (False, [])
 
 
+def test_resolve_pins_the_upstream_change_but_not_a_rebuild_request(tmp_path: Path) -> None:
+    _make_chain_abc(tmp_path)
+    steps = yaml.safe_load(_consumer(tmp_path, "b"))["jobs"]["resolve"]["steps"]
+    resolve = next(s for s in steps if s.get("id") == "r")
+    assert resolve["with"]["pin"] == (
+        "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
+    )
+
+
 def test_validate_job_opts_into_the_fork_checkout(tmp_path: Path) -> None:
     """The fork head sha is refused by actions/checkout from a workflow_run otherwise."""
     _make_chain_abc(tmp_path)
