@@ -691,6 +691,12 @@ def _mint_step() -> Step:
     }
 
 
+# An upstream change is tested at its commit; a rebuild request comes from a consumer and pins nothing.
+_PIN_CHANGE_UNDER_TEST: Final = (
+    "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
+)
+
+
 def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) -> dict[str, Any]:
     matrix_arg = ",".join(runnable)
     all_triggers: frozenset[str] = frozenset().union(*(m.matrices[k].triggers for k in runnable))
@@ -730,6 +736,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                 "uses": "ecmwf/ci-infrastructure/actions/resolve-deps@main",
                 "with": {
                     "current-branch": "${{ steps.pick.outputs.ref }}",
+                    "pin": _PIN_CHANGE_UNDER_TEST,
                     "matrix": matrix_arg,
                     "token": "${{ steps.mint.outputs.token }}",
                     # Enables dispatching a producer whose artifact is missing.
