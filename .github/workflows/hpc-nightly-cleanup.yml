@@ -25,8 +25,16 @@ concurrency:
 
 jobs:
   cleanup:
-    runs-on: [hpc]
+    # The legacy `hpc` builders ship Python 3.11.2, below requires-python.
+    runs-on: arc-hpc-pet-vsphere-prod
+    container:
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      - uses: ecmwf/ci-infrastructure/actions/announce-image@main
+
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
 
       - name: Garbage-collect the cluster work dir
