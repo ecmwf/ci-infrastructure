@@ -396,10 +396,10 @@ def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_packag
     unpinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache)
     pinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache, pins={Repo("o/base"): _PINNED})
 
-    by_name = {d.name: d for d in pinned}
-    assert by_name["base"].sha == _PINNED
+    by_name = {str(d.name): d for d in pinned}
+    assert by_name["base"].sha == Sha(_PINNED)
     assert by_name["middle"].sha == "c" * 40
-    assert by_name["middle"].deps_hash != {d.name: d for d in unpinned}["middle"].deps_hash
+    assert by_name["middle"].deps_hash != {str(d.name): d for d in unpinned}["middle"].deps_hash
 
 
 def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
