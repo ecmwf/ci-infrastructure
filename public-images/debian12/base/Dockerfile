@@ -7,8 +7,9 @@ FROM debian:12
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Bookworm's Python 3.11.2 and CMake 3.25 are below the 3.11.4 and 3.26 floors,
-# so both are installed below. build-essential is only for CPython.
+# Bookworm's CMake 3.25 is below the 3.26 floor, and its Python 3.11.2 below the
+# 3.11.4 that requires-python returns to, so both are installed below.
+# build-essential is only for CPython.
 RUN apt-get update && apt-get install -y \
     sudo \
     git \
