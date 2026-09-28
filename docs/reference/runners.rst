@@ -76,7 +76,7 @@ Right after a merge to ``main`` the baked copy is stale until the images are rep
 The action then warns and installs from the checkout.
 
 Your own images work too, but every job pip-installs ci-infrastructure into a venv.
-That needs Python >= 3.11.4 in the image and outbound access to PyPI and GitHub.
+That needs Python >= 3.11.2 in the image and outbound access to PyPI and GitHub.
 To skip the install, build ``FROM`` an official ``base`` image.
 Re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
 
