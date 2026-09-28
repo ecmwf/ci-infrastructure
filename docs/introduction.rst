@@ -80,8 +80,3 @@ In this context, a missing decision is reported as *pending* rather than failed:
 :action:`require-label-decision` waits for a label instead of failing the pull request.
 In the same spirit, known transient states only warn,
 for example an image that is stale in the minutes after a merge.
-
-Tutorial
---------
-
-Coming soon.

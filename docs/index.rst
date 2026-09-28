@@ -17,16 +17,16 @@ GitHub Actions that wire it into workflow YAML.
    introduction
 
 .. toctree::
+   :caption: Tutorial
+   :maxdepth: 2
+
+   tutorial/index
+
+.. toctree::
    :caption: How-to guides
    :maxdepth: 1
 
    howto/hpc
-
-.. toctree::
-   :caption: Explanation
-   :maxdepth: 1
-
-   explanation/bootstrap
 
 .. toctree::
    :caption: Reference

@@ -3,11 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Ensure ci-infrastructure infrastructure is present
-description: >
-  Expose a ci-infrastructure interpreter as $CI_INFRASTRUCTURE_PYTHON: the
-  baked image one when its `*.py` digest matches the checkout (a mismatch
-  warns), else a content-keyed venv in $RUNNER_TOOL_CACHE. Usually nested by
-  other actions (see docs/explanation/bootstrap.rst).
+description: |
+  If `$CI_INFRASTRUCTURE_PYTHON` is not set, install ci-infrastructure
+  and expose its Python via `$CI_INFRASTRUCTURE_PYTHON`.
+  It does nothing if the infrastructure is already installed,
+  either because of prior calls or because it is baked into the image.
+  An installed copy that does not match the checkout is replaced, with a warning.
+
+  .. note::
+    All actions that need the CI infrastructure are guaranteed to call it themselves,
+    i.e. the user does not have to bootstrap.
+    But it also does no harm to call it.
+    Call it yourself when a workflow runs `$CI_INFRASTRUCTURE_PYTHON` directly.
+    `tests/test_action_conventions.py` enforces that every action using the package nests it.
 
 inputs:
   force-reinstall:

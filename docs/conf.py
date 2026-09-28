@@ -88,7 +88,7 @@ ghactions_groups = [
     ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
     (
         "Internals",
-        "Nested by other actions. See :doc:`../../../explanation/bootstrap`.",
+        "Nested by the actions that need it.",
         ["ensure-infrastructure-present"],
     ),
 ]
