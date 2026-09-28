@@ -14,10 +14,11 @@ inputs:
     default: '.ci/manifest.toml'
   current-branch:
     description: >
-      Branch being built. A sync branch is used in each upstream repo where it
-      exists, as in actions/pick-ref.
+      Branch being built; defaults to the pull request's branch, or the pushed
+      branch. A sync branch is used in each upstream repo where it exists, as in
+      actions/pick-ref.
     required: false
-    default: ''
+    default: ${{ github.head_ref || github.ref_name }}
   pin:
     description: >
       owner/repo@sha of the change under test. That repo resolves at this
