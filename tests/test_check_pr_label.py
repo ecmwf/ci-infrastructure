@@ -15,7 +15,7 @@ from typing import Final
 import pytest
 from conftest import action_run_body, stub_gh
 
-LABEL: Final = "run-downstream-CI"
+LABEL: Final = "run-downstream-ci"
 
 
 def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str], str]:
@@ -59,7 +59,7 @@ def test_the_level_label_sets_run_and_depth(tmp_path: Path, labels: list[str] | 
 def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str]) -> None:
     code, _, err = _gate(tmp_path, labels)
     assert code == 1
-    assert "set exactly one of 'run-downstream-CI:all' or 'run-downstream-CI:<n>'" in err
+    assert "set exactly one of 'run-downstream-ci:all' or 'run-downstream-ci:<n>'" in err
 
 
 def test_other_labels_are_ignored(tmp_path: Path) -> None:

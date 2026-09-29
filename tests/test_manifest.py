@@ -42,7 +42,7 @@ def test_every_key_is_described(table: type[BaseModel]) -> None:
         ({"package": {**_PACKAGE, "prefx": "a"}}, r"\[package\]\.prefx"),
         ({"package": _PACKAGE, "deps": [{**_DEP, "reff": "x"}]}, r"\[\[deps\]\]\[0\]\.reff"),
         ({"package": _PACKAGE, "downstream": {"exclude": [], "excludes": []}}, r"\[downstream\]\.excludes"),
-        ({"package": _PACKAGE, "downstream-gate": {"label": "run-downstream-CI"}}, r"downstream-gate"),
+        ({"package": _PACKAGE, "downstream-gate": {"label": "run-downstream-ci"}}, r"downstream-gate"),
     ],
 )
 def test_unknown_keys_are_rejected(data: dict[str, Any], match: str) -> None:

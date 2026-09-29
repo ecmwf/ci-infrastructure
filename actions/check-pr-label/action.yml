@@ -13,7 +13,7 @@ inputs:
   label:
     description: 'Prefix of the level labels.'
     required: false
-    default: 'run-downstream-CI'
+    default: 'run-downstream-ci'
   sha:
     description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
     required: true

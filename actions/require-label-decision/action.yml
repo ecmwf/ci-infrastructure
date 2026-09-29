@@ -14,11 +14,11 @@ inputs:
   label:
     description: 'Prefix of the level labels.'
     required: false
-    default: 'run-downstream-CI'
+    default: 'run-downstream-ci'
   opt-out-label:
     description: 'Label meaning "deliberately skip it".'
     required: false
-    default: 'downstream-CI-not-needed'
+    default: 'downstream-ci-not-needed'
   context:
     description: 'Commit status context to post (the required check).'
     required: true
