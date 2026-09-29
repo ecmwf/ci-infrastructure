@@ -435,3 +435,37 @@ def test_parse_pin(pin: str, expected: dict[Repo, Ref]) -> None:
 def test_parse_pin_rejects(pin: str) -> None:
     with pytest.raises((ResolveError, ValueError)):
         parse_pin(pin)
+
+
+def _middle_declaring_base(**base: str) -> dict[tuple[Repo, Ref], Manifest]:
+    decl = "".join(f"{k} = {v}\n" for k, v in {"ref": '"main"', "compiler-inputs": "[]", **base}.items())
+    text = _MIDDLE_MANIFEST.replace('ref = "main"\ncompiler-inputs = []\n', decl)
+    return {(Repo("o/middle"), Ref("main")): parse_manifest(text)}
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize("base_first", [True, False])
+def test_conflicting_declarations_of_a_dep_fail_in_either_order(base_first: bool) -> None:
+    base, middle = _dep_spec("base", ref=Ref("develop"), compiler_inputs=[]), _dep_spec("middle")
+    deps = [base, middle] if base_first else [middle, base]
+    with pytest.raises(
+        ResolveError, match=r"'base' is declared differently .*ref 'develop' vs 'main'|ref 'main' vs 'develop'"
+    ):
+        _resolve(_own("top"), deps, dict(_LEG), manifest_cache=_middle_declaring_base())
+
+
+@pytest.mark.usefixtures("offline")
+def test_differing_compiler_inputs_fail() -> None:
+    base, middle = _dep_spec("base"), _dep_spec("middle")
+    with pytest.raises(ResolveError, match="compiler"):
+        _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
+
+
+def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declarations compare refs, not SHAs, so a push between lookups is not a conflict."""
+    commits = iter("abcdef")
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha(next(commits) * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
+    deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
+    assert [d.name for d in deps] == ["base", "middle"]
