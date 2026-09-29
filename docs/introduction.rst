@@ -65,7 +65,7 @@ Several parts of ci-infrastructure exist only for speed:
 (d) matrix legs run in parallel with ``fail-fast: false``, so one broken leg does not hide the others.
 
 Downstream CI, finally, rebuilds the dependent repositories and therefore runs only
-when a pull request asks for it with the ``run-downstream-CI`` label.
+when a pull request asks for it with a ``run-downstream-ci:all`` or ``run-downstream-ci:<n>`` label.
 
 Only a CI that is green by default has diagnostic value
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -168,7 +168,7 @@ What a template may reference
      - ``shlex.quote``, for a value used as **one shell word**
 
 **Anything else is an error, never an empty string** (``StrictUndefined``). The same
-check runs statically at ``ci-infrastructure-generate`` time, so a name used only inside
+check runs statically at :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>` time, so a name used only inside
 a branch that is never taken must still be declared; ``leg['x']`` is invisible to it.
 
 ``| sh`` is the only quoting tool a template has (autoescape is off — this is shell,
@@ -480,8 +480,8 @@ Two rules for the remote directory:
   keep the runner's shell from expanding it first (same rule as ``--remote-work-dir``
   — see *Why the work dir is expanded on the cluster, not on the runner*).
 
-As composite actions. ``push-hpc-tree`` writes the resolved cluster path as its
-``remote-dir`` output and ``fetch-hpc-tree`` writes ``local-dir``, so later steps read
+As composite actions. :action:`push-hpc-tree` writes the resolved cluster path as its
+``remote-dir`` output and :action:`fetch-hpc-tree` writes ``local-dir``, so later steps read
 the resolved path rather than recomputing the spec.
 
 .. code:: yaml
@@ -504,7 +504,7 @@ the resolved path rather than recomputing the spec.
        remote-dir: ${{ steps.push.outputs.remote-dir }}
        local-dir: ./ectrans-reference-artifact
 
-Or directly, e.g. from a checkout, after ``ensure-infrastructure-present``:
+Or directly, e.g. from a checkout, after :action:`ensure-infrastructure-present`:
 
 .. code:: bash
 
@@ -512,7 +512,7 @@ Or directly, e.g. from a checkout, after ``ensure-infrastructure-present``:
      --remote-dir "$OUTPUT_DIR/ectrans-reference-artifact" \
      --local-dir ./ref --tar-dir "$RUNNER_TEMP/hpc-tars"
 
-To reclaim scratch on success, add ``remove-hpc-tree`` as the **last** step and give
+To reclaim scratch on success, add :action:`remove-hpc-tree` as the **last** step and give
 it **no** ``if:``. A step with no ``if:`` runs only when every prior step succeeded, so
 a failed job skips it and its trees stay on scratch for debugging (the nightly GC
 sweeps them up later). Do **not** add ``if: always()`` — that would wipe the trees

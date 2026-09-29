@@ -80,5 +80,6 @@ has to declare its contents and dependencies; this is the subject of :doc:`manif
 Fork pull requests
 ------------------
 
-This code would not run with fork PRs.
-How to make this possible and the security implications see :doc:`fork-pull-requests`.
+A pull request from a fork runs this workflow as well, only without access to secrets.
+On a self-hosted runner this means outside code on our hardware.
+How to guard against this is the subject of :doc:`fork-pull-requests`.
