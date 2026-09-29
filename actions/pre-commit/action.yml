@@ -4,8 +4,9 @@
 
 name: Run pre-commit
 description: >
-  Run `pre-commit run --all-files`. Needs Python, a prior checkout, and
-  job-level FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'.
+  Run `pre-commit run --all-files`. Needs Python and a prior checkout.
+  pre-commit/action still runs on Node 20; FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:
+  'true' in the job's env silences GitHub's deprecation warning.
 
 runs:
   using: composite
