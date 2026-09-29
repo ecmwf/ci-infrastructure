@@ -1424,7 +1424,6 @@ def _label_gate_job() -> dict[str, Any]:
 
 
 def _validate_job() -> dict[str, Any]:
-    """allow-unsafe-pr-checkout is safe only because nothing checked out is executed; never copy it."""
     return {
         "if": _SUCCESS_GATE,
         "runs-on": BASE_IMAGE_RUNNER,
@@ -1437,7 +1436,6 @@ def _validate_job() -> dict[str, Any]:
                 "with": {
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
-                    "allow-unsafe-pr-checkout": True,
                 },
             },
             {
