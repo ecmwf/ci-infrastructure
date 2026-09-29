@@ -1539,20 +1539,12 @@ def test_resolve_pins_the_upstream_change_but_not_a_rebuild_request(tmp_path: Pa
     )
 
 
-def test_validate_job_opts_into_the_fork_checkout(tmp_path: Path) -> None:
-    """The fork head sha is refused by actions/checkout from a workflow_run otherwise."""
+def test_no_checkout_opts_into_fork_code(tmp_path: Path) -> None:
+    """actions/checkout then refuses a fork's code under workflow_run."""
     _make_chain_abc(tmp_path)
-    checkout = next(
-        s
-        for s in yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["steps"]
-        if str(s.get("uses", "")).startswith("actions/checkout")
-    )
-    assert checkout["with"]["allow-unsafe-pr-checkout"] is True
-
-    # Consumer checkouts resolve to a branch of their own repo and need no opt-in.
-    for job in yaml.safe_load(_consumer(tmp_path, "b"))["jobs"].values():
-        for step in job.get("steps", []):
-            if str(step.get("uses", "")).startswith("actions/checkout"):
+    for doc in (_orch(tmp_path), _consumer(tmp_path, "b")):
+        for job in yaml.safe_load(doc)["jobs"].values():
+            for step in job.get("steps", []):
                 assert "allow-unsafe-pr-checkout" not in (step.get("with") or {})
 
 
