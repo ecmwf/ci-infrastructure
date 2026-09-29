@@ -53,3 +53,9 @@ def test_json_schema_uses_toml_keys() -> None:
     props = ManifestFile.model_json_schema(by_alias=True)["$defs"]["DepTable"]["properties"]
     assert "compiler-inputs" in props
     assert "needs-python" in props
+
+
+def test_prefix_defaults_to_name() -> None:
+    package = {k: v for k, v in _PACKAGE.items() if k != "prefix"}
+    assert validate({"package": {**package, "name": "b"}}).package.prefix == "b"
+    assert validate({"package": {**package, "prefix": "c"}}).package.prefix == "c"

@@ -55,7 +55,11 @@ class PackageTable(_Table):
         min_length=1,
         description="Package name, unique across the graph. Other manifests' `needs` refer to it as `<name>/<kind>`.",
     )
-    prefix: str = Field(min_length=1, description="Artifact-name prefix. Consumers name it in `[[deps]].package`.")
+    prefix: str = Field(
+        default="",
+        min_length=1,
+        description="Artifact-name prefix, `name` when absent. Consumers name it in `[[deps]].package`.",
+    )
     repo: str | None = Field(
         default=None,
         description="`owner/name` of this repo. The resolver falls back to `--self-repo`; the generator requires it.",
@@ -83,6 +87,11 @@ class PackageTable(_Table):
     @classmethod
     def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         return _check_compiler_inputs(v)
+
+    @model_validator(mode="after")
+    def _prefix_defaults_to_name(self) -> PackageTable:
+        self.prefix = self.prefix or self.name
+        return self
 
 
 class DepTable(_Table):
