@@ -76,6 +76,7 @@ What comes next
 Whatever a repository does in its ``ci.yml`` is up to it.
 Only a repository that uses other ECMWF packages, or is used by them,
 has to declare its contents and dependencies; this is the subject of :doc:`manifest`.
+A change that spans several such repositories is tested with :doc:`feature-branches`.
 
 Fork pull requests
 ------------------

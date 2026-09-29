@@ -54,10 +54,8 @@ The dependencies
 
 Every ``[[deps]]`` entry names an upstream repository and the ``prefix`` of its package.
 ``ref`` is the branch a build normally uses;
-a coordinated change on a sync branch uses the upstream's branch of the same name instead.
-If, for example, eckit and ecbuild both have a branch ``sync-branch/fancy-feature``,
-eckit's CI on that branch builds against ecbuild's branch of the same name,
-so the two changes are tested against each other; ``feature-sync/`` works alike.
+a coordinated change on a ``sync-branch/`` or ``feature/`` branch uses the upstream's branch of the same name instead,
+see :doc:`feature-branches`.
 
 ``compiler-inputs`` must match the upstream's own ``[package].compiler-inputs``,
 so that eckit asks for the stack-dependencies build made with the same compiler as its own.

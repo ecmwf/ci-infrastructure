@@ -11,7 +11,7 @@ and reports the result on the pull request.
 It serves two purposes:
 it catches a breakage that was not intended,
 and it tests an intended breaking change together with the adaptations of its consumers,
-which are then prepared on sync branches of the same name (see :doc:`manifest`).
+which are then prepared on ``sync-branch/`` or ``feature/`` branches of the same name (see :doc:`feature-branches`).
 
 Declaring the graph
 -------------------
@@ -38,8 +38,6 @@ this allows to exclude heavy tests, such as ``valgrind``, from the downstream CI
 The order follows from ``[[deps]]``:
 eccodes' ``build`` waits for the ``build`` kinds of ecbuild, stack-dependencies and eckit,
 its ``build-hpc`` for their ``build-hpc``.
-``needs`` is written out only for an order within one repository, such as ``needs = ["build"]`` for a test kind,
-or to choose between two kinds of a producer that publish the same package.
 The downstream graph is a subset of the dependency graph (in the other direction):
 every repository in ``[[trigger-downstream]]`` must list the producer in its ``[[deps]]``,
 but not every dependency has to trigger its consumers.
@@ -49,17 +47,18 @@ The graph is transitive as well, so a change in ecbuild also reaches eccodes thr
 The generated workflows
 -----------------------
 
-Running :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>` in the repository writes two workflows, which are committed with it:
-``trigger-downstream.yml`` in the producer and ``cross-repo-trigger.yml`` in the consumer,
-each with an ``-hpc`` variant for HPC kinds.
+The workflows that run downstream CI are auto-generated
+by :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>`.
 Once the workflow ``CI`` of a pull request has completed successfully,
-``trigger-downstream.yml`` builds every consumer at its ``ref`` against the commit under test,
+the downstream CI builds every consumer against the commit under test,
 in dependency order,
 and posts the result as the status ``downstream/runner`` (and ``downstream/hpc``) on the pull request.
 
 The generated files must follow the manifests, also those of the other repositories.
-:action:`validate-generated-workflows` reports when they have drifted,
-and :action:`regenerate-workflows-pr` opens a pull request with the regenerated files.
+:action:`validate-generated-workflows` reports when they have drifted.
+A bot runs :action:`regenerate-workflows-pr` on every push to the default branch and nightly,
+and opens a pull request with the regenerated workflows.
+So it is sufficient to change the manifest: once that is merged, the bot takes care of the rest.
 
 .. note::
 
@@ -77,31 +76,25 @@ so a pull request fans out only when it asks for it, with exactly one label:
 
 - ``run-downstream-ci:all`` builds every consumer.
 - ``run-downstream-ci:<n>`` builds the consumers up to level ``n``.
-  A consumer's level is one more than the highest level among the consumers it depends on;
-  from ecbuild, eckit and ecflow are level 1, and eccodes, which needs eckit, is level 2.
-  A level cut therefore never builds a package without the packages it needs.
+  From ecbuild, eckit and ecflow are level 1, and eccodes is level 2 because it needs eckit.
+  A level cut never builds a package without the packages it needs.
 
-The scheme is the same in every repository.
-:action:`check-pr-label` reads the label when ``CI`` completes;
-since ``ci.yml`` also runs on ``labeled``, adding the label later starts a fresh ``CI`` run by itself.
-A push to one of the branches for which ``ci.yml`` runs on ``push``, typically the default branch after a merge,
-always fans out completely; there is no pull request to carry a label.
+Since ``ci.yml`` also runs on ``labeled``, adding the label later starts a fresh ``CI`` run by itself,
+which then triggers the downstream CI.
+The label persists, and will trigger the requested runs upon future pushes.
 
-To make the decision explicit, the workflow `pr-label-downstream-ci.yml <https://github.com/ecmwf/eckit/blob/develop/.github/workflows/pr-label-downstream-ci.yml>`__
-runs :action:`require-label-decision`.
-It keeps the status ``downstream-ci-label`` pending
-until the pull request carries a level label or ``downstream-ci-not-needed``,
-and turns it red on the bare ``run-downstream-ci``, an invalid level or two level labels.
-Made a required check, it prevents a merge without a decision.
+To merge, a pull request needs exactly one ``run-downstream-ci:*`` label
+or the explicit opt-out ``downstream-ci-not-needed``;
+:action:`require-label-decision` enforces this.
 
-A producer can also leave consumers out of its fan-out for good, in ``[downstream]``:
+The labels only decide which jobs of the dependency graph are **skipped**.
+It is also possible to restrict the full downstream dependency graph from this repository, i.e. what ``run-downstream-ci:all`` runs.
+This is done in the :doc:`../reference/manifest` via
 
 .. code:: toml
 
    [downstream]
    exclude = ["ecflow"]
 
-Every consumer that depends on an excluded one is left out as well, since it could not resolve that dependency;
-excluding eckit from ecbuild's fan-out therefore also drops eccodes.
-Other producers are unaffected: eckit's own downstream CI still builds eccodes.
-See :doc:`../reference/manifest` for the field.
+Every consumer that depends on an excluded one is left out as well.
+For example, excluding ``earthkit-data`` and ``earthkit-utils`` would also drop every package built on them.

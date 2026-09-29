@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" width="760" height="360" font-family="Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="760" height="360" rx="12" fill="#ffffff"/>
+  <defs>
+    <g id="node">
+      <circle r="24" fill="#ffffff" stroke="#156082" stroke-width="3"/>
+    </g>
+  </defs>
+
+  <!-- Row 1: one repository on an ordinary branch -->
+  <text x="30" y="34" font-size="15" font-weight="bold" fill="#004C76">A branch in one repository</text>
+  <line x1="120" y1="112" x2="640" y2="112" stroke="#156082" stroke-width="3"/>
+  <circle cx="120" cy="112" r="5" fill="#156082"/>
+  <circle cx="640" cy="112" r="5" fill="#156082"/>
+
+  <rect x="60" y="52" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="120" y="70" font-size="14" fill="#ffffff" text-anchor="middle">ecbuild</text>
+  <use href="#node" x="120" y="112"/>
+  <circle cx="120" cy="112" r="8" fill="#E97132"/>
+  <rect x="60" y="146" width="120" height="24" rx="3" fill="#156082"/>
+  <text x="120" y="163" font-size="13" fill="#ffffff" text-anchor="middle">develop</text>
+
+  <rect x="320" y="52" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="380" y="70" font-size="14" fill="#ffffff" text-anchor="middle">eckit</text>
+  <use href="#node" x="380" y="112"/>
+  <circle cx="380" cy="112" r="8" fill="#FF0000"/>
+  <rect x="320" y="146" width="120" height="24" rx="3" fill="#156082"/>
+  <text x="380" y="163" font-size="13" fill="#ffffff" text-anchor="middle">fix-leak</text>
+
+  <rect x="580" y="52" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="640" y="70" font-size="14" fill="#ffffff" text-anchor="middle">eccodes</text>
+  <use href="#node" x="640" y="112"/>
+  <circle cx="640" cy="112" r="8" fill="#E97132"/>
+  <rect x="580" y="146" width="120" height="24" rx="3" fill="#156082"/>
+  <text x="640" y="163" font-size="13" fill="#ffffff" text-anchor="middle">develop</text>
+
+  <!-- Row 2: a coordinated change on sync branches -->
+  <text x="30" y="214" font-size="15" font-weight="bold" fill="#004C76">A sync branch in two repositories</text>
+  <line x1="120" y1="292" x2="640" y2="292" stroke="#156082" stroke-width="3"/>
+  <circle cx="120" cy="292" r="5" fill="#156082"/>
+  <circle cx="640" cy="292" r="5" fill="#156082"/>
+  <rect x="348" y="264" width="324" height="56" rx="10" fill="none" stroke="#FF0000" stroke-width="2" stroke-dasharray="6 4"/>
+
+  <rect x="60" y="232" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="120" y="250" font-size="14" fill="#ffffff" text-anchor="middle">ecbuild</text>
+  <use href="#node" x="120" y="292"/>
+  <circle cx="120" cy="292" r="8" fill="#E97132"/>
+  <rect x="60" y="326" width="120" height="24" rx="3" fill="#156082"/>
+  <text x="120" y="343" font-size="13" fill="#ffffff" text-anchor="middle">develop</text>
+
+  <rect x="320" y="232" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="380" y="250" font-size="14" fill="#ffffff" text-anchor="middle">eckit</text>
+  <use href="#node" x="380" y="292"/>
+  <circle cx="380" cy="292" r="8" fill="#FF0000"/>
+  <rect x="290" y="326" width="180" height="24" rx="3" fill="#156082"/>
+  <text x="380" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync-branch/api-change</text>
+
+  <rect x="580" y="232" width="120" height="26" rx="3" fill="#004C76"/>
+  <text x="640" y="250" font-size="14" fill="#ffffff" text-anchor="middle">eccodes</text>
+  <use href="#node" x="640" y="292"/>
+  <circle cx="640" cy="292" r="8" fill="#FF0000"/>
+  <rect x="550" y="326" width="180" height="24" rx="3" fill="#156082"/>
+  <text x="640" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync-branch/api-change</text>
+</svg>

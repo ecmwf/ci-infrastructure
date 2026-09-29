@@ -14,6 +14,7 @@ eckit serves as the running example.
    ci-yml
    manifest
    downstream
+   feature-branches
    hpc
    pull-requests
    fork-pull-requests
