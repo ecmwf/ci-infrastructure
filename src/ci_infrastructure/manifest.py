@@ -100,7 +100,7 @@ class DepTable(_Table):
     repo: str = Field(description="`owner/name` of the upstream repo.")
     package: str = Field(min_length=1, description="The upstream's `[package].prefix`.")
     ref: str = Field(
-        description="Branch, tag or 40-char SHA. A sync branch of the same name in the upstream overrides it."
+        description="Branch, tag or 40-char SHA. A `feature/` branch of the same name in the upstream overrides it."
     )
     compiler_inputs: tuple[str, ...] = Field(
         alias="compiler-inputs",

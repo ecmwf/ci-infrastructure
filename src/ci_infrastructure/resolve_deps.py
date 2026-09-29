@@ -320,7 +320,7 @@ def is_normal_ref(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
 ) -> bool:
-    """Declared ref or a valid sync-branch override; only then is auto-dispatch allowed."""
+    """Declared ref or a valid feature/ branch override; only then is auto-dispatch allowed."""
     if sync_branch and sync_exists_by_repo.get(spec.repo, False):
         return ref == sync_branch
     return ref == spec.ref
@@ -769,7 +769,12 @@ def bfs_load_manifests(
 
 @click.command(help="Resolve dep tree for all matrix legs in a manifest.")
 @click.option("--manifest", default=".ci/manifest.toml", help="Path to local manifest TOML")
-@click.option("--current-branch", "current_branch", default="", help="Branch being built (for sync-branch convention)")
+@click.option(
+    "--current-branch",
+    "current_branch",
+    default="",
+    help="Branch being built; a feature/ branch is used where an upstream has it too",
+)
 @click.option(
     "--matrix",
     default="build",
@@ -957,7 +962,7 @@ def _run(
                 print(f"    dep:  {dep['name']:24s} source={src:17s} {cached:>6s}  {dep['artifact-name']}")
     if sync_branch:
         sync_repos = [r for r, present in sync_exists.items() if present]
-        print(f"sync-branch '{sync_branch}' active in: {', '.join(sync_repos) if sync_repos else '(none)'}")
+        print(f"'{sync_branch}' also used in: {', '.join(sync_repos) if sync_repos else '(none)'}")
 
 
 if __name__ == "__main__":
