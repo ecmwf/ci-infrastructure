@@ -12,9 +12,7 @@ description: >
 
 inputs:
   label:
-    description: >
-      Prefix of the level labels: `<label>:all` or `<label>:<n>` means "run".
-      The bare `<label>`, an invalid level or two level labels fail the status.
+    description: 'Prefix of the level labels.'
     required: false
     default: 'run-downstream-CI'
   opt-out-label:

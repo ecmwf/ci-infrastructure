@@ -1161,14 +1161,12 @@ def render_orchestrator_workflow(
         "report-ci-failure": _report_ci_failure_job(lane),
     }
     consumer_job_ids: list[str] = []
-    job_levels: dict[str, int] = {}
     for cpkg in all_consumers:
         cmanifest = by_pkg[cpkg]
         crepo = cmanifest.repo
         cref = consumer_refs[crepo]
         jid = _orchestrator_job_id(cpkg)
         consumer_job_ids.append(jid)
-        job_levels[jid] = levels[cpkg]
         dep_ids = sorted(_orchestrator_job_id(p) for p in consumer_deps.get(cpkg, set()))
         from_jobs = sorted(origins[cpkg])
         if _edge_needs_dispatch(m, cmanifest):
@@ -1178,7 +1176,7 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    jobs = _apply_label_gate(jobs, job_levels)
+    jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
     jobs = _require_context(jobs)
 
     on: dict[str, Any] = {
@@ -1364,10 +1362,7 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
 
 
 def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int]) -> dict[str, Any]:
-    """A post-pass, so a job added later is gated by construction; a consumer job also by its level.
-
-    A string compares as a number with `>=`, so `all` and an empty depth never pass it.
-    """
+    """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes."""
     gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job()}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)

@@ -52,19 +52,14 @@ def test_the_level_label_sets_run_and_depth(tmp_path: Path, labels: list[str] | 
 
 
 @pytest.mark.parametrize(
-    ("labels", "message"),
-    [
-        ([LABEL], "use 'run-downstream-CI:all'"),
-        ([f"{LABEL}:all", f"{LABEL}:1"], "set exactly one"),
-        ([f"{LABEL}:0"], "is not a level"),
-        ([f"{LABEL}:abc"], "is not a level"),
-    ],
+    "labels",
+    [[LABEL], [f"{LABEL}:all", f"{LABEL}:1"], [f"{LABEL}:0"], [f"{LABEL}:abc"]],
     ids=["bare", "two", "zero", "word"],
 )
-def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str], message: str) -> None:
+def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str]) -> None:
     code, _, err = _gate(tmp_path, labels)
     assert code == 1
-    assert message in err
+    assert "set exactly one of 'run-downstream-CI:all' or 'run-downstream-CI:<n>'" in err
 
 
 def test_other_labels_are_ignored(tmp_path: Path) -> None:
