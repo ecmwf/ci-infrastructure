@@ -227,7 +227,10 @@ class MatrixKindTable(_Table):
         "Empty keeps the kind out of it.",
     )
     needs: tuple[str, ...] = Field(
-        default=(), description="Kinds that must finish first: `<kind>` locally, `<package-name>/<kind>` across repos."
+        default=(),
+        description="Kinds that must finish first: `<kind>` locally, `<package-name>/<kind>` across repos. "
+        "Without cross-repo entries, a kind with `triggers` gets them from `[[deps]]`: per producer that triggers "
+        "this repo, its triggered kind publishing the dep in the same lane.",
     )
     reuse_matrix: str | None = Field(
         default=None,

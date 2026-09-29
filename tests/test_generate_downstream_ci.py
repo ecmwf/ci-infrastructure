@@ -30,6 +30,7 @@ from ci_infrastructure.generate_downstream_ci import (
     _run,
     _write_or_check_path,
     compute_transitive_consumers,
+    derive_cross_repo_needs,
     parse_manifest_text,
     render_orchestrator_workflow,
     render_workflow,
@@ -2054,3 +2055,83 @@ def test_leg_artifact_identity(tmp_path: Path, manifest: str, match: str | None)
     else:
         with pytest.raises(SchemaError, match=match):
             validate_graph(parse_all(tmp_path))
+
+
+_PRODUCER: Final = """
+[[trigger-downstream]]
+repo = "org/b"
+ref = "main"
+[matrix.build]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+[[matrix.build.include]]
+platform = "p"
+[matrix.build-hpc]
+triggers = ["upstream-change"]
+execution = "hpc"
+job-script = "./.ci/hpc/build.sh"
+[[matrix.build-hpc.include]]
+platform = "hpc-p"
+"""
+
+_CONSUMER: Final = """
+[[deps]]
+repo = "org/a"
+package = "a"
+ref = "main"
+compiler-inputs = []
+[matrix.build]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+{needs}
+[[matrix.build.include]]
+platform = "p"
+[matrix.build-hpc]
+triggers = ["upstream-change"]
+execution = "hpc"
+job-script = "./.ci/hpc/build.sh"
+[[matrix.build-hpc.include]]
+platform = "hpc-p"
+[matrix.test]
+reuse-matrix = "build"
+needs = ["build"]
+"""
+
+
+def _derived(tmp_path: Path, needs: str = "", producer: str = _PRODUCER) -> dict[str, list[str]]:
+    write_repo(tmp_path, "a", producer)
+    write_repo(tmp_path, "b", _CONSUMER.format(needs=needs))
+    manifests = parse_all(tmp_path)
+    derive_cross_repo_needs(manifests)
+    validate_graph(manifests)
+    b = next(m for m in manifests if m.package_name == "b")
+    return {k: list(mk.needs) for k, mk in b.matrices.items()}
+
+
+def test_cross_repo_needs_are_derived_per_lane_from_deps(tmp_path: Path) -> None:
+    assert _derived(tmp_path) == {"build": ["a/build"], "build-hpc": ["a/build-hpc"], "test": ["build"]}
+
+
+def test_explicit_cross_repo_needs_are_kept(tmp_path: Path) -> None:
+    assert _derived(tmp_path, needs='needs = ["a/build-hpc"]')["build"] == ["a/build-hpc"]
+
+
+def test_a_producer_that_does_not_trigger_us_is_not_needed(tmp_path: Path) -> None:
+    producer = _PRODUCER.replace('[[trigger-downstream]]\nrepo = "org/b"\nref = "main"\n', "")
+    assert _derived(tmp_path, producer=producer)["build"] == []
+
+
+def test_two_producer_kinds_for_one_dep_need_an_explicit_choice(tmp_path: Path) -> None:
+    producer = (
+        _PRODUCER
+        + """
+[matrix.build-debug]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+[[matrix.build-debug.include]]
+platform = "p"
+build-type = "Debug"
+"""
+    )
+    with pytest.raises(SchemaError, match="cannot derive its needs on 'a'"):
+        _derived(tmp_path, producer=producer)

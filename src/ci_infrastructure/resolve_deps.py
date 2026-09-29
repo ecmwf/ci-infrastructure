@@ -545,12 +545,10 @@ def resolve_leg(
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry."""
     pins = pins or {}
     visited: dict[PackageName, ResolvedDep] = {}
+    requests: dict[PackageName, tuple[str, dict[str, Any]]] = {}
     order: list[PackageName] = []
 
-    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any]) -> ResolvedDep:
-        if spec.package in visited:
-            return visited[spec.package]
-
+    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any], declared_by: str) -> ResolvedDep:
         compiler = _join_compilers(spec.compiler_inputs, parent_ctx, context=f"dep '{spec.package}'")
 
         build_type = str(parent_ctx.get(spec.build_type_input, "Release"))
@@ -572,6 +570,28 @@ def resolve_leg(
         else:
             ref = spec.ref
 
+        # The ref, not its SHA: two lookups of one branch may see different commits.
+        request = {
+            "repo": spec.repo,
+            "ref": ref,
+            "compiler": compiler,
+            "build-type": build_type,
+            "platform": platform_slug,
+            "python-version": python_version,
+            "option": dep_option,
+        }
+        if spec.package in visited:
+            first_by, first = requests[spec.package]
+            differs = {k: (first[k], v) for k, v in request.items() if first[k] != v}
+            if differs:
+                detail = ", ".join(f"{k} {a!r} vs {b!r}" for k, (a, b) in differs.items())
+                raise ResolveError(
+                    f"dep '{spec.package}' is declared differently by '{first_by}' and '{declared_by}' "
+                    f"({detail}). Declarations of the same package must agree."
+                )
+            return visited[spec.package]
+        requests[spec.package] = (declared_by, request)
+
         # Sub-deps first, against the same leg, filtered by `when` exactly as the
         # upstream's own CI did, so deps-hash8 reproduces the published name.
         sub_deps: list[ResolvedDep] = []
@@ -580,7 +600,7 @@ def resolve_leg(
             for sub_spec in sub_manifest.deps:
                 if not sub_spec.applies_to(parent_ctx):
                     continue
-                sub_deps.append(visit(sub_spec, parent_ctx))
+                sub_deps.append(visit(sub_spec, parent_ctx, declared_by=spec.package))
 
         sha_key = (spec.repo, ref)
         if sha_key not in sha_cache:
@@ -658,7 +678,7 @@ def resolve_leg(
 
     applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry)]
     for spec in applicable_deps:
-        visit(spec, matrix_entry)
+        visit(spec, matrix_entry, declared_by=own.name)
 
     deps_resolved = [visited[name] for name in order]
 

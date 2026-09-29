@@ -24,7 +24,7 @@ import sys
 import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, TypeAlias, TypeVar
 
@@ -157,6 +157,7 @@ class MatrixKind:
     container_credentials: bool
     ctest: bool
     ctest_args: str
+    artifact_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,7 @@ class Manifest:
     repo_root: Path
     package_name: str
     repo: str
+    prefix: str = ""
     compiler_inputs: tuple[str, ...] = ()
     visibility: Visibility = VISIBILITY_PRIVATE
     submodules: str | None = None
@@ -213,6 +215,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         repo_root=path.parents[1],
         package_name=raw.package.name,
         repo=raw.package.repo,
+        prefix=raw.package.prefix,
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
@@ -302,6 +305,7 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             container_credentials=body.container_credentials,
             ctest=body.ctest,
             ctest_args=body.ctest_args.strip(),
+            artifact_prefix=body.artifact_prefix,
         )
     return resolved
 
@@ -326,6 +330,40 @@ def _index_unique(manifests: Sequence[Manifest], key: Callable[[Manifest], str],
             raise SchemaError(f"duplicate {label} {key(m)!r}: {out[key(m)].path} and {m.path}")
         out[key(m)] = m
     return out
+
+
+def derive_cross_repo_needs(manifests: Sequence[Manifest]) -> None:
+    """Fill in a triggered kind's cross-repo `needs` from `[[deps]]`, unless it lists any itself.
+
+    Per dep whose producer triggers this repo: the producer's triggered kind that
+    publishes the dep's prefix in the same lane.
+    """
+    by_repo = {m.repo: m for m in manifests}
+    for m in manifests:
+        for kind, mk in m.matrices.items():
+            if not mk.triggers or any("/" in n for n in mk.needs):
+                continue
+            derived: list[str] = []
+            for dep in m.deps:
+                up = by_repo.get(dep.repo)
+                if up is None or not any(t.repo == m.repo for t in up.triggers):
+                    continue
+                candidates = [
+                    k
+                    for k, uk in up.matrices.items()
+                    if uk.triggers
+                    and uk.publishes
+                    and uk.execution == mk.execution
+                    and (uk.artifact_prefix or up.prefix) == dep.package
+                ]
+                if len(candidates) > 1:
+                    raise SchemaError(
+                        f"{m.path}: [matrix.{kind}] cannot derive its needs on {dep.package!r}: "
+                        f"{up.path} publishes it from {candidates}; name the one in needs"
+                    )
+                derived += [f"{up.package_name}/{k}" for k in candidates]
+            if derived:
+                m.matrices[kind] = replace(mk, needs=(*mk.needs, *derived))
 
 
 def validate_graph(manifests: Sequence[Manifest]) -> None:
@@ -1651,6 +1689,7 @@ def _run(
         validate_job_templates(local)
         # No env token is fine: gh falls back to its own auth.
         manifests = _fetch_sibling_manifests(local, select_token(), manifest_path, sibling_root)
+        derive_cross_repo_needs(manifests)
         validate_graph(manifests)
         closures = compute_transitive_consumers(manifests)
         by_pkg = {m.package_name: m for m in manifests}
