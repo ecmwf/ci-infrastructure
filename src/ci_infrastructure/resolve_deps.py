@@ -320,7 +320,7 @@ def is_normal_ref(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
 ) -> bool:
-    """Declared ref or a valid feature/ branch override; only then is auto-dispatch allowed."""
+    """Declared ref or a valid sync-branch/ or feature/ override; only then is auto-dispatch allowed."""
     if sync_branch and sync_exists_by_repo.get(spec.repo, False):
         return ref == sync_branch
     return ref == spec.ref
@@ -773,7 +773,7 @@ def bfs_load_manifests(
     "--current-branch",
     "current_branch",
     default="",
-    help="Branch being built; a feature/ branch is used where an upstream has it too",
+    help="Branch being built; a sync-branch/ or feature/ branch is used where an upstream has it too",
 )
 @click.option(
     "--matrix",
