@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from ci_infrastructure._github_api import ManifestSchemaError
 from ci_infrastructure.manifest import (
     DepTable,
-    DownstreamGateTable,
+    DownstreamTable,
     GeneratedTable,
     ManifestFile,
     MatrixKindTable,
@@ -27,7 +27,7 @@ _DEP: dict[str, Any] = {"repo": "o/b", "package": "b", "ref": "main", "compiler-
 
 @pytest.mark.parametrize(
     "table",
-    [PackageTable, DepTable, TriggerDownstreamTable, MatrixKindTable, GeneratedTable, DownstreamGateTable],
+    [PackageTable, DepTable, TriggerDownstreamTable, MatrixKindTable, GeneratedTable, DownstreamTable],
 )
 def test_every_key_is_described(table: type[BaseModel]) -> None:
     """The manifest reference is generated from these descriptions."""
@@ -41,7 +41,8 @@ def test_every_key_is_described(table: type[BaseModel]) -> None:
         ({"package": _PACKAGE, "pakage": {}}, r"pakage"),
         ({"package": {**_PACKAGE, "prefx": "a"}}, r"\[package\]\.prefx"),
         ({"package": _PACKAGE, "deps": [{**_DEP, "reff": "x"}]}, r"\[\[deps\]\]\[0\]\.reff"),
-        ({"package": _PACKAGE, "downstream-gate": {"label": "x", "labels": []}}, r"\[downstream-gate\]\.labels"),
+        ({"package": _PACKAGE, "downstream": {"exclude": [], "excludes": []}}, r"\[downstream\]\.excludes"),
+        ({"package": _PACKAGE, "downstream-gate": {"label": "run-downstream-CI"}}, r"downstream-gate"),
     ],
 )
 def test_unknown_keys_are_rejected(data: dict[str, Any], match: str) -> None:

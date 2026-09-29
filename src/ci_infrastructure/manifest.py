@@ -371,10 +371,14 @@ class GeneratedTable(_Table):
         return v
 
 
-class DownstreamGateTable(_Table):
-    """`[downstream-gate]`: when a pull request fans out to consumers."""
+class DownstreamTable(_Table):
+    """`[downstream]`: this repo's own fan-out to its consumers."""
 
-    label: str = Field(min_length=1, description="A PR fans out only while it carries this label; a push always does.")
+    exclude: tuple[str, ...] = Field(
+        default=(),
+        description="Consumer packages this repo's fan-out skips, together with every consumer in it that "
+        "depends on them.",
+    )
 
 
 class ManifestFile(_Table):
@@ -383,7 +387,7 @@ class ManifestFile(_Table):
     package: PackageTable
     deps: tuple[DepTable, ...] = ()
     trigger_downstream: tuple[TriggerDownstreamTable, ...] = Field(default=(), alias="trigger-downstream")
-    downstream_gate: DownstreamGateTable | None = Field(default=None, alias="downstream-gate")
+    downstream: DownstreamTable | None = None
     generated: GeneratedTable | None = None
     matrix: dict[str, MatrixKindTable] = Field(default_factory=dict)
 
@@ -421,7 +425,7 @@ _LOC_HEADS: Final = {
     "matrix": "subtable",
     "package": "table",
     "generated": "table",
-    "downstream-gate": "table",
+    "downstream": "table",
 }
 
 

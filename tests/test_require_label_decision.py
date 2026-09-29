@@ -94,11 +94,26 @@ def test_no_label_stays_pending(tmp_path: Path) -> None:
     assert r.posted("context") == CONTEXT
 
 
-def test_either_label_is_a_decision(tmp_path: Path) -> None:
-    run = _run(tmp_path, _payload(labels=[LABEL]))
-    skip = _run(tmp_path, _payload(labels=[OPT_OUT]))
-    assert (run.decision, run.posted("state")) == ("run", "success")
-    assert (skip.decision, skip.posted("state")) == ("skip", "success")
+@pytest.mark.parametrize("labels", [[f"{LABEL}:all"], [f"{LABEL}:2"]])
+def test_a_level_label_decides_to_run(tmp_path: Path, labels: list[str]) -> None:
+    r = _run(tmp_path, _payload(labels=labels))
+    assert (r.decision, r.posted("state")) == ("run", "success")
+
+
+def test_the_opt_out_decides_to_skip(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(labels=[OPT_OUT]))
+    assert (r.decision, r.posted("state")) == ("skip", "success")
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [[LABEL], [f"{LABEL}:all", f"{LABEL}:1"], [f"{LABEL}:0"], [f"{LABEL}:abc"]],
+    ids=["bare", "two", "zero", "word"],
+)
+def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str]) -> None:
+    r = _run(tmp_path, _payload(labels=labels))
+    assert (r.decision, r.posted("state")) == ("conflict", "failure")
+    assert "exactly one" in r.posted("description")
 
 
 def test_an_exempt_author_needs_no_decision(tmp_path: Path) -> None:
@@ -117,7 +132,7 @@ def test_exemption_ignores_account_type(tmp_path: Path) -> None:
 
 def test_a_label_still_wins_over_the_exemption(tmp_path: Path) -> None:
     """A maintainer can still ask for the lane on a bot's pull request."""
-    r = _run(tmp_path, _payload(author="DeployDuck", labels=[LABEL]), EXEMPT_AUTHORS_INPUT="DeployDuck")
+    r = _run(tmp_path, _payload(author="DeployDuck", labels=[f"{LABEL}:all"]), EXEMPT_AUTHORS_INPUT="DeployDuck")
     assert r.decision == "run"
     assert r.posted("description") == "Decision recorded"
 

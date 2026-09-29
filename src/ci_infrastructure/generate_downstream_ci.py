@@ -185,7 +185,7 @@ class Manifest:
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
-    downstream_gate_label: str | None = None
+    downstream_exclude: tuple[str, ...] = ()
     generated_header: str = ""
 
 
@@ -222,7 +222,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
-        downstream_gate_label=raw.downstream_gate.label if raw.downstream_gate else None,
+        downstream_exclude=raw.downstream.exclude if raw.downstream else (),
         generated_header=_normalise_header(raw.generated.header if raw.generated else ""),
     )
 
@@ -1135,6 +1135,17 @@ def render_orchestrator_workflow(
         for r in self_closure[orig_key]["consumers"]:
             origins.setdefault(by_repo[r].package_name, set()).add(orig_key)
 
+    fanout = {by_repo[r].package_name for c in self_closure.values() for r in c["consumers"]}
+    if unknown := sorted(set(m.downstream_exclude) - fanout):
+        raise SchemaError(
+            f"{m.path}: [downstream].exclude names {unknown}, which are not consumers of {m.repo}; "
+            f"its fan-out is {sorted(fanout)}"
+        )
+    excluded = _excluded_with_dependents(m.downstream_exclude, _cross_package_deps(sorted(origins), by_pkg, lane=lane))
+    for pkg in sorted(excluded - set(m.downstream_exclude)):
+        print(f"::notice::{m.package_name} {lane} fan-out: {pkg} skipped, it depends on an excluded package.")
+    origins = {p: o for p, o in origins.items() if p not in excluded}
+
     if not origins:
         return None
 
@@ -1142,6 +1153,7 @@ def render_orchestrator_workflow(
 
     all_consumers = sorted(origins)
     consumer_deps = _cross_package_deps(all_consumers, by_pkg, lane=lane)
+    levels = _consumer_levels(consumer_deps)
 
     jobs: dict[str, Any] = {
         "validate": _validate_job(),
@@ -1149,12 +1161,14 @@ def render_orchestrator_workflow(
         "report-ci-failure": _report_ci_failure_job(lane),
     }
     consumer_job_ids: list[str] = []
+    job_levels: dict[str, int] = {}
     for cpkg in all_consumers:
         cmanifest = by_pkg[cpkg]
         crepo = cmanifest.repo
         cref = consumer_refs[crepo]
         jid = _orchestrator_job_id(cpkg)
         consumer_job_ids.append(jid)
+        job_levels[jid] = levels[cpkg]
         dep_ids = sorted(_orchestrator_job_id(p) for p in consumer_deps.get(cpkg, set()))
         from_jobs = sorted(origins[cpkg])
         if _edge_needs_dispatch(m, cmanifest):
@@ -1164,9 +1178,7 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    label = m.downstream_gate_label
-    if label:
-        jobs = _apply_label_gate(jobs, label)
+    jobs = _apply_label_gate(jobs, job_levels)
     jobs = _require_context(jobs)
 
     on: dict[str, Any] = {
@@ -1269,11 +1281,15 @@ def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict
                 "    state=failure\n"
                 "  fi\n"
                 "done\n"
+                # check-pr-label only ever outputs `all` or digits here.
+                f'depth="${{{{ {_GATE_DEPTH} }}}}"\n'
+                'scope=""\n'
+                'if [ "$depth" != all ]; then scope=" (up to level $depth)"; fi\n'
             ),
             state='"$state"',
             context=_status_context(lane),
             target_url=_RUN_URL,
-            description=f'"Downstream {_lane_label(lane)} tests $state"',
+            description=f'"Downstream {_lane_label(lane)} tests $state$scope"',
         ),
     )
 
@@ -1309,9 +1325,37 @@ def _cross_package_deps(
     return out
 
 
+def _excluded_with_dependents(exclude: Iterable[str], consumer_deps: Mapping[str, set[str]]) -> set[str]:
+    """`exclude` plus every consumer depending on one of them: it could not resolve that dep."""
+    out = set(exclude)
+    grew = True
+    while grew:
+        grew = False
+        for pkg, deps in consumer_deps.items():
+            if pkg not in out and deps & out:
+                out.add(pkg)
+                grew = True
+    return out
+
+
+def _consumer_levels(consumer_deps: Mapping[str, set[str]]) -> dict[str, int]:
+    """1 + the highest level among a consumer's in-fan-out deps, so a level cut keeps its deps."""
+    levels: dict[str, int] = {}
+
+    def level(pkg: str) -> int:
+        if pkg not in levels:
+            levels[pkg] = 1 + max((level(d) for d in consumer_deps.get(pkg, ())), default=0)
+        return levels[pkg]
+
+    for pkg in consumer_deps:
+        level(pkg)
+    return levels
+
+
 _GATE_JOB_ID: Final = "label-gate"
 # Index syntax, not `needs.label-gate`: a hyphen in a context path parses as minus.
 _GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
+_GATE_DEPTH: Final = f"needs['{_GATE_JOB_ID}'].outputs.depth"
 
 
 def _prepend_need(job: dict[str, Any], jid: str) -> None:
@@ -1319,14 +1363,20 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
     job["needs"] = [jid, *(needs if isinstance(needs, list) else [needs])]
 
 
-def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
-    """A post-pass, so a job added later is gated by construction."""
-    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(label)}
+def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int]) -> dict[str, Any]:
+    """A post-pass, so a job added later is gated by construction; a consumer job also by its level.
+
+    A string compares as a number with `>=`, so `all` and an empty depth never pass it.
+    """
+    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job()}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)
         cond = job.get("if")
         inner = cond[3:-2].strip() if isinstance(cond, str) and cond.startswith("${{") else None
-        job["if"] = f"${{{{ ({inner}) && {_GATE_PASSED} }}}}" if inner else f"${{{{ {_GATE_PASSED} }}}}"
+        gate = _GATE_PASSED
+        if jid in levels:
+            gate += f" && ({_GATE_DEPTH} == 'all' || {_GATE_DEPTH} >= {levels[jid]})"
+        job["if"] = f"${{{{ ({inner}) && {gate} }}}}" if inner else f"${{{{ {gate} }}}}"
         gated[jid] = job
     return gated
 
@@ -1361,7 +1411,7 @@ def _context_job() -> dict[str, Any]:
     }
 
 
-def _label_gate_job(label: str) -> dict[str, Any]:
+def _label_gate_job() -> dict[str, Any]:
     """Not gated on CI success: report-ci-failure needs it too.
 
     Uses github.token with explicit `permissions`; an App token 403s on non-public repos.
@@ -1369,16 +1419,13 @@ def _label_gate_job(label: str) -> dict[str, Any]:
     return {
         "runs-on": SLIM_RUNNER,
         "permissions": {"pull-requests": "read"},
-        "outputs": {"run": "${{ steps.gate.outputs.run }}"},
+        "outputs": {"run": "${{ steps.gate.outputs.run }}", "depth": "${{ steps.gate.outputs.depth }}"},
         "steps": [
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
                 "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
-                "with": {
-                    "label": label,
-                    "sha": _HEAD_SHA,
-                },
+                "with": {"sha": _HEAD_SHA},
             },
         ],
     }

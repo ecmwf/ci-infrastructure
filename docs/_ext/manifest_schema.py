@@ -24,7 +24,7 @@ _TABLES = [
     ("[[deps]]", manifest.DepTable),
     ("[matrix.<kind>]", manifest.MatrixKindTable),
     ("[[trigger-downstream]]", manifest.TriggerDownstreamTable),
-    ("[downstream-gate]", manifest.DownstreamGateTable),
+    ("[downstream]", manifest.DownstreamTable),
     ("[generated]", manifest.GeneratedTable),
 ]
 
