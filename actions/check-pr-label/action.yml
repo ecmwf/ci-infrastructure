@@ -68,7 +68,8 @@ runs:
               found+=("$name")
             fi
           done < <(jq -r '.[] | select(.state == "open") | .labels[].name' "$pulls")
-          level="${found[0]#"$LABEL_INPUT:"}"
+          level=""
+          if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
 
           if [ "${#found[@]}" -eq 0 ]; then
             run=false
