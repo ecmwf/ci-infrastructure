@@ -218,8 +218,8 @@ class MatrixKindTable(_Table):
     A leg (`[[matrix.<kind>.include]]`) is free-form: every field is available to
     the kind's action or job script. An HPC leg names its recipe in `job-script`. `platform` is required and names the
     binary-compatibility class; `build-type`, `python-version`, `options` and the
-    `compiler-inputs` fields enter the artifact name; `runs-on` (which may name a
-    runner class) and `container` only schedule the job.
+    `compiler-inputs` fields enter the artifact name; `runs-on` and `container`
+    only schedule the job.
     """
 
     triggers: tuple[str, ...] = Field(

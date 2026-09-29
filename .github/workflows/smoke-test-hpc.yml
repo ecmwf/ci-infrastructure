@@ -45,7 +45,7 @@ jobs:
           FULL: ${{ github.event.inputs.full-matrix }}
         run: |
           set -euo pipefail
-          arc='{"lane":"arc","runner":"arc-hpc-pet-vsphere-prod","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
+          arc='{"lane":"arc","runner":"hpc-submit","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
           hpc='{"lane":"hpc","runner":"hpc","container":""}'
           if [ "${FULL:-false}" = "true" ]; then
             matrix="{\"lane\":[\"arc\",\"hpc\"],\"site\":[\"hpc-batch\",\"ac-batch\"],\"include\":[$arc,$hpc]}"
