@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   cleanup:
-    runs-on: arc-hpc-pet-vsphere-prod
+    runs-on: hpc-submit
     container:
       image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
       credentials:

@@ -65,7 +65,6 @@ from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 from .manifest import DepTable
 from .manifest import validate as validate_manifest
-from .runners import resolve_runner
 from .sync_branch import is_sync_branch
 
 # Leg fields that enter the artifact name; `runs-on`/`container` are scheduling only.
@@ -908,11 +907,7 @@ def _run(
                 "ctest-args": ctest.args,
                 "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }
-            merged = {**entry, "_resolved": resolved_block}
-            # Here, not in the workflow: `runs-on: ${{ matrix['runs-on'] }}` is not re-evaluated.
-            if "runs-on" in merged:
-                merged["runs-on"] = resolve_runner(merged["runs-on"])
-            out_include.append(merged)
+            out_include.append({**entry, "_resolved": resolved_block})
 
         matrices_out[mname] = {"include": out_include}
 
