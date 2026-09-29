@@ -85,10 +85,10 @@ supports ``DESTDIR`` can stage onto node-local disk instead (see
    platform = "hpc-atos-gnu"          # ABI class -> artifact slug (verbatim in the name)
    runs-on = "hpc-submit"             # runner class, mapped in runners.RUNNER_CLASSES
    site = "hpc-batch"                 # troika site from troika-config.yml (scheduling only)
+   job-script = "./.ci/hpc/build-gnu.sh"  # the repo-owned recipe (its own #SBATCH header)
 
    [matrix.build]
    execution = "hpc"                  # selects the SLURM path
-   job-script = "./.ci/hpc/build-gnu.sh"  # the repo-owned recipe (its own #SBATCH header)
    triggers = ["upstream-change", "rebuild-request"]
    forwarded-deps-outputs = ["cmake-prefix-path"]
    needs = ["fortmath/build"]
@@ -106,7 +106,7 @@ set org-wide is one edit there instead of one per manifest leg. A value that is
 not a class passes through verbatim, so a literal label still works.
 
 Name a **plain** recipe after its toolchain (``build-gnu.sh``, ``build-intel.sh``, …)
-even when a repo has only one: ``[matrix.<kind>] job-script`` is a default, and a
+even when a repo has only one: ``[matrix.<kind>.defaults] job-script`` is a default, and a
 file called ``build.sh`` that loads ``prgenv/gnu`` is a generic name doing specific
 work. A **templated** recipe is the opposite case and is named ``build.sh.j2``
 precisely because it hardcodes no toolchain — see below.
@@ -136,9 +136,11 @@ The leg is then the single statement of the toolchain, so the recipe and the
    cc = "gcc"
    cxx = "g++"
 
+   [matrix.build-hpc.defaults]
+   job-script = "./.ci/hpc/build.sh.j2"   # one recipe for every leg
+
    [matrix.build-hpc]
    execution  = "hpc"
-   job-script = "./.ci/hpc/build.sh.j2"   # one recipe for every leg
 
 .. code:: jinja
 

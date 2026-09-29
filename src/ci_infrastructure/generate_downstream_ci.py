@@ -150,13 +150,11 @@ class MatrixKind:
     legs: Sequence[dict[str, Any]]  # after reuse-matrix resolution
     execution: Execution
     action: str
-    job_script: str | None
     forwarded_inputs: tuple[str, ...]
     forwarded_deps_outputs: tuple[str, ...]
     publishes: bool
     container_credentials: bool
     ctest: bool
-    ctest_args: str
     artifact_prefix: str | None = None
 
 
@@ -243,23 +241,24 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             if body.action:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] sets execution = 'hpc' and `action`; "
-                    "HPC kinds run the shared build-on-hpc action — drop `action` and set `job-script`"
+                    "HPC kinds run the shared build-on-hpc action — drop `action` and give the legs a `job-script`"
                 )
-            if body.triggers and not body.job_script:
+            if body.triggers and not all(leg.get("job-script") for leg in legs):
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
-                    "execution = 'hpc' but has no `job-script`; there is no build recipe to submit"
+                    "execution = 'hpc' but a leg has no `job-script`; there is no build recipe to submit. "
+                    f"Set it in [matrix.{kind}.defaults] or on the leg"
                 )
             if body.ctest:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc'; "
-                    f"run ctest inside {body.job_script or 'the job-script'} instead, "
+                    "run ctest inside the job-script instead, "
                     "where it executes on the compute node"
                 )
         else:
-            if body.job_script:
+            if any("job-script" in leg for leg in legs):
                 raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets `job-script` but execution is 'runner'; "
+                    f"{path}: [matrix.{kind}] has a leg with `job-script` but execution is 'runner'; "
                     "`job-script` only applies to execution = 'hpc'"
                 )
             if body.triggers and not body.action:
@@ -267,11 +266,11 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
                     "but has no `action`; cross-repo-trigger.yml has nothing to invoke"
                 )
-
-        if body.ctest_args and not body.ctest:
-            raise SchemaError(
-                f"{path}: [matrix.{kind}] sets `ctest-args` without `ctest = true`; the arguments would never be used"
-            )
+            if not body.ctest and any("ctest-args" in leg for leg in legs):
+                raise SchemaError(
+                    f"{path}: [matrix.{kind}] has a leg with `ctest-args` but no `ctest = true`; "
+                    "the arguments would never be used"
+                )
 
         if body.ctest and not body.publishes:
             raise SchemaError(
@@ -298,13 +297,11 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             legs=legs,
             execution=body.execution,
             action=body.action,
-            job_script=body.job_script or None,
             forwarded_inputs=tuple(body.forwarded_inputs),
             forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
             container_credentials=body.container_credentials,
             ctest=body.ctest,
-            ctest_args=body.ctest_args.strip(),
             artifact_prefix=body.artifact_prefix,
         )
     return resolved
@@ -421,7 +418,7 @@ def validate_job_templates(m: Manifest) -> None:
         if mk.execution != EXECUTION_HPC:
             continue
         for leg in mk.legs:
-            spec = str(leg.get("job-script") or mk.job_script or "")
+            spec = str(leg.get("job-script") or "")
             if not jobscript.is_job_template(spec):
                 continue
             path = m.repo_root / spec.removeprefix("./")
@@ -868,10 +865,9 @@ def _action_call_step(mk: MatrixKind) -> Step:
 
 def _hpc_build_step(mk: MatrixKind) -> Step:
     """A drop-in for _action_call_step that also publishes."""
-    assert mk.job_script is not None
     with_block: dict[str, str] = {
         "site": "${{ matrix.site }}",
-        "job-script": f"${{{{ matrix.job-script || '{mk.job_script}' }}}}",
+        "job-script": "${{ matrix.job-script }}",
         "matrix-leg": "${{ toJSON(matrix) }}",
         "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
@@ -923,12 +919,13 @@ def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
     return step
 
 
-def _ctest_step(mk: MatrixKind) -> Step:
+def _ctest_step() -> Step:
     """Before publishing: the store cannot tell a tested artifact from an untested one."""
-    cmd = 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure'
-    if mk.ctest_args:
-        cmd = f"{cmd} {mk.ctest_args}"
-    return {"name": "Test", "run": cmd}
+    return {
+        "name": "Test",
+        "run": 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure '
+        "${{ matrix._resolved['ctest-args'] }}",
+    }
 
 
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
@@ -985,7 +982,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         steps.append(_action_call_step(mk))
         if mk.publishes:
             if mk.ctest:
-                steps.append(_ctest_step(mk))
+                steps.append(_ctest_step())
             steps.append(
                 {
                     "name": "Publish",

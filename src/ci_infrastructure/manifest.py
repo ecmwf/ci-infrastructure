@@ -216,7 +216,7 @@ class MatrixKindTable(_Table):
     """`[matrix.<kind>]`: one job kind and its legs.
 
     A leg (`[[matrix.<kind>.include]]`) is free-form: every field is available to
-    the kind's action or job script. `platform` is required and names the
+    the kind's action or job script. An HPC leg names its recipe in `job-script`. `platform` is required and names the
     binary-compatibility class; `build-type`, `python-version`, `options` and the
     `compiler-inputs` fields enter the artifact name; `runs-on` (which may name a
     runner class) and `container` only schedule the job.
@@ -252,11 +252,6 @@ class MatrixKindTable(_Table):
         description="Runner kinds: the local composite the job calls, `./.github/actions/<name>`. Required with "
         "`triggers`.",
     )
-    job_script: str = Field(
-        default="",
-        alias="job-script",
-        description="HPC kinds: the recipe submitted to SLURM. Required with `triggers`.",
-    )
     forwarded_inputs: tuple[str, ...] = Field(
         default=(), alias="forwarded-inputs", description="Leg fields passed to the action's `with:`."
     )
@@ -283,9 +278,10 @@ class MatrixKindTable(_Table):
         description="Pull the leg's `container` with registry credentials.",
     )
     ctest: bool = Field(
-        strict=True, default=False, description="Run ctest on the build tree before publishing; runner kinds only."
+        strict=True,
+        default=False,
+        description="Run ctest on the build tree before publishing, with the leg's `ctest-args`; runner kinds only.",
     )
-    ctest_args: str = Field(default="", alias="ctest-args", description="Extra ctest arguments; needs `ctest = true`.")
 
     @model_validator(mode="before")
     @classmethod

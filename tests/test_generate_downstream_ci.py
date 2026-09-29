@@ -148,8 +148,8 @@ _CTEST_MANIFEST: Final = """
             id="empty-artifact-prefix",
         ),
         pytest.param(
-            _CTEST_MANIFEST.format(extra='ctest-args = "-E slow"'),
-            "ctest-args.*without",
+            _CTEST_MANIFEST.format(extra='defaults.ctest-args = "-E slow"'),
+            "ctest-args.*no `ctest = true`",
             id="ctest-args-without-ctest",
         ),
         pytest.param(
@@ -157,7 +157,7 @@ _CTEST_MANIFEST: Final = """
             [matrix.build-hpc]
             execution = "hpc"
             triggers = ["rebuild-request"]
-            job-script = "./.ci/hpc/build.sh"
+            defaults.job-script = "./.ci/hpc/build.sh"
             ctest = true
             needs = []
 
@@ -421,10 +421,10 @@ def test_ctest_absent_by_default(tmp_path: Path) -> None:
     assert "ctest" not in render_single(tmp_path, _CTEST_MANIFEST.format(extra=""))
 
 
-def test_ctest_step_runs_before_publish_with_args_verbatim(tmp_path: Path) -> None:
+def test_ctest_step_runs_before_publish_with_the_legs_args(tmp_path: Path) -> None:
     """A failing test ends the job before publish, so no red build reaches the store."""
-    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra='ctest = true\n    ctest-args = "-L nightly -E s_http"'))
-    assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure -L nightly -E s_http' in out
+    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra="ctest = true"))
+    assert "--output-on-failure ${{ matrix._resolved['ctest-args'] }}" in out
     assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
 
 
@@ -917,7 +917,6 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["upstream-change", "rebuild-request"]
-        job-script = "./.ci/hpc/build.sh"
         needs = {needs}
         [[matrix.build-hpc.include]]
         runs-on = "hpc"
@@ -1313,7 +1312,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
         return (
             f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
             '[matrix.build-hpc]\nexecution = "hpc"\ntriggers = ["rebuild-request"]\n'
-            'job-script = "./.ci/hpc/build.sh"\nneeds = []\n'
+            "needs = []\n"
             '[[matrix.build-hpc.include]]\nruns-on = "hpc"\nsite = "hpc-batch"\n'
             'job-script = "./.ci/hpc/build.sh"\n'
         )
@@ -1420,7 +1419,6 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["upstream-change"]
-        job-script = "./.ci/hpc/build.sh"
         needs = ["d/build-hpc"]
         [[matrix.build-hpc.include]]
         runs-on = "hpc"
@@ -1740,7 +1738,7 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
         action = "./.github/actions/build-a"
         needs = []
         ctest = true
-        ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+        defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
 
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1992,16 +1990,16 @@ _SCHEDULING_ONLY_LEGS: Final = """
         [[matrix.build.include]]
         build-type = "Release"
         platform = "hpc-atos-gnu"
-        job-script = "./.ci/hpc/build-gnu.sh"
+        build-script = "./.ci/hpc/build-gnu.sh"
 
         [[matrix.build.include]]
         build-type = "Release"
         platform = "hpc-atos-gnu"
-        job-script = "./.ci/hpc/build-geo.sh"
+        build-script = "./.ci/hpc/build-geo.sh"
         """,
             ),
             "same artifact identity",
-            id="differ-only-in-job-script",
+            id="differ-only-in-a-free-field",
         ),
         pytest.param(
             _pkg(
@@ -2078,7 +2076,7 @@ platform = "p"
 [matrix.build-hpc]
 triggers = ["upstream-change"]
 execution = "hpc"
-job-script = "./.ci/hpc/build.sh"
+defaults.job-script = "./.ci/hpc/build.sh"
 [[matrix.build-hpc.include]]
 platform = "hpc-p"
 """
@@ -2098,7 +2096,7 @@ platform = "p"
 [matrix.build-hpc]
 triggers = ["upstream-change"]
 execution = "hpc"
-job-script = "./.ci/hpc/build.sh"
+defaults.job-script = "./.ci/hpc/build.sh"
 [[matrix.build-hpc.include]]
 platform = "hpc-p"
 [matrix.test]

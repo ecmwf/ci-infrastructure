@@ -20,7 +20,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
           _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
-          _resolved.ctest-args            this kind's [matrix.<kind>].ctest-args ("" if unset)
+          _resolved.ctest-args            the leg's ctest-args ("" if unset)
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
 
@@ -157,12 +157,6 @@ class PackageSpec:
     compiler_inputs: Sequence[str]
 
 
-@dataclass(frozen=True)
-class CtestSpec:
-    enabled: bool = False
-    args: str = ""
-
-
 @dataclass
 class Manifest:
     package: PackageSpec
@@ -170,7 +164,7 @@ class Manifest:
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # Kinds publishing a secondary artifact under their own prefix; others use package.prefix.
     artifact_prefix_by_kind: dict[str, str] = field(default_factory=dict)
-    ctest_by_kind: dict[str, CtestSpec] = field(default_factory=dict)
+    ctest_by_kind: dict[str, bool] = field(default_factory=dict)
     # Picks which of a producer's lane workflows a recovery rebuild fires.
     execution_by_kind: dict[str, Execution] = field(default_factory=dict)
 
@@ -271,6 +265,8 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
             matrix[kind] = list(resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks))
         except ManifestSchemaError as e:
             raise ValueError(str(e)) from e
+        if any(not isinstance(leg.get("ctest-args", ""), str) for leg in matrix[kind]):
+            raise ValueError(f"[matrix.{kind}] ctest-args must be a string")
 
     return Manifest(
         package=PackageSpec(
@@ -282,7 +278,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         deps=[_to_dep_spec(d) for d in raw.deps],
         matrix=matrix,
         artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
-        ctest_by_kind={k: CtestSpec(enabled=b.ctest, args=b.ctest_args.strip()) for k, b in raw.matrix.items()},
+        ctest_by_kind={k: b.ctest for k, b in raw.matrix.items()},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
@@ -865,7 +861,7 @@ def _run(
 
         out_include: list[dict[str, Any]] = []
         own_prefix_override = local_manifest.artifact_prefix_by_kind.get(mname)
-        ctest = local_manifest.ctest_by_kind.get(mname, CtestSpec())
+        ctest = local_manifest.ctest_by_kind.get(mname, False)
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         for entry in include:
             deps_resolved, own = resolve_leg(
@@ -909,8 +905,8 @@ def _run(
                     for s in local_manifest.deps
                     if s.applies_to(entry)
                 ),
-                "ctest": ctest.enabled,
-                "ctest-args": ctest.args,
+                "ctest": ctest,
+                "ctest-args": str(entry.get("ctest-args", "")).strip(),
                 "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }
             merged = {**entry, "_resolved": resolved_block}
