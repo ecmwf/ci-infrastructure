@@ -97,26 +97,23 @@ runs:
 
         has_label() { jq -e --arg l "$1" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; }
 
-        bare=false
-        levels=()
+        found=()
         while IFS= read -r name; do
-          if [ "$name" = "$LABEL_INPUT" ]; then
-            bare=true
-          elif [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
-            levels+=("${name#"$LABEL_INPUT:"}")
+          if [ "$name" = "$LABEL_INPUT" ] || [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
+            found+=("$name")
           fi
         done < <(jq -r '.pull_request.labels[].name' "$event")
+        level=""
+        if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
 
-        if $bare || [ "${#levels[@]}" -gt 1 ] ||
-           { [ "${#levels[@]}" -eq 1 ] && [ "${levels[0]}" != all ] && ! [[ "${levels[0]}" =~ ^[1-9][0-9]*$ ]]; }; then
-          decision=conflict
-        elif [ "${#levels[@]}" -eq 1 ]; then
+        if [ "${#found[@]}" -eq 0 ]; then
+          if has_label "$OPT_OUT_INPUT"; then decision=skip; else decision=undecided; fi
+        elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
+             { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
           decision=run
-          has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '$LABEL_INPUT:${levels[0]}' and '$OPT_OUT_INPUT' are set; treating this as '$LABEL_INPUT:${levels[0]}'."
-        elif has_label "$OPT_OUT_INPUT"; then
-          decision=skip
+          has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '${found[0]}' and '$OPT_OUT_INPUT' are set; treating this as '${found[0]}'."
         else
-          decision=undecided
+          decision=conflict
         fi
 
         # Compared in jq, so a login is never a shell glob.
