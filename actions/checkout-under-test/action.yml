@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Check out the commit under test
+description: >
+  actions/checkout of the PR merge commit when the event has one (also under
+  pull_request_target), else the default ref. This repository only; cross-repo
+  matching is actions/pick-ref.
+
+inputs:
+  ref:
+    description: 'Check out this ref instead, e.g. the tested head sha in a workflow_run orchestrator.'
+    required: false
+    default: ''
+  token:
+    description: 'Token for the checkout. Defaults to github.token.'
+    required: false
+    default: ''
+  path:
+    description: 'Relative path under $GITHUB_WORKSPACE to check out into.'
+    required: false
+    default: ''
+  fetch-depth:
+    description: 'Commits to fetch; 0 for all history.'
+    required: false
+    default: '1'
+  submodules:
+    description: "'true', 'recursive', or 'false'."
+    required: false
+    default: 'false'
+  persist-credentials:
+    description: 'Leave the token in the local git config for later git commands.'
+    required: false
+    default: 'true'
+  allow-unsafe-pr-checkout:
+    description: >
+      'true' allows checking out a fork under pull_request_target/workflow_run.
+      Set it only on jobs gated by actions/require-ci-approval.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        ref: ${{ inputs.ref || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '') }}
+        token: ${{ inputs.token || github.token }}
+        path: ${{ inputs.path }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        allow-unsafe-pr-checkout: ${{ inputs.allow-unsafe-pr-checkout }}
