@@ -21,12 +21,6 @@ GitHub Actions that wire it into workflow YAML.
    tutorial/index
 
 .. toctree::
-   :caption: How-to guides
-   :maxdepth: 1
-
-   howto/hpc
-
-.. toctree::
    :caption: Reference
    :maxdepth: 1
 
@@ -34,3 +28,4 @@ GitHub Actions that wire it into workflow YAML.
    reference/runners
    reference/actions/index
    reference/cli/index
+   reference/hpc

@@ -83,4 +83,4 @@ Fork pull requests
 
 A pull request from a fork runs this workflow as well, only without access to secrets.
 On a self-hosted runner this means outside code on our hardware.
-How to guard against this is the subject of :doc:`fork-pull-requests`.
+This is why fork pull requests are not supported yet, see :doc:`fork-pull-requests`.

@@ -66,7 +66,7 @@ ghactions_groups = [
     ),
     (
         "HPC",
-        "Build on the cluster. Move trees to and from it. See :doc:`../../../howto/hpc`.",
+        "Build on the cluster. Move trees to and from it. See :doc:`../../hpc`.",
         ["build-on-hpc", "push-hpc-tree", "fetch-hpc-tree", "remove-hpc-tree"],
     ),
     (

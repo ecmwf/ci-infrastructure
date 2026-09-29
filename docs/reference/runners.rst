@@ -29,17 +29,16 @@ The following runner groups for the CI exist on the self-hosted Kubernetes clust
      - 4 / 16
      - 8 / 32 GiB
      - 50 GiB
-   * - ``arc-hpc-pet-vsphere-prod`` or ``hpc-submit``
+   * - ``hpc-submit``
      - —
      - —
      - 50 GiB
 
-The HPC is reached through the runner class ``hpc-submit``.
-It resolves to ``arc-hpc-pet-vsphere-prod``.
+The HPC is reached through the runner group ``hpc-submit``.
 These runners are small and cheap and are not meant for heavy lifting.
 They ship sources and dependencies to the HPC and submit the job to the queue.
 Afterwards they copy the artifacts back and store it in S3.
-See :doc:`../howto/hpc`.
+See :doc:`../tutorial/hpc`.
 To access the HPC you need to run on the HPC runner group and also need an HPC image (see below).
 
 If you suspect a problem with the runners, trigger

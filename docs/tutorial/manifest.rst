@@ -78,11 +78,11 @@ The build configurations
    forwarded-inputs = ["c-compiler", "cxx-compiler", "build-type"]
    forwarded-deps-outputs = ["cmake-prefix-path"]
    ctest = true
-   ctest-args = '-j "$(nproc)"'
 
    [matrix.build.defaults]
    build-type = "RelWithDebInfo"
    runs-on = "arc-runner-very-large"
+   ctest-args = '-j "$(nproc)"'
 
    [[matrix.build.include]]
    cxx-compiler = "g++-13"
@@ -98,7 +98,9 @@ The build configurations
 
 A ``[matrix.<kind>]`` describes one kind of job, here ``build``,
 and each ``[[matrix.<kind>.include]]`` adds one configuration of it, a *leg*.
-``[matrix.<kind>.defaults]`` holds the fields every leg shares.
+``[matrix.<kind>.defaults]`` holds the fields every leg shares, and a leg's own field wins.
+The kind's fields describe how the job runs and are checked against a fixed schema,
+whereas everything that may differ between legs is a leg field.
 A leg is otherwise free-form, with one required field, ``platform``,
 which names the binary-compatibility class.
 It is the developer's responsibility to specify matching platforms.
@@ -251,13 +253,12 @@ Condensed from eckit's ``ci.yml``:
 
 Each leg arrives with its own fields unchanged,
 so ``matrix.runs-on``, ``matrix.container`` and ``matrix.cxx-compiler``
-are what the manifest declares, with ``defaults`` filled in
-and a runner class such as ``hpc-submit`` replaced by its runner label.
+are what the manifest declares, with ``defaults`` filled in.
 In addition, :action:`resolve-deps` attaches a ``_resolved`` object to every leg:
 
 - ``_resolved.deps``: the resolved dependencies, which :action:`fetch-deps` downloads
 - ``_resolved.own-artifact-name``: the name under which :action:`publish-artifact` stores the result
-- ``_resolved.ctest-args``: the kind's ``ctest-args``, so that the ``ci.yml`` and the downstream runs test alike
+- ``_resolved.ctest-args``: the leg's ``ctest-args``, so that the ``ci.yml`` and the downstream runs test alike
 - ``_resolved.job-name``: a readable title for the leg
 
 Both jobs run in an official image, which has ci-infrastructure baked in,

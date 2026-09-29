@@ -16,5 +16,4 @@ eckit serves as the running example.
    downstream
    feature-branches
    hpc
-   pull-requests
    fork-pull-requests

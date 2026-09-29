@@ -2,14 +2,23 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-Fork pull requests and CI approval
-==================================
+Fork pull requests
+==================
 
-A pull request from a fork runs outside code on our self-hosted runners, close to the credentials they hold.
-It therefore runs only after a maintainer has approved it.
+CI for pull requests from forks is deliberately not supported yet.
+A fork's code is untrusted, and there are two ways in which it could do harm:
 
-- why a fork is different from a branch in the repository
-- :action:`require-ci-approval` and the ``approved-for-ci`` label
-- the approval is single-use: a new push needs a new approval
-- the order of labels: ``run-downstream-ci:all`` or ``run-downstream-ci:<n>`` before CI finishes, ``approved-for-ci`` last
-- ``pull_request`` today, ``pull_request_target`` as the end state
+- it runs on ECMWF hardware, i.e. on the self-hosted runners and, through them, on the HPC;
+- it reads the secrets of the workflow, e.g. the GitHub App key or the registry credentials.
+
+The ``ci.yml`` therefore runs on ``pull_request``, which is preferred over ``pull_request_target``.
+Under ``pull_request`` a fork's run gets neither secrets nor a token that can write,
+whereas ``pull_request_target`` runs in the context of the base repository with both.
+In addition, :action:`require-ci-approval` keeps a fork's run off the self-hosted runners
+until a maintainer has reviewed the change and set the ``approved-for-ci`` label.
+No workflow checks out a fork's code in a trusted context:
+``actions/checkout`` refuses this under ``pull_request_target`` and ``workflow_run``,
+and nothing sets ``allow-unsafe-pr-checkout`` to override it.
+
+If fork pull requests become relevant for your repository,
+please open an `issue in ci-infrastructure <https://github.com/ecmwf/ci-infrastructure/issues>`__.
