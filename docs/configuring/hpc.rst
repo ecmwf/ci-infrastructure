@@ -21,7 +21,7 @@ The compute node itself needs neither a GitHub token nor access to the artifact 
 The manifest
 ------------
 
-eccodes declares its HPC kind next to its ``build`` kind:
+``eccodes`` declares its HPC kind next to its ``build`` kind:
 
 .. code:: toml
 
@@ -58,7 +58,7 @@ A build on the HPC usually needs control over the exact modules, the job's resou
 so these are leg fields such as ``modules`` and ``time`` above.
 ``[matrix.build-hpc.defaults]`` holds the fields that all legs share,
 and a leg's own field wins.
-The two legs of eccodes therefore differ only in ``options``,
+The two legs of ``eccodes`` therefore differ only in ``options``,
 which selects a preset from the package's ``CMakePresets.json``.
 ``platform`` names the toolchain as part of the artifact name, e.g. ``hpc-atos-gnu``,
 since it differs from the runners' images.
@@ -117,7 +117,7 @@ The template consists of blocks, ``sbatch``, ``preflight``, ``configure``, ``bui
 and a package overrides only those in which it differs;
 ``{{ super() }}`` keeps the shared content.
 
-eccodes, for example, downloads its test data before running the tests,
+``eccodes``, for example, downloads its test data before running the tests,
 so that a failed download does not show up as dozens of unrelated test failures:
 
 .. code:: jinja

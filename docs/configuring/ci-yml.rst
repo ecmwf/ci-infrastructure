@@ -6,7 +6,7 @@ Write your ci.yml
 =================
 
 First and foremost, a repository can always simply write its own CI.
-ci-infrastructure does not replace GitHub Actions, it only adds building blocks to it;
+``ci-infrastructure`` does not replace GitHub Actions, it only adds building blocks to it;
 especially for reusing other artifacts from the ECMWF stack.
 If GitHub Actions is new to you, start with
 `Understanding GitHub Actions <https://docs.github.com/en/actions/get-started/understand-github-actions>`__
@@ -59,7 +59,7 @@ The tests run on the self-hosted ``arc-runner-normal`` group inside one of the o
 the runner groups and images to choose from are listed in :doc:`../reference/runners`.
 :action:`announce-image` comes first in every job with a ``container:``,
 so that the log states which image the job ran in.
-The virtual environment keeps the project's packages apart from ci-infrastructure,
+The virtual environment keeps the project's packages apart from ``ci-infrastructure``,
 which is installed into the same interpreter.
 
 The workflow's name matters

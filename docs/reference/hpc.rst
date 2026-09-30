@@ -39,7 +39,7 @@ a queued job, a dropped connection or a timeout means to keep waiting.
 The build script
 ----------------
 
-ci-infrastructure wraps the build script with ``#SBATCH --output/--error``,
+``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
 the variables ``CMAKE_PREFIX_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
@@ -166,7 +166,7 @@ Presets need CMake 3.21.
      ]
    }
 
-Every package loads the template from ci-infrastructure ``@main``.
+Every package loads the template from ``ci-infrastructure`` ``@main``.
 A changed template must therefore rebuild every HPC artifact,
 which is why the artifact names carry ``-hpcv<N>``, with ``N`` = ``HPC_TEMPLATE_VERSION`` (no segment for 0).
 A test fails until a changed template comes with a new version.

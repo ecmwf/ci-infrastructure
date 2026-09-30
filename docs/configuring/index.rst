@@ -5,8 +5,8 @@
 Configuring the CI
 ++++++++++++++++++
 
-This tutorial brings a repository onto ci-infrastructure, step by step.
-eckit serves as the running example.
+This tutorial brings a repository onto ``ci-infrastructure``, step by step.
+``eckit`` serves as the running example.
 
 .. toctree::
    :maxdepth: 1

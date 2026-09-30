@@ -69,17 +69,17 @@ The public images need no authentication.
 The private images are needed to connect to the HPC and require credentials.
 Accessing the HPC requires an HPC image **and** the HPC runner group (see above).
 
-The official images have ci-infrastructure baked in.
+The official images have ``ci-infrastructure`` baked in.
 :action:`ensure-infrastructure-present` then reuses it and installs nothing.
 Right after a merge to ``main`` the baked copy is stale until the images are republished.
 The action then warns and installs from the checkout.
 
-Your own images work too, but every job pip-installs ci-infrastructure into a venv.
+Your own images work too, but every job pip-installs ``ci-infrastructure`` into a venv.
 That needs Python >= 3.11.2 in the image and outbound access to PyPI and GitHub.
 To skip the install, build ``FROM`` an official ``base`` image.
 Re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
 
-To add/modify a public image, open a PR in ci-infrastructure.
+To add/modify a public image, open a PR in ``ci-infrastructure``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
 The ``base`` image of each platform shows what an image is expected to supply.
 The rules for images are in

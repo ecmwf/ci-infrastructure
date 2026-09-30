@@ -16,7 +16,7 @@ which are then prepared on ``sync-branch/`` or ``feature/`` branches of the same
 Declaring the graph
 -------------------
 
-The producer lists the repositories to build after a change, eckit for example triggers eccodes:
+The producer lists the repositories to build after a change, ``eckit`` for example triggers ``eccodes``:
 
 .. code:: toml
 
@@ -36,12 +36,12 @@ this allows to exclude heavy tests, such as ``valgrind``, from the downstream CI
 ``triggers = ["upstream-change"]`` builds the kind when an upstream changes,
 ``"rebuild-request"`` when a consumer finds one of its artifacts missing.
 The order follows from ``[[deps]]``:
-eccodes' ``build`` waits for the ``build`` kinds of ecbuild, stack-dependencies and eckit,
+``eccodes``' ``build`` waits for the ``build`` kinds of ``ecbuild``, ``stack-dependencies`` and ``eckit``,
 its ``build-hpc`` for their ``build-hpc``.
 The downstream graph is a subset of the dependency graph (in the other direction):
 every repository in ``[[trigger-downstream]]`` must list the producer in its ``[[deps]]``,
 but not every dependency has to trigger its consumers.
-The graph is transitive as well, so a change in ecbuild also reaches eccodes through eckit.
+The graph is transitive as well, so a change in ``ecbuild`` also reaches ``eccodes`` through ``eckit``.
 :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>` checks these rules; see :doc:`../reference/manifest`.
 
 The generated workflows
@@ -70,13 +70,13 @@ When to run it
 --------------
 
 Downstream CI can be costly:
-a change in a package low in the stack, such as ecbuild, builds most of the stack again.
+a change in a package low in the stack, such as ``ecbuild``, builds most of the stack again.
 Many pull requests, e.g. to documentation or CI, cannot break a consumer,
 so a pull request fans out only when it asks for it, with exactly one label:
 
 - ``run-downstream-ci:all`` builds every consumer.
 - ``run-downstream-ci:<n>`` builds the consumers up to level ``n``.
-  From ecbuild, eckit and ecflow are level 1, and eccodes is level 2 because it needs eckit.
+  From ``ecbuild``, ``eckit`` and ``ecflow`` are level 1, and ``eccodes`` is level 2 because it needs ``eckit``.
   A level cut never builds a package without the packages it needs.
 
 Since ``ci.yml`` also runs on ``labeled``, adding the label later starts a fresh ``CI`` run by itself,

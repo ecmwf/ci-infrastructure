@@ -13,7 +13,7 @@ and :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generat
 Both validate the manifest, reject unknown keys
 and enforce constraints, such as the dependencies being a directed, acyclic graph.
 The formal specification and complete list of fields is in :doc:`../reference/manifest`.
-This page builds up eckit's manifest step by step.
+This page builds up ``eckit``'s manifest step by step.
 
 The package
 -----------
@@ -33,7 +33,7 @@ Since it becomes part of file names and object-store keys,
 it may contain only letters, digits, ``-`` and ``_``.
 ``compiler-inputs`` lists the fields of a build configuration that name the compilers.
 It is a list because a package may compile several languages, e.g. both C++ and Fortran.
-A package that compiles nothing, such as ecbuild, declares ``compiler-inputs = []``.
+A package that compiles nothing, such as ``ecbuild``, declares ``compiler-inputs = []``.
 
 The dependencies
 ----------------
@@ -58,8 +58,8 @@ a coordinated change on a ``sync-branch/`` or ``feature/`` branch uses the upstr
 see :doc:`../using/feature-branches`.
 
 ``compiler-inputs`` must match the upstream's own ``[package].compiler-inputs``,
-so that eckit asks for the stack-dependencies build made with the same compiler as its own.
-Dependencies are transitive: eckit's consumers receive ecbuild and stack-dependencies without declaring them again.
+so that ``eckit`` asks for the ``stack-dependencies`` build made with the same compiler as its own.
+Dependencies are transitive: ``eckit``'s consumers receive ``ecbuild`` and ``stack-dependencies`` without declaring them again.
 
 .. note::
 
@@ -171,11 +171,11 @@ The outputs are fixed:
 ``install-path`` is the tree that :action:`publish-artifact` uploads,
 and ``build-dir`` is where ctest runs when ``ctest = true``.
 How the action gets there is up to the repository.
-eckit delegates everything to :action:`cmake-build`;
+``eckit`` delegates everything to :action:`cmake-build`;
 a package with a more particular build replaces that step with its own,
 as long as it provides ``install-path``, and ``build-dir`` if it runs ctest.
 Often a small addition is enough.
-ecflow, for example, passes its Boost options to :action:`cmake-build` as ``cmake-args``:
+``ecflow``, for example, passes its Boost options to :action:`cmake-build` as ``cmake-args``:
 
 .. code:: yaml
 
@@ -199,7 +199,7 @@ The ``ci.yml`` does not read the manifest itself.
 A ``resolve`` job hands it to :action:`resolve-deps`,
 which returns the legs of each requested kind as a JSON matrix,
 and the build job runs once per leg.
-Condensed from eckit's ``ci.yml``:
+Condensed from ``eckit``'s ``ci.yml``:
 
 .. code:: yaml
 
@@ -261,8 +261,8 @@ In addition, :action:`resolve-deps` attaches a ``_resolved`` object to every leg
 - ``_resolved.ctest-args``: the leg's ``ctest-args``, so that the ``ci.yml`` and the downstream runs test alike
 - ``_resolved.job-name``: a readable title for the leg
 
-Both jobs run in an official image, which has ci-infrastructure baked in,
+Both jobs run in an official image, which has ``ci-infrastructure`` baked in,
 so its actions start without installing it first.
 The environment variables point the actions at the artifact store.
-eckit additionally mints a GitHub App token for :action:`resolve-deps` and :action:`fetch-deps`,
+``eckit`` additionally mints a GitHub App token for :action:`resolve-deps` and :action:`fetch-deps`,
 which raises the API rate limit and gives access to private repositories.

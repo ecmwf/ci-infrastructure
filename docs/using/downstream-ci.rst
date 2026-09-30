@@ -30,7 +30,7 @@ The downstream CI runs only for a pull request, and only if the pull request ask
 
 - ``run-downstream-ci:all`` builds and tests every consumer.
 - ``run-downstream-ci:<n>`` builds and tests the consumers up to level ``n``.
-  In the figures below, eccodes is at level 1 and multio at level 2, as seen from eckit.
+  In the figures below, ``eccodes`` is at level 1 and ``multio`` at level 2, as seen from ``eckit``.
 - ``downstream-ci-not-needed`` states that the change cannot break a consumer,
   e.g. a change to the documentation, to the CI, or to the tests only.
 
@@ -53,7 +53,7 @@ Discussion of different applications
 ++++++++++++++++++++++++++++++++++++
 
 In this section, we discuss four typical situations with the same chain of four repositories,
-ecbuild, eckit, eccodes, and multio, where each arrow points from a repository to the one it depends on.
+``ecbuild``, ``eckit``, ``eccodes``, and ``multio``, where each arrow points from a repository to the one it depends on.
 The figures encode the branch of every repository by its color, blue for ``develop`` and orange for a feature branch.
 A box below a repository is a test:
 its own tests first, and the tests of its downstream consumers in the black box.
@@ -64,9 +64,9 @@ Thus, two test runs are exactly the same test, including their dependencies, if 
 A change on a single branch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We first consider a change of eckit's API on the branch ``api-change``.
-The own CI of eccodes and multio builds against eckit's ``develop`` and hence never sees this change.
-Only eckit's downstream CI builds them against ``api-change``,
+We first consider a change of ``eckit``'s API on the branch ``api-change``.
+The own CI of ``eccodes`` and ``multio`` builds against ``eckit``'s ``develop`` and hence never sees this change.
+Only ``eckit``'s downstream CI builds them against ``api-change``,
 which makes it the one place where the question "do my changes break downstream code?" is actually answered.
 This is the case the downstream CI is made for,
 and it is worth running for every change that can reach a consumer,
@@ -76,25 +76,25 @@ e.g. a change to the public API or ABI, to the behavior, or to the exported CMak
    :alt: eckit is on api-change; only its downstream CI tests eccodes and multio against the change.
    :width: 100%
 
-   eckit is on ``api-change``; only its downstream CI tests eccodes and multio against the change.
+   ``eckit`` is on ``api-change``; only its downstream CI tests ``eccodes`` and ``multio`` against the change.
 
 A coordinated change on a sync branch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Next, eccodes adapts to the new API on a branch with the same name, ``sync-branch/api-change`` (see :doc:`feature-branches`).
+Next, ``eccodes`` adapts to the new API on a branch with the same name, ``sync-branch/api-change`` (see :doc:`feature-branches`).
 At first glance, one could expect that the downstream CI of both pull requests is needed.
-However, eccodes' own CI now builds against eckit's branch as well,
-so that eckit's downstream CI runs exactly the tests that eccodes' own and downstream CI run anyway.
+However, ``eccodes``' own CI now builds against ``eckit``'s branch as well,
+so that ``eckit``'s downstream CI runs exactly the tests that ``eccodes``' own and downstream CI run anyway.
 Running it from both pull requests therefore only doubles the cost.
-It suffices to request the downstream CI on the pull request of the repository furthest downstream on the sync branch, here eccodes,
-and to label eckit's pull request ``downstream-ci-not-needed``.
-The pull requests are then merged from upstream to downstream, i.e. eckit before eccodes.
+It suffices to request the downstream CI on the pull request of the repository furthest downstream on the sync branch, here ``eccodes``,
+and to label ``eckit``'s pull request ``downstream-ci-not-needed``.
+The pull requests are then merged from upstream to downstream, i.e. ``eckit`` before ``eccodes``.
 
 .. figure:: downstream-ci-sync.svg
    :alt: eckit and eccodes are on sync-branch/api-change; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.
    :width: 100%
 
-   eckit and eccodes are on ``sync-branch/api-change``; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.
+   ``eckit`` and ``eccodes`` are on ``sync-branch/api-change``; ``eckit``'s downstream CI repeats the tests of ``eccodes``' own and downstream CI.
 
 The default branch
 ~~~~~~~~~~~~~~~~~~
@@ -115,7 +115,7 @@ This is why the downstream CI does not run on the default branch.
 The capacity saved in this way is better spent on tests that do add information,
 e.g. expensive nightly tests, such as valgrind and sanitizers, that each repository runs on its own ``develop``.
 Their number scales as :math:`\mathcal{O}(n)`, with :math:`n` being the number of repositories.
-Note that ecbuild, a CMake build system without compiled code of its own, has nothing for them to check.
+Note that ``ecbuild``, a CMake build system without compiled code of its own, has nothing for them to check.
 
 .. figure:: downstream-ci-nightly.svg
    :alt: The capacity of the repeated downstream tests is spent on nightly valgrind and sanitizer runs instead.

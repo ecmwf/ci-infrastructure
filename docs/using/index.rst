@@ -5,7 +5,7 @@
 Using the CI
 ++++++++++++
 
-This tutorial describes the everyday workflow of a developer in a repository that already uses ci-infrastructure.
+This tutorial describes the everyday workflow of a developer in a repository that already uses ``ci-infrastructure``.
 
 .. toctree::
    :maxdepth: 1

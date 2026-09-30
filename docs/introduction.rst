@@ -6,16 +6,16 @@ Philosophy
 ----------
 
 The ECMWF software stack consists of several packages that build on each other.
-A change in eckit can break eccodes, and a change in ecbuild can break both.
+A change in ``eckit`` can break ``eccodes``, and a change in ``ecbuild`` can break both.
 Testing a package in isolation therefore misses some crucial failure modes,
 while rebuilding the whole graph for every commit is far too slow to be useful.
-ci-infrastructure sits between these two extremes.
+``ci-infrastructure`` sits between these two extremes.
 The following principles shaped its design.
 
 Functions, not a framework
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-ci-infrastructure is a set of building blocks rather than a pipeline that a repository plugs into.
+``ci-infrastructure`` is a set of building blocks rather than a pipeline that a repository plugs into.
 Each composite action and each command-line tool does one thing:
 :action:`resolve-deps` resolves the dependency graph, :action:`fetch-deps` downloads the
 resolved artifacts, and :action:`publish-artifact` uploads the result.
@@ -27,7 +27,7 @@ Your ``ci.yml`` stays yours
 The people who write a package know best how it has to be built and tested.
 Hence, the ``ci.yml`` of each repository is written by hand and can choose its own jobs,
 build steps, test commands and container images.
-ci-infrastructure only provides what surrounds the build:
+``ci-infrastructure`` only provides what surrounds the build:
 the dependencies before it, and the published artifact after it.
 
 Tight boundaries for artifact reuse
@@ -58,10 +58,10 @@ Only a fast CI is actually used
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A slow CI is skipped, batched, or ignored, and then it no longer protects anything.
-Several parts of ci-infrastructure exist only for speed:
+Several parts of ``ci-infrastructure`` exist only for speed:
 (a) dependencies are fetched from the S3 artifact store instead of being rebuilt,
 (b) :action:`setup-sccache` shares compiler output between jobs through S3,
-(c) the official images have ci-infrastructure baked in, so no job waits for a pip install, and
+(c) the official images have ``ci-infrastructure`` baked in, so no job waits for a pip install, and
 (d) matrix legs run in parallel with ``fail-fast: false``, so one broken leg does not hide the others.
 
 Downstream CI, finally, rebuilds the dependent repositories and therefore runs only
