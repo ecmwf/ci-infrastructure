@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write  # the preview link goes into the PR description
-    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-publish.yml@main
+    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-publish.yml@pr-preview-print-link
     with:
       artifact-id: ${{ needs.build.outputs.artifact-id }}
       space: docs
@@ -51,16 +51,6 @@ jobs:
       link-text: Documentation preview
     secrets:
       sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
-
-  preview-url:
-    needs: preview-publish
-    runs-on: ubuntu-slim
-    steps:
-      - env:
-          URL: https://sites.ecmwf.int/docs/dev-section/ci-infrastructure/pull-requests/PR-${{ github.event.number }}
-        run: |
-          echo "::notice title=Documentation preview::$URL"
-          echo "## Documentation preview: $URL" >> "$GITHUB_STEP_SUMMARY"
 
   preview-unpublish:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
