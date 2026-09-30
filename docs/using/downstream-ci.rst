@@ -57,8 +57,8 @@ In this section, we discuss four typical situations with the same chain of four 
 The figures encode the branch of every repository by its color, blue for ``develop`` and orange for a feature branch.
 A box below a repository is a test:
 its own tests first, and the tests of its downstream consumers in the black box.
-Each test box is split into one cell per repository that the test is built from, dependencies on the left,
-and each cell is colored by the branch of that repository in this run.
+Each test box is split into one cell per repository that the test is built from,
+and each cell is colored by the branch of that repository.
 Thus, two test runs are exactly the same test, including their dependencies, if and only if their cells have the same colors.
 
 A change on a single branch
@@ -77,6 +77,10 @@ e.g. a change to the public API or ABI, to the behavior, or to the exported CMak
    :width: 100%
 
    ``eckit`` is on ``api-change``; only its downstream CI tests ``eccodes`` and ``multio`` against the change.
+   Note the colors of the ``eccodes`` tests:
+   in ``eckit``'s downstream CI they are blue, orange, blue,
+   i.e. built from ``ecbuild``'s ``develop``, ``eckit``'s feature branch, and ``eccodes``' ``develop``.
+   In ``eccodes``' own CI, the same tests are all blue, i.e. built against ``eckit``'s ``develop``.
 
 A coordinated change on a sync branch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -86,9 +90,7 @@ At first glance, one could expect that the downstream CI of both pull requests i
 However, ``eccodes``' own CI now builds against ``eckit``'s branch as well,
 so that ``eckit``'s downstream CI runs exactly the tests that ``eccodes``' own and downstream CI run anyway.
 Running it from both pull requests therefore only doubles the cost.
-It suffices to request the downstream CI on the pull request of the repository furthest downstream on the sync branch, here ``eccodes``,
-and to label ``eckit``'s pull request ``downstream-ci-not-needed``.
-The pull requests are then merged from upstream to downstream, i.e. ``eckit`` before ``eccodes``.
+It suffices to request the downstream CI on the pull request of the repository furthest downstream on the sync branch, here ``eccodes``.
 
 .. figure:: downstream-ci-sync.svg
    :alt: eckit and eccodes are on sync-branch/api-change; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.
