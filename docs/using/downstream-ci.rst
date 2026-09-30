@@ -16,7 +16,7 @@ Until now, the downstream CI ran unconditionally, which put a large strain on ou
 Moreover, it meant that the CI of every pull request ran for several hours,
 which was an incentive to skip pull requests and to push directly to the default branch.
 This, in turn, broke downstream packages **with errors that the ordinary tests alone would have caught**.
-Hence, the downstream CI partly caused the very problems it was designed to prevent.
+Hence, the downstream CI partly caused the very problems it was created to prevent.
 
 The new system is therefore designed to **always** run the own CI of a repository,
 while the downstream CI runs only where it adds value.
