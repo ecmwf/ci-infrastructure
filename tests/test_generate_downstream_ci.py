@@ -1819,7 +1819,7 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     steps = doc["jobs"]["label-gate"]["steps"]
     assert not any("run" in s for s in steps)
     gate = next(s for s in steps if s.get("id") == "gate")
-    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
+    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/should-downstream-run@main"
     assert gate["with"] == {"sha": "${{ needs.context.outputs.head-sha }}"}
 
 

@@ -83,7 +83,13 @@ ghactions_groups = [
     (
         "PR gates",
         "Decide whether a pull request may run CI or downstream CI.",
-        ["require-ci-approval", "require-label-decision", "check-pr-label", "check-pr-declaration"],
+        [
+            "require-ci-approval",
+            "require-label-decision",
+            "should-downstream-run",
+            "check-pr-label",
+            "check-pr-declaration",
+        ],
     ),
     ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
     (

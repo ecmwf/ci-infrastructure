@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Check a commit's pull request label
+name: Check a commit's pull request label (deprecated)
 description: >
-  For workflow_run orchestrators (no PR or labels in the payload): read the
-  level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
-  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run.
-  Fails unless the PR carries at most one, valid level label.
+  Deprecated: renamed to should-downstream-run, which this forwards to.
+  Kept until every generated workflow has been regenerated.
 
 inputs:
   label:
@@ -18,7 +16,7 @@ inputs:
     description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
     required: true
   token:
-    description: 'Token with pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
+    description: 'Token with pull-requests:read on this repo. Defaults to github.token.'
     required: false
     default: ''
 
@@ -34,56 +32,8 @@ runs:
   using: composite
   steps:
     - id: gate
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.token || github.token }}
-        LABEL_INPUT: ${{ inputs.label }}
-        SHA_INPUT: ${{ inputs.sha }}
-      run: |
-        set -euo pipefail
-
-        for var in LABEL_INPUT SHA_INPUT; do
-          if [ -z "${!var:-}" ]; then
-            echo "::error title=Label gate::input '${var%_INPUT}' is required and was empty." >&2
-            exit 1
-          fi
-        done
-        if ! command -v jq >/dev/null 2>&1; then
-          echo "::error title=Label gate::jq is not on PATH; run this job on a runner image that has it." >&2
-          exit 1
-        fi
-
-        pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"
-        gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
-
-        depth=""
-        if [ "$(jq '[.[] | select(.state == "open")] | length' "$pulls")" -eq 0 ]; then
-          run=false
-          why="no open pull request (a push); skipping"
-        else
-          found=()
-          while IFS= read -r name; do
-            if [ "$name" = "$LABEL_INPUT" ] || [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
-              found+=("$name")
-            fi
-          done < <(jq -r '.[] | select(.state == "open") | .labels[].name' "$pulls")
-          level=""
-          if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
-
-          if [ "${#found[@]}" -eq 0 ]; then
-            run=false
-            why="no '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>' label; skipping"
-          elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
-               { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
-            run=true
-            depth="$level"
-            why="pull request carries '${found[0]}'"
-          else
-            echo "::error title=Label gate::set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>' (n from 1); found: ${found[*]}" >&2
-            exit 1
-          fi
-        fi
-
-        echo "run=$run" >> "$GITHUB_OUTPUT"
-        echo "depth=$depth" >> "$GITHUB_OUTPUT"
-        echo "Label gate: $why"
+      uses: ecmwf/ci-infrastructure/actions/should-downstream-run@main
+      with:
+        label: ${{ inputs.label }}
+        sha: ${{ inputs.sha }}
+        token: ${{ inputs.token }}
