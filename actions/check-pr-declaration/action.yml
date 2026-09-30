@@ -5,7 +5,8 @@
 name: Check the PR Contributor Declaration
 description: >
   Fail unless the PR description ENDS with the ECMWF Contributor Declaration
-  (rules in src/ci_infrastructure/check_pr_declaration.py). Stdlib-only python,
+  (rules in src/ci_infrastructure/check_pr_declaration.py); bot-maintained
+  `<!-- NAME_BEGIN -->` ... `<!-- NAME_END -->` blocks after it are ignored. Stdlib-only python,
   no bootstrap. With the default body-source, re-runs replay the old payload:
   edit the description instead.
 
