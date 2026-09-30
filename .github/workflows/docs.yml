@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write  # the preview link goes into the PR description
-    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-publish.yml@pr-preview-print-link
+    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-publish.yml@main
     with:
       artifact-id: ${{ needs.build.outputs.artifact-id }}
       space: docs
