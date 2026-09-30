@@ -13,10 +13,10 @@ The flow of a job
 ::
 
    hpc-submit runner
-     resolve ─▶ fetch deps (S3) ─▶ submit ─▶ ship source, deps, marker ─▶ wait ─▶ fetch install ─▶ publish
-                                     │                                     ▲
-                                     ▼  troika                             │ Finished: SUCCESS/FAILURE
-                              compute node: wait for marker ─▶ unpack into $TMPDIR ─▶ build script
+     resolve -> fetch deps (S3) -> submit -> ship source, deps, marker -> wait -> fetch install -> publish
+                                     |                                     ^
+                                     v  troika                             | Finished: SUCCESS/FAILURE
+                              compute node: wait for marker -> unpack into $TMPDIR -> build script
 
 The runner drives troika's ``Site`` API from Python.
 It submits the job first, which claims the place in the queue,

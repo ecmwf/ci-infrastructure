@@ -20,7 +20,16 @@ extensions = [
     "manifest_schema",
 ]
 
+# LaTeX cannot include SVG; the converter comes with the [pdf] extra and also needs libcairo.
+try:
+    import sphinxcontrib.cairosvgconverter  # noqa: F401
+except (ImportError, OSError):
+    pass
+else:
+    extensions.append("sphinxcontrib.cairosvgconverter")
+
 exclude_patterns = ["_build"]
+latex_elements = {"figure_align": "H"}
 html_theme = "sphinxawesome_theme"
 html_static_path = ["_static"]
 html_css_files = ["tables.css"]
