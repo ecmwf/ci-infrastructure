@@ -38,7 +38,7 @@ The HPC is reached through the runner group ``hpc-submit``.
 These runners are small and cheap and are not meant for heavy lifting.
 They ship sources and dependencies to the HPC and submit the job to the queue.
 Afterwards they copy the artifacts back and store it in S3.
-See :doc:`../tutorial/hpc`.
+See :doc:`../configuring/hpc`.
 To access the HPC you need to run on the HPC runner group and also need an HPC image (see below).
 
 If you suspect a problem with the runners, trigger

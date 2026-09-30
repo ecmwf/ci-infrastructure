@@ -5,7 +5,7 @@
 HPC builds
 ==========
 
-This page collects the details behind :doc:`../tutorial/hpc`.
+This page collects the details behind :doc:`../configuring/hpc`.
 
 The flow of a job
 -----------------

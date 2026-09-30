@@ -2,8 +2,8 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-Tutorial
-++++++++
+Configuring the CI
+++++++++++++++++++
 
 This tutorial brings a repository onto ci-infrastructure, step by step.
 eckit serves as the running example.
@@ -14,6 +14,5 @@ eckit serves as the running example.
    ci-yml
    manifest
    downstream
-   feature-branches
    hpc
    fork-pull-requests

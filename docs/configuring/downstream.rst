@@ -11,7 +11,7 @@ and reports the result on the pull request.
 It serves two purposes:
 it catches a breakage that was not intended,
 and it tests an intended breaking change together with the adaptations of its consumers,
-which are then prepared on ``sync-branch/`` or ``feature/`` branches of the same name (see :doc:`feature-branches`).
+which are then prepared on ``sync-branch/`` or ``feature/`` branches of the same name (see :doc:`../using/feature-branches`).
 
 Declaring the graph
 -------------------

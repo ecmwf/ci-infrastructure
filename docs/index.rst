@@ -18,7 +18,12 @@ GitHub Actions that wire it into workflow YAML.
 .. toctree::
    :maxdepth: 2
 
-   tutorial/index
+   using/index
+
+.. toctree::
+   :maxdepth: 2
+
+   configuring/index
 
 .. toctree::
    :caption: Reference
