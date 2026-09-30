@@ -70,7 +70,7 @@ RUN mkdir -p /etc/apt/keyrings \
 
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
+RUN python3.11 -m pip install --no-cache-dir "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 # Explicit names, not autoremove, which would take libraries still needed.
