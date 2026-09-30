@@ -2,8 +2,8 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-Changing the default branch
-===========================
+Modifying the default branch
+============================
 
 We want to have one default branch (``main|master|develop`` depending on the repo)
 that is assumed and tested to be green.
