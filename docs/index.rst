@@ -10,6 +10,12 @@ whose CLIs resolve cross-repo dependencies, move build artifacts through S3,
 submit builds to HPC, generate the downstream workflows, and the composite
 GitHub Actions that wire it into workflow YAML.
 
+.. note::
+
+   This documentation is provisionally hosted at
+   https://sites.ecmwf.int/docs/dev-section/ci-infrastructure/latest,
+   and its URL will change.
+
 .. toctree::
    :maxdepth: 2
 
