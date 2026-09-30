@@ -24,7 +24,7 @@ import sys
 import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, TypeAlias, TypeVar
 
@@ -67,6 +67,9 @@ def _normalise_header(header: str) -> str:
 
 # 1-CPU, unprivileged, cheap: only for jobs that talk to APIs and shuffle YAML.
 SLIM_RUNNER: Final = "ubuntu-slim"
+# For short jobs that run the ci_infrastructure package: baked in, so no pip install from PyPI.
+BASE_IMAGE_RUNNER: Final = "arc-runner-normal"
+BASE_IMAGE: Final = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
 
 
 Step: TypeAlias = dict[str, Any]
@@ -147,13 +150,12 @@ class MatrixKind:
     legs: Sequence[dict[str, Any]]  # after reuse-matrix resolution
     execution: Execution
     action: str
-    job_script: str | None
     forwarded_inputs: tuple[str, ...]
     forwarded_deps_outputs: tuple[str, ...]
     publishes: bool
     container_credentials: bool
     ctest: bool
-    ctest_args: str
+    artifact_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,13 +176,14 @@ class Manifest:
     repo_root: Path
     package_name: str
     repo: str
+    prefix: str = ""
     compiler_inputs: tuple[str, ...] = ()
     visibility: Visibility = VISIBILITY_PRIVATE
     submodules: str | None = None
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
-    downstream_gate_label: str | None = None
+    downstream_exclude: tuple[str, ...] = ()
     generated_header: str = ""
 
 
@@ -210,13 +213,14 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         repo_root=path.parents[1],
         package_name=raw.package.name,
         repo=raw.package.repo,
+        prefix=raw.package.prefix,
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
         deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
-        downstream_gate_label=raw.downstream_gate.label if raw.downstream_gate else None,
+        downstream_exclude=raw.downstream.exclude if raw.downstream else (),
         generated_header=_normalise_header(raw.generated.header if raw.generated else ""),
     )
 
@@ -237,23 +241,24 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             if body.action:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] sets execution = 'hpc' and `action`; "
-                    "HPC kinds run the shared build-on-hpc action — drop `action` and set `job-script`"
+                    "HPC kinds run the shared build-on-hpc action — drop `action` and give the legs a `job-script`"
                 )
-            if body.triggers and not body.job_script:
+            if body.triggers and not all(leg.get("job-script") for leg in legs):
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
-                    "execution = 'hpc' but has no `job-script`; there is no build recipe to submit"
+                    "execution = 'hpc' but a leg has no `job-script`; there is no build recipe to submit. "
+                    f"Set it in [matrix.{kind}.defaults] or on the leg"
                 )
             if body.ctest:
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc'; "
-                    f"run ctest inside {body.job_script or 'the job-script'} instead, "
+                    "run ctest inside the job-script instead, "
                     "where it executes on the compute node"
                 )
         else:
-            if body.job_script:
+            if any("job-script" in leg for leg in legs):
                 raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets `job-script` but execution is 'runner'; "
+                    f"{path}: [matrix.{kind}] has a leg with `job-script` but execution is 'runner'; "
                     "`job-script` only applies to execution = 'hpc'"
                 )
             if body.triggers and not body.action:
@@ -261,11 +266,11 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
                     "but has no `action`; cross-repo-trigger.yml has nothing to invoke"
                 )
-
-        if body.ctest_args and not body.ctest:
-            raise SchemaError(
-                f"{path}: [matrix.{kind}] sets `ctest-args` without `ctest = true`; the arguments would never be used"
-            )
+            if not body.ctest and any("ctest-args" in leg for leg in legs):
+                raise SchemaError(
+                    f"{path}: [matrix.{kind}] has a leg with `ctest-args` but no `ctest = true`; "
+                    "the arguments would never be used"
+                )
 
         if body.ctest and not body.publishes:
             raise SchemaError(
@@ -292,13 +297,12 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             legs=legs,
             execution=body.execution,
             action=body.action,
-            job_script=body.job_script or None,
             forwarded_inputs=tuple(body.forwarded_inputs),
             forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
             container_credentials=body.container_credentials,
             ctest=body.ctest,
-            ctest_args=body.ctest_args.strip(),
+            artifact_prefix=body.artifact_prefix,
         )
     return resolved
 
@@ -323,6 +327,40 @@ def _index_unique(manifests: Sequence[Manifest], key: Callable[[Manifest], str],
             raise SchemaError(f"duplicate {label} {key(m)!r}: {out[key(m)].path} and {m.path}")
         out[key(m)] = m
     return out
+
+
+def derive_cross_repo_needs(manifests: Sequence[Manifest]) -> None:
+    """Fill in a triggered kind's cross-repo `needs` from `[[deps]]`, unless it lists any itself.
+
+    Per dep whose producer triggers this repo: the producer's triggered kind that
+    publishes the dep's prefix in the same lane.
+    """
+    by_repo = {m.repo: m for m in manifests}
+    for m in manifests:
+        for kind, mk in m.matrices.items():
+            if not mk.triggers or any("/" in n for n in mk.needs):
+                continue
+            derived: list[str] = []
+            for dep in m.deps:
+                up = by_repo.get(dep.repo)
+                if up is None or not any(t.repo == m.repo for t in up.triggers):
+                    continue
+                candidates = [
+                    k
+                    for k, uk in up.matrices.items()
+                    if uk.triggers
+                    and uk.publishes
+                    and uk.execution == mk.execution
+                    and (uk.artifact_prefix or up.prefix) == dep.package
+                ]
+                if len(candidates) > 1:
+                    raise SchemaError(
+                        f"{m.path}: [matrix.{kind}] cannot derive its needs on {dep.package!r}: "
+                        f"{up.path} publishes it from {candidates}; name the one in needs"
+                    )
+                derived += [f"{up.package_name}/{k}" for k in candidates]
+            if derived:
+                m.matrices[kind] = replace(mk, needs=(*mk.needs, *derived))
 
 
 def validate_graph(manifests: Sequence[Manifest]) -> None:
@@ -380,7 +418,7 @@ def validate_job_templates(m: Manifest) -> None:
         if mk.execution != EXECUTION_HPC:
             continue
         for leg in mk.legs:
-            spec = str(leg.get("job-script") or mk.job_script or "")
+            spec = str(leg.get("job-script") or "")
             if not jobscript.is_job_template(spec):
                 continue
             path = m.repo_root / spec.removeprefix("./")
@@ -688,6 +726,12 @@ def _mint_step() -> Step:
     }
 
 
+# An upstream change is tested at its commit; a rebuild request comes from a consumer and pins nothing.
+_PIN_CHANGE_UNDER_TEST: Final = (
+    "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
+)
+
+
 def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) -> dict[str, Any]:
     matrix_arg = ",".join(runnable)
     all_triggers: frozenset[str] = frozenset().union(*(m.matrices[k].triggers for k in runnable))
@@ -697,9 +741,11 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
         outputs[f"matrix-{kind}"] = f"${{{{ steps.r.outputs.matrix-{kind} }}}}"
     return {
         "if": cond,
-        "runs-on": SLIM_RUNNER,
+        "runs-on": BASE_IMAGE_RUNNER,
+        "container": {"image": BASE_IMAGE},
         "outputs": outputs,
         "steps": [
+            _announce_image_step(),
             _mint_step(),
             {
                 "id": "pick",
@@ -725,6 +771,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                 "uses": "ecmwf/ci-infrastructure/actions/resolve-deps@main",
                 "with": {
                     "current-branch": "${{ steps.pick.outputs.ref }}",
+                    "pin": _PIN_CHANGE_UNDER_TEST,
                     "matrix": matrix_arg,
                     "token": "${{ steps.mint.outputs.token }}",
                     # Enables dispatching a producer whose artifact is missing.
@@ -818,10 +865,9 @@ def _action_call_step(mk: MatrixKind) -> Step:
 
 def _hpc_build_step(mk: MatrixKind) -> Step:
     """A drop-in for _action_call_step that also publishes."""
-    assert mk.job_script is not None
     with_block: dict[str, str] = {
         "site": "${{ matrix.site }}",
-        "job-script": f"${{{{ matrix.job-script || '{mk.job_script}' }}}}",
+        "job-script": "${{ matrix.job-script }}",
         "matrix-leg": "${{ toJSON(matrix) }}",
         "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
@@ -873,12 +919,13 @@ def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
     return step
 
 
-def _ctest_step(mk: MatrixKind) -> Step:
+def _ctest_step() -> Step:
     """Before publishing: the store cannot tell a tested artifact from an untested one."""
-    cmd = 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure'
-    if mk.ctest_args:
-        cmd = f"{cmd} {mk.ctest_args}"
-    return {"name": "Test", "run": cmd}
+    return {
+        "name": "Test",
+        "run": 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure '
+        "${{ matrix._resolved['ctest-args'] }}",
+    }
 
 
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
@@ -935,7 +982,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         steps.append(_action_call_step(mk))
         if mk.publishes:
             if mk.ctest:
-                steps.append(_ctest_step(mk))
+                steps.append(_ctest_step())
             steps.append(
                 {
                     "name": "Publish",
@@ -1085,6 +1132,17 @@ def render_orchestrator_workflow(
         for r in self_closure[orig_key]["consumers"]:
             origins.setdefault(by_repo[r].package_name, set()).add(orig_key)
 
+    fanout = {by_repo[r].package_name for c in self_closure.values() for r in c["consumers"]}
+    if unknown := sorted(set(m.downstream_exclude) - fanout):
+        raise SchemaError(
+            f"{m.path}: [downstream].exclude names {unknown}, which are not consumers of {m.repo}; "
+            f"its fan-out is {sorted(fanout)}"
+        )
+    excluded = _excluded_with_dependents(m.downstream_exclude, _cross_package_deps(sorted(origins), by_pkg, lane=lane))
+    for pkg in sorted(excluded - set(m.downstream_exclude)):
+        print(f"::notice::{m.package_name} {lane} fan-out: {pkg} skipped, it depends on an excluded package.")
+    origins = {p: o for p, o in origins.items() if p not in excluded}
+
     if not origins:
         return None
 
@@ -1092,6 +1150,7 @@ def render_orchestrator_workflow(
 
     all_consumers = sorted(origins)
     consumer_deps = _cross_package_deps(all_consumers, by_pkg, lane=lane)
+    levels = _consumer_levels(consumer_deps)
 
     jobs: dict[str, Any] = {
         "validate": _validate_job(),
@@ -1114,9 +1173,7 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    label = m.downstream_gate_label
-    if label:
-        jobs = _apply_label_gate(jobs, label)
+    jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
     jobs = _require_context(jobs)
 
     on: dict[str, Any] = {
@@ -1219,11 +1276,15 @@ def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict
                 "    state=failure\n"
                 "  fi\n"
                 "done\n"
+                # should-downstream-run only ever outputs `all` or digits here.
+                f'depth="${{{{ {_GATE_DEPTH} }}}}"\n'
+                'scope=""\n'
+                'if [ "$depth" != all ]; then scope=" (up to level $depth)"; fi\n'
             ),
             state='"$state"',
             context=_status_context(lane),
             target_url=_RUN_URL,
-            description=f'"Downstream {_lane_label(lane)} tests $state"',
+            description=f'"Downstream {_lane_label(lane)} tests $state$scope"',
         ),
     )
 
@@ -1259,9 +1320,37 @@ def _cross_package_deps(
     return out
 
 
+def _excluded_with_dependents(exclude: Iterable[str], consumer_deps: Mapping[str, set[str]]) -> set[str]:
+    """`exclude` plus every consumer depending on one of them: it could not resolve that dep."""
+    out = set(exclude)
+    grew = True
+    while grew:
+        grew = False
+        for pkg, deps in consumer_deps.items():
+            if pkg not in out and deps & out:
+                out.add(pkg)
+                grew = True
+    return out
+
+
+def _consumer_levels(consumer_deps: Mapping[str, set[str]]) -> dict[str, int]:
+    """1 + the highest level among a consumer's in-fan-out deps, so a level cut keeps its deps."""
+    levels: dict[str, int] = {}
+
+    def level(pkg: str) -> int:
+        if pkg not in levels:
+            levels[pkg] = 1 + max((level(d) for d in consumer_deps.get(pkg, ())), default=0)
+        return levels[pkg]
+
+    for pkg in consumer_deps:
+        level(pkg)
+    return levels
+
+
 _GATE_JOB_ID: Final = "label-gate"
 # Index syntax, not `needs.label-gate`: a hyphen in a context path parses as minus.
 _GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
+_GATE_DEPTH: Final = f"needs['{_GATE_JOB_ID}'].outputs.depth"
 
 
 def _prepend_need(job: dict[str, Any], jid: str) -> None:
@@ -1269,14 +1358,17 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
     job["needs"] = [jid, *(needs if isinstance(needs, list) else [needs])]
 
 
-def _apply_label_gate(jobs: dict[str, Any], label: str) -> dict[str, Any]:
-    """A post-pass, so a job added later is gated by construction."""
-    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(label)}
+def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int]) -> dict[str, Any]:
+    """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes."""
+    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job()}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)
         cond = job.get("if")
         inner = cond[3:-2].strip() if isinstance(cond, str) and cond.startswith("${{") else None
-        job["if"] = f"${{{{ ({inner}) && {_GATE_PASSED} }}}}" if inner else f"${{{{ {_GATE_PASSED} }}}}"
+        gate = _GATE_PASSED
+        if jid in levels:
+            gate += f" && ({_GATE_DEPTH} == 'all' || {_GATE_DEPTH} >= {levels[jid]})"
+        job["if"] = f"${{{{ ({inner}) && {gate} }}}}" if inner else f"${{{{ {gate} }}}}"
         gated[jid] = job
     return gated
 
@@ -1311,7 +1403,7 @@ def _context_job() -> dict[str, Any]:
     }
 
 
-def _label_gate_job(label: str) -> dict[str, Any]:
+def _label_gate_job() -> dict[str, Any]:
     """Not gated on CI success: report-ci-failure needs it too.
 
     Uses github.token with explicit `permissions`; an App token 403s on non-public repos.
@@ -1319,34 +1411,31 @@ def _label_gate_job(label: str) -> dict[str, Any]:
     return {
         "runs-on": SLIM_RUNNER,
         "permissions": {"pull-requests": "read"},
-        "outputs": {"run": "${{ steps.gate.outputs.run }}"},
+        "outputs": {"run": "${{ steps.gate.outputs.run }}", "depth": "${{ steps.gate.outputs.depth }}"},
         "steps": [
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
-                "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
-                "with": {
-                    "label": label,
-                    "sha": _HEAD_SHA,
-                },
+                "uses": "ecmwf/ci-infrastructure/actions/should-downstream-run@main",
+                "with": {"sha": _HEAD_SHA},
             },
         ],
     }
 
 
 def _validate_job() -> dict[str, Any]:
-    """allow-unsafe-pr-checkout is safe only because nothing checked out is executed; never copy it."""
     return {
         "if": _SUCCESS_GATE,
-        "runs-on": SLIM_RUNNER,
+        "runs-on": BASE_IMAGE_RUNNER,
+        "container": {"image": BASE_IMAGE},
         "steps": [
+            _announce_image_step(),
             _mint_step(),
             {
                 "uses": "actions/checkout@v6",
                 "with": {
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
-                    "allow-unsafe-pr-checkout": True,
                 },
             },
             {
@@ -1637,6 +1726,7 @@ def _run(
         validate_job_templates(local)
         # No env token is fine: gh falls back to its own auth.
         manifests = _fetch_sibling_manifests(local, select_token(), manifest_path, sibling_root)
+        derive_cross_repo_needs(manifests)
         validate_graph(manifests)
         closures = compute_transitive_consumers(manifests)
         by_pkg = {m.package_name: m for m in manifests}

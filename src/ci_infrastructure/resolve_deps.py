@@ -20,7 +20,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
           _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
-          _resolved.ctest-args            this kind's [matrix.<kind>].ctest-args ("" if unset)
+          _resolved.ctest-args            the leg's ctest-args ("" if unset)
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
 
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -64,10 +65,10 @@ from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
 from .manifest import DepTable
 from .manifest import validate as validate_manifest
-from .runners import resolve_runner
 from .sync_branch import is_sync_branch
 
 # Leg fields that enter the artifact name; `runs-on`/`container` are scheduling only.
+_SHA_PIN_RE: Final = re.compile(r"[0-9a-f]{40}")
 _MATRIX_DISCRIMINATORS: Final = frozenset(
     {
         "platform",
@@ -109,6 +110,16 @@ def as_repo(s: str) -> Repo:
     return Repo(s)
 
 
+def parse_pin(pin: str) -> dict[Repo, Ref]:
+    """`owner/repo@<40-hex sha>` -> {repo: sha}; empty -> {}."""
+    if not pin.strip():
+        return {}
+    repo, sep, sha = pin.strip().partition("@")
+    if not sep or not _SHA_PIN_RE.fullmatch(sha):
+        raise ResolveError(f"--pin must be owner/repo@<40-hex sha>, got {pin!r}")
+    return {as_repo(repo): Ref(sha)}
+
+
 class ResolveError(Exception):
     """Resolver gave up."""
 
@@ -145,12 +156,6 @@ class PackageSpec:
     compiler_inputs: Sequence[str]
 
 
-@dataclass(frozen=True)
-class CtestSpec:
-    enabled: bool = False
-    args: str = ""
-
-
 @dataclass
 class Manifest:
     package: PackageSpec
@@ -158,7 +163,7 @@ class Manifest:
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # Kinds publishing a secondary artifact under their own prefix; others use package.prefix.
     artifact_prefix_by_kind: dict[str, str] = field(default_factory=dict)
-    ctest_by_kind: dict[str, CtestSpec] = field(default_factory=dict)
+    ctest_by_kind: dict[str, bool] = field(default_factory=dict)
     # Picks which of a producer's lane workflows a recovery rebuild fires.
     execution_by_kind: dict[str, Execution] = field(default_factory=dict)
 
@@ -259,6 +264,8 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
             matrix[kind] = list(resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks))
         except ManifestSchemaError as e:
             raise ValueError(str(e)) from e
+        if any(not isinstance(leg.get("ctest-args", ""), str) for leg in matrix[kind]):
+            raise ValueError(f"[matrix.{kind}] ctest-args must be a string")
 
     return Manifest(
         package=PackageSpec(
@@ -270,7 +277,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         deps=[_to_dep_spec(d) for d in raw.deps],
         matrix=matrix,
         artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
-        ctest_by_kind={k: CtestSpec(enabled=b.ctest, args=b.ctest_args.strip()) for k, b in raw.matrix.items()},
+        ctest_by_kind={k: b.ctest for k, b in raw.matrix.items()},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
@@ -308,7 +315,7 @@ def is_normal_ref(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
 ) -> bool:
-    """Declared ref or a valid sync-branch override; only then is auto-dispatch allowed."""
+    """Declared ref or a valid sync-branch/ or feature/ override; only then is auto-dispatch allowed."""
     if sync_branch and sync_exists_by_repo.get(spec.repo, False):
         return ref == sync_branch
     return ref == spec.ref
@@ -454,6 +461,7 @@ def _classify_orphan_pin(
     can_dispatch: bool,
     lane: Execution,
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
+    pins: Mapping[Repo, Ref] | None = None,
 ) -> Literal["triggered rebuild"]:
     """Artifact missing, no producer CI in flight: raise, or (timing skew) record a DispatchPlan."""
     producer_manifest = manifest_cache.get((spec.repo, ref))
@@ -470,6 +478,13 @@ def _classify_orphan_pin(
             f"the producer's manifest declares no [matrix.<kind>.include] row matching {relevant}. "
             "Either add the missing matrix leg to the producer or drop the unsupported "
             "combination from this consumer's manifest."
+        )
+
+    if pins and spec.repo in pins:
+        raise ResolveError(
+            f"dep '{spec.package}' is pinned to {spec.repo}@{sha[:8]}, the commit under test, but "
+            f"no artifact named '{artifact_name}' exists and no CI is in flight for it: "
+            "that commit's CI did not publish this leg."
         )
 
     if not is_normal_ref(spec, ref, sync_branch, sync_exists_by_repo):
@@ -520,15 +535,15 @@ def resolve_leg(
     lane: Execution,
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     own_prefix_override: str | None = None,
+    pins: Mapping[Repo, Ref] | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry."""
+    pins = pins or {}
     visited: dict[PackageName, ResolvedDep] = {}
+    requests: dict[PackageName, tuple[str, dict[str, Any]]] = {}
     order: list[PackageName] = []
 
-    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any]) -> ResolvedDep:
-        if spec.package in visited:
-            return visited[spec.package]
-
+    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any], declared_by: str) -> ResolvedDep:
         compiler = _join_compilers(spec.compiler_inputs, parent_ctx, context=f"dep '{spec.package}'")
 
         build_type = str(parent_ctx.get(spec.build_type_input, "Release"))
@@ -543,7 +558,34 @@ def resolve_leg(
         else:
             dep_option = ""
 
-        ref = sync_branch if sync_branch and sync_exists_by_repo.get(spec.repo, False) else spec.ref
+        if spec.repo in pins:
+            ref = pins[spec.repo]
+        elif sync_branch and sync_exists_by_repo.get(spec.repo, False):
+            ref = sync_branch
+        else:
+            ref = spec.ref
+
+        # The ref, not its SHA: two lookups of one branch may see different commits.
+        request = {
+            "repo": spec.repo,
+            "ref": ref,
+            "compiler": compiler,
+            "build-type": build_type,
+            "platform": platform_slug,
+            "python-version": python_version,
+            "option": dep_option,
+        }
+        if spec.package in visited:
+            first_by, first = requests[spec.package]
+            differs = {k: (first[k], v) for k, v in request.items() if first[k] != v}
+            if differs:
+                detail = ", ".join(f"{k} {a!r} vs {b!r}" for k, (a, b) in differs.items())
+                raise ResolveError(
+                    f"dep '{spec.package}' is declared differently by '{first_by}' and '{declared_by}' "
+                    f"({detail}). Declarations of the same package must agree."
+                )
+            return visited[spec.package]
+        requests[spec.package] = (declared_by, request)
 
         # Sub-deps first, against the same leg, filtered by `when` exactly as the
         # upstream's own CI did, so deps-hash8 reproduces the published name.
@@ -553,11 +595,11 @@ def resolve_leg(
             for sub_spec in sub_manifest.deps:
                 if not sub_spec.applies_to(parent_ctx):
                     continue
-                sub_deps.append(visit(sub_spec, parent_ctx))
+                sub_deps.append(visit(sub_spec, parent_ctx, declared_by=spec.package))
 
         sha_key = (spec.repo, ref)
         if sha_key not in sha_cache:
-            sha_cache[sha_key] = resolve_ref_to_sha(spec.repo, ref, token)
+            sha_cache[sha_key] = Sha(ref) if spec.repo in pins else resolve_ref_to_sha(spec.repo, ref, token)
         sha = sha_cache[sha_key]
 
         deps_hash8 = compute_deps_hash8([d.artifact_name for d in sub_deps])
@@ -606,6 +648,7 @@ def resolve_leg(
                     can_dispatch=can_dispatch,
                     lane=lane,
                     dispatch_plans=dispatch_plans,
+                    pins=pins,
                 )
 
         resolved = ResolvedDep(
@@ -630,7 +673,7 @@ def resolve_leg(
 
     applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry)]
     for spec in applicable_deps:
-        visit(spec, matrix_entry)
+        visit(spec, matrix_entry, declared_by=own.name)
 
     deps_resolved = [visited[name] for name in order]
 
@@ -672,11 +715,13 @@ def bfs_load_manifests(
     token: str | None,
     manifest_path: str,
     max_depth: int = 8,
+    pins: Mapping[Repo, Ref] | None = None,
 ) -> tuple[dict[tuple[Repo, Ref], Manifest], dict[Repo, bool]]:
     """Returns (manifests, sync_branch exists per repo)."""
+    pins = pins or {}
     manifest_cache: dict[tuple[Repo, Ref], Manifest] = {}
     sync_exists: dict[Repo, bool] = {}
-    queue: list[tuple[Repo, Ref]] = [(d.repo, d.ref) for d in root_deps]
+    queue: list[tuple[Repo, Ref]] = [(d.repo, pins.get(d.repo, d.ref)) for d in root_deps]
 
     for _depth in range(max_depth):
         layer = [(r, ref) for (r, ref) in queue if (r, ref) not in manifest_cache]
@@ -688,7 +733,7 @@ def bfs_load_manifests(
         next_queue: list[tuple[Repo, Ref]] = []
         for (raw_repo, raw_ref), (text, sync_present) in results.items():
             repo, ref = Repo(raw_repo), Ref(raw_ref)
-            if sync_branch:
+            if sync_branch and repo not in pins:
                 sync_exists.setdefault(repo, sync_present)
                 if sync_present and ref != sync_branch:
                     next_queue.append((repo, sync_branch))
@@ -710,7 +755,7 @@ def bfs_load_manifests(
                 raise ResolveError(f"Failed to parse manifest from {repo}@{ref}: {e}") from e
             manifest_cache[(repo, ref)] = m
             for sub in m.deps:
-                next_queue.append((sub.repo, sub.ref))
+                next_queue.append((sub.repo, pins.get(sub.repo, sub.ref)))
 
         queue = next_queue
 
@@ -719,7 +764,12 @@ def bfs_load_manifests(
 
 @click.command(help="Resolve dep tree for all matrix legs in a manifest.")
 @click.option("--manifest", default=".ci/manifest.toml", help="Path to local manifest TOML")
-@click.option("--current-branch", "current_branch", default="", help="Branch being built (for sync-branch convention)")
+@click.option(
+    "--current-branch",
+    "current_branch",
+    default="",
+    help="Branch being built; a sync-branch/ or feature/ branch is used where an upstream has it too",
+)
 @click.option(
     "--matrix",
     default="build",
@@ -737,15 +787,21 @@ def bfs_load_manifests(
     default=".ci/manifest.toml",
     help="Where to look for manifests in upstream repos (default: same as local).",
 )
+@click.option(
+    "--pin",
+    default="",
+    help="owner/repo@sha: resolve that repo at this commit wherever it appears (the change under test).",
+)
 def main(
     manifest: str,
     current_branch: str,
     matrix: str,
     self_repo: str,
     upstream_manifest_path: str,
+    pin: str,
 ) -> None:
     try:
-        _run(manifest, current_branch, matrix, self_repo, upstream_manifest_path)
+        _run(manifest, current_branch, matrix, self_repo, upstream_manifest_path, pin)
     except (ResolveError, ValueError) as e:
         raise CIError(str(e)) from e
 
@@ -756,6 +812,7 @@ def _run(
     matrix: str,
     self_repo: str,
     upstream_manifest_path: str,
+    pin: str = "",
 ) -> None:
     if not os.path.exists(manifest):
         raise ResolveError(f"Manifest not found: {manifest}")
@@ -770,6 +827,7 @@ def _run(
     if current_branch and is_sync_branch(current_branch):
         sync_branch = Ref(current_branch)
 
+    pins = parse_pin(pin)
     token = select_token()
 
     own_sha = _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
@@ -779,6 +837,7 @@ def _run(
         sync_branch=sync_branch,
         token=token,
         manifest_path=upstream_manifest_path,
+        pins=pins,
     )
 
     sha_cache: dict[tuple[Repo, Ref], Sha] = {}
@@ -801,7 +860,7 @@ def _run(
 
         out_include: list[dict[str, Any]] = []
         own_prefix_override = local_manifest.artifact_prefix_by_kind.get(mname)
-        ctest = local_manifest.ctest_by_kind.get(mname, CtestSpec())
+        ctest = local_manifest.ctest_by_kind.get(mname, False)
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         for entry in include:
             deps_resolved, own = resolve_leg(
@@ -820,6 +879,7 @@ def _run(
                 lane=lane,
                 dispatch_plans=dispatch_plans,
                 own_prefix_override=own_prefix_override,
+                pins=pins,
             )
             cmake_paths = [str(d.install_path) for d in deps_resolved]
             all_artifact_names = [d.artifact_name for d in deps_resolved]
@@ -844,15 +904,11 @@ def _run(
                     for s in local_manifest.deps
                     if s.applies_to(entry)
                 ),
-                "ctest": ctest.enabled,
-                "ctest-args": ctest.args,
+                "ctest": ctest,
+                "ctest-args": str(entry.get("ctest-args", "")).strip(),
                 "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }
-            merged = {**entry, "_resolved": resolved_block}
-            # Here, not in the workflow: `runs-on: ${{ matrix['runs-on'] }}` is not re-evaluated.
-            if "runs-on" in merged:
-                merged["runs-on"] = resolve_runner(merged["runs-on"])
-            out_include.append(merged)
+            out_include.append({**entry, "_resolved": resolved_block})
 
         matrices_out[mname] = {"include": out_include}
 
@@ -897,7 +953,7 @@ def _run(
                 print(f"    dep:  {dep['name']:24s} source={src:17s} {cached:>6s}  {dep['artifact-name']}")
     if sync_branch:
         sync_repos = [r for r, present in sync_exists.items() if present]
-        print(f"sync-branch '{sync_branch}' active in: {', '.join(sync_repos) if sync_repos else '(none)'}")
+        print(f"'{sync_branch}' also used in: {', '.join(sync_repos) if sync_repos else '(none)'}")
 
 
 if __name__ == "__main__":

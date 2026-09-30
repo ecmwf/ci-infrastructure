@@ -39,13 +39,13 @@ def _run(tmp_path: Path, branch: str, *, exists: bool) -> tuple[str, list[str]]:
     return ref, calls
 
 
-@pytest.mark.parametrize("branch", ["master", "develop", "try-new-CI", ""])
+@pytest.mark.parametrize("branch", ["master", "develop", "try-new-CI", "feature-sync/foo", "features/foo", ""])
 def test_a_non_sync_branch_is_never_probed(tmp_path: Path, branch: str) -> None:
     """A push to master once built eckit's release `master`, which has no manifest."""
     assert _run(tmp_path, branch, exists=True) == (FALLBACK, [])
 
 
-@pytest.mark.parametrize("branch", ["feature-sync/foo", "sync-branch/foo"])
+@pytest.mark.parametrize("branch", ["sync-branch/foo", "feature/foo"])
 def test_a_sync_branch_is_used_where_it_exists(tmp_path: Path, branch: str) -> None:
     ref, calls = _run(tmp_path, branch, exists=True)
     assert ref == branch
@@ -53,6 +53,6 @@ def test_a_sync_branch_is_used_where_it_exists(tmp_path: Path, branch: str) -> N
 
 
 def test_a_missing_sync_branch_falls_back(tmp_path: Path) -> None:
-    ref, calls = _run(tmp_path, "feature-sync/foo", exists=False)
+    ref, calls = _run(tmp_path, "feature/foo", exists=False)
     assert ref == FALLBACK
     assert len(calls) == 1

@@ -14,8 +14,16 @@ inputs:
     default: '.ci/manifest.toml'
   current-branch:
     description: >
-      Branch being built. A sync branch is used in each upstream repo where it
-      exists, as in actions/pick-ref.
+      Branch being built; defaults to the pull request's branch, or the pushed
+      branch. A `sync-branch/*` or `feature/*` branch is used in each upstream repo where it exists, as in
+      actions/pick-ref.
+    required: false
+    default: ${{ github.head_ref || github.ref_name }}
+  pin:
+    description: >
+      owner/repo@sha of the change under test. That repo resolves at this
+      commit wherever it appears in the dependency tree, so a downstream run
+      builds against it rather than its default branch. Empty pins nothing.
     required: false
     default: ''
   matrix:
@@ -146,6 +154,7 @@ runs:
         DISPATCH_TOKEN: ${{ steps.mint.outputs.token }}
         MANIFEST: ${{ inputs.manifest }}
         CURRENT_BRANCH: ${{ inputs.current-branch }}
+        PIN: ${{ inputs.pin }}
         MATRIX: ${{ inputs.matrix }}
         UPSTREAM_MANIFEST_PATH: ${{ inputs.upstream-manifest-path }}
       run: |
@@ -153,5 +162,6 @@ runs:
         "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.resolve_deps \
           --manifest "$MANIFEST" \
           --current-branch "$CURRENT_BRANCH" \
+          --pin "$PIN" \
           --matrix "$MATRIX" \
           --upstream-manifest-path "$UPSTREAM_MANIFEST_PATH"

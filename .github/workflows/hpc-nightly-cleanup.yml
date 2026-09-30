@@ -25,8 +25,15 @@ concurrency:
 
 jobs:
   cleanup:
-    runs-on: [hpc]
+    runs-on: hpc-submit
+    container:
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
     steps:
+      - uses: ecmwf/ci-infrastructure/actions/announce-image@main
+
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
 
       - name: Garbage-collect the cluster work dir

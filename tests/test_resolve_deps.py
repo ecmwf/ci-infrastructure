@@ -17,6 +17,7 @@ from ci_infrastructure._github_api import (
     EXECUTION_HPC,
     EXECUTION_RUNNER,
     Execution,
+    WorkflowRuns,
     canonical_option_segment,
 )
 from ci_infrastructure.manifest import DepTable
@@ -35,7 +36,10 @@ from ci_infrastructure.resolve_deps import (
     _as_option,
     _resolve_own_sha,
     _to_dep_spec,
+    bfs_load_manifests,
     make_artifact_name,
+    parse_manifest,
+    parse_pin,
     producer_can_build,
     resolve_leg,
 )
@@ -174,14 +178,19 @@ def _dep_spec(package: str, **overrides: Any) -> DepSpec:
 
 
 def _resolve(
-    own: PackageSpec, deps: list[DepSpec], leg: dict[str, str], lane: Execution = EXECUTION_RUNNER
+    own: PackageSpec,
+    deps: list[DepSpec],
+    leg: dict[str, str],
+    lane: Execution = EXECUTION_RUNNER,
+    manifest_cache: dict[tuple[Repo, Ref], Manifest] | None = None,
+    pins: dict[Repo, Ref] | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     return resolve_leg(
         own=own,
         own_deps=deps,
         own_sha=Sha("d" * 40),
         matrix_entry=leg,
-        manifest_cache={},
+        manifest_cache=manifest_cache or {},
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
@@ -191,6 +200,7 @@ def _resolve(
         can_dispatch=False,
         lane=lane,
         dispatch_plans={},
+        pins=pins,
     )
 
 
@@ -291,7 +301,7 @@ platform = "ubuntu-24.04"
 
 [matrix.build]
 ctest = true
-ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
 
 [[matrix.build-hpc.include]]
 cxx-compiler = "g++-13"
@@ -303,16 +313,15 @@ execution = "hpc"
 [matrix.test]
 reuse-matrix = "build"
 ctest = true
-ctest-args = '-j "$(nproc)"'
 """
 
 
-def test_ctest_parsed_per_kind_verbatim_and_not_inherited_through_reuse_matrix() -> None:
-    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
+def test_ctest_is_per_kind_and_its_args_per_leg() -> None:
+    m = resolve_deps.parse_manifest(_CTEST_MANIFEST)
 
-    assert kinds["build"] == resolve_deps.CtestSpec(enabled=True, args="-L nightly -E 's_test|s_zombies' -j 8")
-    assert kinds["build-hpc"] == resolve_deps.CtestSpec(enabled=False, args="")
-    assert kinds["test"] == resolve_deps.CtestSpec(enabled=True, args='-j "$(nproc)"')
+    assert m.ctest_by_kind == {"build": True, "build-hpc": False, "test": True}
+    assert m.matrix["build"][0]["ctest-args"] == "-L nightly -E 's_test|s_zombies' -j 8"
+    assert "ctest-args" not in m.matrix["build-hpc"][0]
 
 
 def test_ctest_rejects_wrong_types() -> None:
@@ -334,8 +343,8 @@ platform = "ubuntu-24.04"
     with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest Input should be a valid boolean"):
         resolve_deps.parse_manifest(manifest('ctest = "yes"'))
 
-    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args Input should be a valid string"):
-        resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
+    with pytest.raises(ValueError, match=r"\[matrix\.build\] ctest-args must be a string"):
+        resolve_deps.parse_manifest(manifest("ctest = true\ndefaults.ctest-args = 8"))
 
 
 def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
@@ -358,3 +367,104 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
         )
 
     assert sorted(p.lane for p in plans.values()) == ["hpc", "runner"]
+
+
+_PINNED: Final = Ref("a" * 40)
+_MIDDLE_MANIFEST: Final = """
+[package]
+name = "middle"
+prefix = "middle"
+repo = "o/middle"
+compiler-inputs = ["cxx-compiler"]
+
+[[deps]]
+repo = "o/base"
+package = "base"
+ref = "main"
+compiler-inputs = []
+"""
+
+
+@pytest.mark.usefixtures("offline")
+def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_package() -> None:
+    """Downstream CI builds against the commit under test, not the pinned repo's default branch."""
+    own = _own("top")
+    base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
+    cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST)}
+
+    unpinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache)
+    pinned, _ = _resolve(own, [base, middle], dict(_LEG), manifest_cache=cache, pins={Repo("o/base"): _PINNED})
+
+    by_name = {str(d.name): d for d in pinned}
+    assert by_name["base"].sha == Sha(_PINNED)
+    assert by_name["middle"].sha == "c" * 40
+    assert by_name["middle"].deps_hash != {str(d.name): d for d in unpinned}["middle"].deps_hash
+
+
+def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
+    with pytest.raises(ResolveError, match="the commit under test"):
+        _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins={Repo("o/base"): _PINNED})
+
+
+def test_bfs_reads_pinned_manifests_at_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested: list[tuple[str, str]] = []
+
+    def layer(
+        repos_refs: Any, sync_branch: Any, token: Any, path: Any
+    ) -> dict[tuple[str, str], tuple[str | None, bool]]:
+        requested.extend(repos_refs)
+        return {rr: (_MIDDLE_MANIFEST if rr[0] == "o/middle" else None, False) for rr in repos_refs}
+
+    monkeypatch.setattr(resolve_deps, "fetch_manifests_layer", layer)
+    bfs_load_manifests([_dep_spec("middle")], None, None, ".ci/manifest.toml", pins={Repo("o/base"): _PINNED})
+    assert requested == [("o/middle", "main"), ("o/base", _PINNED)]
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"),
+    [("", {}), (f"o/base@{'a' * 40}", {Repo("o/base"): Ref("a" * 40)})],
+)
+def test_parse_pin(pin: str, expected: dict[Repo, Ref]) -> None:
+    assert parse_pin(pin) == expected
+
+
+@pytest.mark.parametrize("pin", ["o/base", "o/base@main", f"base@{'a' * 40}"])
+def test_parse_pin_rejects(pin: str) -> None:
+    with pytest.raises((ResolveError, ValueError)):
+        parse_pin(pin)
+
+
+def _middle_declaring_base(**base: str) -> dict[tuple[Repo, Ref], Manifest]:
+    decl = "".join(f"{k} = {v}\n" for k, v in {"ref": '"main"', "compiler-inputs": "[]", **base}.items())
+    text = _MIDDLE_MANIFEST.replace('ref = "main"\ncompiler-inputs = []\n', decl)
+    return {(Repo("o/middle"), Ref("main")): parse_manifest(text)}
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize("base_first", [True, False])
+def test_conflicting_declarations_of_a_dep_fail_in_either_order(base_first: bool) -> None:
+    base, middle = _dep_spec("base", ref=Ref("develop"), compiler_inputs=[]), _dep_spec("middle")
+    deps = [base, middle] if base_first else [middle, base]
+    with pytest.raises(
+        ResolveError, match=r"'base' is declared differently .*ref 'develop' vs 'main'|ref 'main' vs 'develop'"
+    ):
+        _resolve(_own("top"), deps, dict(_LEG), manifest_cache=_middle_declaring_base())
+
+
+@pytest.mark.usefixtures("offline")
+def test_differing_compiler_inputs_fail() -> None:
+    base, middle = _dep_spec("base"), _dep_spec("middle")
+    with pytest.raises(ResolveError, match="compiler"):
+        _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
+
+
+def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declarations compare refs, not SHAs, so a push between lookups is not a conflict."""
+    commits = iter("abcdef")
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha(next(commits) * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
+    deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
+    assert [d.name for d in deps] == ["base", "middle"]

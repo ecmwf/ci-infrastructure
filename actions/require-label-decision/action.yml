@@ -4,17 +4,21 @@
 
 name: Require a label decision before merge
 description: >
-  Post a commit status that stays pending (not failed) until the PR carries
-  `label` (run) or `opt-out-label` (skip); both means run. Make `context` a
-  required check. Payload-only, so safe under pull_request_target.
+  Post a commit status that stays pending until the PR carries exactly one
+  level label, `<label>:all` or `<label>:<n>` (run), or `opt-out-label` (skip);
+  a level label wins over the opt-out. Any other use of `<label>` fails the
+  status. Make `context` a required check. Payload-only, so safe under
+  pull_request_target.
 
 inputs:
   label:
-    description: 'Label meaning "run the expensive lane".'
-    required: true
+    description: 'Prefix of the level labels.'
+    required: false
+    default: 'run-downstream-ci'
   opt-out-label:
     description: 'Label meaning "deliberately skip it".'
-    required: true
+    required: false
+    default: 'downstream-ci-not-needed'
   context:
     description: 'Commit status context to post (the required check).'
     required: true
@@ -43,7 +47,7 @@ inputs:
 
 outputs:
   decision:
-    description: "'run', 'skip', 'exempt' or 'undecided'."
+    description: "'run', 'skip', 'exempt', 'undecided' or 'conflict'."
     value: ${{ steps.gate.outputs.decision }}
 
 runs:
@@ -93,13 +97,23 @@ runs:
 
         has_label() { jq -e --arg l "$1" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; }
 
-        if has_label "$LABEL_INPUT"; then
+        found=()
+        while IFS= read -r name; do
+          if [ "$name" = "$LABEL_INPUT" ] || [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
+            found+=("$name")
+          fi
+        done < <(jq -r '.pull_request.labels[].name' "$event")
+        level=""
+        if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
+
+        if [ "${#found[@]}" -eq 0 ]; then
+          if has_label "$OPT_OUT_INPUT"; then decision=skip; else decision=undecided; fi
+        elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
+             { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
           decision=run
-          has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '$LABEL_INPUT' and '$OPT_OUT_INPUT' are set; treating this as '$LABEL_INPUT'."
-        elif has_label "$OPT_OUT_INPUT"; then
-          decision=skip
+          has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '${found[0]}' and '$OPT_OUT_INPUT' are set; treating this as '${found[0]}'."
         else
-          decision=undecided
+          decision=conflict
         fi
 
         # Compared in jq, so a login is never a shell glob.
@@ -113,7 +127,11 @@ runs:
         case "$decision" in
           undecided)
             state=pending
-            description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT' or '$OPT_OUT_INPUT' to merge}"
+            description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT:all', '$LABEL_INPUT:<n>' or '$OPT_OUT_INPUT' to merge}"
+            ;;
+          conflict)
+            state=failure
+            description="Set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'"
             ;;
           exempt)
             state=success

@@ -24,7 +24,7 @@ _HPC_MANIFEST: Final = """
     [matrix.build]
     execution = "hpc"
     triggers = ["rebuild-request"]
-    job-script = "./.ci/hpc/build.sh"
+    defaults.job-script = "./.ci/hpc/build.sh"
     forwarded-deps-outputs = ["cmake-prefix-path"]
     needs = []
 
@@ -46,7 +46,7 @@ def hpc_yaml(tmp_path: Path) -> str:
     "line",
     [
         "uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main",
-        "matrix.job-script || './.ci/hpc/build.sh'",
+        "job-script: ${{ matrix.job-script }}",
         "site: ${{ matrix.site }}",
         "actions/fetch-deps@main",
         "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}",
@@ -65,14 +65,14 @@ def test_hpc_job_omits(hpc_yaml: str, absent: str) -> None:
     assert absent not in hpc_yaml
 
 
-def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> None:
+def test_hpc_job_script_is_per_leg_over_defaults(tmp_path: Path) -> None:
     yaml = render_single(
         tmp_path,
         """
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["rebuild-request"]
-        job-script = "./.ci/hpc/build-py3.12.sh"
+        defaults.job-script = "./.ci/hpc/build-py3.12.sh"
         forwarded-deps-outputs = ["cmake-prefix-path"]
         needs = []
 
@@ -94,8 +94,8 @@ def test_hpc_job_script_is_per_leg_with_kind_level_fallback(tmp_path: Path) -> N
         """,
         EXECUTION_HPC,
     )
-    assert "matrix.job-script || './.ci/hpc/build-py3.12.sh'" in yaml
-    assert "job-script: ./.ci/hpc/build-py3.12.sh" not in yaml
+    assert "job-script: ${{ matrix.job-script }}" in yaml
+    assert "build-py3.1" not in yaml
 
 
 def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
@@ -105,7 +105,6 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
         [matrix.test-hpc]
         execution = "hpc"
         triggers = ["upstream-change"]
-        job-script = "./.ci/hpc/test.sh"
         forwarded-deps-outputs = ["cmake-prefix-path"]
         publishes = false
         needs = []
@@ -143,7 +142,7 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
         [matrix.build]
         execution = "hpc"
         triggers = ["rebuild-request"]
-        job-script = "./.ci/hpc/build.sh"
+        defaults.job-script = "./.ci/hpc/build.sh"
         needs = []
 
         [[matrix.build.include]]
@@ -173,7 +172,7 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             [matrix.build]
             execution = "hpc"
             triggers = ["rebuild-request"]
-            job-script = "./.ci/hpc/build.sh"
+            defaults.job-script = "./.ci/hpc/build.sh"
             action = "./.github/actions/build-a"
             needs = []
 
@@ -197,7 +196,7 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             site = "hpc-batch"
             platform = "hpc-atos-gnu"
             """,
-            "no `job-script`",
+            "a leg has no `job-script`",
             id="hpc-kind-without-job-script",
         ),
         pytest.param(
@@ -205,7 +204,7 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             [matrix.build]
             triggers = ["rebuild-request"]
             action = "./.github/actions/build-a"
-            job-script = "./.ci/hpc/build.sh"
+            defaults.job-script = "./.ci/hpc/build.sh"
             needs = []
 
             [[matrix.build.include]]
@@ -220,7 +219,7 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             [matrix.build]
             execution = "cloud"
             triggers = ["rebuild-request"]
-            job-script = "./.ci/hpc/build.sh"
+            defaults.job-script = "./.ci/hpc/build.sh"
             needs = []
 
             [[matrix.build.include]]
@@ -257,7 +256,7 @@ _TEMPLATED_MANIFEST = """
     cc = "icx"
     [matrix.build]
     execution = "hpc"
-    job-script = "./.ci/hpc/build.sh.j2"
+    defaults.job-script = "./.ci/hpc/build.sh.j2"
     triggers = ["rebuild-request"]
     needs = []
 """
@@ -270,7 +269,7 @@ _BASE_MANIFEST = """
     cxx = "g++"
     [matrix.build]
     execution = "hpc"
-    job-script = "./.ci/hpc/build.sh.j2"
+    defaults.job-script = "./.ci/hpc/build.sh.j2"
     triggers = ["rebuild-request"]
     needs = []
 """
@@ -333,7 +332,7 @@ def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         modules = ["load prgenv/intel-llvm"]
         [matrix.build]
         execution = "hpc"
-        job-script = "./.ci/hpc/build.sh.j2"
+        defaults.job-script = "./.ci/hpc/build.sh.j2"
         triggers = ["rebuild-request"]
         needs = []
         """,

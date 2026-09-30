@@ -18,6 +18,8 @@ from conftest import parse_all, render_single, write_repo
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
+    BASE_IMAGE,
+    BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     SLIM_RUNNER,
@@ -28,6 +30,7 @@ from ci_infrastructure.generate_downstream_ci import (
     _run,
     _write_or_check_path,
     compute_transitive_consumers,
+    derive_cross_repo_needs,
     parse_manifest_text,
     render_orchestrator_workflow,
     render_workflow,
@@ -145,8 +148,8 @@ _CTEST_MANIFEST: Final = """
             id="empty-artifact-prefix",
         ),
         pytest.param(
-            _CTEST_MANIFEST.format(extra='ctest-args = "-E slow"'),
-            "ctest-args.*without",
+            _CTEST_MANIFEST.format(extra='defaults.ctest-args = "-E slow"'),
+            "ctest-args.*no `ctest = true`",
             id="ctest-args-without-ctest",
         ),
         pytest.param(
@@ -154,7 +157,7 @@ _CTEST_MANIFEST: Final = """
             [matrix.build-hpc]
             execution = "hpc"
             triggers = ["rebuild-request"]
-            job-script = "./.ci/hpc/build.sh"
+            defaults.job-script = "./.ci/hpc/build.sh"
             ctest = true
             needs = []
 
@@ -418,10 +421,10 @@ def test_ctest_absent_by_default(tmp_path: Path) -> None:
     assert "ctest" not in render_single(tmp_path, _CTEST_MANIFEST.format(extra=""))
 
 
-def test_ctest_step_runs_before_publish_with_args_verbatim(tmp_path: Path) -> None:
+def test_ctest_step_runs_before_publish_with_the_legs_args(tmp_path: Path) -> None:
     """A failing test ends the job before publish, so no red build reaches the store."""
-    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra='ctest = true\n    ctest-args = "-L nightly -E s_http"'))
-    assert 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure -L nightly -E s_http' in out
+    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra="ctest = true"))
+    assert "--output-on-failure ${{ matrix._resolved['ctest-args'] }}" in out
     assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
 
 
@@ -872,7 +875,10 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "name: Downstream runner (a)" in yaml
     assert "${{ needs.context.outputs.head-sha }}" in yaml
     assert "${{ needs.context.outputs.head-branch }}" in yaml
-    assert "if: ${{ needs.context.outputs.ci-conclusion == 'success' }}" in yaml
+    assert (
+        "if: ${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
+        in yaml
+    )
     assert "group: trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}" in yaml
     assert "cancel-in-progress: true" in yaml
     assert "dispatch-and-wait" not in yaml
@@ -888,8 +894,8 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert '["a/build"]' in yaml
     assert "  validate:\n" in yaml
     assert "actions/validate-generated-workflows@main" in yaml
-    assert "needs:\n    - context\n    - validate\n" in yaml
-    assert "needs:\n    - context\n    - validate\n    - b\n" in yaml
+    assert "needs:\n    - context\n    - label-gate\n    - validate\n" in yaml
+    assert "needs:\n    - context\n    - label-gate\n    - validate\n    - b\n" in yaml
     assert "actions/create-github-app-token@v3" in yaml
     assert "  report-start:\n" in yaml
     assert "  report-result:\n" in yaml
@@ -911,7 +917,6 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["upstream-change", "rebuild-request"]
-        job-script = "./.ci/hpc/build.sh"
         needs = {needs}
         [[matrix.build-hpc.include]]
         runs-on = "hpc"
@@ -1186,13 +1191,21 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         """,
     )
     doc = yaml.safe_load(_orch(tmp_path))
-    assert sorted(doc["jobs"]) == ["b", "context", "report-ci-failure", "report-result", "report-start", "validate"]
+    assert sorted(doc["jobs"]) == [
+        "b",
+        "context",
+        "label-gate",
+        "report-ci-failure",
+        "report-result",
+        "report-start",
+        "validate",
+    ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/test"]
     assert doc["jobs"]["b"]["name"] == "b"
 
 
-def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
-    """Jobs that only call APIs use SLIM_RUNNER; kind jobs keep the leg's runs-on."""
+def test_job_runners(tmp_path: Path) -> None:
+    """API-only jobs use SLIM_RUNNER, package jobs the base image, kind jobs the leg's runs-on."""
     write_repo(
         tmp_path,
         "a",
@@ -1226,9 +1239,14 @@ def test_api_only_jobs_run_on_the_slim_runner(tmp_path: Path) -> None:
         """,
     )
     consumer = yaml.safe_load(_consumer(tmp_path, "b"))
-    assert consumer["jobs"]["resolve"]["runs-on"] == SLIM_RUNNER
     assert consumer["jobs"]["b__build"]["runs-on"] == "${{ matrix['runs-on'] }}"
-    assert yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["runs-on"] == SLIM_RUNNER
+    orch = yaml.safe_load(_orch(tmp_path))["jobs"]
+    assert orch["context"]["runs-on"] == SLIM_RUNNER
+    validate = orch["validate"]
+    for job in (consumer["jobs"]["resolve"], validate):
+        assert job["runs-on"] == BASE_IMAGE_RUNNER
+        assert job["container"] == {"image": BASE_IMAGE}
+        assert job["steps"][0]["name"] == "Announce image"
 
 
 def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
@@ -1275,13 +1293,14 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         "b",
         "c",
         "context",
+        "label-gate",
         "report-ci-failure",
         "report-result",
         "report-start",
         "validate",
     ]
-    assert doc["jobs"]["b"]["needs"] == ["context", "validate"]
-    assert doc["jobs"]["c"]["needs"] == ["context", "validate", "b"]
+    assert doc["jobs"]["b"]["needs"] == ["context", "label-gate", "validate"]
+    assert doc["jobs"]["c"]["needs"] == ["context", "label-gate", "validate", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert _render_orch(tmp_path, EXECUTION_HPC) is None
@@ -1293,7 +1312,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
         return (
             f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
             '[matrix.build-hpc]\nexecution = "hpc"\ntriggers = ["rebuild-request"]\n'
-            'job-script = "./.ci/hpc/build.sh"\nneeds = []\n'
+            "needs = []\n"
             '[[matrix.build-hpc.include]]\nruns-on = "hpc"\nsite = "hpc-batch"\n'
             'job-script = "./.ci/hpc/build.sh"\n'
         )
@@ -1335,7 +1354,7 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         # PyYAML reads the bare key `on` as True.
         assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
         assert "inputs" not in orch
-        gate = "${{ needs.context.outputs.ci-conclusion == 'success' }}"
+        gate = "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
         assert doc["jobs"]["validate"]["if"] == gate
         assert doc["jobs"]["report-start"]["if"] == gate
         assert doc["jobs"]["b"]["uses"].endswith(f"cross-repo-trigger{suffix}.yml@main")
@@ -1352,8 +1371,11 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
     assert "downstream/runner" in start
 
     result = doc["jobs"]["report-result"]
-    assert result["needs"] == ["context", "validate", "b"]
-    assert result["if"] == "${{ always() && needs.context.outputs.ci-conclusion == 'success' }}"
+    assert result["needs"] == ["context", "label-gate", "validate", "b"]
+    assert (
+        result["if"] == "${{ (always() && needs.context.outputs.ci-conclusion == 'success') && "
+        "needs['label-gate'].outputs.run == 'true' }}"
+    )
     run = result["steps"][-1]["run"]
     assert "${{ needs.validate.result }}" in run
     assert "${{ needs.b.result }}" in run
@@ -1370,7 +1392,10 @@ def test_orchestrator_posts_ci_failure_status(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path, hpc=True)
     for lane, context in ((EXECUTION_RUNNER, "downstream/runner"), (EXECUTION_HPC, "downstream/hpc")):
         job = yaml.safe_load(_orch(tmp_path, lane))["jobs"]["report-ci-failure"]
-        assert job["if"] == "${{ needs.context.outputs.ci-conclusion != 'success' }}"
+        assert (
+            job["if"]
+            == "${{ (needs.context.outputs.ci-conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
+        )
         run = job["steps"][-1]["run"]
         assert "gh api -X POST" in run
         assert "-f state=failure" in run
@@ -1394,7 +1419,6 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         [matrix.build-hpc]
         execution = "hpc"
         triggers = ["upstream-change"]
-        job-script = "./.ci/hpc/build.sh"
         needs = ["d/build-hpc"]
         [[matrix.build-hpc.include]]
         runs-on = "hpc"
@@ -1522,20 +1546,21 @@ def test_generated_header_round_trips_through_check(tmp_path: Path) -> None:
     assert _write_or_check_path(out, rendered, check=True) == (False, [])
 
 
-def test_validate_job_opts_into_the_fork_checkout(tmp_path: Path) -> None:
-    """The fork head sha is refused by actions/checkout from a workflow_run otherwise."""
+def test_resolve_pins_the_upstream_change_but_not_a_rebuild_request(tmp_path: Path) -> None:
     _make_chain_abc(tmp_path)
-    checkout = next(
-        s
-        for s in yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["steps"]
-        if str(s.get("uses", "")).startswith("actions/checkout")
+    steps = yaml.safe_load(_consumer(tmp_path, "b"))["jobs"]["resolve"]["steps"]
+    resolve = next(s for s in steps if s.get("id") == "r")
+    assert resolve["with"]["pin"] == (
+        "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
     )
-    assert checkout["with"]["allow-unsafe-pr-checkout"] is True
 
-    # Consumer checkouts resolve to a branch of their own repo and need no opt-in.
-    for job in yaml.safe_load(_consumer(tmp_path, "b"))["jobs"].values():
-        for step in job.get("steps", []):
-            if str(step.get("uses", "")).startswith("actions/checkout"):
+
+def test_no_checkout_opts_into_fork_code(tmp_path: Path) -> None:
+    """actions/checkout then refuses a fork's code under workflow_run."""
+    _make_chain_abc(tmp_path)
+    for doc in (_orch(tmp_path), _consumer(tmp_path, "b")):
+        for job in yaml.safe_load(doc)["jobs"].values():
+            for step in job.get("steps", []):
                 assert "allow-unsafe-pr-checkout" not in (step.get("with") or {})
 
 
@@ -1705,7 +1730,7 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
         action = "./.github/actions/build-a"
         needs = []
         ctest = true
-        ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+        defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
 
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1727,8 +1752,6 @@ _GATE_UPSTREAM: Final = """
     [[trigger-downstream]]
     repo = "org/b"
     ref = "main"
-    [downstream-gate]
-    label = "run-downstream-CI"
     [matrix.build]
     triggers = ["upstream-change"]
     action = "./.github/actions/build"
@@ -1736,8 +1759,6 @@ _GATE_UPSTREAM: Final = """
     [[matrix.build.include]]
     runs-on = "ubuntu-latest"
 """
-
-_UNGATED_UPSTREAM: Final = _GATE_UPSTREAM.replace('[downstream-gate]\n    label = "run-downstream-CI"\n', "")
 
 _GATE_CONSUMER: Final = """
     [[deps]]
@@ -1761,18 +1782,14 @@ def _render_gate(tmp_path: Path, upstream: str) -> dict[Any, Any]:
     return doc
 
 
-def test_downstream_gate_absent_by_default(tmp_path: Path) -> None:
-    doc = _render_gate(tmp_path, _UNGATED_UPSTREAM)
-
-    assert "label-gate" not in doc["jobs"]
-    assert doc["jobs"]["validate"]["if"] == "${{ needs.context.outputs.ci-conclusion == 'success' }}"
-
-
 def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     """Including report-start and report-ci-failure: an opted-out PR posts no status."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    assert doc["jobs"]["label-gate"]["outputs"] == {"run": "${{ steps.gate.outputs.run }}"}
+    assert doc["jobs"]["label-gate"]["outputs"] == {
+        "run": "${{ steps.gate.outputs.run }}",
+        "depth": "${{ steps.gate.outputs.depth }}",
+    }
     assert "if" not in doc["jobs"]["label-gate"], "report-ci-failure needs the gate on the failure path"
     for jid, job in doc["jobs"].items():
         # context runs first: the gate looks its PR up by the commit context resolves.
@@ -1796,15 +1813,14 @@ def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> Non
 
 
 def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Path) -> None:
-    """The label travels as an action input, never as shell text."""
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM.replace("run-downstream-CI", "it's-needed"))
+    """The label scheme is the action's own default, the same in every repo."""
+    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     steps = doc["jobs"]["label-gate"]["steps"]
     assert not any("run" in s for s in steps)
     gate = next(s for s in steps if s.get("id") == "gate")
-    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/check-pr-label@main"
-    assert gate["with"]["label"] == "it's-needed"
-    assert gate["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
+    assert gate["uses"] == "ecmwf/ci-infrastructure/actions/should-downstream-run@main"
+    assert gate["with"] == {"sha": "${{ needs.context.outputs.head-sha }}"}
 
 
 def test_downstream_gate_reads_its_own_repo_with_the_plain_token(tmp_path: Path) -> None:
@@ -1966,16 +1982,16 @@ _SCHEDULING_ONLY_LEGS: Final = """
         [[matrix.build.include]]
         build-type = "Release"
         platform = "hpc-atos-gnu"
-        job-script = "./.ci/hpc/build-gnu.sh"
+        build-script = "./.ci/hpc/build-gnu.sh"
 
         [[matrix.build.include]]
         build-type = "Release"
         platform = "hpc-atos-gnu"
-        job-script = "./.ci/hpc/build-geo.sh"
+        build-script = "./.ci/hpc/build-geo.sh"
         """,
             ),
             "same artifact identity",
-            id="differ-only-in-job-script",
+            id="differ-only-in-a-free-field",
         ),
         pytest.param(
             _pkg(
@@ -2038,3 +2054,146 @@ def test_leg_artifact_identity(tmp_path: Path, manifest: str, match: str | None)
     else:
         with pytest.raises(SchemaError, match=match):
             validate_graph(parse_all(tmp_path))
+
+
+_PRODUCER: Final = """
+[[trigger-downstream]]
+repo = "org/b"
+ref = "main"
+[matrix.build]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+[[matrix.build.include]]
+platform = "p"
+[matrix.build-hpc]
+triggers = ["upstream-change"]
+execution = "hpc"
+defaults.job-script = "./.ci/hpc/build.sh"
+[[matrix.build-hpc.include]]
+platform = "hpc-p"
+"""
+
+_CONSUMER: Final = """
+[[deps]]
+repo = "org/a"
+package = "a"
+ref = "main"
+compiler-inputs = []
+[matrix.build]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+{needs}
+[[matrix.build.include]]
+platform = "p"
+[matrix.build-hpc]
+triggers = ["upstream-change"]
+execution = "hpc"
+defaults.job-script = "./.ci/hpc/build.sh"
+[[matrix.build-hpc.include]]
+platform = "hpc-p"
+[matrix.test]
+reuse-matrix = "build"
+needs = ["build"]
+"""
+
+
+def _derived(tmp_path: Path, needs: str = "", producer: str = _PRODUCER) -> dict[str, list[str]]:
+    write_repo(tmp_path, "a", producer)
+    write_repo(tmp_path, "b", _CONSUMER.format(needs=needs))
+    manifests = parse_all(tmp_path)
+    derive_cross_repo_needs(manifests)
+    validate_graph(manifests)
+    b = next(m for m in manifests if m.package_name == "b")
+    return {k: list(mk.needs) for k, mk in b.matrices.items()}
+
+
+def test_cross_repo_needs_are_derived_per_lane_from_deps(tmp_path: Path) -> None:
+    assert _derived(tmp_path) == {"build": ["a/build"], "build-hpc": ["a/build-hpc"], "test": ["build"]}
+
+
+def test_explicit_cross_repo_needs_are_kept(tmp_path: Path) -> None:
+    assert _derived(tmp_path, needs='needs = ["a/build-hpc"]')["build"] == ["a/build-hpc"]
+
+
+def test_a_producer_that_does_not_trigger_us_is_not_needed(tmp_path: Path) -> None:
+    producer = _PRODUCER.replace('[[trigger-downstream]]\nrepo = "org/b"\nref = "main"\n', "")
+    assert _derived(tmp_path, producer=producer)["build"] == []
+
+
+def test_two_producer_kinds_for_one_dep_need_an_explicit_choice(tmp_path: Path) -> None:
+    producer = (
+        _PRODUCER
+        + """
+[matrix.build-debug]
+triggers = ["upstream-change"]
+action = "./.github/actions/build"
+[[matrix.build-debug.include]]
+platform = "p"
+build-type = "Debug"
+"""
+    )
+    with pytest.raises(SchemaError, match="cannot derive its needs on 'a'"):
+        _derived(tmp_path, producer=producer)
+
+
+def _diamond(tmp_path: Path, exclude: str = "") -> None:
+    """a triggers b and c; c also depends on b, so b is level 1 and c level 2."""
+    kind = """
+    [matrix.build]
+    triggers = ["upstream-change"]
+    action = "./.github/actions/build"
+    needs = {needs}
+    [[matrix.build.include]]
+    platform = "p"
+    """
+    dep = """
+    [[deps]]
+    repo = "org/{0}"
+    package = "{0}"
+    ref = "main"
+    compiler-inputs = []
+    """
+    trigger = """
+    [[trigger-downstream]]
+    repo = "org/{0}"
+    ref = "main"
+    """
+    write_repo(tmp_path, "a", trigger.format("b") + trigger.format("c") + exclude + kind.format(needs="[]"))
+    write_repo(tmp_path, "b", dep.format("a") + trigger.format("c") + kind.format(needs='["a/build"]'))
+    write_repo(tmp_path, "c", dep.format("a") + dep.format("b") + kind.format(needs='["a/build", "b/build"]'))
+
+
+def test_consumer_jobs_run_up_to_the_labelled_level(tmp_path: Path) -> None:
+    _diamond(tmp_path)
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    for jid, level in (("b", 1), ("c", 2)):
+        assert (
+            f"(needs['label-gate'].outputs.depth == 'all' || needs['label-gate'].outputs.depth >= {level})"
+            in jobs[jid]["if"]
+        )
+    assert "depth" not in jobs["validate"]["if"]
+
+
+def test_the_final_status_names_a_partial_run(tmp_path: Path) -> None:
+    _diamond(tmp_path)
+    run = yaml.safe_load(_orch(tmp_path))["jobs"]["report-result"]["steps"][0]["run"]
+    assert "depth=\"${{ needs['label-gate'].outputs.depth }}\"" in run
+    assert 'scope=" (up to level $depth)"' in run
+
+
+@pytest.mark.parametrize(
+    ("exclude", "kept"),
+    [(["c"], ["b"]), (["b"], [])],
+    ids=["leaf", "middle-drags-its-dependent"],
+)
+def test_exclude_drops_the_package_and_its_dependents(tmp_path: Path, exclude: list[str], kept: list[str]) -> None:
+    _diamond(tmp_path, exclude=f"[downstream]\nexclude = {json.dumps(exclude)}\n")
+    out = _render_orch(tmp_path)
+    consumers = [] if out is None else sorted(set(yaml.safe_load(out)["jobs"]) & {"b", "c"})
+    assert consumers == kept
+
+
+def test_an_unknown_exclude_is_an_error(tmp_path: Path) -> None:
+    _diamond(tmp_path, exclude='[downstream]\nexclude = ["d"]\n')
+    with pytest.raises(SchemaError, match=r"exclude names \['d'\]"):
+        _render_orch(tmp_path)

@@ -55,7 +55,11 @@ class PackageTable(_Table):
         min_length=1,
         description="Package name, unique across the graph. Other manifests' `needs` refer to it as `<name>/<kind>`.",
     )
-    prefix: str = Field(min_length=1, description="Artifact-name prefix. Consumers name it in `[[deps]].package`.")
+    prefix: str = Field(
+        default="",
+        min_length=1,
+        description="Artifact-name prefix, `name` when absent. Consumers name it in `[[deps]].package`.",
+    )
     repo: str | None = Field(
         default=None,
         description="`owner/name` of this repo. The resolver falls back to `--self-repo`; the generator requires it.",
@@ -84,6 +88,11 @@ class PackageTable(_Table):
     def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         return _check_compiler_inputs(v)
 
+    @model_validator(mode="after")
+    def _prefix_defaults_to_name(self) -> PackageTable:
+        self.prefix = self.prefix or self.name
+        return self
+
 
 class DepTable(_Table):
     """`[[deps]]`: one upstream package whose artifact every applicable leg fetches."""
@@ -91,7 +100,8 @@ class DepTable(_Table):
     repo: str = Field(description="`owner/name` of the upstream repo.")
     package: str = Field(min_length=1, description="The upstream's `[package].prefix`.")
     ref: str = Field(
-        description="Branch, tag or 40-char SHA. A sync branch of the same name in the upstream overrides it."
+        description="Branch, tag or 40-char SHA. A `sync-branch/` or `feature/` branch of the same name in the "
+        "upstream overrides it."
     )
     compiler_inputs: tuple[str, ...] = Field(
         alias="compiler-inputs",
@@ -206,10 +216,10 @@ class MatrixKindTable(_Table):
     """`[matrix.<kind>]`: one job kind and its legs.
 
     A leg (`[[matrix.<kind>.include]]`) is free-form: every field is available to
-    the kind's action or job script. `platform` is required and names the
+    the kind's action or job script. An HPC leg names its recipe in `job-script`. `platform` is required and names the
     binary-compatibility class; `build-type`, `python-version`, `options` and the
-    `compiler-inputs` fields enter the artifact name; `runs-on` (which may name a
-    runner class) and `container` only schedule the job.
+    `compiler-inputs` fields enter the artifact name; `runs-on` and `container`
+    only schedule the job.
     """
 
     triggers: tuple[str, ...] = Field(
@@ -218,7 +228,10 @@ class MatrixKindTable(_Table):
         "Empty keeps the kind out of it.",
     )
     needs: tuple[str, ...] = Field(
-        default=(), description="Kinds that must finish first: `<kind>` locally, `<package-name>/<kind>` across repos."
+        default=(),
+        description="Kinds that must finish first: `<kind>` locally, `<package-name>/<kind>` across repos. "
+        "Without cross-repo entries, a kind with `triggers` gets them from `[[deps]]`: per producer that triggers "
+        "this repo, its triggered kind publishing the dep in the same lane.",
     )
     reuse_matrix: str | None = Field(
         default=None,
@@ -238,11 +251,6 @@ class MatrixKindTable(_Table):
         default="",
         description="Runner kinds: the local composite the job calls, `./.github/actions/<name>`. Required with "
         "`triggers`.",
-    )
-    job_script: str = Field(
-        default="",
-        alias="job-script",
-        description="HPC kinds: the recipe submitted to SLURM. Required with `triggers`.",
     )
     forwarded_inputs: tuple[str, ...] = Field(
         default=(), alias="forwarded-inputs", description="Leg fields passed to the action's `with:`."
@@ -270,9 +278,10 @@ class MatrixKindTable(_Table):
         description="Pull the leg's `container` with registry credentials.",
     )
     ctest: bool = Field(
-        strict=True, default=False, description="Run ctest on the build tree before publishing; runner kinds only."
+        strict=True,
+        default=False,
+        description="Run ctest on the build tree before publishing, with the leg's `ctest-args`; runner kinds only.",
     )
-    ctest_args: str = Field(default="", alias="ctest-args", description="Extra ctest arguments; needs `ctest = true`.")
 
     @model_validator(mode="before")
     @classmethod
@@ -359,10 +368,14 @@ class GeneratedTable(_Table):
         return v
 
 
-class DownstreamGateTable(_Table):
-    """`[downstream-gate]`: when a pull request fans out to consumers."""
+class DownstreamTable(_Table):
+    """`[downstream]`: this repo's own fan-out to its consumers."""
 
-    label: str = Field(min_length=1, description="A PR fans out only while it carries this label; a push always does.")
+    exclude: tuple[str, ...] = Field(
+        default=(),
+        description="Consumer packages this repo's fan-out skips, together with every consumer in it that "
+        "depends on them.",
+    )
 
 
 class ManifestFile(_Table):
@@ -371,7 +384,7 @@ class ManifestFile(_Table):
     package: PackageTable
     deps: tuple[DepTable, ...] = ()
     trigger_downstream: tuple[TriggerDownstreamTable, ...] = Field(default=(), alias="trigger-downstream")
-    downstream_gate: DownstreamGateTable | None = Field(default=None, alias="downstream-gate")
+    downstream: DownstreamTable | None = None
     generated: GeneratedTable | None = None
     matrix: dict[str, MatrixKindTable] = Field(default_factory=dict)
 
@@ -409,7 +422,7 @@ _LOC_HEADS: Final = {
     "matrix": "subtable",
     "package": "table",
     "generated": "table",
-    "downstream-gate": "table",
+    "downstream": "table",
 }
 
 

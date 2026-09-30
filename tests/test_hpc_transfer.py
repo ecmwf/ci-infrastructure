@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
@@ -253,6 +254,7 @@ def test_push_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     assert not remote.exists()
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11, 4), reason="tarfile extraction filters (PEP 706)")
 def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "hello.txt", "content-xyz")
     conn = CopyingConnection()
