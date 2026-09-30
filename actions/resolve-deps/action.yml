@@ -15,7 +15,7 @@ inputs:
   current-branch:
     description: >
       Branch being built; defaults to the pull request's branch, or the pushed
-      branch. A sync branch is used in each upstream repo where it exists, as in
+      branch. A `sync-branch/*` or `feature/*` branch is used in each upstream repo where it exists, as in
       actions/pick-ref.
     required: false
     default: ${{ github.head_ref || github.ref_name }}

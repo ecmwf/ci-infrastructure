@@ -16,13 +16,13 @@ How it fits together
 
 ::
 
-   `hpc` self-hosted runner (reaches the cluster only over troika ssh)
+   hpc-submit runner (reaches the cluster only over troika ssh)
      resolve ─▶ fetch deps (S3) ─▶ build-on-hpc: submit ─▶ ship source + deps + marker ─▶ wait ─▶ fetch install ─▶ publish
                                                     │                                 ▲
                                                     ▼  troika (as a Python library)   │ Finished: SUCCESS/FAILURE
                                              SLURM compute node: wait for marker ─▶ unpack into $TMPDIR ─▶ .ci/hpc/build-<toolchain>.sh
 
-- The job runs on the ``hpc`` **self-hosted runner** (``runs-on``), which submits
+- The job runs on the ``hpc-submit`` **runner** (``runs-on``), which submits
   the batch job, ships the source, waits for it, and publishes the result.
 - Submission / polling / cancellation is **pure Python** driving troika's ``Site``
   API directly (``ci_infrastructure.hpc``) — no shell-out to the troika CLI.
@@ -83,12 +83,12 @@ supports ``DESTDIR`` can stage onto node-local disk instead (see
    compiler = "gnu-12"
    build-type = "Release"
    platform = "hpc-atos-gnu"          # ABI class -> artifact slug (verbatim in the name)
-   runs-on = "hpc-submit"             # runner class, mapped in runners.RUNNER_CLASSES
+   runs-on = "hpc-submit"             # the runner group that submits to the cluster
    site = "hpc-batch"                 # troika site from troika-config.yml (scheduling only)
+   job-script = "./.ci/hpc/build-gnu.sh"  # the repo-owned recipe (its own #SBATCH header)
 
    [matrix.build]
    execution = "hpc"                  # selects the SLURM path
-   job-script = "./.ci/hpc/build-gnu.sh"  # the repo-owned recipe (its own #SBATCH header)
    triggers = ["upstream-change", "rebuild-request"]
    forwarded-deps-outputs = ["cmake-prefix-path"]
    needs = ["fortmath/build"]
@@ -99,14 +99,8 @@ rejected as a collision. Give an HPC build a distinct ``platform`` slug (e.g.
 ``hpc-atos-gnu``) since its toolchain is a different ABI from the runner images.
 Slugs read general → detailed: lane, then site, then toolchain.
 
-``runs-on`` takes a **runner class** rather than a fleet label. The classes and the
-labels they currently resolve to live in ``src/ci_infrastructure/runners.py``;
-``resolve_deps`` substitutes the label into the emitted matrix, so renaming a scale
-set org-wide is one edit there instead of one per manifest leg. A value that is
-not a class passes through verbatim, so a literal label still works.
-
 Name a **plain** recipe after its toolchain (``build-gnu.sh``, ``build-intel.sh``, …)
-even when a repo has only one: ``[matrix.<kind>] job-script`` is a default, and a
+even when a repo has only one: ``[matrix.<kind>.defaults] job-script`` is a default, and a
 file called ``build.sh`` that loads ``prgenv/gnu`` is a generic name doing specific
 work. A **templated** recipe is the opposite case and is named ``build.sh.j2``
 precisely because it hardcodes no toolchain — see below.
@@ -136,9 +130,11 @@ The leg is then the single statement of the toolchain, so the recipe and the
    cc = "gcc"
    cxx = "g++"
 
+   [matrix.build-hpc.defaults]
+   job-script = "./.ci/hpc/build.sh.j2"   # one recipe for every leg
+
    [matrix.build-hpc]
    execution  = "hpc"
-   job-script = "./.ci/hpc/build.sh.j2"   # one recipe for every leg
 
 .. code:: jinja
 

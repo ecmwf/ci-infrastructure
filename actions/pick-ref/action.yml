@@ -4,8 +4,8 @@
 
 name: Pick downstream ref
 description: >
-  Emit `try-branch` when it is a sync branch (`sync-branch/*` / `feature-sync/*`)
-  that exists in `repo`, otherwise `fallback-ref`, so coordinated cross-repo PRs
+  Emit `try-branch` when it is a `sync-branch/*` or `feature/*` branch that
+  exists in `repo`, otherwise `fallback-ref`, so coordinated cross-repo PRs
   build against each other. Stdlib-only python, no bootstrap.
 
 inputs:
@@ -16,7 +16,7 @@ inputs:
     description: 'Branch name to probe; usually the upstream-side branch we were called from.'
     required: true
   fallback-ref:
-    description: 'Ref to use unless try-branch is a sync branch that exists in `repo` (typically the manifest ref).'
+    description: 'Ref to use unless try-branch is a `sync-branch/*` or `feature/*` branch that exists in `repo` (typically the manifest ref).'
     required: true
   token:
     description: 'Token with contents:read on `repo`. Defaults to github.token.'
@@ -81,7 +81,7 @@ runs:
         if ! PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" \
             "$python" -m ci_infrastructure.sync_branch "$TRY_BRANCH"; then
           echo "ref=$FALLBACK_REF" >> "$GITHUB_OUTPUT"
-          echo "'$TRY_BRANCH' is not a sync branch; using '$FALLBACK_REF'."
+          echo "'$TRY_BRANCH' is not a sync-branch/ or feature/ branch; using '$FALLBACK_REF'."
           exit 0
         fi
         if gh api "repos/$REPO/branches/$TRY_BRANCH" >/dev/null 2>&1; then

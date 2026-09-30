@@ -301,7 +301,7 @@ platform = "ubuntu-24.04"
 
 [matrix.build]
 ctest = true
-ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
+defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
 
 [[matrix.build-hpc.include]]
 cxx-compiler = "g++-13"
@@ -313,16 +313,15 @@ execution = "hpc"
 [matrix.test]
 reuse-matrix = "build"
 ctest = true
-ctest-args = '-j "$(nproc)"'
 """
 
 
-def test_ctest_parsed_per_kind_verbatim_and_not_inherited_through_reuse_matrix() -> None:
-    kinds = resolve_deps.parse_manifest(_CTEST_MANIFEST).ctest_by_kind
+def test_ctest_is_per_kind_and_its_args_per_leg() -> None:
+    m = resolve_deps.parse_manifest(_CTEST_MANIFEST)
 
-    assert kinds["build"] == resolve_deps.CtestSpec(enabled=True, args="-L nightly -E 's_test|s_zombies' -j 8")
-    assert kinds["build-hpc"] == resolve_deps.CtestSpec(enabled=False, args="")
-    assert kinds["test"] == resolve_deps.CtestSpec(enabled=True, args='-j "$(nproc)"')
+    assert m.ctest_by_kind == {"build": True, "build-hpc": False, "test": True}
+    assert m.matrix["build"][0]["ctest-args"] == "-L nightly -E 's_test|s_zombies' -j 8"
+    assert "ctest-args" not in m.matrix["build-hpc"][0]
 
 
 def test_ctest_rejects_wrong_types() -> None:
@@ -344,8 +343,8 @@ platform = "ubuntu-24.04"
     with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest Input should be a valid boolean"):
         resolve_deps.parse_manifest(manifest('ctest = "yes"'))
 
-    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest-args Input should be a valid string"):
-        resolve_deps.parse_manifest(manifest("ctest = true\nctest-args = 8"))
+    with pytest.raises(ValueError, match=r"\[matrix\.build\] ctest-args must be a string"):
+        resolve_deps.parse_manifest(manifest("ctest = true\ndefaults.ctest-args = 8"))
 
 
 def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:

@@ -45,7 +45,7 @@ jobs:
           FULL: ${{ github.event.inputs.full-matrix }}
         run: |
           set -euo pipefail
-          arc='{"lane":"arc","runner":"arc-hpc-pet-vsphere-prod","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
+          arc='{"lane":"arc","runner":"hpc-submit","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
           hpc='{"lane":"hpc","runner":"hpc","container":""}'
           if [ "${FULL:-false}" = "true" ]; then
             matrix="{\"lane\":[\"arc\",\"hpc\"],\"site\":[\"hpc-batch\",\"ac-batch\"],\"include\":[$arc,$hpc]}"
@@ -91,10 +91,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
     steps:
-      # Fork code in a trusted context: safe only because every job needs ci-approval.
-      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          allow-unsafe-pr-checkout: 'true'
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
@@ -161,9 +160,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
     steps:
-      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          allow-unsafe-pr-checkout: 'true'
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:

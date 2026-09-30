@@ -4,14 +4,16 @@
 
 name: Check a commit's pull request label
 description: >
-  For workflow_run orchestrators (no PR or labels in the payload): output
-  `run`=true when the open PR for `sha` carries `label`, or when the commit has
-  no open PR (a push). Never fails on the verdict.
+  For workflow_run orchestrators (no PR or labels in the payload): read the
+  level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
+  `run` and `depth`; a commit with no open PR (a push) runs at depth `all`.
+  Fails unless the PR carries at most one, valid level label.
 
 inputs:
   label:
-    description: 'Label that means "run the expensive lane".'
-    required: true
+    description: 'Prefix of the level labels.'
+    required: false
+    default: 'run-downstream-ci'
   sha:
     description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
     required: true
@@ -24,6 +26,9 @@ outputs:
   run:
     description: "'true' when the lane should run for this commit, else 'false'."
     value: ${{ steps.gate.outputs.run }}
+  depth:
+    description: "'all', or the highest consumer level to run; empty when `run` is 'false'."
+    value: ${{ steps.gate.outputs.depth }}
 
 runs:
   using: composite
@@ -51,17 +56,35 @@ runs:
         pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"
         gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
 
+        depth=""
         if [ "$(jq '[.[] | select(.state == "open")] | length' "$pulls")" -eq 0 ]; then
           run=true
-          why="no open pull request (a push); running"
-        elif jq -e --arg l "$LABEL_INPUT" \
-             '[.[] | select(.state == "open") | .labels[].name] | index($l) != null' "$pulls" >/dev/null; then
-          run=true
-          why="pull request carries '$LABEL_INPUT'"
+          depth=all
+          why="no open pull request (a push); running everything"
         else
-          run=false
-          why="no '$LABEL_INPUT' label; skipping"
+          found=()
+          while IFS= read -r name; do
+            if [ "$name" = "$LABEL_INPUT" ] || [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
+              found+=("$name")
+            fi
+          done < <(jq -r '.[] | select(.state == "open") | .labels[].name' "$pulls")
+          level=""
+          if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
+
+          if [ "${#found[@]}" -eq 0 ]; then
+            run=false
+            why="no '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>' label; skipping"
+          elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
+               { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
+            run=true
+            depth="$level"
+            why="pull request carries '${found[0]}'"
+          else
+            echo "::error title=Label gate::set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>' (n from 1); found: ${found[*]}" >&2
+            exit 1
+          fi
         fi
 
         echo "run=$run" >> "$GITHUB_OUTPUT"
+        echo "depth=$depth" >> "$GITHUB_OUTPUT"
         echo "Label gate: $why"

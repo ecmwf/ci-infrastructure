@@ -205,7 +205,7 @@ def _unsafe_wf(tmp_path: Path, needs: str = "", value: str = "'true'") -> Path:
             runs-on: ubuntu-latest
         {needs}
             steps:
-              - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+              - uses: actions/checkout@v6
                 with:
                   allow-unsafe-pr-checkout: {value}
         """,
@@ -268,7 +268,7 @@ def test_both_rules_fire_independently(tmp_path: Path) -> None:
           build:
             runs-on: ubuntu-latest
             steps:
-              - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+              - uses: actions/checkout@v6
                 with:
                   allow-unsafe-pr-checkout: 'true'
         """,
