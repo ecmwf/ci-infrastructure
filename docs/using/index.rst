@@ -11,5 +11,5 @@ This tutorial describes the everyday workflow of a developer in a repository tha
    :maxdepth: 1
 
    default-branch
-   feature-branches
    downstream-ci
+   feature-branches
