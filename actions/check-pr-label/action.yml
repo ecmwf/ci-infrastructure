@@ -6,7 +6,7 @@ name: Check a commit's pull request label
 description: >
   For workflow_run orchestrators (no PR or labels in the payload): read the
   level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
-  `run` and `depth`; a commit with no open PR (a push) runs at depth `all`.
+  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run.
   Fails unless the PR carries at most one, valid level label.
 
 inputs:
@@ -58,9 +58,8 @@ runs:
 
         depth=""
         if [ "$(jq '[.[] | select(.state == "open")] | length' "$pulls")" -eq 0 ]; then
-          run=true
-          depth=all
-          why="no open pull request (a push); running everything"
+          run=false
+          why="no open pull request (a push); skipping"
         else
           found=()
           while IFS= read -r name; do

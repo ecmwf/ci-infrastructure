@@ -42,7 +42,7 @@ def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str]
 
 @pytest.mark.parametrize(
     ("labels", "run", "depth"),
-    [(None, "true", "all"), ([f"{LABEL}:all"], "true", "all"), ([f"{LABEL}:2"], "true", "2"), ([], "false", "")],
+    [(None, "false", ""), ([f"{LABEL}:all"], "true", "all"), ([f"{LABEL}:2"], "true", "2"), ([], "false", "")],
     ids=["push", "all", "level", "none"],
 )
 def test_the_level_label_sets_run_and_depth(tmp_path: Path, labels: list[str] | None, run: str, depth: str) -> None:
