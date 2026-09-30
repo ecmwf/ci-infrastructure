@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""check-pr-label's `run:` body, executed with a stub `gh` returning the commit's pull requests."""
+"""should-downstream-run's `run:` body, executed with a stub `gh` returning the commit's pull requests."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str]
         "SHA_INPUT": "abc123",
     }
     proc = subprocess.run(
-        ["bash", "-c", action_run_body("check-pr-label")], env=env, capture_output=True, text=True, check=False
+        ["bash", "-c", action_run_body("should-downstream-run")], env=env, capture_output=True, text=True, check=False
     )
     out = dict(line.split("=", 1) for line in outputs.read_text().splitlines()) if outputs.exists() else {}
     return proc.returncode, out, proc.stderr
@@ -42,7 +42,7 @@ def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str]
 
 @pytest.mark.parametrize(
     ("labels", "run", "depth"),
-    [(None, "true", "all"), ([f"{LABEL}:all"], "true", "all"), ([f"{LABEL}:2"], "true", "2"), ([], "false", "")],
+    [(None, "false", ""), ([f"{LABEL}:all"], "true", "all"), ([f"{LABEL}:2"], "true", "2"), ([], "false", "")],
     ids=["push", "all", "level", "none"],
 )
 def test_the_level_label_sets_run_and_depth(tmp_path: Path, labels: list[str] | None, run: str, depth: str) -> None:

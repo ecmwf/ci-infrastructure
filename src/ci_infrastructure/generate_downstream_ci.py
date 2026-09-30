@@ -1276,7 +1276,7 @@ def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict
                 "    state=failure\n"
                 "  fi\n"
                 "done\n"
-                # check-pr-label only ever outputs `all` or digits here.
+                # should-downstream-run only ever outputs `all` or digits here.
                 f'depth="${{{{ {_GATE_DEPTH} }}}}"\n'
                 'scope=""\n'
                 'if [ "$depth" != all ]; then scope=" (up to level $depth)"; fi\n'
@@ -1416,7 +1416,7 @@ def _label_gate_job() -> dict[str, Any]:
             {
                 "name": "Check the downstream-CI label",
                 "id": "gate",
-                "uses": "ecmwf/ci-infrastructure/actions/check-pr-label@main",
+                "uses": "ecmwf/ci-infrastructure/actions/should-downstream-run@main",
                 "with": {"sha": _HEAD_SHA},
             },
         ],
