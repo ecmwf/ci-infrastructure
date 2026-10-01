@@ -18,7 +18,7 @@ which was an incentive to skip pull requests and to push directly to the default
 This, in turn, broke downstream packages **with errors that the ordinary tests alone would have caught**.
 Hence, the downstream CI partly caused the very problems it was created to prevent.
 
-The new system is therefore designed to **always** run the own CI of a repository,
+The new system is therefore designed to **always** run a repository's own CI,
 while the downstream CI runs only where it adds value.
 In the following we describe how the downstream CI is controlled
 and discuss typical cases in which running it does, or does not, make sense.
@@ -31,11 +31,13 @@ The downstream CI runs only for a pull request, and only if the pull request ask
 - ``run-downstream-ci:all`` builds and tests every consumer.
 - ``run-downstream-ci:<n>`` builds and tests the consumers up to level ``n``.
   In the figures below, ``eccodes`` is at level 1 and ``multio`` at level 2, as seen from ``eckit``.
-- ``downstream-ci-not-needed`` states that the change cannot break a consumer,
-  e.g. a change to the documentation, to the CI, or to the tests only.
 
-A pull request needs exactly one of these labels to be merged (:action:`require-label-decision`),
-making sure that the decision is always taken explicitly and is never forgotten.
+If you are sure that a PR cannot break a consumer,
+e.g. a change to the documentation, to the CI, or to the tests only,
+then it is possible to explicitly opt out of running via the label ``downstream-ci-not-needed``.
+
+The action :action:`require-label-decision` ensures that this decision is always taken explicitly and is never forgotten,
+by enforcing that a pull request has exactly one of the run or the opt-out label to be merged.
 
 The downstream CI starts once the ``CI`` of the pull request has completed successfully,
 hence the label has to be on the pull request by then.
