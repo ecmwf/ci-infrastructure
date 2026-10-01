@@ -9,6 +9,13 @@ Running the downstream CI
 
    This page is opinionated, open for debate, and likely to change (as of 2026-09-30).
 
+Every pull request can run two kinds of CI.
+The *own CI* builds and tests the repository itself and is the minimal test that always runs
+(see :doc:`best practices <default-branch>`).
+The *downstream CI* additionally builds and tests its consumers, i.e. the repositories that depend on it.
+For ``eckit``, these are e.g. ``eccodes`` and ``multio``.
+How the consumers are declared is described in :doc:`../configuring/downstream`.
+
 The downstream CI answers one very specific question, namely:
 do my changes break downstream code?
 
@@ -48,7 +55,6 @@ The results are reported as the statuses ``downstream/runner`` and ``downstream/
 It has to be emphasized that the downstream CI does **not run** on the default branch,
 that is, a push to ``develop``, e.g. a merge, does not fan out to the consumers.
 This deliberate change of behaviour is explained with the last two figures below.
-How the downstream graph is declared and restricted is described in :doc:`../configuring/downstream`.
 
 Discussion of different applications
 ++++++++++++++++++++++++++++++++++++
