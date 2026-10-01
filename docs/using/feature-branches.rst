@@ -10,8 +10,10 @@ Tested one by one, both sides fail:
 ``eckit``'s downstream CI builds ``eccodes``' ``develop``, which does not use the changed interface yet,
 and ``eccodes``' own CI builds against ``eckit``'s ``develop``, which does not have it yet.
 
-Such changes go on branches with the same name in every repository involved,
-starting with ``sync-branch/`` or ``feature/``:
+Such changes go on special branches starting with ``sync-branch/`` or ``feature/``.
+Whenever a branch with such a prefix exists in two repos, the CI tests these
+branches automatically against each other.
+
 
 .. figure:: feature-branches.svg
    :alt: Two chains ecbuild, eckit, eccodes. Top: only eckit is on a branch, fix-leak; the others are on develop.

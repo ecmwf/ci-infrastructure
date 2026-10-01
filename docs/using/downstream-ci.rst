@@ -35,7 +35,6 @@ The downstream CI runs only for a pull request, and only if the pull request ask
 If you are sure that a PR cannot break a consumer,
 e.g. a change to the documentation, to the CI, or to the tests only,
 then it is possible to explicitly opt out of running via the label ``downstream-ci-not-needed``.
-
 The action :action:`require-label-decision` ensures that this decision is always taken explicitly and is never forgotten,
 by enforcing that a pull request has exactly one of the run or the opt-out label to be merged.
 
@@ -67,7 +66,7 @@ A change on a single branch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 We first consider a change of ``eckit``'s API on the branch ``api-change``.
-The own CI of ``eccodes`` and ``multio`` builds against ``eckit``'s ``develop`` and hence never sees this change.
+In their own CI, ``eccodes`` and ``multio`` build against ``eckit``'s ``develop`` and hence never see this change.
 Only ``eckit``'s downstream CI builds them against ``api-change``,
 which makes it the one place where the question "do my changes break downstream code?" is actually answered.
 This is the case the downstream CI is made for,
