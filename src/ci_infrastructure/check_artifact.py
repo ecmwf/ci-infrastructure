@@ -82,7 +82,7 @@ Outputs = TypedDict(
 @click.option(
     "--lane",
     "lane",
-    type=click.Choice(["runner", "hpc"]),
+    type=click.Choice(["runner", "hpc-atos", "hpc"]),
     default="runner",
     help="Execution lane of the build. hpc artifacts carry the HPC template version segment.",
 )
@@ -130,7 +130,7 @@ def main(
         build_type=build_type,
         python_version=python_version or None,
         option=options.strip(),
-        template_version=template_version_for_lane("hpc" if lane == "hpc" else "runner"),
+        template_version=template_version_for_lane("runner" if lane == "runner" else "hpc-atos"),
     )
     tar_name = f"{artifact_name}.tar.gz"
     found = s3_store.object_exists(artifact_name)

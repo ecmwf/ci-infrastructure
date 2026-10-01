@@ -46,7 +46,7 @@ def test_nothing_to_report_is_none(monkeypatch: pytest.MonkeyPatch, data: Any) -
 
 def test_only_build_workflows_count(monkeypatch: pytest.MonkeyPatch) -> None:
     stuck_legacy = {**QUEUED, "path": ".github/workflows/old-ci.yml"}
-    trigger = {**OK, "path": ".github/workflows/cross-repo-trigger-hpc.yml@refs/heads/x"}
+    trigger = {**OK, "path": ".github/workflows/cross-repo-trigger-hpc-atos.yml@refs/heads/x"}
     _payload(monkeypatch, {"workflow_runs": [stuck_legacy, trigger]})
     assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
     _payload(monkeypatch, {"workflow_runs": [stuck_legacy]})
@@ -129,7 +129,7 @@ def test_template_version_follows_the_build_type() -> None:
 
 def test_only_the_hpc_lane_carries_the_template_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_github_api, "HPC_TEMPLATE_VERSION", 3)
-    assert template_version_for_lane("hpc") == 3
+    assert template_version_for_lane("hpc-atos") == 3
     assert template_version_for_lane("runner") == 0
 
 

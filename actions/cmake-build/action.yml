@@ -4,7 +4,9 @@
 
 name: CMake build
 description: >
-  Configure, build and install the CMake project in $GITHUB_WORKSPACE to
+  Deprecated: give the legs a job-script and let run-job-script build them
+  (docs/configuring/job-scripts.rst); this action will be removed. Configure, build
+  and install the CMake project in $GITHUB_WORKSPACE to
   <install-prefix>/<package>, keeping the build tree for ctest. Uses sccache
   when SCCACHE_BUCKET is set.
 
@@ -62,6 +64,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Note deprecation
+      shell: bash
+      run: echo "::warning title=cmake-build is deprecated::Give the legs a job-script (docs/configuring/job-scripts.rst); this action will be removed."
+
     - name: Get install prefix
       id: prefix
       uses: ecmwf/ci-infrastructure/actions/install-prefix@main

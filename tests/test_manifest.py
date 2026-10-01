@@ -60,3 +60,9 @@ def test_prefix_defaults_to_name() -> None:
     package = {k: v for k, v in _PACKAGE.items() if k != "prefix"}
     assert validate({"package": {**package, "name": "b"}}).package.prefix == "b"
     assert validate({"package": {**package, "prefix": "c"}}).package.prefix == "c"
+
+
+@pytest.mark.parametrize("value", ["hpc-atos", "hpc"])
+def test_hpc_atos_is_the_hpc_lane(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert MatrixKindTable.model_validate({"execution": value}).execution == "hpc-atos"
+    assert ("deprecated" in capsys.readouterr().err) == (value == "hpc")

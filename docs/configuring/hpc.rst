@@ -5,7 +5,7 @@
 Add an HPC build
 ================
 
-An HPC build is a matrix kind with ``execution = "hpc"``.
+An HPC build is a matrix kind with ``execution = "hpc-atos"``.
 It builds and tests the package inside a SLURM job on ECMWF's HPC,
 while dependencies, artifact names and publishing work as for any other kind.
 
@@ -26,7 +26,7 @@ The manifest
 .. code:: toml
 
    [matrix.build-hpc]
-   execution = "hpc"
+   execution = "hpc-atos"
    triggers = ["upstream-change", "rebuild-request"]
    forwarded-deps-outputs = ["cmake-prefix-path"]
    container-credentials = true
@@ -80,7 +80,7 @@ The above manifest would then require two hand-written shell scripts and look li
 .. code:: toml
 
    [matrix.build-hpc]
-   execution = "hpc"
+   execution = "hpc-atos"
    triggers = ["upstream-change", "rebuild-request"]
    forwarded-deps-outputs = ["cmake-prefix-path"]
    container-credentials = true
@@ -111,18 +111,19 @@ but most packages are similar enough to extend the shared one:
 
 .. code:: jinja
 
-   {% extends "ci-infrastructure/cmake-build.sh.j2" %}
+   {% extends "ci-infrastructure/cmake-atos.sh.j2" %}
 
 The template consists of blocks, ``sbatch``, ``preflight``, ``configure``, ``build``, ``test`` and ``install``,
 and a package overrides only those in which it differs;
 ``{{ super() }}`` keeps the shared content.
+It extends the runner template, which runner legs use (see :doc:`job-scripts`).
 
 ``eccodes``, for example, downloads its test data before running the tests,
 so that a failed download does not show up as dozens of unrelated test failures:
 
 .. code:: jinja
 
-   {% extends "ci-infrastructure/cmake-build.sh.j2" %}
+   {% extends "ci-infrastructure/cmake-atos.sh.j2" %}
    {% block test %}
    ctest --test-dir "$build" --output-on-failure -L download_data -j 6
    ctest --test-dir "$build" --output-on-failure -LE download_data -j "$jobs"

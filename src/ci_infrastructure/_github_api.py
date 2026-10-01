@@ -25,22 +25,24 @@ from ._errors import CIError
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 # How a kind's build runs: on a GitHub runner, or as a SLURM job via build-on-hpc.
-Execution: TypeAlias = Literal["runner", "hpc"]
+Execution: TypeAlias = Literal["runner", "hpc-atos"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
-EXECUTION_HPC: Final[Execution] = "hpc"
+EXECUTION_HPC_ATOS: Final[Execution] = "hpc-atos"
+#: The old name of hpc-atos, still read until #98: as `execution`, and as the workflow suffix.
+LEGACY_HPC: Final = "hpc"
 
-#: Version of hpc/templates/cmake-build.sh.j2, in every hpc artifact name: consumers load
+#: Version of hpc/templates/cmake-atos.sh.j2, in every hpc artifact name: consumers load
 #: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
 HPC_TEMPLATE_VERSION: Final = 1
 
 
 def template_version_for_lane(lane: Execution) -> int:
-    return HPC_TEMPLATE_VERSION if lane == EXECUTION_HPC else 0
+    return 0 if lane == EXECUTION_RUNNER else HPC_TEMPLATE_VERSION
 
 
 def lane_suffix(lane: Execution) -> str:
     """Generated-workflow filename suffix."""
-    return "" if lane == EXECUTION_RUNNER else "-hpc"
+    return "" if lane == EXECUTION_RUNNER else f"-{lane}"
 
 
 _ALIAS_SAFE_RE: Final = re.compile(r"[^A-Za-z0-9_]")
@@ -249,7 +251,9 @@ class WorkflowRuns(NamedTuple):
 
 
 # Any other workflow (e.g. a legacy CI stuck in the queue) must not look like a build in flight.
-_BUILD_WORKFLOWS: Final = frozenset({"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc.yml"})
+_BUILD_WORKFLOWS: Final = frozenset(
+    {"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc-atos.yml", f"cross-repo-trigger-{LEGACY_HPC}.yml"}
+)
 
 
 def _is_build_workflow(run: Mapping[str, Any]) -> bool:

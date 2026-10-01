@@ -59,8 +59,13 @@ JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
 _CONTEXT_EXTRAS: Final = ("leg", "artifact_name")
 
-#: E.g. ``{% extends "ci-infrastructure/cmake-build.sh.j2" %}``.
+#: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
+
+#: Runner legs name their compilers in the compiler-input fields; the recipes read these.
+_COMPILER_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {"cc": "c_compiler", "cxx": "cxx_compiler", "fc": "fortran_compiler"}
+)
 
 #: Optional knobs of the shared base template; a leg's own value wins.
 JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
@@ -135,6 +140,9 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
             )
         origin[name] = key
         context[name] = value
+    for name, source in _COMPILER_ALIASES.items():
+        if name not in context and source in context:
+            context[name] = context[source]
     for name, value in JOB_TEMPLATE_DEFAULTS.items():
         context.setdefault(name, value)
     context["leg"] = dict(leg)
@@ -143,11 +151,17 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
 
 
 def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
-    return {template_var(k) for k in leg if k != "_resolved"} | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
+    names = {template_var(k) for k in leg if k != "_resolved"}
+    names |= {alias for alias, source in _COMPILER_ALIASES.items() if source in names}
+    return names | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
 
 def undeclared_template_names(
-    template_source: str, leg: Mapping[str, Any], *, template_name: str, search_path: Path | None = None
+    template_source: str,
+    leg: Mapping[str, Any],
+    *,
+    template_name: str,
+    search_path: Path | None = None,
 ) -> set[str]:
     """Names the template (or what it extends/includes) reads that the leg lacks; static, so misses ``leg['x']``."""
     env = job_template_environment(search_path)

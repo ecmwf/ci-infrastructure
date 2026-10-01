@@ -14,7 +14,7 @@ import pytest
 
 from ci_infrastructure import resolve_deps
 from ci_infrastructure._github_api import (
-    EXECUTION_HPC,
+    EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
     Execution,
     WorkflowRuns,
@@ -227,7 +227,7 @@ def test_options_do_not_propagate_and_ripple_via_deps_hash() -> None:
 
 
 @pytest.mark.usefixtures("offline")
-@pytest.mark.parametrize(("lane", "tail"), [(EXECUTION_HPC, "-Release-hpcv3"), (EXECUTION_RUNNER, "-Release")])
+@pytest.mark.parametrize(("lane", "tail"), [(EXECUTION_HPC_ATOS, "-Release-hpcv3"), (EXECUTION_RUNNER, "-Release")])
 def test_template_version_marks_hpc_lane_names_only(
     monkeypatch: pytest.MonkeyPatch, lane: Execution, tail: str
 ) -> None:
@@ -308,7 +308,7 @@ cxx-compiler = "g++-13"
 platform = "hpc-atos-gnu"
 
 [matrix.build-hpc]
-execution = "hpc"
+execution = "hpc-atos"
 
 [matrix.test]
 reuse-matrix = "build"
@@ -351,7 +351,7 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
     """A producer missing its artifact on both lanes needs two dispatches."""
     plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
     spec = _dep_spec("up")
-    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
         resolve_deps._classify_orphan_pin(
             spec=spec,
             ref=Ref("main"),
@@ -366,7 +366,7 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
             dispatch_plans=plans,
         )
 
-    assert sorted(p.lane for p in plans.values()) == ["hpc", "runner"]
+    assert sorted(p.lane for p in plans.values()) == ["hpc-atos", "runner"]
 
 
 _PINNED: Final = Ref("a" * 40)
@@ -468,3 +468,19 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
     base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
     deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
     assert [d.name for d in deps] == ["base", "middle"]
+
+
+def test_hpc_dispatch_falls_back_to_the_legacy_workflow_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    files: list[str] = []
+
+    def gh(cmd: list[str], token: str) -> tuple[int, str, str]:
+        files.append(cmd[3])
+        return (0, "", "") if cmd[3] == "cross-repo-trigger-hpc.yml" else (1, "", "could not find any workflows")
+
+    monkeypatch.setattr(resolve_deps, "_gh", gh)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
+    plan = resolve_deps.DispatchPlan(repo=Repo("o/p"), ref=Ref("main"), sha=Sha("a" * 40), lane=EXECUTION_HPC_ATOS)
+    resolve_deps.dispatch_producer_workflow(
+        plan=plan, dispatcher_repo="o/c", dispatcher_sha="b" * 40, branch="", fallback_ref="main", token="t"
+    )
+    assert files == ["cross-repo-trigger-hpc-atos.yml", "cross-repo-trigger-hpc.yml"]

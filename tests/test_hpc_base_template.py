@@ -17,7 +17,7 @@ import pytest
 from ci_infrastructure import _github_api
 from ci_infrastructure.hpc import jobscript
 
-BASE: Final = "ci-infrastructure/cmake-build.sh.j2"
+BASE: Final = "ci-infrastructure/cmake-atos.sh.j2"
 EXTENDS: Final = f'{{% extends "{BASE}" %}}\n'
 
 LEG: dict[str, Any] = {
@@ -39,7 +39,8 @@ def _render(source: str = EXTENDS, leg: dict[str, Any] | None = None, search_pat
 
 
 def _base_source() -> bytes:
-    return (resources.files("ci_infrastructure.hpc") / "templates" / "cmake-build.sh.j2").read_bytes()
+    templates = resources.files("ci_infrastructure.hpc") / "templates"
+    return b"".join((templates / name).read_bytes() for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2"))
 
 
 def test_bare_extends_is_a_complete_recipe() -> None:
@@ -151,13 +152,43 @@ def test_computed_template_name_is_refused() -> None:
 
 
 def test_repo_file_cannot_shadow_the_base(tmp_path: Path) -> None:
-    shadow = tmp_path / "ci-infrastructure" / "cmake-build.sh.j2"
+    shadow = tmp_path / "ci-infrastructure" / "cmake-atos.sh.j2"
     shadow.parent.mkdir()
     shadow.write_text("shadowed\n")
     assert "shadowed" not in _render(search_path=tmp_path)
 
 
-TEMPLATE_SHA256: Final = "9948b226aaeb3a61f484f0c0189efb0a2b66986ceb4f305f79514f2838c013cc"
+RUNNER_LEG: dict[str, Any] = {
+    "build-type": "Release",
+    "c-compiler": "gcc-13",
+    "cxx-compiler": "g++-13",
+    "fortran-compiler": "gfortran-13",
+}
+RUNNER: Final = '{% extends "ci-infrastructure/cmake-runner.sh.j2" %}\n'
+
+
+def _render_runner(source: str = RUNNER, leg: dict[str, Any] | None = None) -> str:
+    return jobscript.render_job_template(template_source=source, template_name="build.sh.j2", leg=leg or RUNNER_LEG)
+
+
+def test_runner_base_has_no_slurm_parts() -> None:
+    out = _render_runner()
+    assert out.startswith("#!/bin/bash\n")
+    assert not [line for line in out.splitlines() if line.startswith(("#SBATCH", "module ", "tar "))]
+    assert 'build="${CI_BUILD_DIR:-${TMPDIR:-/tmp}/build}"' in out
+    assert 'cmake --install "$build"' in out
+
+
+def test_compiler_fields_name_the_compilers() -> None:
+    out = _render_runner()
+    assert '  -DCMAKE_C_COMPILER="$(command -v gcc-13)" \\' in out
+    assert '  -DCMAKE_Fortran_COMPILER="$(command -v gfortran-13)" \\' in out
+    assert jobscript.undeclared_template_names(RUNNER, RUNNER_LEG, template_name="t") == set()
+    without_cc = {k: v for k, v in RUNNER_LEG.items() if k != "c-compiler"}
+    assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
+
+
+TEMPLATE_SHA256: Final = "a4b1973c63906b2464cb146c5d585a897c860616956ed51653646a6a02fb0589"
 TEMPLATE_VERSION: Final = 1
 
 
@@ -167,4 +198,8 @@ def test_base_template_change_bumps_the_template_version() -> None:
     assert (hashlib.sha256(_base_source()).hexdigest(), _github_api.HPC_TEMPLATE_VERSION) == (
         TEMPLATE_SHA256,
         TEMPLATE_VERSION,
-    ), "cmake-build.sh.j2 changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
+    ), "cmake-runner.sh.j2 or cmake-atos.sh.j2 changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
+
+
+def test_cmake_build_is_an_alias_of_cmake_hpc() -> None:
+    assert _render('{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n') == _render()

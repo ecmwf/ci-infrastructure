@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Run a job-script on the runner
+description: >
+  Render the leg's job-script with ci-infrastructure-render, the same script a
+  person can render and run by hand, and run it in the job's container against
+  the checked-out source in $GITHUB_WORKSPACE. Installs to
+  <install-prefix>/<package>. Uses sccache when SCCACHE_BUCKET is set.
+
+inputs:
+  job-script:
+    description: 'The recipe, relative to the repo root (a .j2 template or a plain script)'
+    required: true
+  matrix-leg:
+    description: 'The matrix leg as JSON, the render context'
+    required: true
+  package:
+    description: 'Install subdirectory under the install prefix, and build tree name'
+    required: true
+  cmake-prefix-path:
+    description: 'Semicolon-separated prefixes of the resolved deps'
+    required: false
+    default: ''
+
+outputs:
+  install-path:
+    description: 'Absolute path where the package is installed'
+    value: ${{ steps.set-paths.outputs.install-path }}
+  build-dir:
+    description: 'Absolute path of the build tree'
+    value: ${{ steps.set-paths.outputs.build-dir }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Get install prefix
+      id: prefix
+      uses: ecmwf/ci-infrastructure/actions/install-prefix@main
+
+    - name: Set paths
+      id: set-paths
+      shell: bash
+      env:
+        BASE: ${{ steps.prefix.outputs.base }}
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        {
+          echo "install-path=$BASE/$PACKAGE"
+          echo "build-dir=$RUNNER_TEMP/_$PACKAGE-build"
+          echo "script=$RUNNER_TEMP/_$PACKAGE-job.sh"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Set up sccache
+      if: env.SCCACHE_BUCKET != ''
+      uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
+      with:
+        cache-key-suffix: ${{ fromJSON(inputs.matrix-leg).cxx-compiler }}-${{ fromJSON(inputs.matrix-leg).build-type }}${{ fromJSON(inputs.matrix-leg).options && format('-{0}', fromJSON(inputs.matrix-leg).options) || '' }}
+
+    - name: Render job-script
+      shell: bash
+      env:
+        JOB_SCRIPT: ${{ inputs.job-script }}
+        MATRIX_LEG: ${{ inputs.matrix-leg }}
+        SCRIPT: ${{ steps.set-paths.outputs.script }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.render_job \
+          --job-script "$GITHUB_WORKSPACE/${JOB_SCRIPT#./}" --matrix-leg "$MATRIX_LEG" -o "$SCRIPT"
+        cat "$SCRIPT"
+
+    - name: Run job-script
+      shell: bash
+      env:
+        SCRIPT: ${{ steps.set-paths.outputs.script }}
+        CI_INSTALL_PREFIX: ${{ steps.set-paths.outputs.install-path }}
+        CI_BUILD_DIR: ${{ steps.set-paths.outputs.build-dir }}
+        CMAKE_PREFIX_PATH: ${{ inputs.cmake-prefix-path }}
+      run: CI_SOURCE_DIR="$GITHUB_WORKSPACE" bash "$SCRIPT"
