@@ -5,28 +5,31 @@
 ci-infrastructure
 =================
 
-Shared CI orchestration for ECMWF's downstream package graph: a Python package
+Shared CI orchestration for ECMWF's package graph: a Python package
 whose CLIs resolve cross-repo dependencies, move build artifacts through S3,
-generate the downstream workflows and submit builds to HPC, and the composite
+submit builds to HPC, generate the downstream workflows, and the composite
 GitHub Actions that wire it into workflow YAML.
 
+.. note::
+
+   This documentation is provisionally hosted at
+   https://sites.ecmwf.int/docs/dev-section/ci-infrastructure/latest,
+   and its URL will change.
+
 .. toctree::
-   :caption: Tutorial
    :maxdepth: 2
 
-   tutorial/index
+   introduction
 
 .. toctree::
-   :caption: How-to guides
-   :maxdepth: 1
+   :maxdepth: 2
 
-   howto/hpc
+   using/index
 
 .. toctree::
-   :caption: Explanation
-   :maxdepth: 1
+   :maxdepth: 2
 
-   explanation/bootstrap
+   configuring/index
 
 .. toctree::
    :caption: Reference
@@ -36,3 +39,4 @@ GitHub Actions that wire it into workflow YAML.
    reference/runners
    reference/actions/index
    reference/cli/index
+   reference/hpc

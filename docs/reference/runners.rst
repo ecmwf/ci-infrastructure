@@ -38,7 +38,7 @@ The HPC is reached through the runner group ``hpc-submit``.
 These runners are small and cheap and are not meant for heavy lifting.
 They ship sources and dependencies to the HPC and submit the job to the queue.
 Afterwards they copy the artifacts back and store it in S3.
-See :doc:`../howto/hpc`.
+See :doc:`../configuring/hpc`.
 To access the HPC you need to run on the HPC runner group and also need an HPC image (see below).
 
 If you suspect a problem with the runners, trigger
@@ -66,16 +66,24 @@ Images
   (``eccr.ecmwf.int/private-ci-images/<name>:<tag>``).
 
 The public images need no authentication.
-The private images are needed to connect to the HPC.
-They require credentials.
+The private images are needed to connect to the HPC and require credentials.
 Accessing the HPC requires an HPC image **and** the HPC runner group (see above).
 
-To add/modify a public image, open a PR in ci-infrastructure.
+The official images have ``ci-infrastructure`` baked in.
+:action:`ensure-infrastructure-present` then reuses it and installs nothing.
+Right after a merge to ``main`` the baked copy is stale until the images are republished.
+The action then warns and installs from the checkout.
+
+Your own images work too, but every job pip-installs ``ci-infrastructure`` into a venv.
+That needs Python >= 3.11.2 in the image and outbound access to PyPI and GitHub.
+To skip the install, build ``FROM`` an official ``base`` image.
+Re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
+
+To add/modify a public image, open a PR in ``ci-infrastructure``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
 The ``base`` image of each platform shows what an image is expected to supply.
 The rules for images are in
 `public-images/README.md <https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/README.md>`__.
-In a hand-written ``ci.yml``, make :action:`announce-image` the first step of every job with a ``container:``.
 To add/modify a private image, contact the maintainers of `ci-infrastructure <https://github.com/ecmwf/ci-infrastructure>`__ .
 
 Currently the following public images are supported.

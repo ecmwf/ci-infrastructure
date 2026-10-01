@@ -10,7 +10,8 @@ STDLIB ONLY, OLDER PYTHON, ON PURPOSE: the action runs it with the runner's bare
 ``python3`` (``tests/test_check_pr_declaration.py`` enforces the imports).
 
 The verdict is tail equality of the normalized line lists (plus HIDDEN_BLOCK);
-everything else only explains a failure.
+everything else only explains a failure. Bot-maintained ``<!-- NAME_BEGIN -->`` ...
+``<!-- NAME_END -->`` blocks after the declaration, e.g. a docs preview link, do not count.
 
 SECURITY. The PR body is attacker-controlled: it is never printed raw, and
 ``$GITHUB_OUTPUT`` only receives a fixed ``Verdict`` value.
@@ -71,6 +72,7 @@ _DETAILS_CLOSE: Final = re.compile(r"</details\s*>", re.IGNORECASE)
 _SUMMARY_OPEN: Final = re.compile(r"<summary\b", re.IGNORECASE)
 _SUMMARY_CLOSE: Final = re.compile(r"</summary\s*>", re.IGNORECASE)
 _BACKTICK_RUN: Final = re.compile(r"`+")
+_MARKER_END: Final = re.compile(r"<!-- ([\w-]+)_END -->")
 
 _HINTS: Final = {
     "empty-body": "Paste the declaration from the job summary at the end of the description.",
@@ -150,6 +152,23 @@ def normalize(text: str) -> list[str]:
     while lines and not lines[-1]:
         lines.pop()
     return lines
+
+
+def drop_trailing_marker_blocks(lines: Sequence[str]) -> list[str]:
+    """Drop complete ``<!-- NAME_BEGIN -->`` ... ``<!-- NAME_END -->`` blocks from the end.
+
+    ecmwf/reusable-workflows' update-pr-description appends them below the declaration.
+    """
+    kept = list(lines)
+    while kept:
+        end = _MARKER_END.fullmatch(kept[-1])
+        begin = f"<!-- {end.group(1)}_BEGIN -->" if end else None
+        if begin is None or begin not in kept:
+            break
+        del kept[len(kept) - 1 - kept[::-1].index(begin) :]
+        while kept and not kept[-1]:
+            kept.pop()
+    return kept
 
 
 def expected_lines(source: str | None = None) -> list[str]:
@@ -273,7 +292,7 @@ def _hidden_reason(lines: Sequence[str], block_start: int) -> str | None:
 def check_body(body: str, expected: Sequence[str] | None = None) -> Result:
     """Judge ``body``; only the tail-equality comparison decides, the rest explains."""
     declaration = list(expected) if expected is not None else expected_lines()
-    lines = normalize(body)
+    lines = drop_trailing_marker_blocks(normalize(body))
 
     if not lines:
         return Result(

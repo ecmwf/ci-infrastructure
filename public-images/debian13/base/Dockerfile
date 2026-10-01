@@ -52,7 +52,7 @@ RUN mkdir -p /etc/apt/keyrings \
 
 COPY pyproject.toml LICENSE /opt/ci-infrastructure/
 COPY src /opt/ci-infrastructure/src
-RUN python3 -m pip install --no-cache-dir "/opt/ci-infrastructure[all]" \
+RUN python3 -m pip install --no-cache-dir "/opt/ci-infrastructure[runtime]" \
  && rm -rf /opt/ci-infrastructure
 
 ENV CI_INFRASTRUCTURE_PYTHON=/usr/bin/python3

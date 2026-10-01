@@ -20,7 +20,16 @@ extensions = [
     "manifest_schema",
 ]
 
+# LaTeX cannot include SVG; the converter comes with the [pdf] extra and also needs libcairo.
+try:
+    import sphinxcontrib.cairosvgconverter  # noqa: F401
+except (ImportError, OSError):
+    pass
+else:
+    extensions.append("sphinxcontrib.cairosvgconverter")
+
 exclude_patterns = ["_build"]
+latex_elements = {"figure_align": "H"}
 html_theme = "sphinxawesome_theme"
 html_static_path = ["_static"]
 html_css_files = ["tables.css"]
@@ -66,7 +75,7 @@ ghactions_groups = [
     ),
     (
         "HPC",
-        "Build on the cluster. Move trees to and from it. See :doc:`../../../howto/hpc`.",
+        "Build on the cluster. Move trees to and from it. See :doc:`../../hpc`.",
         ["build-on-hpc", "push-hpc-tree", "fetch-hpc-tree", "remove-hpc-tree"],
     ),
     (
@@ -93,7 +102,7 @@ ghactions_groups = [
     ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
     (
         "Internals",
-        "Nested by other actions. See :doc:`../../../explanation/bootstrap`.",
+        "Nested by the actions that need it.",
         ["ensure-infrastructure-present"],
     ),
 ]

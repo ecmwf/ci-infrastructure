@@ -248,6 +248,33 @@ def test_loose_heading_is_diagnosed_as_diverged() -> None:
     assert result.diff.index == 0
 
 
+PREVIEW_BLOCK = (
+    "\n<!-- PREVIEW-URL_BEGIN -->\nDocumentation preview\nhttps://example.invalid/PR-1\n<!-- PREVIEW-URL_END -->\n"
+)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [PREVIEW_BLOCK, PREVIEW_BLOCK + "\n\n<!-- OTHER_BEGIN -->\nmore\n<!-- OTHER_END -->"],
+    ids=["one-block", "two-blocks"],
+)
+def test_trailing_marker_blocks_are_ignored(tail: str) -> None:
+    assert check_body(body() + tail).verdict is Verdict.OK
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "\nFixes #12\n" + PREVIEW_BLOCK,
+        "\ndangling\n<!-- PREVIEW-URL_END -->\n",
+        "\n<!-- PREVIEW-URL_BEGIN -->\nlink\n<!-- OTHER_END -->\n",
+    ],
+    ids=["text-before-block", "end-without-begin", "mismatched-names"],
+)
+def test_only_complete_trailing_marker_blocks_are_ignored(tail: str) -> None:
+    assert check_body(body() + tail).verdict is Verdict.NOT_AT_END
+
+
 def test_text_after_block() -> None:
     result = check_body(body() + "\nFixes #12\n")
     assert result.verdict is Verdict.NOT_AT_END

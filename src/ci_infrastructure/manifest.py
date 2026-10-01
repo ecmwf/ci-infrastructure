@@ -72,7 +72,8 @@ class PackageTable(_Table):
     visibility: Visibility = Field(
         default=VISIBILITY_PRIVATE,
         description="`public` or `private`; unlabelled repos are private. A public repo triggers a private "
-        "consumer by dispatch rather than `workflow_call`.",
+        "consumer by dispatch rather than `workflow_call`. Set it only once the security and exposure risks "
+        "are understood, see :doc:`/configuring/manifest`.",
     )
     submodules: Literal["true", "recursive"] | None = Field(
         default=None, description="`actions/checkout` `submodules` for the build jobs."
