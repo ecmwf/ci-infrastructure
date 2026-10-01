@@ -7,7 +7,7 @@ Coordinated changes across repositories
 
 Some changes span several repositories, e.g. a changed ``eckit`` interface that ``eccodes`` starts to use.
 Tested one by one, both sides fail:
-``eckit``'s downstream CI builds ``eccodes``' ``develop``, which does not use the changed interface yet,
+``eckit``'s :doc:`downstream CI <downstream-ci>` builds ``eccodes``' ``develop``, which does not use the changed interface yet,
 and ``eccodes``' own CI builds against ``eckit``'s ``develop``, which does not have it yet.
 
 Such changes go on special branches starting with ``sync-branch/`` or ``feature/``.

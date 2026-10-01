@@ -5,11 +5,11 @@
 Using the CI
 ++++++++++++
 
-This tutorial describes the everyday workflow of a developer in a repository that already uses ``ci-infrastructure``.
+This overview describes the everyday workflow of a developer in a repository that already uses ``ci-infrastructure``.
 
 .. toctree::
    :maxdepth: 1
 
    default-branch
-   downstream-ci
    feature-branches
+   downstream-ci

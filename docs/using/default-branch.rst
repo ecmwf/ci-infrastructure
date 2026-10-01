@@ -2,17 +2,17 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-Modifying the default branch
-============================
+Best practices for the default branch
+=====================================
 
-We want to have one default branch (``main|master|develop`` depending on the repo)
-that is assumed and tested to be green.
-**Nothing shall change the default branch except through a pull request.**
+We want to have at least one branch (``main|master|develop`` depending on the repo)
+that is assumed and tested to be green and from which new development can branch off.
+**Nothing shall change this branch except through a pull request.**
 This holds also for a repository with a single maintainer, where nobody reviews the pull request:
 the pull request is what guarantees that the CI runs.
 
-The CI of basically every repository finishes in less than 5 minutes, the time to grab a cup of tea or coffe.
-It ensures that the code is linted, compiles, the own tests pass, and the own guarantees are fulfilled.
+The CI of basically every repository finishes in less than 5 minutes, the time to grab a cup of tea or coffee.
+It ensures that the code is linted, compiles, its own tests pass and its own guarantees hold.
 Waiting is a very small price for knowing that the minimal checks pass.
 A direct push that saves these 5 minutes and breaks the build costs far more in debugging afterwards.
 

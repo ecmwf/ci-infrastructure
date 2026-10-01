@@ -35,6 +35,16 @@ it may contain only letters, digits, ``-`` and ``_``.
 It is a list because a package may compile several languages, e.g. both C++ and Fortran.
 A package that compiles nothing, such as ``ecbuild``, declares ``compiler-inputs = []``.
 
+There is an additional, optional field ``visibility`` which can be set to ``"private"`` or ``"public"``.
+**Setting this field should only happen once both the security and exposure risks are understood.**
+A private repo does not need to do any checks of CI approval because it cannot be reached by outside fork code,
+so code is always assumed to be approved.
+A public repo shows its logs in the downstream CI of its public upstream repos,
+this can expose internal logs to the public.
+Leaving ``visibility`` undeclared assumes the safer option in both cases, i.e. approval is required for outside code
+and logs shall not be exposed.
+
+
 The dependencies
 ----------------
 
