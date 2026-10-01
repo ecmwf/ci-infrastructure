@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Same flags as .github/workflows/docs.yml.
-SPHINXOPTS    ?= -W --keep-going -n
+# CI adds -W (.github/workflows/docs.yml); locally warnings stay warnings.
+SPHINXOPTS    ?= --keep-going -n
 SPHINXBUILD   ?= sphinx-build
 SOURCEDIR     = .
 BUILDDIR      = _build
