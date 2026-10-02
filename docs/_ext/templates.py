@@ -35,12 +35,12 @@ def _purpose(source: str) -> str:
     return re.sub(r"(?<!`)`([^`]+)`(?!`)", r"``\1``", " ".join(paragraph))
 
 
-def _row(name: str, source: str) -> list[str]:
+def _row(name: str, source: str, url: str) -> list[str]:
     ast = jinja2.Environment().parse(source)
     bases = sorted({ref for ref in jinja2.meta.find_referenced_templates(ast) if ref})
     blocks = sorted({block.name for block in ast.find_all(jinja2.nodes.Block)})
     return [
-        f"``{_PREFIX}/{name}``",
+        f"`{_PREFIX}/{name} <{url}/{name}>`__",
         _purpose(source),
         ", ".join(f"``{base.removeprefix(_PREFIX + '/')}``" for base in bases) or "—",
         ", ".join(f"``{block}``" for block in blocks) or "—",
@@ -49,12 +49,14 @@ def _row(name: str, source: str) -> list[str]:
 
 def _generate(app: Sphinx) -> None:
     folder = Path(app.config.ghactions_root) / _TEMPLATES
-    rows = [_row(path.name, path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.j2"))]
+    url = f"https://github.com/{app.config.ghactions_repo}/blob/{app.config.ghactions_ref}/{_TEMPLATES.as_posix()}"
+    rows = [_row(path.name, path.read_text(encoding="utf-8"), url) for path in sorted(folder.glob("*.j2"))]
     lines = [
         "Job-script templates",
         "====================",
         "",
-        "Every template ``ci-infrastructure`` ships for a recipe to extend,",
+        "Every template ``ci-infrastructure`` ships for a recipe to extend; each name links to its source.",
+        "A recipe names it with the prefix,",
         'e.g. ``{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}``; see :doc:`../configuring/job-scripts`.',
         "",
         ".. list-table::",

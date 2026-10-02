@@ -22,15 +22,15 @@ So far they build one CMake project:
 
    * - template
      - for
-   * - ``ci-infrastructure/cmake-runner.sh.j2``
+   * - `ci-infrastructure/cmake-runner.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-runner.sh.j2>`__
      - a GitHub runner: configure, build, test and install one CMake project
-   * - ``ci-infrastructure/cmake-atos.sh.j2``
+   * - `ci-infrastructure/cmake-atos.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-atos.sh.j2>`__
      - HPC: extends the runner template and adds the ``#SBATCH`` header, the modules,
        the node-local build tree and the install archive
-   * - ``ci-infrastructure/cmake-all-lanes.sh.j2``
+   * - `ci-infrastructure/cmake-all-lanes.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-all-lanes.sh.j2>`__
      - every lane: extends one of the two above, chosen by the leg's ``execution``
 
-:doc:`../reference/templates` lists every template with its blocks.
+:doc:`../reference/templates` lists every template with its blocks; each name links to its source.
 
 The HPC template fills three blocks that are empty or different on a runner:
 ``header`` (holding ``sbatch`` and the modules), ``setup`` (``build``, ``jobs``, ``install_root``)
@@ -61,8 +61,7 @@ and ``execution`` tells the lanes apart where they differ:
    {% endif %}
    {% endblock %}
 
-Point the legs of every kind at it.
-The runner kind drops its ``action`` and ``ctest``, since the recipe's ``test`` block runs the tests:
+Point the legs of every kind at it; the recipe's ``test`` block runs the tests:
 
 .. code:: toml
 
@@ -123,16 +122,3 @@ CI fetches the dependencies from the artifact store;
 locally you provide them, and ``CMAKE_PREFIX_PATH`` (``;``-separated) says where.
 An HPC leg's script also runs on an interactive node:
 to bash the ``#SBATCH`` lines are comments, and the ``module`` lines load the toolchain.
-
-Migrate from a build action
----------------------------
-
-:action:`cmake-build` and the ``.github/actions/build-<package>`` wrappers around it are deprecated.
-To move a package over:
-
-#. Write ``.ci/build.sh.j2``, extending ``ci-infrastructure/cmake-runner.sh.j2``.
-   Move what the build action did differently, such as extra ``-D`` flags, into its blocks.
-#. Set ``job-script = "./.ci/build.sh.j2"`` in the runner kind's defaults,
-   and drop its ``action``, ``forwarded-inputs`` and ``ctest``.
-#. In ``ci.yml``, build with :action:`run-job-script` instead of the package's action, then delete the action.
-#. Regenerate the workflows with ``ci-infrastructure-generate``.

@@ -37,7 +37,7 @@ GitHub Actions that wire it into workflow YAML.
 
    reference/manifest
    reference/runners
+   reference/templates
    reference/actions/index
    reference/cli/index
    reference/hpc
-   reference/templates

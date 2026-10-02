@@ -127,10 +127,11 @@ Together with ``ctest-args`` this is what the generated workflows need
 to build the package on behalf of an upstream change, the subject of :doc:`downstream`.
 Since the ``ci.yml`` runs the same recipe, the build is described once for both.
 
-The build recipe
+The job script
 ----------------
 
-The recipe is a `Jinja <https://jinja.palletsprojects.com/>`__ template in the repository,
+The recipe that does the actual build and test
+is a `Jinja <https://jinja.palletsprojects.com/>`__ template in the repository,
 rendered against the leg that runs it into a shell script.
 :action:`run-job-script` renders and runs it, in the ``ci.yml`` as well as in the generated workflows,
 which use it to rebuild a missing artifact and to build the package in a downstream run.
