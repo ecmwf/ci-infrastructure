@@ -39,6 +39,7 @@ ACTIVE_STATES: Final = frozenset(
 )
 
 _DEFAULT_GUARD_INTERVAL: Final = 120
+_STATUS_INTERVAL: Final = 30  # the step log shows the queue state this often
 _DEFAULT_WAIT_TIMEOUT: Final = 6 * 60 * 60
 _GRACE_SECONDS: Final = 10  # last look for a late-flushed sentinel after the job leaves the queue
 _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we give up on the tail itself
@@ -238,21 +239,30 @@ def wait_for_job(
     guard_interval: float = _DEFAULT_GUARD_INTERVAL,
     jitter: float = 0.1,
     on_tick: Callable[[], None] = lambda: None,
+    tick_interval: float | None = None,
 ) -> Verdict:
     """Block until the sentinel appears, the job leaves the queue, or ``timeout``.
 
-    ``on_tick`` runs before each guard interval, for display; it must not raise.
+    ``on_tick`` runs before each wait, for display; it must not raise. With ``tick_interval``
+    the waits are that short, while the queue is still checked only each guard interval.
     """
     deadline = time.monotonic() + timeout
+    next_guard = time.monotonic() + guard_interval * (1.0 + random.uniform(-jitter, jitter))
     while True:
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        remaining = deadline - now
         if remaining <= 0:
             return "TIMEOUT"
         on_tick()
-        window = min(guard_interval * (1.0 + random.uniform(-jitter, jitter)), remaining)
+        window = min(max(next_guard - now, 0.0), remaining)
+        if tick_interval is not None:
+            window = min(window, tick_interval)
         verdict = sentinel_waiter(window)
         if verdict is not None:
             return verdict
+        if tick_interval is not None and time.monotonic() < next_guard:
+            continue
+        next_guard = time.monotonic() + guard_interval * (1.0 + random.uniform(-jitter, jitter))
         if state_getter() is None:
             # The sentinel may still be flushing.
             final = sentinel_waiter(_GRACE_SECONDS)
@@ -600,6 +610,7 @@ def submit_wait(
             sentinel_waiter=_remote_sentinel_waiter(site._connection, paths.output, jid),
             state_getter=lambda: site._get_state(jid, strict=False),
             on_tick=_StatusReporter(site._connection, jid),
+            tick_interval=_STATUS_INTERVAL,
         )
     finally:
         _stop_stream(streamer)

@@ -394,3 +394,22 @@ def test_wait_for_job_ticks_each_interval() -> None:
         == "SUCCESS"
     )
     assert len(ticks) == 3
+
+
+def test_wait_for_job_ticks_more_often_than_it_checks_the_queue() -> None:
+    ticks: list[int] = []
+    checks: list[int] = []
+    verdicts: list[Verdict | None] = [None, None, None, "SUCCESS"]
+
+    def state() -> str:
+        checks.append(1)
+        return "RUNNING"
+
+    verdict = wait_for_job(
+        sentinel_waiter=lambda _s: verdicts.pop(0),
+        state_getter=state,
+        guard_interval=1000,
+        on_tick=lambda: ticks.append(1),
+        tick_interval=30,
+    )
+    assert (verdict, len(ticks), len(checks)) == ("SUCCESS", 4, 0)
