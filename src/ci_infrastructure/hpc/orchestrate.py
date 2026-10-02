@@ -39,6 +39,7 @@ ACTIVE_STATES: Final = frozenset(
 )
 
 _DEFAULT_GUARD_INTERVAL: Final = 120
+_STATUS_INTERVAL: Final = 30  # the step log shows the queue state this often
 _DEFAULT_WAIT_TIMEOUT: Final = 6 * 60 * 60
 _GRACE_SECONDS: Final = 10  # last look for a late-flushed sentinel after the job leaves the queue
 _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we give up on the tail itself
@@ -175,6 +176,62 @@ def submit_or_reattach(
     return jid, "submitted"
 
 
+def query_job_status(conn: Any, jid: int) -> tuple[str, str, str] | None:
+    """(state, reason, start) from ``squeue``, for display only; None whenever it does not answer."""
+    try:
+        proc = conn.execute(
+            ["squeue", "-h", "-j", str(jid), "-o", "%T|%r|%S"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        stdout, _stderr = proc.communicate()
+    except Exception:  # noqa: BLE001 - display only
+        return None
+    if proc.returncode != 0:
+        return None
+    text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    parts = lines[0].split("|") if lines else []
+    if len(parts) != 3:
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def _known(value: str) -> str:
+    return "" if value in {"", "None", "N/A", "Unknown", "(null)"} else value
+
+
+def _clock(stamp: str) -> str:
+    """``2026-10-02T13:45:00`` -> ``13:45``; anything else as is."""
+    match = re.fullmatch(r"\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}):\d{2}", stamp)
+    return match.group(1) if match else stamp
+
+
+def format_job_status(jid: int, status: tuple[str, str, str], waited: float) -> str:
+    state, reason, start = (_known(part) for part in status)
+    if state == "RUNNING":
+        return f"submit-wait: job {jid} RUNNING" + (f" since {_clock(start)}" if start else "")
+    details = [f"({reason})"] if reason else []
+    if start:
+        details.append(f"est. start {_clock(start)}")
+    details.append(f"waiting {int(waited // 60)}m")
+    return f"submit-wait: job {jid} {state} " + ", ".join(details)
+
+
+class _StatusReporter:
+    """Prints the job's queue state each guard interval until it runs, then once per change."""
+
+    def __init__(self, conn: Any, jid: int, clock: Callable[[], float] = time.monotonic) -> None:
+        self._conn, self._jid, self._clock = conn, jid, clock
+        self._since = clock()
+        self._last: str | None = None
+
+    def __call__(self) -> None:
+        status = query_job_status(self._conn, self._jid)
+        if status is None or (status[0] == self._last and status[0] == "RUNNING"):
+            return
+        self._last = status[0]
+        print(format_job_status(self._jid, status, self._clock() - self._since), flush=True)
+
+
 def wait_for_job(
     *,
     sentinel_waiter: Callable[[float], Verdict | None],
@@ -182,17 +239,31 @@ def wait_for_job(
     timeout: float = _DEFAULT_WAIT_TIMEOUT,
     guard_interval: float = _DEFAULT_GUARD_INTERVAL,
     jitter: float = 0.1,
+    on_tick: Callable[[], None] = lambda: None,
+    tick_interval: float | None = None,
 ) -> Verdict:
-    """Block until the sentinel appears, the job leaves the queue, or ``timeout``."""
+    """Block until the sentinel appears, the job leaves the queue, or ``timeout``.
+
+    ``on_tick`` runs before each wait, for display; it must not raise. With ``tick_interval``
+    the waits are that short, while the queue is still checked only each guard interval.
+    """
     deadline = time.monotonic() + timeout
+    next_guard = time.monotonic() + guard_interval * (1.0 + random.uniform(-jitter, jitter))
     while True:
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        remaining = deadline - now
         if remaining <= 0:
             return "TIMEOUT"
-        window = min(guard_interval * (1.0 + random.uniform(-jitter, jitter)), remaining)
+        on_tick()
+        window = min(max(next_guard - now, 0.0), remaining)
+        if tick_interval is not None:
+            window = min(window, tick_interval)
         verdict = sentinel_waiter(window)
         if verdict is not None:
             return verdict
+        if tick_interval is not None and time.monotonic() < next_guard:
+            continue
+        next_guard = time.monotonic() + guard_interval * (1.0 + random.uniform(-jitter, jitter))
         if state_getter() is None:
             # The sentinel may still be flushing.
             final = sentinel_waiter(_GRACE_SECONDS)
@@ -539,6 +610,8 @@ def submit_wait(
         verdict = wait_for_job(
             sentinel_waiter=_remote_sentinel_waiter(site._connection, paths.output, jid),
             state_getter=lambda: site._get_state(jid, strict=False),
+            on_tick=_StatusReporter(site._connection, jid),
+            tick_interval=_STATUS_INTERVAL,
         )
     finally:
         _stop_stream(streamer)
