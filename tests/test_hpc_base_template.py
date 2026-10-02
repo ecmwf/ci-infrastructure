@@ -179,6 +179,11 @@ def test_runner_base_has_no_slurm_parts() -> None:
     assert 'cmake --install "$build"' in out
 
 
+def test_runner_uses_cmakes_default_generator_and_hpc_ninja() -> None:
+    assert "-GNinja" not in _render_runner()
+    assert 'if command -v ninja >/dev/null 2>&1; then gen_flag="-GNinja"; fi' in _render()
+
+
 def test_compiler_fields_name_the_compilers() -> None:
     out = _render_runner()
     assert '  -DCMAKE_C_COMPILER="$(command -v gcc-13)" \\' in out
@@ -188,7 +193,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
 
 
-TEMPLATE_SHA256: Final = "a4b1973c63906b2464cb146c5d585a897c860616956ed51653646a6a02fb0589"
+TEMPLATE_SHA256: Final = "08ff1ba97bcd51db8e213747bc5d550e7db1fabb0e1518ea677b108d5a9e1752"
 TEMPLATE_VERSION: Final = 1
 
 
