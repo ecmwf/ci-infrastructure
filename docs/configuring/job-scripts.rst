@@ -6,7 +6,11 @@ Build with a recipe on runners and HPC
 ======================================
 
 A runner leg can name a ``job-script`` just like an HPC leg.
-On a runner, :action:`run-job-script` renders it and runs it in the job's container;
+Both the runners and the HPC execute a jinja script.
+Usually these scripts are the same, with the HPC only adding ``module load`` and ``#SBATCH``
+commands.
+On a runner, :action:`run-job-script` renders it with the information from the manifest
+and runs it in the job's container;
 on HPC, :action:`build-on-hpc` submits it as a SLURM job (see :doc:`hpc`).
 Either way the recipe renders to one shell script,
 and ``ci-infrastructure-render`` prints that same script for you to run by hand.
@@ -15,7 +19,7 @@ Shared Jinja templates
 ----------------------
 
 ``ci-infrastructure`` ships Jinja templates that a recipe extends.
-So far they build one CMake project:
+So far the following templates exist:
 
 .. list-table::
    :header-rows: 1
@@ -74,8 +78,10 @@ Point the legs of every kind at it; the recipe's ``test`` block runs the tests:
 A recipe may also extend one lane's template directly, ``cmake-runner.sh.j2`` or ``cmake-atos.sh.j2``,
 and serve only that lane.
 
-Runner legs name their compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``;
-the recipe reads them as ``cc``, ``cxx`` and ``fc``.
+A leg names its compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``.
+They identify the build, and by default they are also the binaries the recipe calls.
+Where a binary is named differently, e.g. ``g++`` from a module for the ``g++-8`` build,
+the leg sets ``c-compiler-binary``, ``cxx-compiler-binary`` or ``fortran-compiler-binary``.
 Name the C compiler too: left out, CMake picks the image's default ``cc``.
 
 Reproduce a leg locally

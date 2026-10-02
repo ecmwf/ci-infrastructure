@@ -127,7 +127,7 @@ def test_child_overrides_blocks_and_keeps_the_base_with_super() -> None:
 def test_static_check_follows_extends() -> None:
     assert jobscript.undeclared_template_names(EXTENDS, LEG, template_name="t") == set()
     without_cxx = {k: v for k, v in LEG.items() if k != "cxx"}
-    assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx"}
+    assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx_compiler_binary"}
 
 
 def test_static_check_sees_a_child_block_and_not_super() -> None:
@@ -195,10 +195,10 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert '  -DCMAKE_Fortran_COMPILER="$(command -v gfortran-13)" \\' in out
     assert jobscript.undeclared_template_names(RUNNER, RUNNER_LEG, template_name="t") == set()
     without_cc = {k: v for k, v in RUNNER_LEG.items() if k != "c-compiler"}
-    assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
+    assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "856ffa229419c2786d7ad4ca97a18e2e961381c49a50459a3125c3e7b9882a73"
+TEMPLATE_SHA256: Final = "a3026ff4a7115f5970bbccd19bd5a5993c772546e339806245f6bddbe38b359c"
 TEMPLATE_VERSION: Final = 1
 
 
@@ -242,3 +242,16 @@ def test_a_lane_without_a_branch_renders_nothing_and_fails() -> None:
 def test_static_check_follows_both_lanes_of_all_lanes() -> None:
     assert jobscript.undeclared_template_names(ALL_LANES, RUNNER_LEG, template_name="t") == set()
     assert jobscript.undeclared_template_names(ALL_LANES, LEG, template_name="t") == set()
+
+
+def test_the_compiler_binary_defaults_to_the_compiler_and_may_differ() -> None:
+    assert "$(command -v g++-13)" in _render_runner()
+    hpc_leg = {**LEG, "cxx-compiler": "g++-8", "cxx-compiler-binary": "g++"}
+    hpc_leg.pop("cxx")
+    assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render(leg=hpc_leg)
+    assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render()  # the old `cxx`, until #98
+
+
+def test_the_old_names_still_read_the_binary_until_98() -> None:
+    src = RUNNER + "{% block build %}{{ cc }} {{ cxx }} {{ fc }}{% endblock %}\n"
+    assert "gcc-13 g++-13 gfortran-13" in _render_runner(src)

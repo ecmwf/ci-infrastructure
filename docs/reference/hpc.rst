@@ -151,8 +151,12 @@ A leg may omit these fields:
      - ``20G``
    * - ``tests``
      - ``true``
-   * - ``ctest-args``, ``fc``, ``options``
+   * - ``ctest-args``, ``options``
      - ``""``
+   * - ``c-compiler-binary``, ``cxx-compiler-binary``
+     - ``c-compiler``, ``cxx-compiler``
+   * - ``fortran-compiler-binary``
+     - ``fortran-compiler``; without it ``""``, i.e. no Fortran
 
 ``configure`` uses the preset named by ``options``, or ``ci`` if it is empty.
 The feature flags thus live in the package's ``CMakePresets.json``,

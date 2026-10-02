@@ -41,9 +41,9 @@ The manifest
    container = "eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"
    site = "hpc-batch"
    modules = ["load prgenv/gnu", "unload gcc", "load gcc/old", "load cmake", "load ninja"]
-   cc = "gcc"
-   cxx = "g++"
-   fc = "gfortran"
+   c-compiler-binary = "gcc"
+   cxx-compiler-binary = "g++"
+   fortran-compiler-binary = "gfortran"
    time = "01:30:00"
 
    [[matrix.build-hpc.include]]
@@ -62,6 +62,9 @@ The two legs of ``eccodes`` therefore differ only in ``options``,
 which selects a preset from the package's ``CMakePresets.json``.
 ``platform`` names the toolchain as part of the artifact name, e.g. ``hpc-atos-gnu``,
 since it differs from the runners' images.
+``cxx-compiler`` and ``fortran-compiler`` identify the build;
+the module ``gcc/old`` provides the compilers without a version suffix,
+so the ``*-compiler-binary`` fields name the binaries the build script calls.
 
 The build script
 ----------------

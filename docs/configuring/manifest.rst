@@ -132,17 +132,18 @@ The job script
 
 The recipe that does the actual build and test
 is a `Jinja <https://jinja.palletsprojects.com/>`__ template in the repository,
-rendered against the leg that runs it into a shell script.
+rendered against the leg from the manifrest that runs it into a shell script.
 :action:`run-job-script` renders and runs it, in the ``ci.yml`` as well as in the generated workflows,
 which use it to rebuild a missing artifact and to build the package in a downstream run.
-Most packages extend a template shipped with ``ci-infrastructure`` and override only the blocks in which they differ;
+It is possible to write your own template, but it's recommended
+to extend a template shipped with ``ci-infrastructure`` and override only the blocks in which they differ;
 ``eckit``'s ``.ci/build.sh.j2`` extends one and changes nothing:
 
 .. code:: jinja
 
    {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
 
-The templates, their blocks and how to run a leg's recipe locally are described in :doc:`job-scripts`.
+The templates and their blocks are described in :doc:`job-scripts`.
 
 From the manifest to the ci.yml
 -------------------------------

@@ -411,7 +411,7 @@ def test_runner_recipe_is_checked_against_the_runner_base(tmp_path: Path) -> Non
     recipe = '{% extends "ci-infrastructure/cmake-runner.sh.j2" %}\n'
     validate_job_templates(parse_manifest(_runner_repo(tmp_path, _RUNNER_MANIFEST, recipe)))
     without_cc = _RUNNER_MANIFEST.replace('    c-compiler = "gcc-13"\n', "")
-    with pytest.raises(SchemaError, match="cc"):
+    with pytest.raises(SchemaError, match="c_compiler_binary.*`c-compiler`"):
         validate_job_templates(parse_manifest(_runner_repo(tmp_path / "x", without_cc, recipe)))
 
 

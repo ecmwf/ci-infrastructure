@@ -17,10 +17,10 @@ gen_flag=""
 {% endblock %}
 
 {% block preflight %}
-echo "Using: $(command -v {{ cc | sh }}) ($({{ cc | sh }} --version | head -1))"
-echo "Using: $(command -v {{ cxx | sh }}) ($({{ cxx | sh }} --version | head -1))"
-{% if fc %}
-echo "Using: $(command -v {{ fc | sh }}) ($({{ fc | sh }} --version | head -1))"
+echo "Using: $(command -v {{ c_compiler_binary | sh }}) ($({{ c_compiler_binary | sh }} --version | head -1))"
+echo "Using: $(command -v {{ cxx_compiler_binary | sh }}) ($({{ cxx_compiler_binary | sh }} --version | head -1))"
+{% if fortran_compiler_binary %}
+echo "Using: $(command -v {{ fortran_compiler_binary | sh }}) ($({{ fortran_compiler_binary | sh }} --version | head -1))"
 {% endif %}
 echo "Using: $(command -v cmake) ($(cmake --version | head -1))"
 {% endblock %}
@@ -29,10 +29,10 @@ echo "Using: $(command -v cmake) ($(cmake --version | head -1))"
 # shellcheck disable=SC2086
 cmake --preset {{ (options or "ci") | sh }} -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \
   -DCMAKE_BUILD_TYPE={{ build_type | sh }} \
-  -DCMAKE_C_COMPILER="$(command -v {{ cc | sh }})" \
-  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx | sh }})" \
-{% if fc %}
-  -DCMAKE_Fortran_COMPILER="$(command -v {{ fc | sh }})" \
+  -DCMAKE_C_COMPILER="$(command -v {{ c_compiler_binary | sh }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx_compiler_binary | sh }})" \
+{% if fortran_compiler_binary %}
+  -DCMAKE_Fortran_COMPILER="$(command -v {{ fortran_compiler_binary | sh }})" \
 {% endif %}
 {% block cmake_args %}{% endblock %}
   -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
