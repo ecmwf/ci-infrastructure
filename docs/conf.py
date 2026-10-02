@@ -66,7 +66,7 @@ ghactions_groups = [
     (
         "Checkout and build",
         "Get the right sources and build them.",
-        ["checkout-under-test", "pick-ref", "pre-commit", "cmake-build", "run-job-script", "setup-sccache"],
+        ["checkout-under-test", "pick-ref", "pre-commit", "run-job-script", "setup-sccache"],
     ),
     (
         "Dependencies",

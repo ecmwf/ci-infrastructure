@@ -82,7 +82,7 @@ Outputs = TypedDict(
 @click.option(
     "--lane",
     "lane",
-    type=click.Choice(["runner", "hpc-atos", "hpc"]),
+    type=click.Choice(["runner", "hpc-atos"]),
     default="runner",
     help="Execution lane of the build. hpc artifacts carry the HPC template version segment.",
 )

@@ -11,7 +11,6 @@ from typing import Final
 
 import pytest
 import yaml
-from click.testing import CliRunner
 from conftest import parse_all, render_single, write_repo
 
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS
@@ -21,7 +20,6 @@ from ci_infrastructure.generate_downstream_ci import (
     validate_graph,
     validate_job_templates,
 )
-from ci_infrastructure.generate_downstream_ci import main as generate_main
 
 _HPC_MANIFEST: Final = """
     [matrix.build]
@@ -419,20 +417,6 @@ def _runner_repo(tmp_path: Path, body: str, recipe: str) -> Path:
     manifest = write_repo(tmp_path, "pkg", body)
     (manifest.parent / "build.sh.j2").write_text(recipe)
     return manifest
-
-
-def test_regenerating_deletes_the_legacy_hpc_files(tmp_path: Path) -> None:
-    manifest = write_repo(tmp_path, "pkg", _TEMPLATED_MANIFEST)
-    wf = manifest.parents[1] / ".github" / "workflows"
-    wf.mkdir(parents=True)
-    for name in ("cross-repo-trigger-hpc.yml", "trigger-downstream-hpc.yml"):
-        (wf / name).write_text("old\n")
-    (script := manifest.parent / "hpc" / "build.sh.j2").parent.mkdir()
-    script.write_text("#!/bin/bash\nexport CC={{ cc }}\n")
-    main_args = ["--manifest-path", str(manifest), "--sibling-root", str(tmp_path)]
-    result = CliRunner().invoke(generate_main, main_args)
-    assert result.exit_code == 0, result.output
-    assert sorted(p.name for p in wf.iterdir()) == ["cross-repo-trigger-hpc-atos.yml"]
 
 
 def test_runner_job_script_legs_may_set_ctest_args(tmp_path: Path) -> None:

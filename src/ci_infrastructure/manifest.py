@@ -10,7 +10,6 @@ Cross-manifest rules (the `needs` graph, trigger cycles) live in `generate_downs
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Mapping
 from typing import Any, Final, Literal, TypeAlias
 
@@ -18,9 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ._github_api import (
     _OPTION_TOKEN_RE,
-    EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
-    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
 )
@@ -255,9 +252,7 @@ class MatrixKindTable(_Table):
     )
     execution: Execution = Field(
         default=EXECUTION_RUNNER,
-        description="`runner` (a GitHub Actions job) or `hpc-atos` (a SLURM job on Atos); `hpc` is a deprecated "
-        "alias of `hpc-atos`.",
-        json_schema_extra={"enum": [EXECUTION_RUNNER, EXECUTION_HPC_ATOS, LEGACY_HPC]},
+        description="`runner` (a GitHub Actions job) or `hpc-atos` (a SLURM job on Atos).",
     )
     action: str = Field(
         default="",
@@ -305,14 +300,6 @@ class MatrixKindTable(_Table):
         if unknown:
             raise ValueError(f"has unknown key(s) {sorted(unknown)}; allowed: {sorted(allowed)}")
         return data
-
-    @field_validator("execution", mode="before")
-    @classmethod
-    def _hpc_atos(cls, v: Any) -> Any:
-        if v != LEGACY_HPC:
-            return v
-        print('::warning title=Deprecated::execution = "hpc" is deprecated; use "hpc-atos"', file=sys.stderr)
-        return EXECUTION_HPC_ATOS
 
     @field_validator("triggers")
     @classmethod

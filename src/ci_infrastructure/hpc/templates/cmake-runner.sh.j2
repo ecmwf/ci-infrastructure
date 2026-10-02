@@ -12,7 +12,7 @@
 {% block setup %}
 build="${CI_BUILD_DIR:-${TMPDIR:-/tmp}/build}"
 jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-# CMake's default generator, as cmake-build used: some images ship a ninja too old for every project.
+# CMake's default generator: some images ship a ninja too old for every project.
 gen_flag=""
 {% endblock %}
 
