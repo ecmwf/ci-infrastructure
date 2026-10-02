@@ -19,6 +19,8 @@ from typing import Any, Final
 import jinja2
 import jinja2.meta
 
+from .._github_api import Execution
+
 SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
 SENTINEL_FAILURE: Final = "Finished: FAILURE"
 
@@ -57,7 +59,7 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution")
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -79,6 +81,7 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
         "ctest_args": "",
         "fc": "",
         "options": "",
+        "modules": [],
     }
 )
 
@@ -120,7 +123,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
     return env
 
 
-def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -> dict[str, Any]:
+def build_template_context(leg: Mapping[str, Any], *, execution: Execution, artifact_name: str = "") -> dict[str, Any]:
     """``_resolved`` is left out: its runner-local paths are invalid on the cluster."""
     context: dict[str, Any] = {}
     origin: dict[str, str] = {}
@@ -147,6 +150,7 @@ def build_template_context(leg: Mapping[str, Any], *, artifact_name: str = "") -
         context.setdefault(name, value)
     context["leg"] = dict(leg)
     context["artifact_name"] = artifact_name
+    context["execution"] = execution
     return context
 
 
@@ -198,13 +202,14 @@ def render_job_template(
     template_source: str,
     template_name: str,
     leg: Mapping[str, Any],
+    execution: Execution,
     artifact_name: str = "",
     search_path: Path | None = None,
 ) -> str:
     env = job_template_environment(search_path)
     try:
         template = env.from_string(template_source)
-        return template.render(build_template_context(leg, artifact_name=artifact_name))
+        rendered = template.render(build_template_context(leg, execution=execution, artifact_name=artifact_name))
     except jinja2.TemplateSyntaxError as exc:
         raise JobTemplateError(f"{exc.name or template_name}:{exc.lineno}: {exc.message}") from exc
     except jinja2.TemplateNotFound as exc:
@@ -214,10 +219,16 @@ def render_job_template(
         raise JobTemplateError(
             f"{template_name}: {exc.message}. The matrix leg declares {declared or '(nothing)'}; "
             f"a template may only read those (hyphens as underscores), plus `leg`, "
-            f"`artifact_name` and the defaults {sorted(JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
+            f"`artifact_name`, `execution` and the defaults {sorted(JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
             f"leg in .ci/manifest.toml, or drop it from the recipe -- the two are meant to say the "
             f"same thing."
         ) from exc
+    if not rendered.strip():
+        raise JobTemplateError(
+            f"{template_name} renders nothing for execution = {execution!r}; "
+            "does a template it extends (e.g. cmake-all-lanes.sh.j2) have a branch for that lane?"
+        )
+    return rendered
 
 
 def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:

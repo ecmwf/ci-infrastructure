@@ -30,7 +30,7 @@ import click
 
 from .. import s3_store
 from .._errors import CIError
-from .._github_api import write_outputs
+from .._github_api import EXECUTION_HPC_ATOS, write_outputs
 from . import jobscript, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
@@ -74,6 +74,7 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
             template_source=source,
             template_name=str(repo_script),
             leg=leg,
+            execution=EXECUTION_HPC_ATOS,
             artifact_name=artifact_name,
             search_path=repo_script.parent,
         )

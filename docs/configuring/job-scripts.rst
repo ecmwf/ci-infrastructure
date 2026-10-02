@@ -11,8 +11,11 @@ on HPC, :action:`build-on-hpc` submits it as a SLURM job (see :doc:`hpc`).
 Either way the recipe renders to one shell script,
 and ``ci-infrastructure-render`` prints that same script for you to run by hand.
 
-Two shared templates
---------------------
+Shared Jinja templates
+----------------------
+
+``ci-infrastructure`` ships Jinja templates that a recipe extends.
+So far they build one CMake project:
 
 .. list-table::
    :header-rows: 1
@@ -24,39 +27,39 @@ Two shared templates
    * - ``ci-infrastructure/cmake-atos.sh.j2``
      - HPC: extends the runner template and adds the ``#SBATCH`` header, the modules,
        the node-local build tree and the install archive
+   * - ``ci-infrastructure/cmake-all-lanes.sh.j2``
+     - every lane: extends one of the two above, chosen by the leg's ``execution``
 
 The HPC template fills three blocks that are empty or different on a runner:
 ``header`` (holding ``sbatch`` and the modules), ``setup`` (``build``, ``jobs``, ``install_root``)
 and ``publish`` (the archive).
 All other blocks are shared; :doc:`../reference/hpc` lists them.
 
-A recipe per lane
------------------
+One recipe for all lanes
+------------------------
 
-A runner recipe extends the runner template, an HPC recipe the HPC template.
-A change both lanes need, such as a different ``test`` block, goes into both recipes:
+Extend ``cmake-all-lanes.sh.j2``, and one ``.ci/build.sh.j2`` serves the runner and the HPC legs.
+It extends the template of the leg's lane, so an override is written once,
+and ``execution`` tells the lanes apart where they differ:
 
 .. code:: jinja
 
-   {# .ci/build.sh.j2 #}
-   {% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+   {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
    {% block test %}
    for v in 0 1; do
      ECCODES_ECKIT_GEO=$v ctest --test-dir "$build" --output-on-failure -j "$jobs"
    done
    {% endblock %}
-
-.. code:: jinja
-
-   {# .ci/hpc/build.sh.j2 #}
-   {% extends "ci-infrastructure/cmake-atos.sh.j2" %}
-   {% block test %}
-   for v in 0 1; do
-     ECCODES_ECKIT_GEO=$v ctest --test-dir "$build" --output-on-failure -j "$jobs"
-   done
+   {% block install %}
+   {% if execution == "hpc-atos" %}
+   DESTDIR="${TMPDIR:-/tmp}/stage" cmake --install "$build"
+   install_root="${TMPDIR:-/tmp}/stage$CI_INSTALL_PREFIX"
+   {% else %}
+   {{ super() }}
+   {% endif %}
    {% endblock %}
 
-Point each kind's legs at its recipe.
+Point the legs of every kind at it.
 The runner kind drops its ``action`` and ``ctest``, since the recipe's ``test`` block runs the tests:
 
 .. code:: toml
@@ -65,7 +68,10 @@ The runner kind drops its ``action`` and ``ctest``, since the recipe's ``test`` 
    job-script = "./.ci/build.sh.j2"
 
    [matrix.build-hpc.defaults]
-   job-script = "./.ci/hpc/build.sh.j2"
+   job-script = "./.ci/build.sh.j2"
+
+A recipe may also extend one lane's template directly, ``cmake-runner.sh.j2`` or ``cmake-atos.sh.j2``,
+and serve only that lane.
 
 Runner legs name their compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``;
 the recipe reads them as ``cc``, ``cxx`` and ``fc``.

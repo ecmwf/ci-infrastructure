@@ -81,6 +81,8 @@ against its leg. It may use
      - the leg as a mapping, spelled as in the manifest
    * - ``artifact_name``
      - the name of the artifact
+   * - ``execution``
+     - the lane the leg runs in, ``runner`` or ``hpc-atos``
    * - ``| sh``
      - quotes a value as one shell word
 

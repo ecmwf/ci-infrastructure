@@ -37,6 +37,7 @@ def _render(
         template_source=source,
         template_name="build.sh.j2",
         leg=LEG if leg is None else leg,
+        execution="hpc-atos",
         artifact_name=artifact_name,
         search_path=search_path,
     )
