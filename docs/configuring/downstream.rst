@@ -65,6 +65,7 @@ So it is sufficient to change the manifest: once that is merged, the bot takes c
    GitHub runs a `workflow_run <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run>`__ workflow from the **default** branch.
    A change to ``trigger-downstream.yml`` therefore takes effect only once it is merged;
    on its own branch, the old graph is still used.
+   Only setting a label runs the pull request's own copy.
 
 When to run it
 --------------
@@ -79,8 +80,10 @@ so a pull request fans out only when it asks for it, with exactly one label:
   From ``ecbuild``, ``eckit`` and ``ecflow`` are level 1, and ``eccodes`` is level 2 because it needs ``eckit``.
   A level cut never builds a package without the packages it needs.
 
-Since ``ci.yml`` also runs on ``labeled``, adding the label later starts a fresh ``CI`` run by itself,
-which then triggers the downstream CI.
+A label added later starts the downstream CI by itself, without running ``CI`` again,
+as long as ``CI`` already succeeded for the pull request's head commit.
+If ``CI`` is still running, the downstream CI starts once it has finished.
+Other labels start nothing, and neither does a label on a pull request from a fork.
 The label persists, and will trigger the requested runs upon future pushes.
 
 To merge, a pull request needs exactly one ``run-downstream-ci:*`` label

@@ -1201,18 +1201,21 @@ def render_orchestrator_workflow(
     jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
     jobs = _require_context(jobs)
 
+    # Labelling a pull request starts its downstream CI without re-running its CI.
     on: dict[str, Any] = {
         "workflow_run": {
             "workflows": ["CI"],
             "types": ["completed"],
         },
+        "pull_request": {"types": ["labeled"]},
     }
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
         "on": on,
         # Concurrency cannot see `needs`, so the commit comes from the event.
         "concurrency": {
-            "group": f"trigger-downstream-{lane}-" + "${{ github.event.workflow_run.head_sha }}",
+            "group": f"trigger-downstream-{lane}-"
+            + "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}",
             "cancel-in-progress": True,
         },
         "jobs": jobs,
@@ -1274,7 +1277,8 @@ def _report_start_job(lane: Execution) -> dict[str, Any]:
 def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
     """`failure` linking the CI run, when CI did not succeed (the complement of _SUCCESS_GATE)."""
     return _status_job(
-        when=f"${{{{ {_CI_CONCLUSION} != 'success' }}}}",
+        # '' is a label set while CI still runs: the workflow_run on its completion reports.
+        when=f"${{{{ {_CI_CONCLUSION} != 'success' && {_CI_CONCLUSION} != '' }}}}",
         step_name="Post downstream failure status",
         script=_post_status_script(
             state="failure",
@@ -1407,8 +1411,17 @@ def _require_context(jobs: dict[str, Any]) -> dict[str, Any]:
     return ordered
 
 
+#: On a label event, only a run-downstream-ci label of a branch in this repository; fork PRs are unsupported.
+_LABEL_EVENT_FILTER: Final = (
+    "${{ github.event_name != 'pull_request' || "
+    "(startsWith(github.event.label.name, 'run-downstream-ci') && "
+    "github.event.pull_request.head.repo.full_name == github.repository) }}"
+)
+
+
 def _context_job() -> dict[str, Any]:
     return {
+        "if": _LABEL_EVENT_FILTER,
         "runs-on": SLIM_RUNNER,
         "permissions": {"actions": "read"},
         "outputs": {

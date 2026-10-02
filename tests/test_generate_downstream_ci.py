@@ -879,7 +879,10 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
         "if: ${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
         in yaml
     )
-    assert "group: trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}" in yaml
+    assert (
+        "group: trigger-downstream-runner-"
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in yaml
+    )
     assert "cancel-in-progress: true" in yaml
     assert "dispatch-and-wait" not in yaml
     assert "uses: org/b/.github/workflows/cross-repo-trigger.yml@main" in yaml
@@ -1352,7 +1355,10 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         doc = yaml.safe_load(orch)
         assert doc["name"] == f"Downstream {label} (a)"
         # PyYAML reads the bare key `on` as True.
-        assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
+        assert doc[True] == {
+            "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
+            "pull_request": {"types": ["labeled"]},
+        }
         assert "inputs" not in orch
         gate = "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
         assert doc["jobs"]["validate"]["if"] == gate
@@ -1394,7 +1400,8 @@ def test_orchestrator_posts_ci_failure_status(tmp_path: Path) -> None:
         job = yaml.safe_load(_orch(tmp_path, lane))["jobs"]["report-ci-failure"]
         assert (
             job["if"]
-            == "${{ (needs.context.outputs.ci-conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
+            == "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') "
+            "&& needs['label-gate'].outputs.run == 'true' }}"
         )
         run = job["steps"][-1]["run"]
         assert "gh api -X POST" in run
@@ -1807,7 +1814,8 @@ def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> Non
         "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
     )
     assert doc["jobs"]["report-ci-failure"]["if"] == (
-        "${{ (needs.context.outputs.ci-conclusion != 'success') && needs['label-gate'].outputs.run == 'true' }}"
+        "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') "
+        "&& needs['label-gate'].outputs.run == 'true' }}"
     )
     assert doc["jobs"]["report-result"]["if"].startswith("${{ (always() && ")
 
@@ -1860,11 +1868,14 @@ def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
     assert "permissions" not in job
 
 
-def test_a_completed_ci_run_is_the_only_entry_point(tmp_path: Path) -> None:
-    """The label is read by label-gate, not by an `on:` filter."""
+def test_a_completed_ci_run_or_a_label_is_the_entry_point(tmp_path: Path) -> None:
+    """The label's level is read by label-gate; `on:` only adds the labelling itself as a start."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
+    assert doc[True] == {
+        "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
+        "pull_request": {"types": ["labeled"]},
+    }
 
 
 def test_no_ci_approval_gate(tmp_path: Path) -> None:
@@ -1880,21 +1891,27 @@ def test_no_ci_approval_gate(tmp_path: Path) -> None:
 
 
 def test_the_label_filter_sits_only_on_the_label_gate_job(tmp_path: Path) -> None:
-    """A job skipped by `if:` reports Success, so work jobs read label-gate's output."""
+    """A job skipped by `if:` reports Success, so work jobs read label-gate's output.
+
+    The context job only drops label events that are not a downstream label."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    for job in doc["jobs"].values():
-        assert "github.event.label" not in (job.get("if") or "")
+    for jid, job in doc["jobs"].items():
+        if jid != "context":
+            assert "github.event.label" not in (job.get("if") or ""), jid
 
 
 def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> None:
-    """Only the concurrency key (which cannot see `needs`) reads workflow_run directly."""
+    """Only the concurrency key (which cannot see `needs`) reads the commit from the event."""
     write_repo(tmp_path, "a", _GATE_UPSTREAM)
     write_repo(tmp_path, "b", _GATE_CONSUMER)
     orch = _orch(tmp_path)
 
     doc: dict[str, Any] = yaml.safe_load(orch)
-    assert doc["concurrency"]["group"] == "trigger-downstream-runner-${{ github.event.workflow_run.head_sha }}"
+    assert (
+        doc["concurrency"]["group"]
+        == "trigger-downstream-runner-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
+    )
     assert orch.count("github.event.workflow_run") == 1
 
     ctx = doc["jobs"]["context"]
@@ -2197,3 +2214,19 @@ def test_an_unknown_exclude_is_an_error(tmp_path: Path) -> None:
     _diamond(tmp_path, exclude='[downstream]\nexclude = ["d"]\n')
     with pytest.raises(SchemaError, match=r"exclude names \['d'\]"):
         _render_orch(tmp_path)
+
+
+def test_orchestrator_starts_on_a_downstream_label_without_ci(tmp_path: Path) -> None:
+    _make_chain_ab(tmp_path)
+    doc = yaml.safe_load(_orch(tmp_path))
+    context_if = doc["jobs"]["context"]["if"]
+    assert "github.event_name != 'pull_request'" in context_if
+    assert "startsWith(github.event.label.name, 'run-downstream-ci')" in context_if
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in context_if
+    assert doc["concurrency"]["group"].endswith(
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
+    )
+    assert doc["jobs"]["report-ci-failure"]["if"] == (
+        "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') && "
+        "needs['label-gate'].outputs.run == 'true' }}"
+    )
