@@ -29,4 +29,5 @@ while ``ecbuild`` stays on ``develop``.
 Any other branch, such as ``fix-leak``, or such a branch that exists in one repository only,
 keeps testing against ``ref`` from :doc:`../configuring/manifest`.
 
-If pull requests are merged from upstream to downstream, ``eckit`` before ``eccodes`` in this example, everything stays green.
+If all synchronised pull requests are ready, they shall be merged in rapid succession from upstream to downstream,
+``eckit`` before ``eccodes`` in this example.
