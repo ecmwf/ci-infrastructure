@@ -48,7 +48,6 @@ from ._errors import CIError
 from ._github_api import (
     _OPTION_TOKEN_RE,
     EXECUTION_RUNNER,
-    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
     _gh,
@@ -363,11 +362,6 @@ def dispatch_producer_workflow(
         f"fallback-ref={fallback_ref}",
     ]
     rc, _, stderr = _gh(cmd, token)
-    if rc != 0 and plan.lane != EXECUTION_RUNNER:
-        # The producer may not have regenerated since the hpc lane became hpc-atos.
-        workflow_file = f"cross-repo-trigger-{LEGACY_HPC}.yml"
-        cmd[3] = workflow_file
-        rc, _, stderr = _gh(cmd, token)
     if rc != 0:
         raise ResolveError(
             f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "

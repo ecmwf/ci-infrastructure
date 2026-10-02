@@ -468,19 +468,3 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
     base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
     deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
     assert [d.name for d in deps] == ["base", "middle"]
-
-
-def test_hpc_dispatch_falls_back_to_the_legacy_workflow_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    files: list[str] = []
-
-    def gh(cmd: list[str], token: str) -> tuple[int, str, str]:
-        files.append(cmd[3])
-        return (0, "", "") if cmd[3] == "cross-repo-trigger-hpc.yml" else (1, "", "could not find any workflows")
-
-    monkeypatch.setattr(resolve_deps, "_gh", gh)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
-    plan = resolve_deps.DispatchPlan(repo=Repo("o/p"), ref=Ref("main"), sha=Sha("a" * 40), lane=EXECUTION_HPC_ATOS)
-    resolve_deps.dispatch_producer_workflow(
-        plan=plan, dispatcher_repo="o/c", dispatcher_sha="b" * 40, branch="", fallback_ref="main", token="t"
-    )
-    assert files == ["cross-repo-trigger-hpc-atos.yml", "cross-repo-trigger-hpc.yml"]

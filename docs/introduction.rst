@@ -50,8 +50,8 @@ optional features, test labels, Python wheels and HPC toolchains.
 A shared build step that absorbs all of these differences turns into a framework
 with a hundred inputs, which nobody dares to change.
 The shared pieces are therefore kept deliberately small:
-:action:`cmake-build` covers the plain case, and a repository that needs more writes its own step
-or overrides parts of it through ``preset`` and ``cmake-args``.
+shared Jinja templates cover the common builds, and a repository overrides the blocks in which it differs,
+or writes its own recipe.
 Some repetition across repositories is the cheaper choice.
 
 Only a fast CI is actually used

@@ -11,8 +11,11 @@ on HPC, :action:`build-on-hpc` submits it as a SLURM job (see :doc:`hpc`).
 Either way the recipe renders to one shell script,
 and ``ci-infrastructure-render`` prints that same script for you to run by hand.
 
-Two shared templates
---------------------
+Shared Jinja templates
+----------------------
+
+``ci-infrastructure`` ships Jinja templates for common builds, which a recipe extends.
+So far there is one build, a CMake project, in two lanes:
 
 .. list-table::
    :header-rows: 1
@@ -119,8 +122,7 @@ to bash the ``#SBATCH`` lines are comments, and the ``module`` lines load the to
 Migrate from a build action
 ---------------------------
 
-:action:`cmake-build` and the ``.github/actions/build-<package>`` wrappers around it are deprecated.
-To move a package over:
+A package that still builds through its own ``.github/actions/build-<package>`` moves over like this:
 
 #. Write ``.ci/build.sh.j2``, extending ``ci-infrastructure/cmake-runner.sh.j2``.
    Move what the build action did differently, such as extra ``-D`` flags, into its blocks.

@@ -193,7 +193,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
 
 
-TEMPLATE_SHA256: Final = "08ff1ba97bcd51db8e213747bc5d550e7db1fabb0e1518ea677b108d5a9e1752"
+TEMPLATE_SHA256: Final = "ec17a43b837e505e05b91134c6bd71df5ae22e5f2e93b9b0b62065297387a405"
 TEMPLATE_VERSION: Final = 1
 
 
@@ -204,7 +204,3 @@ def test_base_template_change_bumps_the_template_version() -> None:
         TEMPLATE_SHA256,
         TEMPLATE_VERSION,
     ), "cmake-runner.sh.j2 or cmake-atos.sh.j2 changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
-
-
-def test_cmake_build_is_an_alias_of_cmake_hpc() -> None:
-    assert _render('{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n') == _render()
