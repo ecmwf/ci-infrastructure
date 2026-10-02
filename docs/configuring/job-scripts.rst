@@ -30,6 +30,8 @@ So far they build one CMake project:
    * - ``ci-infrastructure/cmake-all-lanes.sh.j2``
      - every lane: extends one of the two above, chosen by the leg's ``execution``
 
+:doc:`../reference/templates` lists every template with its blocks.
+
 The HPC template fills three blocks that are empty or different on a runner:
 ``header`` (holding ``sbatch`` and the modules), ``setup`` (``build``, ``jobs``, ``install_root``)
 and ``publish`` (the archive).

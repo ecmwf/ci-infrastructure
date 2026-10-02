@@ -2,10 +2,10 @@
 {# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
    SPDX-License-Identifier: Apache-2.0
 
-   The runner recipe plus what a SLURM job needs: the #SBATCH header, modules, the
-   node-local build tree and the install archive. A repo's .ci/hpc/build.sh.j2
-   extends it (see docs/reference/hpc.rst). Any change here must bump
-   _github_api.HPC_TEMPLATE_VERSION. #}
+   The runner template plus what a SLURM job on Atos needs: the #SBATCH header,
+   the modules, the node-local build tree and the install archive.
+
+   Any change here must bump _github_api.HPC_TEMPLATE_VERSION. #}
 {% block header %}
 {% block sbatch %}
 #SBATCH --qos=nf

@@ -17,6 +17,7 @@ extensions = [
     "sphinx_click",
     "ghactions",
     "clis",
+    "templates",
     "manifest_schema",
 ]
 

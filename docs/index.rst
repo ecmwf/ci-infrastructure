@@ -40,3 +40,4 @@ GitHub Actions that wire it into workflow YAML.
    reference/actions/index
    reference/cli/index
    reference/hpc
+   reference/templates

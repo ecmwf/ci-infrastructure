@@ -198,7 +198,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
 
 
-TEMPLATE_SHA256: Final = "b82734e9457dea24e29fb4aa5912acbf4913864c48aae56f58c6d2e8b034728f"
+TEMPLATE_SHA256: Final = "856ffa229419c2786d7ad4ca97a18e2e961381c49a50459a3125c3e7b9882a73"
 TEMPLATE_VERSION: Final = 1
 
 

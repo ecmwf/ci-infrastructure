@@ -22,3 +22,4 @@ docs/_build/
 docs/reference/actions/composite/
 docs/reference/actions/workflows/
 docs/reference/cli/
+docs/reference/templates.rst

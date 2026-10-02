@@ -2,10 +2,10 @@
 {# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
    SPDX-License-Identifier: Apache-2.0
 
-   Shared recipe for a single CMake project on a GitHub runner, and the base that
-   cmake-atos.sh.j2 extends for HPC. A repo's recipe extends the one for its lane
-   and overrides only the blocks it needs. Any change
-   here must bump _github_api.HPC_TEMPLATE_VERSION. #}
+   Configure, build, test and install a CMake project on a GitHub runner.
+
+   Also the base of cmake-atos.sh.j2. Any change here must bump
+   _github_api.HPC_TEMPLATE_VERSION. #}
 {% block header %}
 {% endblock %}
 
