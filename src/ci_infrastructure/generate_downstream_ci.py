@@ -448,6 +448,12 @@ def validate_job_templates(m: Manifest) -> None:
                     f"(hyphens as underscores), plus `leg`, `artifact_name` and the defaults "
                     f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
                     f"leg, or drop it from the recipe — they are meant to say the same thing."
+                    + "".join(
+                        f" `{name}` comes from `{name.removesuffix('_binary').replace('_', '-')}`, or "
+                        f"`{name.replace('_', '-')}` when the binary to call is named differently."
+                        for name in sorted(missing)
+                        if name.endswith("_compiler_binary")
+                    )
                 )
 
 

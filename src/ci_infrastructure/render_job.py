@@ -58,6 +58,7 @@ def render(
                 template_source=source,
                 template_name=str(job_script),
                 leg=leg,
+                execution=execution,
                 artifact_name=artifact_name,
                 search_path=job_script.parent,
             )

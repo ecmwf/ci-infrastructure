@@ -81,6 +81,8 @@ against its leg. It may use
      - the leg as a mapping, spelled as in the manifest
    * - ``artifact_name``
      - the name of the artifact
+   * - ``execution``
+     - the lane the leg runs in, ``runner`` or ``hpc-atos``
    * - ``| sh``
      - quotes a value as one shell word
 
@@ -149,8 +151,12 @@ A leg may omit these fields:
      - ``20G``
    * - ``tests``
      - ``true``
-   * - ``ctest-args``, ``fc``, ``options``
+   * - ``ctest-args``, ``options``
      - ``""``
+   * - ``c-compiler-binary``, ``cxx-compiler-binary``
+     - ``c-compiler``, ``cxx-compiler``
+   * - ``fortran-compiler-binary``
+     - ``fortran-compiler``; without it ``""``, i.e. no Fortran
 
 ``configure`` uses the preset named by ``options``, or ``ci`` if it is empty.
 The feature flags thus live in the package's ``CMakePresets.json``,

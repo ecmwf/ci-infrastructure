@@ -6,58 +6,66 @@ Build with a recipe on runners and HPC
 ======================================
 
 A runner leg can name a ``job-script`` just like an HPC leg.
-On a runner, :action:`run-job-script` renders it and runs it in the job's container;
+Both the runners and the HPC execute a jinja script.
+Usually these scripts are the same, with the HPC only adding ``module load`` and ``#SBATCH``
+commands.
+On a runner, :action:`run-job-script` renders it with the information from the manifest
+and runs it in the job's container;
 on HPC, :action:`build-on-hpc` submits it as a SLURM job (see :doc:`hpc`).
 Either way the recipe renders to one shell script,
 and ``ci-infrastructure-render`` prints that same script for you to run by hand.
 
-Two shared templates
---------------------
+Shared Jinja templates
+----------------------
+
+``ci-infrastructure`` ships Jinja templates that a recipe extends.
+So far the following templates exist:
 
 .. list-table::
    :header-rows: 1
 
    * - template
      - for
-   * - ``ci-infrastructure/cmake-runner.sh.j2``
+   * - `ci-infrastructure/cmake-runner.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-runner.sh.j2>`__
      - a GitHub runner: configure, build, test and install one CMake project
-   * - ``ci-infrastructure/cmake-atos.sh.j2``
+   * - `ci-infrastructure/cmake-atos.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-atos.sh.j2>`__
      - HPC: extends the runner template and adds the ``#SBATCH`` header, the modules,
        the node-local build tree and the install archive
+   * - `ci-infrastructure/cmake-all-lanes.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-all-lanes.sh.j2>`__
+     - every lane: extends one of the two above, chosen by the leg's ``execution``
+
+:doc:`../reference/templates` lists every template with its blocks; each name links to its source.
 
 The HPC template fills three blocks that are empty or different on a runner:
 ``header`` (holding ``sbatch`` and the modules), ``setup`` (``build``, ``jobs``, ``install_root``)
 and ``publish`` (the archive).
 All other blocks are shared; :doc:`../reference/hpc` lists them.
 
-A recipe per lane
------------------
+One recipe for all lanes
+------------------------
 
-A runner recipe extends the runner template, an HPC recipe the HPC template.
-A change both lanes need, such as a different ``test`` block, goes into both recipes:
+Extend ``cmake-all-lanes.sh.j2``, and one ``.ci/build.sh.j2`` serves the runner and the HPC legs.
+It extends the template of the leg's lane, so an override is written once,
+and ``execution`` tells the lanes apart where they differ:
 
 .. code:: jinja
 
-   {# .ci/build.sh.j2 #}
-   {% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+   {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
    {% block test %}
    for v in 0 1; do
      ECCODES_ECKIT_GEO=$v ctest --test-dir "$build" --output-on-failure -j "$jobs"
    done
    {% endblock %}
-
-.. code:: jinja
-
-   {# .ci/hpc/build.sh.j2 #}
-   {% extends "ci-infrastructure/cmake-atos.sh.j2" %}
-   {% block test %}
-   for v in 0 1; do
-     ECCODES_ECKIT_GEO=$v ctest --test-dir "$build" --output-on-failure -j "$jobs"
-   done
+   {% block install %}
+   {% if execution == "hpc-atos" %}
+   DESTDIR="${TMPDIR:-/tmp}/stage" cmake --install "$build"
+   install_root="${TMPDIR:-/tmp}/stage$CI_INSTALL_PREFIX"
+   {% else %}
+   {{ super() }}
+   {% endif %}
    {% endblock %}
 
-Point each kind's legs at its recipe.
-The runner kind drops its ``action`` and ``ctest``, since the recipe's ``test`` block runs the tests:
+Point the legs of every kind at it; the recipe's ``test`` block runs the tests:
 
 .. code:: toml
 
@@ -65,10 +73,18 @@ The runner kind drops its ``action`` and ``ctest``, since the recipe's ``test`` 
    job-script = "./.ci/build.sh.j2"
 
    [matrix.build-hpc.defaults]
-   job-script = "./.ci/hpc/build.sh.j2"
+   job-script = "./.ci/build.sh.j2"
 
-Runner legs name their compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``;
-the recipe reads them as ``cc``, ``cxx`` and ``fc``.
+A recipe may also extend one lane's template directly, ``cmake-runner.sh.j2`` or ``cmake-atos.sh.j2``,
+and serve only that lane.
+A package with a recipe per lane keeps them side by side,
+``.ci/runner/build.sh.j2`` and ``.ci/hpc/build.sh.j2``;
+a recipe for all lanes is ``.ci/build.sh.j2``.
+
+A leg names its compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``.
+They identify the build, and by default they are also the binaries the recipe calls.
+Where a binary is named differently, e.g. ``g++`` from a module for the ``g++-8`` build,
+the leg sets ``c-compiler-binary``, ``cxx-compiler-binary`` or ``fortran-compiler-binary``.
 Name the C compiler too: left out, CMake picks the image's default ``cc``.
 
 Reproduce a leg locally
@@ -115,16 +131,3 @@ CI fetches the dependencies from the artifact store;
 locally you provide them, and ``CMAKE_PREFIX_PATH`` (``;``-separated) says where.
 An HPC leg's script also runs on an interactive node:
 to bash the ``#SBATCH`` lines are comments, and the ``module`` lines load the toolchain.
-
-Migrate from a build action
----------------------------
-
-:action:`cmake-build` and the ``.github/actions/build-<package>`` wrappers around it are deprecated.
-To move a package over:
-
-#. Write ``.ci/build.sh.j2``, extending ``ci-infrastructure/cmake-runner.sh.j2``.
-   Move what the build action did differently, such as extra ``-D`` flags, into its blocks.
-#. Set ``job-script = "./.ci/build.sh.j2"`` in the runner kind's defaults,
-   and drop its ``action``, ``forwarded-inputs`` and ``ctest``.
-#. In ``ci.yml``, build with :action:`run-job-script` instead of the package's action, then delete the action.
-#. Regenerate the workflows with ``ci-infrastructure-generate``.

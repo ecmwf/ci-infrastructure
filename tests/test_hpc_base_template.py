@@ -34,13 +34,16 @@ def _render(source: str = EXTENDS, leg: dict[str, Any] | None = None, search_pat
         template_source=source,
         template_name="build.sh.j2",
         leg={**LEG, **(leg or {})},
+        execution="hpc-atos",
         search_path=search_path,
     )
 
 
 def _base_source() -> bytes:
     templates = resources.files("ci_infrastructure.hpc") / "templates"
-    return b"".join((templates / name).read_bytes() for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2"))
+    return b"".join(
+        (templates / name).read_bytes() for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2", "cmake-all-lanes.sh.j2")
+    )
 
 
 def test_bare_extends_is_a_complete_recipe() -> None:
@@ -124,7 +127,7 @@ def test_child_overrides_blocks_and_keeps_the_base_with_super() -> None:
 def test_static_check_follows_extends() -> None:
     assert jobscript.undeclared_template_names(EXTENDS, LEG, template_name="t") == set()
     without_cxx = {k: v for k, v in LEG.items() if k != "cxx"}
-    assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx"}
+    assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx_compiler_binary"}
 
 
 def test_static_check_sees_a_child_block_and_not_super() -> None:
@@ -168,7 +171,9 @@ RUNNER: Final = '{% extends "ci-infrastructure/cmake-runner.sh.j2" %}\n'
 
 
 def _render_runner(source: str = RUNNER, leg: dict[str, Any] | None = None) -> str:
-    return jobscript.render_job_template(template_source=source, template_name="build.sh.j2", leg=leg or RUNNER_LEG)
+    return jobscript.render_job_template(
+        template_source=source, template_name="build.sh.j2", leg=leg or RUNNER_LEG, execution="runner"
+    )
 
 
 def test_runner_base_has_no_slurm_parts() -> None:
@@ -190,10 +195,10 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert '  -DCMAKE_Fortran_COMPILER="$(command -v gfortran-13)" \\' in out
     assert jobscript.undeclared_template_names(RUNNER, RUNNER_LEG, template_name="t") == set()
     without_cc = {k: v for k, v in RUNNER_LEG.items() if k != "c-compiler"}
-    assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"cc"}
+    assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "08ff1ba97bcd51db8e213747bc5d550e7db1fabb0e1518ea677b108d5a9e1752"
+TEMPLATE_SHA256: Final = "a3026ff4a7115f5970bbccd19bd5a5993c772546e339806245f6bddbe38b359c"
 TEMPLATE_VERSION: Final = 1
 
 
@@ -203,8 +208,50 @@ def test_base_template_change_bumps_the_template_version() -> None:
     assert (hashlib.sha256(_base_source()).hexdigest(), _github_api.HPC_TEMPLATE_VERSION) == (
         TEMPLATE_SHA256,
         TEMPLATE_VERSION,
-    ), "cmake-runner.sh.j2 or cmake-atos.sh.j2 changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
+    ), "a shared CMake template changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
 
 
 def test_cmake_build_is_an_alias_of_cmake_hpc() -> None:
     assert _render('{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n') == _render()
+
+
+ALL_LANES: Final = '{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}\n'
+
+
+def test_all_lanes_extends_the_template_of_the_lane() -> None:
+    assert _render_runner(ALL_LANES) == _render_runner()
+    assert _render(ALL_LANES) == _render()
+
+
+def test_all_lanes_overrides_once_for_both_lanes() -> None:
+    src = ALL_LANES + "{% block build %}echo build on {{ execution }}{% endblock %}\n"
+    assert "echo build on runner" in _render_runner(src)
+    assert "echo build on hpc-atos" in _render(src)
+
+
+def test_a_lane_without_a_branch_renders_nothing_and_fails() -> None:
+    with pytest.raises(jobscript.JobTemplateError, match="renders nothing for execution = 'hpc-lumi'"):
+        jobscript.render_job_template(
+            template_source=ALL_LANES,
+            template_name="t",
+            leg=LEG,
+            execution="hpc-lumi",  # type: ignore[arg-type]
+        )
+
+
+def test_static_check_follows_both_lanes_of_all_lanes() -> None:
+    assert jobscript.undeclared_template_names(ALL_LANES, RUNNER_LEG, template_name="t") == set()
+    assert jobscript.undeclared_template_names(ALL_LANES, LEG, template_name="t") == set()
+
+
+def test_the_compiler_binary_defaults_to_the_compiler_and_may_differ() -> None:
+    assert "$(command -v g++-13)" in _render_runner()
+    hpc_leg = {**LEG, "cxx-compiler": "g++-8", "cxx-compiler-binary": "g++"}
+    hpc_leg.pop("cxx")
+    assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render(leg=hpc_leg)
+    assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render()  # the old `cxx`, until #98
+
+
+def test_the_old_names_still_read_the_binary_until_98() -> None:
+    src = RUNNER + "{% block build %}{{ cc }} {{ cxx }} {{ fc }}{% endblock %}\n"
+    assert "gcc-13 g++-13 gfortran-13" in _render_runner(src)

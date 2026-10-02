@@ -225,7 +225,7 @@ class MatrixKindTable(_Table):
     """`[matrix.<kind>]`: one job kind and its legs.
 
     A leg (`[[matrix.<kind>.include]]`) is free-form: every field is available to
-    the kind's action or job script. An HPC leg names its recipe in `job-script`. `platform` is required and names the
+    its recipe, the Jinja template it names in `job-script`. `platform` is required and names the
     binary-compatibility class; `build-type`, `python-version`, `options` and the
     `compiler-inputs` fields enter the artifact name; `runs-on` and `container`
     only schedule the job.
@@ -261,8 +261,8 @@ class MatrixKindTable(_Table):
     )
     action: str = Field(
         default="",
-        description="Runner kinds: the local composite the job calls, `./.github/actions/<name>`. Required with "
-        "`triggers`.",
+        description="Runner kinds whose legs have no `job-script`: a local composite action to call instead, "
+        "`./.github/actions/<name>`.",
     )
     forwarded_inputs: tuple[str, ...] = Field(
         default=(), alias="forwarded-inputs", description="Leg fields passed to the action's `with:`."
@@ -292,7 +292,8 @@ class MatrixKindTable(_Table):
     ctest: bool = Field(
         strict=True,
         default=False,
-        description="Run ctest on the build tree before publishing, with the leg's `ctest-args`; runner kinds only.",
+        description="With `action` only: run ctest on its build tree before publishing, with the leg's `ctest-args`. "
+        "A recipe runs ctest in its `test` block.",
     )
 
     @model_validator(mode="before")

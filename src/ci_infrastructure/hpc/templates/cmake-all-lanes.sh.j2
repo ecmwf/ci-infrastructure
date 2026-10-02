@@ -1,0 +1,12 @@
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   A CMake project in every lane: extends the runner or the Atos template, by the
+   leg's `execution`.
+
+   A lane with no branch here renders nothing, which render_job_template rejects. #}
+{% if execution == "runner" %}
+{% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+{% elif execution == "hpc-atos" %}
+{% extends "ci-infrastructure/cmake-atos.sh.j2" %}
+{% endif %}
