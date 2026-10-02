@@ -43,11 +43,14 @@ runs:
 
         rel="src/ci_infrastructure/__init__.py"
 
-        # Relative paths, so an installed tree and a source tree compare equal.
-        pkg_py_hash() {
+        # Relative paths, so an installed tree and a source tree compare equal. The package
+        # data (pyproject.toml's package-data) counts too: a template-only change must not
+        # reuse a stale baked interpreter.
+        pkg_hash() {
           local dir="$1" list
           [ -d "$dir" ] || return 1
-          list="$(cd "$dir" && find . -name '__pycache__' -prune -o -type f -name '*.py' -print \
+          list="$(cd "$dir" && find . -name '__pycache__' -prune -o -type f \
+                  \( -name '*.py' -o -name '*.j2' -o -name '*.yml' -o -name '*.pem' \) -print \
                   | LC_ALL=C sort)"
           [ -n "$list" ] || return 1
           ( cd "$dir" && printf '%s\n' "$list" | xargs sha256sum | sha256sum | cut -c1-16 )
@@ -94,21 +97,21 @@ runs:
           echo "::warning::ensure-infrastructure-present: force-reinstall is set, but the workspace is not a ci-infrastructure checkout — installing from the action checkout ($repo_root), which is the ref this action was pinned at, not a branch under test."
         fi
 
-        checkout_hash="$(pkg_py_hash "$repo_root/src/ci_infrastructure")" \
-          || { echo "::error::ensure-infrastructure-present: no *.py under $repo_root/src/ci_infrastructure" >&2; exit 1; }
+        checkout_hash="$(pkg_hash "$repo_root/src/ci_infrastructure")" \
+          || { echo "::error::ensure-infrastructure-present: no package files under $repo_root/src/ci_infrastructure" >&2; exit 1; }
 
         python="${CI_INFRASTRUCTURE_PYTHON:-}"
         baked_ok=false
         if ! $force_reinstall && [ -n "$python" ] && [ -x "$python" ] \
            && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
           baked_dir="$("$python" -c 'import ci_infrastructure, os; print(os.path.dirname(os.path.abspath(ci_infrastructure.__file__)))' 2>/dev/null || true)"
-          baked_hash="$(pkg_py_hash "$baked_dir" || true)"
+          baked_hash="$(pkg_hash "$baked_dir" || true)"
           if [ -n "$baked_hash" ] && [ "$baked_hash" = "$checkout_hash" ]; then
             baked_ok=true
-            echo "ensure-infrastructure-present: reusing the baked interpreter $python (*.py digest $baked_hash matches the checkout)"
+            echo "ensure-infrastructure-present: reusing the baked interpreter $python (package digest $baked_hash matches the checkout)"
           else
             baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
-            echo "::warning::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked *.py digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}); installing from the checkout instead. Expected on a pull request or just after a merge to main, until images.yml republishes the image; if it persists, check images.yml."
+            echo "::warning::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked package digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}); installing from the checkout instead. Expected on a pull request or just after a merge to main, until images.yml republishes the image; if it persists, check images.yml."
           fi
         fi
 
