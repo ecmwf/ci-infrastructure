@@ -33,8 +33,9 @@ import yaml
 
 from ._errors import CIError
 from ._github_api import (
-    EXECUTION_HPC,
+    EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
+    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
     fetch_manifests_layer,
@@ -237,36 +238,47 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
         except ManifestSchemaError as e:
             raise SchemaError(f"{path}: {e}") from e
 
-        if body.execution == EXECUTION_HPC:
+        if body.execution == EXECUTION_HPC_ATOS:
             if body.action:
                 raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets execution = 'hpc' and `action`; "
+                    f"{path}: [matrix.{kind}] sets execution = 'hpc-atos' and `action`; "
                     "HPC kinds run the shared build-on-hpc action — drop `action` and give the legs a `job-script`"
                 )
             if body.triggers and not all(leg.get("job-script") for leg in legs):
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
-                    "execution = 'hpc' but a leg has no `job-script`; there is no build recipe to submit. "
+                    "execution = 'hpc-atos' but a leg has no `job-script`; there is no build recipe to submit. "
                     f"Set it in [matrix.{kind}.defaults] or on the leg"
                 )
             if body.ctest:
                 raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc'; "
+                    f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc-atos'; "
                     "run ctest inside the job-script instead, "
                     "where it executes on the compute node"
                 )
         else:
-            if any("job-script" in leg for leg in legs):
+            scripted = [bool(leg.get("job-script")) for leg in legs]
+            if any(scripted) and not all(scripted):
                 raise SchemaError(
-                    f"{path}: [matrix.{kind}] has a leg with `job-script` but execution is 'runner'; "
-                    "`job-script` only applies to execution = 'hpc'"
+                    f"{path}: [matrix.{kind}] gives some legs a `job-script` and not others; "
+                    f"set it in [matrix.{kind}.defaults] or on every leg"
                 )
-            if body.triggers and not body.action:
+            if any(scripted) and body.action:
+                raise SchemaError(
+                    f"{path}: [matrix.{kind}] sets both `action` and a leg `job-script`; "
+                    "the job-script is the build recipe, drop `action`"
+                )
+            if any(scripted) and body.ctest:
+                raise SchemaError(
+                    f"{path}: [matrix.{kind}] sets `ctest` with a leg `job-script`; "
+                    "the recipe's `test` block runs the tests"
+                )
+            if body.triggers and not body.action and not any(scripted):
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
-                    "but has no `action`; cross-repo-trigger.yml has nothing to invoke"
+                    "but has no `action` or leg `job-script`; cross-repo-trigger.yml has nothing to invoke"
                 )
-            if not body.ctest and any("ctest-args" in leg for leg in legs):
+            if not body.ctest and not any(scripted) and any("ctest-args" in leg for leg in legs):
                 raise SchemaError(
                     f"{path}: [matrix.{kind}] has a leg with `ctest-args` but no `ctest = true`; "
                     "the arguments would never be used"
@@ -415,8 +427,6 @@ def validate_job_templates(m: Manifest) -> None:
     if not m.path.is_file():
         return
     for kind, mk in m.matrices.items():
-        if mk.execution != EXECUTION_HPC:
-            continue
         for leg in mk.legs:
             spec = str(leg.get("job-script") or "")
             if not jobscript.is_job_template(spec):
@@ -863,6 +873,21 @@ def _action_call_step(mk: MatrixKind) -> Step:
     }
 
 
+def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
+    """The runner-lane drop-in for _action_call_step: render the leg's recipe and run it."""
+    return {
+        "name": "Build" if mk.publishes else "Run",
+        "id": "build",
+        "uses": "ecmwf/ci-infrastructure/actions/run-job-script@main",
+        "with": {
+            "job-script": "${{ matrix.job-script }}",
+            "matrix-leg": "${{ toJSON(matrix) }}",
+            "package": m.package_name,
+            "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
+        },
+    }
+
+
 def _hpc_build_step(mk: MatrixKind) -> Step:
     """A drop-in for _action_call_step that also publishes."""
     with_block: dict[str, str] = {
@@ -956,7 +981,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         },
         _decode_step(mk),
     ]
-    is_hpc = mk.execution == EXECUTION_HPC
+    is_hpc = mk.execution == EXECUTION_HPC_ATOS
     if not is_hpc:
         setup_py = _setup_python_step(mk)
         if setup_py is not None:
@@ -979,7 +1004,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     if is_hpc:
         steps.append(_hpc_build_step(mk))
     else:
-        steps.append(_action_call_step(mk))
+        steps.append(_job_script_step(m, mk) if mk.legs and mk.legs[0].get("job-script") else _action_call_step(mk))
         if mk.publishes:
             if mk.ctest:
                 steps.append(_ctest_step())
@@ -1484,7 +1509,7 @@ def _orchestrator_dispatch_job(
     lane: Execution,
 ) -> dict[str, Any]:
     dispatch_with: dict[str, Any] = {"consumer-repo": crepo}
-    if lane == EXECUTION_HPC:
+    if lane == EXECUTION_HPC_ATOS:
         dispatch_with["workflow-file"] = f"cross-repo-trigger{lane_suffix(lane)}.yml"
     dispatch_with["ref"] = cref
     dispatch_with.update(_consumer_inputs(cref, from_jobs))
@@ -1749,7 +1774,7 @@ def _render_one_repo(
     changed: list[Change] = []
     wf_dir = m.repo_root / ".github" / "workflows"
 
-    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
         suffix = lane_suffix(lane)
         for basename, content in (
             (f"cross-repo-trigger{suffix}.yml", render_workflow(m, by_pkg, lane=lane)),
@@ -1766,6 +1791,13 @@ def _render_one_repo(
                     changed.append(Change("delete", path, where))
                 else:
                     changed.append(Change("update" if existed else "create", path, where))
+        if lane != EXECUTION_RUNNER:
+            for legacy in (f"cross-repo-trigger-{LEGACY_HPC}.yml", f"trigger-downstream-{LEGACY_HPC}.yml"):
+                path = wf_dir / legacy
+                if path.exists():
+                    if not check:
+                        path.unlink()
+                    changed.append(Change("delete", path))
 
     return changed
 

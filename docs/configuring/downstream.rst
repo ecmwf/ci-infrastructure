@@ -52,7 +52,7 @@ by :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate
 Once the workflow ``CI`` of a pull request has completed successfully,
 the downstream CI builds every consumer against the commit under test,
 in dependency order,
-and posts the result as the status ``downstream/runner`` (and ``downstream/hpc``) on the pull request.
+and posts the result as the status ``downstream/runner`` (and ``downstream/hpc-atos``) on the pull request.
 
 The generated files must follow the manifests, also those of the other repositories.
 :action:`validate-generated-workflows` reports when they have drifted.

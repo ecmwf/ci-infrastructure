@@ -101,7 +101,8 @@ To render a leg without a cluster (see :doc:`cli/ci-infrastructure-hpc`):
 The shared template
 -------------------
 
-``ci-infrastructure/cmake-build.sh.j2`` consists of these blocks:
+``ci-infrastructure/cmake-atos.sh.j2`` extends the runner template ``cmake-runner.sh.j2``
+and consists of these blocks:
 
 .. list-table::
    :header-rows: 1

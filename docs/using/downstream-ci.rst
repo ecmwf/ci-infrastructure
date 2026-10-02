@@ -50,7 +50,7 @@ hence the label has to be on the pull request by then.
 Adding it later is not a problem, since this starts a fresh ``CI`` run, which then triggers the downstream CI.
 We also note that the label stays on the pull request, so that every further push runs the downstream CI again;
 it is therefore cheapest to add the label once the pull request is ready for review.
-The results are reported as the statuses ``downstream/runner`` and ``downstream/hpc`` on the pull request.
+The results are reported as the statuses ``downstream/runner`` and ``downstream/hpc-atos`` on the pull request.
 
 It has to be emphasized that the downstream CI does **not run** on the default branch,
 that is, a push to ``develop``, e.g. a merge, does not fan out to the consumers.

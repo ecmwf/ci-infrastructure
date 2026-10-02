@@ -1,0 +1,42 @@
+{% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   The runner recipe plus what a SLURM job needs: the #SBATCH header, modules, the
+   node-local build tree and the install archive. A repo's .ci/hpc/build.sh.j2
+   extends it (see docs/reference/hpc.rst). Any change here must bump
+   _github_api.HPC_TEMPLATE_VERSION. #}
+{% block header %}
+{% block sbatch %}
+#SBATCH --qos=nf
+#SBATCH --nodes=1
+#SBATCH --ntasks={{ ntasks }}
+{% if cpus_per_task %}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% endif %}
+{% if mem %}
+#SBATCH --mem={{ mem }}
+{% endif %}
+#SBATCH --gres=ssdtmp:{{ ssdtmp }}
+#SBATCH --time={{ time }}
+{% endblock %}
+
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+{% endblock %}
+
+{% block setup %}
+build="${TMPDIR:-/tmp}/build"
+jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-{{ ntasks }}}}"
+install_root="$CI_INSTALL_PREFIX"
+{% endblock %}
+
+{% block publish %}
+
+# The fetcher takes the artifact from CI_INSTALL_ARCHIVE, not from the install
+# tree; .part + mv so it only ever appears complete.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
+{% endblock %}

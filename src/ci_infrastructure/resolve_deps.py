@@ -48,6 +48,7 @@ from ._errors import CIError
 from ._github_api import (
     _OPTION_TOKEN_RE,
     EXECUTION_RUNNER,
+    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
     _gh,
@@ -219,7 +220,7 @@ class ResolvedOwn:
 
 @dataclass(frozen=True)
 class DispatchPlan:
-    """A producer whose cross-repo-trigger{,-hpc}.yml must fire before fetch_deps runs.
+    """A producer whose cross-repo-trigger{,-hpc-atos}.yml must fire before fetch_deps runs.
 
     `lane` is the consumer kind's lane; orchestrators only wire a lane to the same lane.
     """
@@ -362,6 +363,11 @@ def dispatch_producer_workflow(
         f"fallback-ref={fallback_ref}",
     ]
     rc, _, stderr = _gh(cmd, token)
+    if rc != 0 and plan.lane != EXECUTION_RUNNER:
+        # The producer may not have regenerated since the hpc lane became hpc-atos.
+        workflow_file = f"cross-repo-trigger-{LEGACY_HPC}.yml"
+        cmd[3] = workflow_file
+        rc, _, stderr = _gh(cmd, token)
     if rc != 0:
         raise ResolveError(
             f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "

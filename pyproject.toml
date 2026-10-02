@@ -26,6 +26,7 @@ ci-infrastructure-print-dep-table = "ci_infrastructure.print_dep_table:main"
 ci-infrastructure-s3 = "ci_infrastructure.s3_store:main"
 ci-infrastructure-check-ci-approval = "ci_infrastructure.check_ci_approval:main"
 ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
+ci-infrastructure-render = "ci_infrastructure.render_job:main"
 # Local debugging only: actions/check-pr-declaration runs the stdlib-only module with -m.
 ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:main"
 

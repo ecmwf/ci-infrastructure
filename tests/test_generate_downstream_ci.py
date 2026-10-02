@@ -16,7 +16,7 @@ import yaml
 from conftest import parse_all, render_single, write_repo
 
 from ci_infrastructure._errors import CIError
-from ci_infrastructure._github_api import EXECUTION_HPC, EXECUTION_RUNNER, Execution
+from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
     BASE_IMAGE,
     BASE_IMAGE_RUNNER,
@@ -155,7 +155,7 @@ _CTEST_MANIFEST: Final = """
         pytest.param(
             """
             [matrix.build-hpc]
-            execution = "hpc"
+            execution = "hpc-atos"
             triggers = ["rebuild-request"]
             defaults.job-script = "./.ci/hpc/build.sh"
             ctest = true
@@ -167,7 +167,7 @@ _CTEST_MANIFEST: Final = """
             build-type = "Release"
             platform = "hpc-atos-gnu"
             """,
-            "ctest.*execution = 'hpc'",
+            "ctest.*execution = 'hpc-atos'",
             id="ctest-on-hpc-kind",
         ),
         pytest.param(
@@ -915,7 +915,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
             return ""
         return f"""
         [matrix.build-hpc]
-        execution = "hpc"
+        execution = "hpc-atos"
         triggers = ["upstream-change", "rebuild-request"]
         needs = {needs}
         [[matrix.build-hpc.include]]
@@ -982,7 +982,7 @@ def _build_checkouts(tmp_path: Path, lane: Execution) -> list[dict[str, Any]]:
     ]
 
 
-@pytest.mark.parametrize("lane", [EXECUTION_RUNNER, EXECUTION_HPC])
+@pytest.mark.parametrize("lane", [EXECUTION_RUNNER, EXECUTION_HPC_ATOS])
 def test_submodules_reach_the_build_checkout(tmp_path: Path, lane: Execution) -> None:
     _make_chain_ab(tmp_path, hpc=True)
     assert not any("submodules" in c for c in _build_checkouts(tmp_path, lane))
@@ -1038,7 +1038,7 @@ def test_kind_job_announces_its_image_before_the_checkout(tmp_path: Path) -> Non
     """Announced before checkout, so a checkout failure still names the image."""
     _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
     by_pkg = {m.package_name: m for m in parse_all(tmp_path)}
-    for lane in (EXECUTION_RUNNER, EXECUTION_HPC):
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
         rendered = render_workflow(by_pkg["b"], by_pkg, lane=lane)
         if rendered is None:
             continue
@@ -1287,7 +1287,7 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         + kinds.format(build='["b/build"]', build_hpc='["b/build-hpc"]'),
     )
 
-    # build-hpc here is only a name; neither kind sets execution = "hpc".
+    # build-hpc here is only a name; neither kind sets execution = "hpc-atos".
     doc = yaml.safe_load(_orch(tmp_path))
     assert sorted(doc["jobs"]) == [
         "b",
@@ -1303,7 +1303,7 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
     assert doc["jobs"]["c"]["needs"] == ["context", "label-gate", "validate", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
-    assert _render_orch(tmp_path, EXECUTION_HPC) is None
+    assert _render_orch(tmp_path, EXECUTION_HPC_ATOS) is None
 
 
 def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
@@ -1311,7 +1311,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
     if hpc:
         return (
             f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
-            '[matrix.build-hpc]\nexecution = "hpc"\ntriggers = ["rebuild-request"]\n'
+            '[matrix.build-hpc]\nexecution = "hpc-atos"\ntriggers = ["rebuild-request"]\n'
             "needs = []\n"
             '[[matrix.build-hpc.include]]\nruns-on = "hpc"\nsite = "hpc-batch"\n'
             'job-script = "./.ci/hpc/build.sh"\n'
@@ -1327,13 +1327,13 @@ def test_render_workflow_none_for_absent_lane(tmp_path: Path) -> None:
     _make_chain_abc(tmp_path)
     by_pkg = {m.package_name: m for m in parse_all(tmp_path)}
     assert render_workflow(by_pkg["c"], by_pkg, lane=EXECUTION_RUNNER) is not None
-    assert render_workflow(by_pkg["c"], by_pkg, lane=EXECUTION_HPC) is None
+    assert render_workflow(by_pkg["c"], by_pkg, lane=EXECUTION_HPC_ATOS) is None
 
 
 def test_lane_split_consumer_files(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path, hpc=True)
     runner = _consumer(tmp_path, "b", EXECUTION_RUNNER)
-    hpc = _consumer(tmp_path, "b", EXECUTION_HPC)
+    hpc = _consumer(tmp_path, "b", EXECUTION_HPC_ATOS)
 
     assert "matrix-build-hpc" not in runner
     assert "b__build:\n" in runner
@@ -1342,12 +1342,12 @@ def test_lane_split_consumer_files(tmp_path: Path) -> None:
     assert "b__build:\n" not in hpc
 
     assert "group: cross-repo-trigger-runner-b-${{ github.ref }}" in runner
-    assert "group: cross-repo-trigger-hpc-b-${{ github.ref }}" in hpc
+    assert "group: cross-repo-trigger-hpc-atos-b-${{ github.ref }}" in hpc
 
 
 def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path, hpc=True)
-    for lane, suffix, label in ((EXECUTION_RUNNER, "", "runner"), (EXECUTION_HPC, "-hpc", "HPC")):
+    for lane, suffix, label in ((EXECUTION_RUNNER, "", "runner"), (EXECUTION_HPC_ATOS, "-hpc-atos", "HPC")):
         orch = _orch(tmp_path, lane)
         doc = yaml.safe_load(orch)
         assert doc["name"] == f"Downstream {label} (a)"
@@ -1382,15 +1382,15 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
     assert "state=failure" in run
     assert "downstream/runner" in run
 
-    orch_hpc = _orch(tmp_path, EXECUTION_HPC)
-    assert "downstream/hpc" in orch_hpc
+    orch_hpc = _orch(tmp_path, EXECUTION_HPC_ATOS)
+    assert "downstream/hpc-atos" in orch_hpc
     assert "downstream/runner" not in orch_hpc
 
 
 def test_orchestrator_posts_ci_failure_status(tmp_path: Path) -> None:
     """report-ci-failure fires on exactly the runs the success-gated jobs skip."""
     _make_chain_ab(tmp_path, hpc=True)
-    for lane, context in ((EXECUTION_RUNNER, "downstream/runner"), (EXECUTION_HPC, "downstream/hpc")):
+    for lane, context in ((EXECUTION_RUNNER, "downstream/runner"), (EXECUTION_HPC_ATOS, "downstream/hpc-atos")):
         job = yaml.safe_load(_orch(tmp_path, lane))["jobs"]["report-ci-failure"]
         assert (
             job["if"]
@@ -1417,7 +1417,7 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
         [matrix.build-hpc]
-        execution = "hpc"
+        execution = "hpc-atos"
         triggers = ["upstream-change"]
         needs = ["d/build-hpc"]
         [[matrix.build-hpc.include]]
@@ -1429,15 +1429,15 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
     by_pkg = {m.package_name: m for m in parse_all(tmp_path)}
     scope = ["b", "c", "d"]
     assert _cross_package_deps(scope, by_pkg, lane=EXECUTION_RUNNER) == {"b": set(), "c": {"b"}, "d": set()}
-    assert _cross_package_deps(scope, by_pkg, lane=EXECUTION_HPC) == {"b": set(), "c": {"d"}, "d": set()}
+    assert _cross_package_deps(scope, by_pkg, lane=EXECUTION_HPC_ATOS) == {"b": set(), "c": {"d"}, "d": set()}
 
 
 def test_hpc_orchestrator_targets_hpc_files(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path, a_vis="public", b_vis="private", hpc=True)
     runner_with = yaml.safe_load(_orch(tmp_path))["jobs"]["b"]["steps"][-1]["with"]
     assert "workflow-file" not in runner_with
-    hpc_with = yaml.safe_load(_orch(tmp_path, EXECUTION_HPC))["jobs"]["b"]["steps"][-1]["with"]
-    assert hpc_with["workflow-file"] == "cross-repo-trigger-hpc.yml"
+    hpc_with = yaml.safe_load(_orch(tmp_path, EXECUTION_HPC_ATOS))["jobs"]["b"]["steps"][-1]["with"]
+    assert hpc_with["workflow-file"] == "cross-repo-trigger-hpc-atos.yml"
 
 
 def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
@@ -2067,7 +2067,7 @@ action = "./.github/actions/build"
 platform = "p"
 [matrix.build-hpc]
 triggers = ["upstream-change"]
-execution = "hpc"
+execution = "hpc-atos"
 defaults.job-script = "./.ci/hpc/build.sh"
 [[matrix.build-hpc.include]]
 platform = "hpc-p"
@@ -2087,7 +2087,7 @@ action = "./.github/actions/build"
 platform = "p"
 [matrix.build-hpc]
 triggers = ["upstream-change"]
-execution = "hpc"
+execution = "hpc-atos"
 defaults.job-script = "./.ci/hpc/build.sh"
 [[matrix.build-hpc.include]]
 platform = "hpc-p"
