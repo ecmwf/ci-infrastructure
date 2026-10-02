@@ -16,6 +16,8 @@ Under ``pull_request`` a fork's run gets neither secrets nor a token that can wr
 whereas ``pull_request_target`` runs in the context of the base repository with both.
 In addition, :action:`require-ci-approval` keeps a fork's run off the self-hosted runners
 until a maintainer has reviewed the change and set the ``approved-for-ci`` label.
+Setting a label does not start ``CI``, so the maintainer then re-runs it.
+The downstream CI never starts for a fork's pull request.
 No workflow checks out a fork's code in a trusted context:
 ``actions/checkout`` refuses this under ``pull_request_target`` and ``workflow_run``,
 and nothing sets ``allow-unsafe-pr-checkout`` to override it.

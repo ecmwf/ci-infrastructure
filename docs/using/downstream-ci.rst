@@ -45,9 +45,9 @@ then it is possible to explicitly opt out of running via the label ``downstream-
 The action :action:`require-label-decision` ensures that this decision is always taken explicitly and is never forgotten,
 by enforcing that a pull request has exactly one of the run or the opt-out label to be merged.
 
-The downstream CI starts once the ``CI`` of the pull request has completed successfully,
-hence the label has to be on the pull request by then.
-Adding it later is not a problem, since this starts a fresh ``CI`` run, which then triggers the downstream CI.
+The downstream CI starts once the ``CI`` of the pull request has completed successfully.
+Adding the label later is not a problem: if ``CI`` already succeeded, the label starts the downstream CI directly,
+without running ``CI`` again.
 We also note that the label stays on the pull request, so that every further push runs the downstream CI again;
 it is therefore cheapest to add the label once the pull request is ready for review.
 The results are reported as the statuses ``downstream/runner`` and ``downstream/hpc-atos`` on the pull request.
