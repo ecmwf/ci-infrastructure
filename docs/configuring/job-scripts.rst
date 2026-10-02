@@ -131,3 +131,15 @@ CI fetches the dependencies from the artifact store;
 locally you provide them, and ``CMAKE_PREFIX_PATH`` (``;``-separated) says where.
 An HPC leg's script also runs on an interactive node:
 to bash the ``#SBATCH`` lines are comments, and the ``module`` lines load the toolchain.
+
+Migrate from a build action
+---------------------------
+
+A package that still builds through its own ``.github/actions/build-<package>`` moves over like this:
+
+#. Write ``.ci/build.sh.j2``, extending ``ci-infrastructure/cmake-runner.sh.j2``.
+   Move what the build action did differently, such as extra ``-D`` flags, into its blocks.
+#. Set ``job-script = "./.ci/build.sh.j2"`` in the runner kind's defaults,
+   and drop its ``action``, ``forwarded-inputs`` and ``ctest``.
+#. In ``ci.yml``, build with :action:`run-job-script` instead of the package's action, then delete the action.
+#. Regenerate the workflows with ``ci-infrastructure-generate``.

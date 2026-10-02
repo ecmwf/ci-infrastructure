@@ -35,7 +35,6 @@ from ._errors import CIError
 from ._github_api import (
     EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
-    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
     fetch_manifests_layer,
@@ -1811,13 +1810,6 @@ def _render_one_repo(
                     changed.append(Change("delete", path, where))
                 else:
                     changed.append(Change("update" if existed else "create", path, where))
-        if lane != EXECUTION_RUNNER:
-            for legacy in (f"cross-repo-trigger-{LEGACY_HPC}.yml", f"trigger-downstream-{LEGACY_HPC}.yml"):
-                path = wf_dir / legacy
-                if path.exists():
-                    if not check:
-                        path.unlink()
-                    changed.append(Change("delete", path))
 
     return changed
 

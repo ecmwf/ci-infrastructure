@@ -248,10 +248,6 @@ def test_base_template_change_bumps_the_template_version() -> None:
     ), "a shared CMake template changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
 
 
-def test_cmake_build_is_an_alias_of_cmake_hpc() -> None:
-    assert _render('{% extends "ci-infrastructure/cmake-build.sh.j2" %}\n') == _render()
-
-
 ALL_LANES: Final = '{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}\n'
 
 
