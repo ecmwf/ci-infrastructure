@@ -30,6 +30,8 @@ module {{ m }}
 build="${TMPDIR:-/tmp}/build"
 jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-{{ ntasks }}}}"
 install_root="$CI_INSTALL_PREFIX"
+gen_flag=""
+if command -v ninja >/dev/null 2>&1; then gen_flag="-GNinja"; fi
 {% endblock %}
 
 {% block publish %}

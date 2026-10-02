@@ -12,9 +12,9 @@
 {% block setup %}
 build="${CI_BUILD_DIR:-${TMPDIR:-/tmp}/build}"
 jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
-{% endblock %}
+# CMake's default generator, as cmake-build used: some images ship a ninja too old for every project.
 gen_flag=""
-if command -v ninja >/dev/null 2>&1; then gen_flag="-GNinja"; fi
+{% endblock %}
 
 {% block preflight %}
 echo "Using: $(command -v {{ cc | sh }}) ($({{ cc | sh }} --version | head -1))"
