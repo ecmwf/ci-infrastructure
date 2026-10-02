@@ -26,8 +26,11 @@ from ci_infrastructure.hpc.orchestrate import (
     _echo_remote_output,
     _remote_sentinel_waiter,
     _require_nested_remote_path,
+    _StatusReporter,
     find_active_job_by_name,
+    format_job_status,
     plan_remote_prefixes,
+    query_job_status,
     submit_or_reattach,
     wait_for_job,
 )
@@ -319,3 +322,75 @@ def test_every_cli_command_dispatches_through_the_group() -> None:
     for name in sorted(expected):
         result = runner.invoke(orch.main, [name, "--help"])
         assert result.exit_code == 0, f"{name}: {result.output}"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "expected"),
+    [
+        (b"PENDING|Priority|2026-10-02T13:45:00\n", 0, ("PENDING", "Priority", "2026-10-02T13:45:00")),
+        (b"", 0, None),
+        (b"", 1, None),
+        (b"garbage\n", 0, None),
+    ],
+    ids=["pending", "gone", "squeue-error", "unparsable"],
+)
+def test_query_job_status(stdout: bytes, returncode: int, expected: tuple[str, str, str] | None) -> None:
+    assert query_job_status(SqueueConnection(stdout, returncode), 7) == expected
+
+
+def test_query_job_status_never_raises() -> None:
+    class Broken:
+        def execute(self, *_a: object, **_k: object) -> FakeProc:
+            raise OSError("ssh is down")
+
+    assert query_job_status(Broken(), 7) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "waited", "line"),
+    [
+        (
+            ("PENDING", "Priority", "2026-10-02T13:45:00"),
+            754,
+            "job 7 PENDING (Priority), est. start 13:45, waiting 12m",
+        ),
+        (("PENDING", "None", "N/A"), 30, "job 7 PENDING waiting 0m"),
+        (("RUNNING", "None", "2026-10-02T13:47:12"), 900, "job 7 RUNNING since 13:47"),
+        (("COMPLETING", "None", "2026-10-02T13:47:12"), 60, "job 7 COMPLETING est. start 13:47, waiting 1m"),
+    ],
+    ids=["pending", "no-reason-no-start", "running", "completing"],
+)
+def test_format_job_status(status: tuple[str, str, str], waited: float, line: str) -> None:
+    assert format_job_status(7, status, waited) == f"submit-wait: {line}"
+
+
+def test_status_reporter_repeats_while_queued_and_reports_running_once(capsys: pytest.CaptureFixture[str]) -> None:
+    answers = iter([b"PENDING|Priority|N/A\n", b"PENDING|Priority|N/A\n", b"RUNNING|None|N/A\n", b"RUNNING|None|N/A\n"])
+
+    class Queue:
+        def execute(self, *_a: object, **_k: object) -> FakeProc:
+            return FakeProc(stdout=next(answers))
+
+    report = _StatusReporter(Queue(), 7, clock=lambda: 0.0)
+    for _ in range(4):
+        report()
+    assert capsys.readouterr().out.splitlines() == [
+        "submit-wait: job 7 PENDING (Priority), waiting 0m",
+        "submit-wait: job 7 PENDING (Priority), waiting 0m",
+        "submit-wait: job 7 RUNNING",
+    ]
+
+
+def test_wait_for_job_ticks_each_interval() -> None:
+    ticks: list[int] = []
+    verdicts: list[Verdict | None] = [None, None, "SUCCESS"]
+    assert (
+        wait_for_job(
+            sentinel_waiter=lambda _s: verdicts.pop(0),
+            state_getter=lambda: "RUNNING",
+            guard_interval=1,
+            on_tick=lambda: ticks.append(1),
+        )
+        == "SUCCESS"
+    )
+    assert len(ticks) == 3

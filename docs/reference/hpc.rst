@@ -35,6 +35,9 @@ A lock older than 30 minutes is broken.
 The job reports its result by a sentinel line, ``Finished: SUCCESS`` or ``Finished: FAILURE``, in its output.
 Only this line decides the outcome;
 a queued job, a dropped connection or a timeout means to keep waiting.
+While waiting, the step's log shows the job's output as it is written,
+and about every two minutes, until the job runs, its queue state from ``squeue``, e.g.
+``submit-wait: job 33846069 PENDING (Priority), est. start 13:45, waiting 12m``.
 
 The build script
 ----------------
