@@ -77,6 +77,9 @@ Point the legs of every kind at it; the recipe's ``test`` block runs the tests:
 
 A recipe may also extend one lane's template directly, ``cmake-runner.sh.j2`` or ``cmake-atos.sh.j2``,
 and serve only that lane.
+A package with a recipe per lane keeps them side by side,
+``.ci/runner/build.sh.j2`` and ``.ci/hpc/build.sh.j2``;
+a recipe for all lanes is ``.ci/build.sh.j2``.
 
 A leg names its compilers in ``c-compiler``, ``cxx-compiler`` and ``fortran-compiler``.
 They identify the build, and by default they are also the binaries the recipe calls.
