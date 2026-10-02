@@ -84,12 +84,9 @@ The build configurations
 .. code:: toml
 
    [matrix.build]
-   action = "./.github/actions/build-eckit"
-   forwarded-inputs = ["c-compiler", "cxx-compiler", "build-type"]
-   forwarded-deps-outputs = ["cmake-prefix-path"]
-   ctest = true
 
    [matrix.build.defaults]
+   job-script = "./.ci/build.sh.j2"
    build-type = "RelWithDebInfo"
    runs-on = "arc-runner-very-large"
    ctest-args = '-j "$(nproc)"'
@@ -125,82 +122,26 @@ Moving a leg to a larger runner therefore reuses its artifacts,
 while changing its compiler builds everything below it anew.
 That is why ``platform`` is not automatically deduced from ``runs-on`` and ``container``.
 
-``action`` names the repository's own build step,
-and ``forwarded-inputs`` and ``forwarded-deps-outputs`` state what it receives.
-Together with ``ctest`` and ``ctest-args`` this is what the generated workflows need
+``job-script`` names the recipe that builds and tests the package.
+Together with ``ctest-args`` this is what the generated workflows need
 to build the package on behalf of an upstream change, the subject of :doc:`downstream`.
-Since the ``ci.yml`` calls the same action, the build is described once for both.
+Since the ``ci.yml`` runs the same recipe, the build is described once for both.
 
-The build action
+The build recipe
 ----------------
 
-A package declares how to build itself in an action;
-how it is tested follows from ``ctest`` and ``ctest-args`` in the manifest.
-The action is also the entry point for other repositories:
-the generated workflows call it to rebuild a missing artifact
-and to build the package in a downstream run.
-The action is an ordinary composite action in the repository, ``.github/actions/build-eckit/action.yml``:
+The recipe is a `Jinja <https://jinja.palletsprojects.com/>`__ template in the repository,
+rendered against the leg that runs it into a shell script.
+:action:`run-job-script` renders and runs it, in the ``ci.yml`` as well as in the generated workflows,
+which use it to rebuild a missing artifact and to build the package in a downstream run.
+Most packages extend a template shipped with ``ci-infrastructure`` and override only the blocks in which they differ;
+``eckit``'s ``.ci/build.sh.j2`` extends one and changes nothing:
 
-.. code:: yaml
+.. code:: jinja
 
-   name: Build eckit from source
-   description: Builds and installs the checked-out eckit.
+   {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
 
-   inputs:
-     cmake-prefix-path:
-       required: true
-     c-compiler:
-       required: true
-     cxx-compiler:
-       required: true
-     build-type:
-       required: true
-
-   outputs:
-     install-path:
-       value: ${{ steps.build.outputs.install-path }}
-     build-dir:
-       value: ${{ steps.build.outputs.build-dir }}
-
-   runs:
-     using: composite
-     steps:
-       - id: build
-         uses: ecmwf/ci-infrastructure/actions/cmake-build@main
-         with:
-           package: eckit
-           cmake-prefix-path: ${{ inputs.cmake-prefix-path }}
-           c-compiler: ${{ inputs.c-compiler }}
-           cxx-compiler: ${{ inputs.cxx-compiler }}
-           build-type: ${{ inputs.build-type }}
-
-Its interface follows from the manifest.
-The inputs are the entries of ``forwarded-deps-outputs``, filled by :action:`fetch-deps`,
-and the leg fields named in ``forwarded-inputs``.
-The outputs are fixed:
-``install-path`` is the tree that :action:`publish-artifact` uploads,
-and ``build-dir`` is where ctest runs when ``ctest = true``.
-How the action gets there is up to the repository.
-``eckit`` delegates everything to :action:`cmake-build`;
-a package with a more particular build replaces that step with its own,
-as long as it provides ``install-path``, and ``build-dir`` if it runs ctest.
-Often a small addition is enough.
-``ecflow``, for example, passes its Boost options to :action:`cmake-build` as ``cmake-args``:
-
-.. code:: yaml
-
-   cmake-args: |
-     -DENABLE_CONFIG_MODE_BOOST=OFF
-     -DENABLE_STATIC_BOOST_LIBS=OFF
-     -DBOOST_ROOT=${{ inputs.boost-root || '/usr' }}
-
-The Boost location comes from the manifest:
-the macOS legs set a ``boost-root`` field, ``forwarded-inputs`` passes it to the action,
-and the Linux legs, which set nothing, get the images' ``/usr``.
-A setting that differs between legs thus stays next to the legs it belongs to,
-instead of being detected at run time.
-The complete action is
-`build-ecflow <https://github.com/ecmwf/ecflow/blob/develop/.github/actions/build-ecflow/action.yml>`__.
+The templates, their blocks and how to run a leg's recipe locally are described in :doc:`job-scripts`.
 
 From the manifest to the ci.yml
 -------------------------------
@@ -249,13 +190,12 @@ Condensed from ``eckit``'s ``ci.yml``:
            with:
              deps-json: ${{ toJSON(matrix._resolved.deps) }}
          - id: build
-           uses: ./.github/actions/build-eckit
+           uses: ecmwf/ci-infrastructure/actions/run-job-script@main
            with:
+             job-script: ${{ matrix.job-script }}
+             matrix-leg: ${{ toJSON(matrix) }}
+             package: eckit
              cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}
-             c-compiler: ${{ matrix.c-compiler }}
-             cxx-compiler: ${{ matrix.cxx-compiler }}
-             build-type: ${{ matrix.build-type }}
-         - run: ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure ${{ matrix._resolved['ctest-args'] }}
          - uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
            with:
              install-path: ${{ steps.build.outputs.install-path }}
@@ -268,7 +208,6 @@ In addition, :action:`resolve-deps` attaches a ``_resolved`` object to every leg
 
 - ``_resolved.deps``: the resolved dependencies, which :action:`fetch-deps` downloads
 - ``_resolved.own-artifact-name``: the name under which :action:`publish-artifact` stores the result
-- ``_resolved.ctest-args``: the leg's ``ctest-args``, so that the ``ci.yml`` and the downstream runs test alike
 - ``_resolved.job-name``: a readable title for the leg
 
 Both jobs run in an official image, which has ``ci-infrastructure`` baked in,
