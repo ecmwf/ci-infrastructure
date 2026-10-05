@@ -19,8 +19,6 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
                                           own-build-type, own-python, own-deps-hash
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
-          _resolved.ctest                 this kind's [matrix.<kind>].ctest (false if unset)
-          _resolved.ctest-args            the leg's ctest-args ("" if unset)
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
 
@@ -48,7 +46,6 @@ from ._errors import CIError
 from ._github_api import (
     _OPTION_TOKEN_RE,
     EXECUTION_RUNNER,
-    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
     _gh,
@@ -164,7 +161,6 @@ class Manifest:
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # Kinds publishing a secondary artifact under their own prefix; others use package.prefix.
     artifact_prefix_by_kind: dict[str, str] = field(default_factory=dict)
-    ctest_by_kind: dict[str, bool] = field(default_factory=dict)
     # Picks which of a producer's lane workflows a recovery rebuild fires.
     execution_by_kind: dict[str, Execution] = field(default_factory=dict)
 
@@ -278,7 +274,6 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         deps=[_to_dep_spec(d) for d in raw.deps],
         matrix=matrix,
         artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
-        ctest_by_kind={k: b.ctest for k, b in raw.matrix.items()},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
@@ -363,11 +358,6 @@ def dispatch_producer_workflow(
         f"fallback-ref={fallback_ref}",
     ]
     rc, _, stderr = _gh(cmd, token)
-    if rc != 0 and plan.lane != EXECUTION_RUNNER:
-        # The producer may not have regenerated since the hpc lane became hpc-atos.
-        workflow_file = f"cross-repo-trigger-{LEGACY_HPC}.yml"
-        cmd[3] = workflow_file
-        rc, _, stderr = _gh(cmd, token)
     if rc != 0:
         raise ResolveError(
             f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "
@@ -866,7 +856,6 @@ def _run(
 
         out_include: list[dict[str, Any]] = []
         own_prefix_override = local_manifest.artifact_prefix_by_kind.get(mname)
-        ctest = local_manifest.ctest_by_kind.get(mname, False)
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         for entry in include:
             deps_resolved, own = resolve_leg(
@@ -910,8 +899,6 @@ def _run(
                     for s in local_manifest.deps
                     if s.applies_to(entry)
                 ),
-                "ctest": ctest,
-                "ctest-args": str(entry.get("ctest-args", "")).strip(),
                 "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }
             out_include.append({**entry, "_resolved": resolved_block})

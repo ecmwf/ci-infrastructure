@@ -10,7 +10,6 @@ Cross-manifest rules (the `needs` graph, trigger cycles) live in `generate_downs
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Mapping
 from typing import Any, Final, Literal, TypeAlias
 
@@ -18,9 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ._github_api import (
     _OPTION_TOKEN_RE,
-    EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
-    LEGACY_HPC,
     Execution,
     ManifestSchemaError,
 )
@@ -33,9 +30,6 @@ TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"
 TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"
 _VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQUEST})
 
-# Outputs of actions/fetch-deps.
-_VALID_DEPS_OUTPUTS: Final = frozenset({"cmake-prefix-path"})
-_ACTION_PATH_RE: Final = re.compile(r"^\./\.github/actions/[A-Za-z0-9_-]+$")
 _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -255,28 +249,12 @@ class MatrixKindTable(_Table):
     )
     execution: Execution = Field(
         default=EXECUTION_RUNNER,
-        description="`runner` (a GitHub Actions job) or `hpc-atos` (a SLURM job on Atos); `hpc` is a deprecated "
-        "alias of `hpc-atos`.",
-        json_schema_extra={"enum": [EXECUTION_RUNNER, EXECUTION_HPC_ATOS, LEGACY_HPC]},
-    )
-    action: str = Field(
-        default="",
-        description="Runner kinds whose legs have no `job-script`: a local composite action to call instead, "
-        "`./.github/actions/<name>`.",
-    )
-    forwarded_inputs: tuple[str, ...] = Field(
-        default=(), alias="forwarded-inputs", description="Leg fields passed to the action's `with:`."
-    )
-    forwarded_deps_outputs: tuple[str, ...] = Field(
-        default=(),
-        alias="forwarded-deps-outputs",
-        description="`fetch-deps` outputs passed to the action's `with:`; only `cmake-prefix-path`.",
+        description="`runner` (a GitHub Actions job) or `hpc-atos` (a SLURM job on Atos).",
     )
     publishes: bool = Field(
         strict=True,
         default=True,
-        description="Upload the install tree as an artifact. `false` for test kinds, whose action gets "
-        "`own-artifact-name` instead.",
+        description="Upload the install tree as an artifact; `false` for test kinds.",
     )
     artifact_prefix: str | None = Field(
         default=None,
@@ -288,12 +266,6 @@ class MatrixKindTable(_Table):
         default=False,
         alias="container-credentials",
         description="Pull the leg's `container` with registry credentials.",
-    )
-    ctest: bool = Field(
-        strict=True,
-        default=False,
-        description="With `action` only: run ctest on its build tree before publishing, with the leg's `ctest-args`. "
-        "A recipe runs ctest in its `test` block.",
     )
 
     @model_validator(mode="before")
@@ -307,14 +279,6 @@ class MatrixKindTable(_Table):
             raise ValueError(f"has unknown key(s) {sorted(unknown)}; allowed: {sorted(allowed)}")
         return data
 
-    @field_validator("execution", mode="before")
-    @classmethod
-    def _hpc_atos(cls, v: Any) -> Any:
-        if v != LEGACY_HPC:
-            return v
-        print('::warning title=Deprecated::execution = "hpc" is deprecated; use "hpc-atos"', file=sys.stderr)
-        return EXECUTION_HPC_ATOS
-
     @field_validator("triggers")
     @classmethod
     def _triggers_valid(cls, v: tuple[str, ...]) -> tuple[str, ...]:
@@ -323,35 +287,6 @@ class MatrixKindTable(_Table):
             raise ValueError(f"triggers entries must be drawn from {sorted(_VALID_TRIGGERS)}; got unknown: {bad}")
         if len(set(v)) != len(v):
             raise ValueError(f"triggers must not contain duplicates: {list(v)}")
-        return v
-
-    @field_validator("action")
-    @classmethod
-    def _action_path_shape(cls, v: str) -> str:
-        if v and not _ACTION_PATH_RE.fullmatch(v):
-            raise ValueError(f"action must be a local composite path like './.github/actions/<name>'; got {v!r}")
-        return v
-
-    @field_validator("forwarded_inputs")
-    @classmethod
-    def _forwarded_inputs_shape(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(v)) != len(v):
-            raise ValueError(f"forwarded-inputs must not contain duplicates: {list(v)}")
-        bad = [x for x in v if not x or x != x.strip()]
-        if bad:
-            raise ValueError(f"forwarded-inputs entries must be non-empty trimmed strings: {bad}")
-        return v
-
-    @field_validator("forwarded_deps_outputs")
-    @classmethod
-    def _forwarded_deps_outputs_valid(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        bad = [x for x in v if x not in _VALID_DEPS_OUTPUTS]
-        if bad:
-            raise ValueError(
-                f"forwarded-deps-outputs entries must be drawn from {sorted(_VALID_DEPS_OUTPUTS)}; got unknown: {bad}"
-            )
-        if len(set(v)) != len(v):
-            raise ValueError(f"forwarded-deps-outputs must not contain duplicates: {list(v)}")
         return v
 
     @field_validator("artifact_prefix")
@@ -420,7 +355,7 @@ class ManifestFile(_Table):
 
 
 def validate(data: Mapping[str, Any]) -> ManifestFile:
-    """Validate a loaded manifest; the first violation raises in TOML notation (`[matrix.build].ctest ...`)."""
+    """Validate a loaded manifest; the first violation raises in TOML notation (`[matrix.build].publishes ...`)."""
     try:
         return ManifestFile.model_validate(data)
     except ValidationError as exc:

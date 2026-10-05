@@ -38,8 +38,8 @@ _MANIFEST = """
     platform = "hpc-atos-gnu"
     build-type = "Release"
     modules = ["load cmake"]
-    cc = "gcc"
-    cxx = "g++"
+    c-compiler-binary = "gcc"
+    cxx-compiler-binary = "g++"
     [matrix.build-hpc]
     execution = "hpc-atos"
     defaults.job-script = "./.ci/hpc/build.sh.j2"

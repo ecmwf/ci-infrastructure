@@ -66,13 +66,13 @@ _CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution")
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
 
 #: Runner legs name their compilers in the compiler-input fields; the recipes read these.
-#: The binary a recipe calls: the leg's `*-compiler-binary`, else the old `cc`/`cxx`/`fc` (until #98),
-#: else the compiler that identifies the build, which is the same binary wherever no module renames it.
-_COMPILER_BINARIES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+#: The binary a recipe calls: the leg's `*-compiler-binary`, else the compiler that identifies the
+#: build, which is the same binary wherever no module renames it.
+_COMPILER_BINARIES: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "c_compiler_binary": ("cc", "c_compiler"),
-        "cxx_compiler_binary": ("cxx", "cxx_compiler"),
-        "fortran_compiler_binary": ("fc", "fortran_compiler"),
+        "c_compiler_binary": "c_compiler",
+        "cxx_compiler_binary": "cxx_compiler",
+        "fortran_compiler_binary": "fortran_compiler",
     }
 )
 
@@ -82,7 +82,6 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
     {
         "tests": True,
         "ctest_args": "",
-        "fc": "",
         "fortran_compiler_binary": "",
         "options": "",
         "modules": [],
@@ -114,7 +113,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
         loader=jinja2.ChoiceLoader(loaders),
         # A name the leg does not declare fails instead of rendering empty.
         undefined=jinja2.StrictUndefined,
-        # Shell, not markup; quote per use with the `sh` filter.
+        # Shell, not markup; quote per use with the `quote` (alias `sh`) filter.
         autoescape=False,
         # Keeps a templated #SBATCH block contiguous for _split_header.
         trim_blocks=True,
@@ -123,7 +122,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
         newline_sequence="\n",
     )
     # For a single shell word only; a list of flags must stay unquoted.
-    env.filters["sh"] = shlex.quote
+    env.filters["quote"] = env.filters["sh"] = shlex.quote
     return env
 
 
@@ -147,13 +146,9 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
             )
         origin[name] = key
         context[name] = value
-    for name, sources in _COMPILER_BINARIES.items():
-        if name not in context:
-            found = [context[s] for s in sources if s in context]
-            if found:
-                context[name] = found[0]
-        if name in context:
-            context.setdefault(sources[0], context[name])
+    for name, source in _COMPILER_BINARIES.items():
+        if name not in context and source in context:
+            context[name] = context[source]
     for name, value in JOB_TEMPLATE_DEFAULTS.items():
         context.setdefault(name, value)
     context["leg"] = dict(leg)
@@ -164,8 +159,7 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
 
 def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
     names = {template_var(k) for k in leg if k != "_resolved"}
-    binaries = {name for name, sources in _COMPILER_BINARIES.items() if names & set(sources)}
-    names |= binaries | {_COMPILER_BINARIES[name][0] for name in binaries}
+    names |= {name for name, source in _COMPILER_BINARIES.items() if source in names}
     return names | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
 

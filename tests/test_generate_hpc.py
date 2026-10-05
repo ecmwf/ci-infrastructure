@@ -11,7 +11,6 @@ from typing import Final
 
 import pytest
 import yaml
-from click.testing import CliRunner
 from conftest import parse_all, render_single, write_repo
 
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS
@@ -21,14 +20,12 @@ from ci_infrastructure.generate_downstream_ci import (
     validate_graph,
     validate_job_templates,
 )
-from ci_infrastructure.generate_downstream_ci import main as generate_main
 
 _HPC_MANIFEST: Final = """
     [matrix.build]
     execution = "hpc-atos"
     triggers = ["rebuild-request"]
     defaults.job-script = "./.ci/hpc/build.sh"
-    forwarded-deps-outputs = ["cmake-prefix-path"]
     needs = []
 
     [[matrix.build.include]]
@@ -76,7 +73,6 @@ def test_hpc_job_script_is_per_leg_over_defaults(tmp_path: Path) -> None:
         execution = "hpc-atos"
         triggers = ["rebuild-request"]
         defaults.job-script = "./.ci/hpc/build-py3.12.sh"
-        forwarded-deps-outputs = ["cmake-prefix-path"]
         needs = []
 
         [[matrix.build-hpc.include]]
@@ -108,7 +104,6 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
         [matrix.test-hpc]
         execution = "hpc-atos"
         triggers = ["upstream-change"]
-        forwarded-deps-outputs = ["cmake-prefix-path"]
         publishes = false
         needs = []
 
@@ -175,23 +170,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             [matrix.build]
             execution = "hpc-atos"
             triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/hpc/build.sh"
-            action = "./.github/actions/build-a"
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "hpc-login-selfhosted"
-            site = "hpc-batch"
-            platform = "hpc-atos-gnu"
-            """,
-            "execution = 'hpc-atos' and `action`",
-            id="hpc-kind-with-action",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            execution = "hpc-atos"
-            triggers = ["rebuild-request"]
             needs = []
 
             [[matrix.build.include]]
@@ -201,21 +179,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             """,
             "a leg has no `job-script`",
             id="hpc-kind-without-job-script",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            triggers = ["rebuild-request"]
-            action = "./.github/actions/build-a"
-            defaults.job-script = "./.ci/hpc/build.sh"
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "ubuntu-latest"
-            build-type = "Release"
-            """,
-            "sets both `action` and a leg `job-script`",
-            id="runner-kind-with-action-and-job-script",
         ),
         pytest.param(
             """
@@ -234,21 +197,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             """,
             "gives some legs a `job-script` and not others",
             id="runner-kind-with-partial-job-script",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/build.sh.j2"
-            ctest = true
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "ubuntu-latest"
-            build-type = "Release"
-            """,
-            "sets `ctest` with a leg `job-script`",
-            id="runner-kind-with-job-script-and-ctest",
         ),
         pytest.param(
             """
@@ -286,10 +234,10 @@ def _hpc_repo(tmp_path: Path, body: str, recipe: str | None = None) -> Path:
 _TEMPLATED_MANIFEST = """
     [[matrix.build.include]]
     platform = "hpc-atos-gnu"
-    cc = "gcc"
+    c-compiler = "gcc"
     [[matrix.build.include]]
     platform = "hpc-atos-intel"
-    cc = "icx"
+    c-compiler = "icx"
     [matrix.build]
     execution = "hpc-atos"
     defaults.job-script = "./.ci/hpc/build.sh.j2"
@@ -301,8 +249,8 @@ _BASE_MANIFEST = """
     platform = "hpc-atos-gnu"
     build-type = "RelWithDebInfo"
     modules = ["load cmake"]
-    cc = "gcc"
-    cxx = "g++"
+    c-compiler = "gcc"
+    cxx-compiler = "g++"
     [matrix.build]
     execution = "hpc-atos"
     defaults.job-script = "./.ci/hpc/build.sh.j2"
@@ -320,7 +268,7 @@ def test_hpc_step_forwards_the_matrix_leg(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("body", "recipe"),
     [
-        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ cc }}\n"),
+        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ c_compiler }}\n"),
         (_BASE_MANIFEST, _EXTENDS),
         (_TEMPLATED_MANIFEST.replace("build.sh.j2", "nowhere.sh"), None),
     ],
@@ -359,12 +307,11 @@ def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         [[matrix.build.include]]
         platform = "hpc-atos-gnu"
         cxx-compiler = "g++-8"
-        cc = "gcc"
+        cxx-compiler-binary = "g++"
         modules = ["load prgenv/gnu"]
         [[matrix.build.include]]
         platform = "hpc-atos-intel"
         cxx-compiler = "icpx"
-        cc = "icx"
         modules = ["load prgenv/intel-llvm"]
         [matrix.build]
         execution = "hpc-atos"
@@ -419,20 +366,6 @@ def _runner_repo(tmp_path: Path, body: str, recipe: str) -> Path:
     manifest = write_repo(tmp_path, "pkg", body)
     (manifest.parent / "build.sh.j2").write_text(recipe)
     return manifest
-
-
-def test_regenerating_deletes_the_legacy_hpc_files(tmp_path: Path) -> None:
-    manifest = write_repo(tmp_path, "pkg", _TEMPLATED_MANIFEST)
-    wf = manifest.parents[1] / ".github" / "workflows"
-    wf.mkdir(parents=True)
-    for name in ("cross-repo-trigger-hpc.yml", "trigger-downstream-hpc.yml"):
-        (wf / name).write_text("old\n")
-    (script := manifest.parent / "hpc" / "build.sh.j2").parent.mkdir()
-    script.write_text("#!/bin/bash\nexport CC={{ cc }}\n")
-    main_args = ["--manifest-path", str(manifest), "--sibling-root", str(tmp_path)]
-    result = CliRunner().invoke(generate_main, main_args)
-    assert result.exit_code == 0, result.output
-    assert sorted(p.name for p in wf.iterdir()) == ["cross-repo-trigger-hpc-atos.yml"]
 
 
 def test_runner_job_script_legs_may_set_ctest_args(tmp_path: Path) -> None:
