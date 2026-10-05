@@ -149,12 +149,8 @@ class MatrixKind:
     reuse_matrix: str | None
     legs: Sequence[dict[str, Any]]  # after reuse-matrix resolution
     execution: Execution
-    action: str
-    forwarded_inputs: tuple[str, ...]
-    forwarded_deps_outputs: tuple[str, ...]
     publishes: bool
     container_credentials: bool
-    ctest: bool
     artifact_prefix: str | None = None
 
 
@@ -237,68 +233,17 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
         except ManifestSchemaError as e:
             raise SchemaError(f"{path}: {e}") from e
 
-        if body.execution == EXECUTION_HPC_ATOS:
-            if body.action:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets execution = 'hpc-atos' and `action`; "
-                    "HPC kinds run the shared build-on-hpc action — drop `action` and give the legs a `job-script`"
-                )
-            if body.triggers and not all(leg.get("job-script") for leg in legs):
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} with "
-                    "execution = 'hpc-atos' but a leg has no `job-script`; there is no build recipe to submit. "
-                    f"Set it in [matrix.{kind}.defaults] or on the leg"
-                )
-            if body.ctest:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets `ctest` with execution = 'hpc-atos'; "
-                    "run ctest inside the job-script instead, "
-                    "where it executes on the compute node"
-                )
-        else:
-            scripted = [bool(leg.get("job-script")) for leg in legs]
-            if any(scripted) and not all(scripted):
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] gives some legs a `job-script` and not others; "
-                    f"set it in [matrix.{kind}.defaults] or on every leg"
-                )
-            if any(scripted) and body.action:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets both `action` and a leg `job-script`; "
-                    "the job-script is the build recipe, drop `action`"
-                )
-            if any(scripted) and body.ctest:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] sets `ctest` with a leg `job-script`; "
-                    "the recipe's `test` block runs the tests"
-                )
-            if body.triggers and not body.action and not any(scripted):
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} "
-                    "but has no `action` or leg `job-script`; cross-repo-trigger.yml has nothing to invoke"
-                )
-            if not body.ctest and not any(scripted) and any("ctest-args" in leg for leg in legs):
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}] has a leg with `ctest-args` but no `ctest = true`; "
-                    "the arguments would never be used"
-                )
-
-        if body.ctest and not body.publishes:
+        scripted = [bool(leg.get("job-script")) for leg in legs]
+        if any(scripted) and not all(scripted):
             raise SchemaError(
-                f"{path}: [matrix.{kind}] sets `ctest` with `publishes = false`; "
-                "a non-publishing kind has no build tree — run the tests inside "
-                f"{body.action or 'its action'} instead"
+                f"{path}: [matrix.{kind}] gives some legs a `job-script` and not others; "
+                f"set it in [matrix.{kind}.defaults] or on every leg"
             )
-
-        if body.forwarded_inputs:
-            available = {k for leg in legs for k in leg}
-            missing = [x for x in body.forwarded_inputs if x not in available]
-            if missing:
-                raise SchemaError(
-                    f"{path}: [matrix.{kind}].forwarded-inputs references field(s) {missing} "
-                    f"that no [[matrix.{kind}.include]] leg declares; "
-                    f"available fields: {sorted(available)}"
-                )
+        if body.triggers and not all(scripted):
+            raise SchemaError(
+                f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} but a leg has no "
+                f"`job-script`; there is no recipe to run. Set it in [matrix.{kind}.defaults] or on the leg"
+            )
 
         resolved[kind] = MatrixKind(
             name=kind,
@@ -307,12 +252,8 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             reuse_matrix=body.reuse_matrix,
             legs=legs,
             execution=body.execution,
-            action=body.action,
-            forwarded_inputs=tuple(body.forwarded_inputs),
-            forwarded_deps_outputs=tuple(body.forwarded_deps_outputs),
             publishes=body.publishes,
             container_credentials=body.container_credentials,
-            ctest=body.ctest,
             artifact_prefix=body.artifact_prefix,
         )
     return resolved
@@ -799,26 +740,12 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
     }
 
 
-def _decode_step(mk: MatrixKind) -> Step:
-    # A field missing from some leg is optional and may be empty.
-    optional_fields = {fld for fld in mk.forwarded_inputs if any(fld not in leg for leg in mk.legs)}
-    var_assignments: list[str] = []
-    for fld in mk.forwarded_inputs:
-        var = jobscript.template_var(fld)
-        if fld in optional_fields:
-            var_assignments.append(f'{var}=$(jq -r \'."{fld}" // ""\' <<<"$leg")')
-        else:
-            var_assignments.append(f"{var}=$(require '.\"{fld}\"' {fld})")
-    var_assignments.append("deps_json=$(require '._resolved.deps | tojson' '_resolved.deps')")
-    var_assignments.append(
-        "own_artifact_name=$(require '._resolved.\"own-artifact-name\"' '_resolved.own-artifact-name')"
-    )
-
-    output_lines: list[str] = []
-    for fld in mk.forwarded_inputs:
-        output_lines.append(f'  echo "{fld}=${{{jobscript.template_var(fld)}}}"')
-    output_lines.append('  echo "deps-json=${deps_json}"')
-    output_lines.append('  echo "own-artifact-name=${own_artifact_name}"')
+def _decode_step() -> Step:
+    var_assignments = [
+        "deps_json=$(require '._resolved.deps | tojson' '_resolved.deps')",
+        "own_artifact_name=$(require '._resolved.\"own-artifact-name\"' '_resolved.own-artifact-name')",
+    ]
+    output_lines = ['  echo "deps-json=${deps_json}"', '  echo "own-artifact-name=${own_artifact_name}"']
 
     body_lines = [
         "set -euo pipefail",
@@ -857,30 +784,14 @@ def _setup_python_step(mk: MatrixKind) -> Step | None:
     if not any("python-version" in leg for leg in mk.legs):
         return None
     return {
-        "name": "Set up Python ${{ steps.m.outputs.python-version }}",
+        "name": "Set up Python ${{ matrix.python-version }}",
         "uses": "actions/setup-python@v6",
-        "with": {"python-version": "${{ steps.m.outputs.python-version }}"},
-    }
-
-
-def _action_call_step(mk: MatrixKind) -> Step:
-    with_block: dict[str, str] = {}
-    for out in mk.forwarded_deps_outputs:
-        with_block[out] = f"${{{{ steps.deps.outputs.{out} }}}}"
-    for fld in mk.forwarded_inputs:
-        with_block[fld] = f"${{{{ steps.m.outputs.{fld} }}}}"
-    if not mk.publishes:
-        with_block["own-artifact-name"] = "${{ steps.m.outputs.own-artifact-name }}"
-    return {
-        "name": "Build" if mk.publishes else "Run",
-        "id": "build",
-        "uses": mk.action,
-        "with": with_block,
+        "with": {"python-version": "${{ matrix.python-version }}"},
     }
 
 
 def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
-    """The runner-lane drop-in for _action_call_step: render the leg's recipe and run it."""
+    """Render the leg's recipe and run it on the runner."""
     return {
         "name": "Build" if mk.publishes else "Run",
         "id": "build",
@@ -895,7 +806,7 @@ def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
 
 
 def _hpc_build_step(mk: MatrixKind) -> Step:
-    """A drop-in for _action_call_step that also publishes."""
+    """Submit the leg's recipe to the cluster; the action also publishes."""
     with_block: dict[str, str] = {
         "site": "${{ matrix.site }}",
         "job-script": "${{ matrix.job-script }}",
@@ -950,15 +861,6 @@ def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
     return step
 
 
-def _ctest_step() -> Step:
-    """Before publishing: the store cannot tell a tested artifact from an untested one."""
-    return {
-        "name": "Test",
-        "run": 'ctest --test-dir "${{ steps.build.outputs.build-dir }}" --output-on-failure '
-        "${{ matrix._resolved['ctest-args'] }}",
-    }
-
-
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
@@ -985,7 +887,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                 **({"submodules": m.submodules} if m.submodules else {}),
             },
         },
-        _decode_step(mk),
+        _decode_step(),
     ]
     is_hpc = mk.execution == EXECUTION_HPC_ATOS
     if not is_hpc:
@@ -1010,10 +912,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     if is_hpc:
         steps.append(_hpc_build_step(mk))
     else:
-        steps.append(_job_script_step(m, mk) if mk.legs and mk.legs[0].get("job-script") else _action_call_step(mk))
+        steps.append(_job_script_step(m, mk))
         if mk.publishes:
-            if mk.ctest:
-                steps.append(_ctest_step())
             steps.append(
                 {
                     "name": "Publish",

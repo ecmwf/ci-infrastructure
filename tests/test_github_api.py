@@ -206,16 +206,16 @@ def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) 
 
         [matrix.build]
         triggers = ["rebuild-request"]
-        action = "./.github/actions/build-a"
 
         [matrix.test]
         reuse-matrix = "build"
         triggers = ["upstream-change"]
-        action = "./.github/actions/test-a"
+        defaults.job-script = "./.ci/build.sh"
         publishes = false
 
         [matrix.build.defaults]
         build-type = "Release"
+        job-script = "./.ci/build.sh"
 
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"

@@ -28,7 +28,6 @@ The manifest
    [matrix.build-hpc]
    execution = "hpc-atos"
    triggers = ["upstream-change", "rebuild-request"]
-   forwarded-deps-outputs = ["cmake-prefix-path"]
    container-credentials = true
 
    [matrix.build-hpc.defaults]
@@ -85,7 +84,6 @@ The above manifest would then require two hand-written shell scripts and look li
    [matrix.build-hpc]
    execution = "hpc-atos"
    triggers = ["upstream-change", "rebuild-request"]
-   forwarded-deps-outputs = ["cmake-prefix-path"]
    container-credentials = true
 
    [matrix.build-hpc.defaults]

@@ -26,7 +26,6 @@ _HPC_MANIFEST: Final = """
     execution = "hpc-atos"
     triggers = ["rebuild-request"]
     defaults.job-script = "./.ci/hpc/build.sh"
-    forwarded-deps-outputs = ["cmake-prefix-path"]
     needs = []
 
     [[matrix.build.include]]
@@ -74,7 +73,6 @@ def test_hpc_job_script_is_per_leg_over_defaults(tmp_path: Path) -> None:
         execution = "hpc-atos"
         triggers = ["rebuild-request"]
         defaults.job-script = "./.ci/hpc/build-py3.12.sh"
-        forwarded-deps-outputs = ["cmake-prefix-path"]
         needs = []
 
         [[matrix.build-hpc.include]]
@@ -106,7 +104,6 @@ def test_hpc_test_only_kind_passes_publish_false(tmp_path: Path) -> None:
         [matrix.test-hpc]
         execution = "hpc-atos"
         triggers = ["upstream-change"]
-        forwarded-deps-outputs = ["cmake-prefix-path"]
         publishes = false
         needs = []
 
@@ -173,23 +170,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             [matrix.build]
             execution = "hpc-atos"
             triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/hpc/build.sh"
-            action = "./.github/actions/build-a"
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "hpc-login-selfhosted"
-            site = "hpc-batch"
-            platform = "hpc-atos-gnu"
-            """,
-            "execution = 'hpc-atos' and `action`",
-            id="hpc-kind-with-action",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            execution = "hpc-atos"
-            triggers = ["rebuild-request"]
             needs = []
 
             [[matrix.build.include]]
@@ -199,21 +179,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             """,
             "a leg has no `job-script`",
             id="hpc-kind-without-job-script",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            triggers = ["rebuild-request"]
-            action = "./.github/actions/build-a"
-            defaults.job-script = "./.ci/hpc/build.sh"
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "ubuntu-latest"
-            build-type = "Release"
-            """,
-            "sets both `action` and a leg `job-script`",
-            id="runner-kind-with-action-and-job-script",
         ),
         pytest.param(
             """
@@ -232,21 +197,6 @@ def test_legs_differing_only_by_site_collide(tmp_path: Path) -> None:
             """,
             "gives some legs a `job-script` and not others",
             id="runner-kind-with-partial-job-script",
-        ),
-        pytest.param(
-            """
-            [matrix.build]
-            triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/build.sh.j2"
-            ctest = true
-            needs = []
-
-            [[matrix.build.include]]
-            runs-on = "ubuntu-latest"
-            build-type = "Release"
-            """,
-            "sets `ctest` with a leg `job-script`",
-            id="runner-kind-with-job-script-and-ctest",
         ),
         pytest.param(
             """

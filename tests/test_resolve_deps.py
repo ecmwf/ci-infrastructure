@@ -288,45 +288,8 @@ def test_when_scopes_dep_out_of_identity_of_nonmatching_legs() -> None:
     assert plain_own.deps_hash == without_scoped.deps_hash
 
 
-_CTEST_MANIFEST: Final = """
-[package]
-name = "x"
-prefix = "x"
-repo = "o/x"
-compiler-inputs = ["cxx-compiler"]
-
-[[matrix.build.include]]
-cxx-compiler = "g++-13"
-platform = "ubuntu-24.04"
-
-[matrix.build]
-ctest = true
-defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
-
-[[matrix.build-hpc.include]]
-cxx-compiler = "g++-13"
-platform = "hpc-atos-gnu"
-
-[matrix.build-hpc]
-execution = "hpc-atos"
-
-[matrix.test]
-reuse-matrix = "build"
-ctest = true
-"""
-
-
-def test_ctest_is_per_kind_and_its_args_per_leg() -> None:
-    m = resolve_deps.parse_manifest(_CTEST_MANIFEST)
-
-    assert m.ctest_by_kind == {"build": True, "build-hpc": False, "test": True}
-    assert m.matrix["build"][0]["ctest-args"] == "-L nightly -E 's_test|s_zombies' -j 8"
-    assert "ctest-args" not in m.matrix["build-hpc"][0]
-
-
-def test_ctest_rejects_wrong_types() -> None:
-    def manifest(block: str) -> str:
-        return f"""
+def test_ctest_args_must_be_a_string() -> None:
+    manifest = """
 [package]
 name = "x"
 prefix = "x"
@@ -337,14 +300,10 @@ compiler-inputs = []
 platform = "ubuntu-24.04"
 
 [matrix.build]
-{block}
+defaults.ctest-args = 8
 """
-
-    with pytest.raises(ValueError, match=r"\[matrix\.build\]\.ctest Input should be a valid boolean"):
-        resolve_deps.parse_manifest(manifest('ctest = "yes"'))
-
     with pytest.raises(ValueError, match=r"\[matrix\.build\] ctest-args must be a string"):
-        resolve_deps.parse_manifest(manifest("ctest = true\ndefaults.ctest-args = 8"))
+        resolve_deps.parse_manifest(manifest)
 
 
 def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
