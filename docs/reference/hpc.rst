@@ -116,8 +116,10 @@ and consists of these blocks:
      - content
    * - ``sbatch``
      - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` and ``--mem`` if set, ``--gres=ssdtmp:``, ``--time``
+   * - ``set_environment``
+     - empty; for venvs, ``export`` and ``source``, before anything is printed or configured
    * - ``preflight``
-     - prints the compiler and CMake versions
+     - prints the compiler and CMake versions; extend it with ``{{ super() }}`` for further checks
    * - ``configure``
      - ``cmake --preset``, build type, compilers, rpath, prefix path, install prefix
    * - ``cmake_args``

@@ -151,6 +151,17 @@ def test_static_check_follows_extends() -> None:
     assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx_compiler_binary"}
 
 
+@pytest.mark.parametrize("base", ["cmake-runner.sh.j2", "cmake-atos.sh.j2"])
+def test_set_environment_runs_after_setup_and_before_preflight(base: str) -> None:
+    src = f'{{% extends "ci-infrastructure/{base}" %}}\n{{% block set_environment %}}\nsource venv\n{{% endblock %}}\n'
+    lines = _render(src).splitlines()
+    assert (
+        lines.index('gen_flag=""')
+        < lines.index("source venv")
+        < lines.index('echo "Using: $(command -v gcc) ($(gcc --version | head -1))"')
+    )
+
+
 def test_static_check_accepts_a_name_read_through_default() -> None:
     src = "{{ a | default(1) }}{{ b }}\n"
     assert jobscript.undeclared_template_names(src, LEG, template_name="t") == {"b"}
@@ -224,7 +235,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "b7553dfc9571f8c23e27ead13021501f415c927fbcc7f2bb5c31bebc32fc0706"
+TEMPLATE_SHA256: Final = "2a32ac7c93d229a85731342d18dbfa4ea967884c9836b8b4c73bff3d4a1a366d"
 TEMPLATE_VERSION: Final = 2
 
 
