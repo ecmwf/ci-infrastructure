@@ -120,14 +120,14 @@ so a consumer can take the whole set or only the packages it links:
    compiler-inputs = ["cxx-compiler"]
    deps = [{ package = "sqlite3" }]
 
-   [matrix.sqlite3]
-   packages = ["sqlite3"]
+   [matrix.build]
+   packages = ["sqlite3", "proj"]
 
-   [matrix.proj]
-   packages = ["proj"]
-
-A kind that publishes a package waits for the kinds that publish its packages from the same repository.
-For now each kind publishes one package.
+A kind may publish several packages: one job builds them, each after the packages of the repository it depends on,
+and publishes one artifact per package.
+Its recipe loops over ``ci_packages``, which lists them in that order, and installs each to ``$CI_INSTALL_ROOT/<name>``.
+A kind that publishes a package also waits for the other kinds that publish packages it depends on.
+On HPC a kind publishes one package for now.
 
 The build configurations
 ------------------------

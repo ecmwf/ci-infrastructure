@@ -199,7 +199,8 @@ class ResolvedDep:
     cached: bool  # already in the S3 store at resolve time
     # "artifact": in the store, or a producer run in flight will upload it.
     # "triggered rebuild": timing skew; _run dispatches the producer before exiting.
-    source: Literal["artifact", "triggered rebuild"]
+    # "local": built earlier in the same job; never fetched.
+    source: Literal["artifact", "triggered rebuild", "local"]
     needs_python: bool
     install_path: Path
     # The fields artifact_name is built from; the name alone is ambiguous to parse.
@@ -597,11 +598,14 @@ def resolve_leg(
     pins: Mapping[Repo, Ref] | None = None,
     own_ref: Ref = Ref(""),
     own_compiler_inputs: Sequence[str] | None = None,
+    local: Mapping[PackageName, ResolvedDep] | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry.
 
-    `own_ref` is the commit's ref, for deps on packages of the own repo (siblings).
+    `own_ref` is the commit's ref, for deps on packages of the own repo (siblings);
+    `local` are siblings built earlier in the same job.
     """
+    local = local or {}
     pins = pins or {}
     visited: dict[PackageName, ResolvedDep] = {}
     expanded: dict[PackageName, list[ResolvedDep]] = {}
@@ -610,6 +614,12 @@ def resolve_leg(
 
     def visit(spec: DepSpec, parent_ctx: Mapping[str, Any], declared_by: str, parent_ref: Ref) -> list[ResolvedDep]:
         """The artifact `spec` names, or the members of a meta package."""
+        if spec.sibling and parent_ref == own_ref and spec.package in local:
+            visited[spec.package] = local[spec.package]
+            expanded[spec.package] = [local[spec.package]]
+            if spec.package not in order:
+                order.append(spec.package)
+            return expanded[spec.package]
         if spec.sibling:
             ref = parent_ref
         elif spec.repo in pins:
@@ -801,6 +811,99 @@ def resolve_leg(
     )
 
 
+def resolve_packages(
+    manifest: Manifest,
+    prefixes: Sequence[PackageName],
+    *,
+    own_sha: Sha,
+    own_ref: Ref,
+    matrix_entry: Mapping[str, Any],
+    manifest_cache: Mapping[tuple[Repo, Ref], Manifest],
+    sync_branch: Ref | None,
+    sync_exists_by_repo: Mapping[Repo, bool],
+    sha_cache: dict[tuple[Repo, Ref], Sha],
+    artifact_cache: dict[ArtifactName, bool],
+    run_state_cache: dict[tuple[Repo, Sha], bool],
+    token: str | None,
+    can_dispatch: bool,
+    lane: Execution,
+    dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
+    pins: Mapping[Repo, Ref] | None = None,
+) -> tuple[list[ResolvedDep], dict[PackageName, ResolvedOwn]]:
+    """One leg of a kind publishing `prefixes` in build order: the deps to fetch, and each package's artifact."""
+    built: dict[PackageName, ResolvedDep] = {}
+    per_package: dict[PackageName, ResolvedOwn] = {}
+    to_fetch: dict[PackageName, ResolvedDep] = {}
+    primary = manifest.packages[manifest.package.prefix]
+    for prefix in prefixes:
+        info = manifest.packages.get(prefix, primary)
+        deps, own = resolve_leg(
+            own=manifest.package,
+            own_deps=info.deps,
+            own_sha=own_sha,
+            matrix_entry=matrix_entry,
+            manifest_cache=manifest_cache,
+            sync_branch=sync_branch,
+            sync_exists_by_repo=sync_exists_by_repo,
+            sha_cache=sha_cache,
+            artifact_cache=artifact_cache,
+            run_state_cache=run_state_cache,
+            token=token,
+            can_dispatch=can_dispatch,
+            lane=lane,
+            dispatch_plans=dispatch_plans,
+            own_prefix_override=None if prefix == manifest.package.prefix else prefix,
+            pins=pins,
+            own_ref=own_ref,
+            own_compiler_inputs=info.compiler_inputs,
+            local=built,
+        )
+        for d in deps:
+            if d.source != "local":
+                to_fetch.setdefault(d.name, d)
+        per_package[prefix] = own
+        built[prefix] = _as_local(prefix, manifest.package.repo, own_ref, own_sha, own)
+    return list(to_fetch.values()), per_package
+
+
+def build_order(manifest: Manifest, prefixes: Sequence[PackageName]) -> list[PackageName]:
+    """`prefixes` with every package after the packages of this repo it depends on."""
+    wanted = set(prefixes)
+    out: list[PackageName] = []
+
+    def place(p: PackageName) -> None:
+        if p in out:
+            return
+        for d in manifest.packages[p].deps:
+            if d.sibling and d.package in wanted:
+                place(d.package)
+        out.append(p)
+
+    for p in prefixes:
+        place(p)
+    return out
+
+
+def _as_local(prefix: PackageName, repo: Repo, ref: Ref, sha: Sha, own: ResolvedOwn) -> ResolvedDep:
+    """A package built earlier in the same job, as its siblings see it."""
+    return ResolvedDep(
+        name=prefix,
+        repo=repo,
+        ref=ref,
+        sha=sha,
+        artifact_name=own.artifact_name,
+        cached=False,
+        source="local",
+        needs_python=False,
+        install_path=_install_base() / prefix,
+        platform=own.platform,
+        compiler=own.compiler,
+        build_type=own.build_type,
+        python_version=own.python_version,
+        deps_hash=own.deps_hash,
+    )
+
+
 def _unique(deps: Sequence[ResolvedDep]) -> list[ResolvedDep]:
     """First occurrence wins; a package reached through two members appears once."""
     out: dict[PackageName, ResolvedDep] = {}
@@ -963,20 +1066,16 @@ def _run(
             continue
 
         out_include: list[dict[str, Any]] = []
-        published = local_manifest.packages_by_kind.get(mname, ())
-        if len(published) > 1:
-            raise ResolveError(
-                f"[matrix.{mname}] publishes {list(published)}; one job publishing several packages is not "
-                "supported yet, give each its own kind"
-            )
-        prefix = published[0] if published else local_manifest.package.prefix
-        package = local_manifest.packages.get(prefix, local_manifest.packages[local_manifest.package.prefix])
+        published = build_order(local_manifest, local_manifest.packages_by_kind.get(mname, ()))
+        prefixes = published or [local_manifest.package.prefix]
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
+        package = local_manifest.packages.get(prefixes[0], local_manifest.packages[local_manifest.package.prefix])
         for entry in include:
-            deps_resolved, own = resolve_leg(
-                own=local_manifest.package,
-                own_deps=package.deps,
+            deps_resolved, per_package = resolve_packages(
+                local_manifest,
+                prefixes,
                 own_sha=own_sha,
+                own_ref=own_ref,
                 matrix_entry=entry,
                 manifest_cache=manifest_cache,
                 sync_branch=sync_branch,
@@ -988,14 +1087,12 @@ def _run(
                 can_dispatch=can_dispatch,
                 lane=lane,
                 dispatch_plans=dispatch_plans,
-                own_prefix_override=None if prefix == local_manifest.package.prefix else prefix,
                 pins=pins,
-                own_ref=own_ref,
-                own_compiler_inputs=package.compiler_inputs,
             )
+            own = per_package[prefixes[0]]
             cmake_paths = [str(d.install_path) for d in deps_resolved]
             all_artifact_names = [d.artifact_name for d in deps_resolved]
-            resolved_block = {
+            resolved_block: dict[str, Any] = {
                 "cmake-prefix-path": ";".join(cmake_paths),
                 "all-artifact-names": " ".join(all_artifact_names),
                 "all-artifact-sources": " ".join(d.source for d in deps_resolved),
@@ -1012,6 +1109,15 @@ def _run(
                 "deps": [d.to_json() for d in deps_resolved],
                 "direct-artifact-names": " ".join(own.direct_artifact_names),
                 "job-name": job_names.name_suffix(entry, include, package.compiler_inputs),
+            }
+            resolved_block["packages"] = {
+                p: {
+                    "own-artifact-name": o.artifact_name,
+                    "own-deps-hash": o.deps_hash or "",
+                    "direct-artifact-names": " ".join(o.direct_artifact_names),
+                    "install-path": str(_install_base() / p),
+                }
+                for p, o in per_package.items()
             }
             out_include.append({**entry, "_resolved": resolved_block})
 

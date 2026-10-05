@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -276,8 +277,109 @@ def test_a_dep_on_the_umbrella_needs_every_member_kind(tmp_path: Path) -> None:
     assert sorted(needs) == ["stack-deps/libaec", "stack-deps/proj", "stack-deps/sqlite3"]
 
 
-def test_one_kind_publishing_several_packages_is_not_supported_yet(tmp_path: Path) -> None:
-    body = _STACK_GENERATED.replace('packages = ["proj"]', 'packages = ["proj", "libaec"]')
+# --- batch kinds: one job, several packages ---------------------------------------------------------------
+
+_BATCH: Final = """
+[package]
+name = "stack-deps"
+repo = "org/stack"
+compiler-inputs = ["cxx-compiler"]
+meta = true
+
+[[deps]]
+package = ["libaec", "sqlite3", "proj"]
+
+[packages.libaec]
+compiler-inputs = ["cxx-compiler"]
+[packages.sqlite3]
+compiler-inputs = ["cxx-compiler"]
+[packages.proj]
+compiler-inputs = ["cxx-compiler"]
+deps = [{ package = "sqlite3" }]
+
+[matrix.build]
+triggers = ["rebuild-request"]
+defaults.job-script = "./b.sh"
+[[matrix.build.include]]
+platform = "ubuntu-24.04"
+cxx-compiler = "g++-13"
+"""
+
+
+def test_a_batch_kind_builds_siblings_first() -> None:
+    from ci_infrastructure.resolve_deps import build_order
+
+    m = parse_manifest(_BATCH)
+    assert m.packages_by_kind["build"] == ("libaec", "sqlite3", "proj")
+    assert build_order(m, [PackageName(p) for p in ("proj", "libaec", "sqlite3")]) == ["sqlite3", "proj", "libaec"]
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_batch_kind_publishes_what_outside_consumers_resolve() -> None:
+    from ci_infrastructure.resolve_deps import resolve_packages
+
+    m = parse_manifest(_BATCH)
+    sha = Sha("c" * 40)
+    to_fetch, built = resolve_packages(
+        m,
+        [PackageName("libaec"), PackageName("sqlite3"), PackageName("proj")],
+        own_sha=sha,
+        own_ref=Ref("master"),
+        matrix_entry=dict(_LEG),
+        manifest_cache={(Repo("org/stack"), Ref("master")): m},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={(Repo("org/stack"), Ref("master")): sha},
+        artifact_cache={},
+        run_state_cache={},
+        token=None,
+        can_dispatch=False,
+        lane=EXECUTION_RUNNER,
+        dispatch_plans={},
+    )
+    assert to_fetch == []  # sqlite3 is built in the same job, not fetched
+    consumer_view, _ = _resolve(
+        [replace(_consumer_dep("proj"), repo=Repo("org/stack"))], {(Repo("org/stack"), Ref("master")): m}
+    )
+    assert {d.name: d.artifact_name for d in consumer_view} == {
+        "sqlite3": built[PackageName("sqlite3")].artifact_name,
+        "proj": built[PackageName("proj")].artifact_name,
+    }
+
+
+def test_a_batch_kind_publishes_each_package(tmp_path: Path) -> None:
+    import yaml
+    from conftest import render_single
+
+    steps = yaml.safe_load(render_single(tmp_path, _BATCH, name="stack"))["jobs"]
+    publish = [s for job in steps.values() for s in job.get("steps", []) if s.get("name", "").startswith("Publish")]
+    assert [s["name"] for s in publish] == ["Publish libaec", "Publish sqlite3", "Publish proj"]
+    assert publish[2]["with"] == {
+        "install-path": "${{ steps.build.outputs.install-root }}/proj",
+        "artifact-name": "${{ matrix._resolved.packages['proj']['own-artifact-name'] }}",
+    }
+
+
+def test_an_hpc_batch_kind_is_not_supported_yet(tmp_path: Path) -> None:
+    body = _BATCH.replace("[matrix.build]\n", '[matrix.build]\nexecution = "hpc-atos"\n')
     write_repo(tmp_path, "stack", body)
-    with pytest.raises(SchemaError, match="not supported yet"):
+    with pytest.raises(SchemaError, match="HPC job publishing several packages"):
         parse_all(tmp_path)
+
+
+def test_the_recipe_sees_the_packages_in_build_order(tmp_path: Path) -> None:
+    from ci_infrastructure.hpc import jobscript
+
+    leg = {**_LEG, "_resolved": {"packages": {"sqlite3": {}, "proj": {}}}}
+    ctx = jobscript.build_template_context(leg, execution=EXECUTION_RUNNER)
+    assert ctx["ci_packages"] == ["sqlite3", "proj"]
+    assert jobscript.build_template_context(dict(_LEG), execution=EXECUTION_RUNNER)["ci_packages"] == []
+
+
+def test_rendering_a_batch_leg_by_hand_passes_the_packages(tmp_path: Path) -> None:
+    from ci_infrastructure.render_job import _from_manifest
+
+    manifest = write_repo(tmp_path, "stack", _BATCH.replace("./b.sh", "./.ci/build.sh.j2"))
+    (manifest.parent / "build.sh.j2").write_text("{% for p in ci_packages %}echo {{ p }}\n{% endfor %}")
+    _, leg, _, _ = _from_manifest(manifest, "build (ubuntu-24.04, g++-13)")
+    assert list(leg["_resolved"]["packages"]) == ["libaec", "sqlite3", "proj"]

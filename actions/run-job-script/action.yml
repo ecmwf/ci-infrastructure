@@ -31,6 +31,9 @@ outputs:
   build-dir:
     description: 'Absolute path of the build tree'
     value: ${{ steps.set-paths.outputs.build-dir }}
+  install-root:
+    description: 'Absolute path holding one install tree per package the kind publishes'
+    value: ${{ steps.prefix.outputs.base }}
 
 runs:
   using: composite
@@ -77,6 +80,7 @@ runs:
       env:
         SCRIPT: ${{ steps.set-paths.outputs.script }}
         CI_INSTALL_PREFIX: ${{ steps.set-paths.outputs.install-path }}
+        CI_INSTALL_ROOT: ${{ steps.prefix.outputs.base }}
         CI_BUILD_DIR: ${{ steps.set-paths.outputs.build-dir }}
         CMAKE_PREFIX_PATH: ${{ inputs.cmake-prefix-path }}
       run: CI_SOURCE_DIR="$GITHUB_WORKSPACE" bash "$SCRIPT"

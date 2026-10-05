@@ -289,9 +289,9 @@ def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
                 f"`job-script`; there is no recipe to run. Set it in [matrix.{kind}.defaults] or on the leg"
             )
         published = raw.published_by(kind)
-        if len(published) > 1:
+        if len(published) > 1 and body.execution == EXECUTION_HPC_ATOS:
             raise SchemaError(
-                f"{path}: [matrix.{kind}] publishes {list(published)}; one job publishing several packages "
+                f"{path}: [matrix.{kind}] publishes {list(published)}; an HPC job publishing several packages "
                 "is not supported yet, give each its own kind"
             )
 
@@ -369,6 +369,24 @@ def derive_cross_repo_needs(manifests: Sequence[Manifest]) -> None:
                 m.matrices[kind] = replace(mk, needs=(*mk.needs, *derived))
 
 
+def build_order(m: Manifest, kind: str) -> list[str]:
+    """The packages `kind` publishes, each after the packages of this repo it depends on."""
+    wanted = set(m.matrices[kind].packages)
+    out: list[str] = []
+
+    def place(p: str) -> None:
+        if p in out:
+            return
+        for s in m.packages[p].siblings:
+            if s in wanted:
+                place(s)
+        out.append(p)
+
+    for p in m.matrices[kind].packages:
+        place(p)
+    return out
+
+
 def _distinct(deps: Sequence[DepRef]) -> list[DepRef]:
     """Order-preserving; DepRef holds dicts, so not by hash."""
     out: list[DepRef] = []
@@ -421,25 +439,29 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
         for kind, mk in m.matrices.items():
             if not mk.publishes:
                 continue
-            compiler_inputs = m.packages[mk.packages[0]].compiler_inputs if mk.packages else m.compiler_inputs
-            seen: dict[tuple[str, ...], dict[str, Any]] = {}
-            for leg in mk.legs:
-                identity = _artifact_identity(leg, compiler_inputs)
-                twin = seen.get(identity)
-                if twin is not None:
-                    shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
-                    differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
-                    raise SchemaError(
-                        f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
-                        f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
-                        f"the artifact name, so they would publish different builds under one name. "
-                        f"The name is built from platform + "
-                        f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
-                        f"python-version + options; give them distinct values there. For a different "
-                        f"module set or compiler that means a distinct `platform` slug (e.g. "
-                        f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
-                    )
-                seen[identity] = leg
+            for prefix in mk.packages or (m.prefix,):
+                _check_leg_identities(m, kind, mk, m.packages[prefix].compiler_inputs)
+
+
+def _check_leg_identities(m: Manifest, kind: str, mk: MatrixKind, compiler_inputs: Sequence[str]) -> None:
+    seen: dict[tuple[str, ...], dict[str, Any]] = {}
+    for leg in mk.legs:
+        identity = _artifact_identity(leg, compiler_inputs)
+        twin = seen.get(identity)
+        if twin is not None:
+            shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
+            differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
+            raise SchemaError(
+                f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
+                f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
+                f"the artifact name, so they would publish different builds under one name. "
+                f"The name is built from platform + "
+                f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
+                f"python-version + options; give them distinct values there. For a different "
+                f"module set or compiler that means a distinct `platform` slug (e.g. "
+                f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
+            )
+        seen[identity] = leg
 
 
 def validate_job_templates(m: Manifest) -> None:
@@ -993,7 +1015,19 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         steps.append(_hpc_build_step(mk))
     else:
         steps.append(_job_script_step(m, mk))
-        if mk.publishes:
+        if len(mk.packages) > 1:
+            steps += [
+                {
+                    "name": f"Publish {p}",
+                    "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
+                    "with": {
+                        "install-path": f"${{{{ steps.build.outputs.install-root }}}}/{p}",
+                        "artifact-name": f"${{{{ matrix._resolved.packages['{p}']['own-artifact-name'] }}}}",
+                    },
+                }
+                for p in build_order(m, kind)
+            ]
+        elif mk.publishes:
             steps.append(
                 {
                     "name": "Publish",

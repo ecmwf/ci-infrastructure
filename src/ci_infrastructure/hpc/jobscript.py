@@ -60,7 +60,7 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages")
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -154,6 +154,8 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     context["leg"] = dict(leg)
     context["artifact_name"] = artifact_name
     context["execution"] = execution
+    # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
+    context["ci_packages"] = list((leg.get("_resolved") or {}).get("packages") or {})
     return context
 
 

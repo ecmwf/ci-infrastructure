@@ -114,6 +114,8 @@ set any of these to override it:
      - ``$PWD/_ci/build`` (runner lane only)
    * - ``CI_INSTALL_PREFIX``
      - ``$PWD/_ci/install``
+   * - ``CI_INSTALL_ROOT``
+     - ``$PWD/_ci/install``, holding ``<name>`` per package of a kind that publishes several
    * - ``CMAKE_PREFIX_PATH``
      - empty
    * - ``CI_INSTALL_ARCHIVE``
