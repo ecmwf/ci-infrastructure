@@ -64,6 +64,19 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
     return out
 
 
+_CTEST_MANIFEST: Final = """
+    [matrix.build]
+    triggers = ["upstream-change", "rebuild-request"]
+    action = "./.github/actions/build-thisrepo"
+    needs = []
+    {extra}
+
+    [[matrix.build.include]]
+    runs-on = "ubuntu-latest"
+    build-type = "Release"
+    """
+
+
 @pytest.mark.parametrize(
     ("body", "match"),
     [
@@ -71,7 +84,7 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             """
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             bogus = "x"
 
             [[matrix.build.include]]
@@ -89,15 +102,43 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
             """,
-            "a leg has no `job-script`",
-            id="triggered-kind-without-job-script",
+            "has no `action`",
+            id="triggered-kind-without-action",
+        ),
+        pytest.param(
+            """
+            [matrix.build]
+            triggers = ["rebuild-request"]
+            action = "../etc/passwd"
+            needs = []
+
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            """,
+            "local composite path",
+            id="action-not-local-composite",
+        ),
+        pytest.param(
+            """
+            [matrix.build]
+            triggers = ["rebuild-request"]
+            action = "./.github/actions/build-a"
+            forwarded-inputs = ["typoed-field"]
+            needs = []
+
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            build-type = "Release"
+            """,
+            "typoed-field",
+            id="forwarded-input-typo",
         ),
         pytest.param(
             """
             [matrix.build]
             artifact-prefix = ""
             triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build-a"
             needs = []
 
             [[matrix.build.include]]
@@ -105,6 +146,45 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             """,
             "artifact-prefix must be a non-empty string",
             id="empty-artifact-prefix",
+        ),
+        pytest.param(
+            _CTEST_MANIFEST.format(extra='defaults.ctest-args = "-E slow"'),
+            "ctest-args.*no `ctest = true`",
+            id="ctest-args-without-ctest",
+        ),
+        pytest.param(
+            """
+            [matrix.build-hpc]
+            execution = "hpc-atos"
+            triggers = ["rebuild-request"]
+            defaults.job-script = "./.ci/hpc/build.sh"
+            ctest = true
+            needs = []
+
+            [[matrix.build-hpc.include]]
+            runs-on = "hpc-login-selfhosted"
+            site = "hpc-batch"
+            build-type = "Release"
+            platform = "hpc-atos-gnu"
+            """,
+            "ctest.*execution = 'hpc-atos'",
+            id="ctest-on-hpc-kind",
+        ),
+        pytest.param(
+            """
+            [matrix.build]
+            triggers = ["upstream-change"]
+            action = "./.github/actions/run-checks"
+            publishes = false
+            ctest = true
+            needs = []
+
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            build-type = "Release"
+            """,
+            "ctest.*publishes = false",
+            id="ctest-on-non-publishing-kind",
         ),
         pytest.param(
             """
@@ -141,7 +221,7 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             [matrix.test]
             reuse-matrix = "build"
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             needs = ["build"]
             """,
             "reuse-matrix",
@@ -157,7 +237,7 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             compiler-inputs = []
             [matrix.build]
             triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
             """,
@@ -174,7 +254,7 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             compiler-inputs = []
             [matrix.build]
             triggers = ["rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
             """,
@@ -211,13 +291,13 @@ def test_artifact_prefix_is_an_accepted_kind_key(tmp_path: Path) -> None:
 
         [matrix.build]
         triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-a"
         needs = []
 
         [matrix.build-secondary]
         artifact-prefix = "a-secondary"
         triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-a-secondary"
         needs = []
 
         [[matrix.build.include]]
@@ -238,7 +318,8 @@ def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> Non
         """
         [matrix.test]
         triggers = ["upstream-change"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/test-a"
+        forwarded-inputs = ["python-version"]
         publishes = false
         needs = []
 
@@ -248,7 +329,7 @@ def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> Non
         """,
     )
     assert "uses: actions/setup-python@v6" in yaml
-    assert "python-version: ${{ matrix.python-version }}" in yaml
+    assert "python-version: ${{ steps.m.outputs.python-version }}" in yaml
     assert yaml.index("Decode matrix-leg") < yaml.index("Set up Python") < yaml.index("Fetch resolved deps")
 
 
@@ -265,7 +346,8 @@ def test_setup_python_omitted_when_no_leg_has_python_version(tmp_path: Path) -> 
 
         [matrix.build]
         triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-a"
+        forwarded-inputs = ["cxx-compiler"]
         needs = []
 
         [[matrix.build.include]]
@@ -290,7 +372,8 @@ def test_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
 
         [matrix.build]
         triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-a"
+        forwarded-inputs = ["cxx-compiler"]
         needs = []
 
         [[matrix.build.include]]
@@ -308,13 +391,15 @@ def test_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
     assert yaml.count("name: a/build (${{ matrix._resolved['job-name'] }})") == 3
 
 
-def test_workflow_runs_the_job_script(tmp_path: Path) -> None:
+def test_workflow_inlines_build_action(tmp_path: Path) -> None:
     yaml = render_single(
         tmp_path,
         """
         [matrix.build]
         triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-thisrepo"
+        forwarded-inputs = ["build-type"]
+        forwarded-deps-outputs = ["cmake-prefix-path"]
         needs = []
 
         [[matrix.build.include]]
@@ -322,13 +407,25 @@ def test_workflow_runs_the_job_script(tmp_path: Path) -> None:
         build-type = "Release"
         """,
     )
-    assert "actions/run-job-script@main" in yaml
+    assert "uses: ./.github/actions/build-thisrepo" in yaml
     assert "Decode matrix-leg" in yaml
     assert "command -v jq" in yaml
     assert "Fetch resolved deps" in yaml
     assert "actions/fetch-deps@main" in yaml
     assert "actions/publish-artifact@main" in yaml
     assert "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}" in yaml
+    assert "build-type: ${{ steps.m.outputs.build-type }}" in yaml
+
+
+def test_ctest_absent_by_default(tmp_path: Path) -> None:
+    assert "ctest" not in render_single(tmp_path, _CTEST_MANIFEST.format(extra=""))
+
+
+def test_ctest_step_runs_before_publish_with_the_legs_args(tmp_path: Path) -> None:
+    """A failing test ends the job before publish, so no red build reaches the store."""
+    out = render_single(tmp_path, _CTEST_MANIFEST.format(extra="ctest = true"))
+    assert "--output-on-failure ${{ matrix._resolved['ctest-args'] }}" in out
+    assert out.index("ctest --test-dir") < out.index("actions/publish-artifact@main")
 
 
 def test_parse_manifest_text_round_trip() -> None:
@@ -346,7 +443,7 @@ def test_parse_manifest_text_round_trip() -> None:
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
 
         [[matrix.build.include]]
@@ -373,7 +470,7 @@ def test_subset_invariant_violated(tmp_path: Path) -> None:
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
 
         [[matrix.build.include]]
@@ -386,7 +483,7 @@ def test_subset_invariant_violated(tmp_path: Path) -> None:
         """
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
 
         [[matrix.build.include]]
@@ -421,7 +518,7 @@ def test_trigger_cycle(tmp_path: Path) -> None:
 
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             needs = []
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
@@ -442,7 +539,7 @@ def test_dangling_need(tmp_path: Path, need: str, match: str) -> None:
         f"""
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["{need}"]
 
         [[matrix.build.include]]
@@ -481,7 +578,7 @@ def test_cross_repo_need_target_not_runnable(tmp_path: Path) -> None:
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/internal"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -499,7 +596,7 @@ def test_reachability_violation(tmp_path: Path) -> None:
         """
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -517,7 +614,7 @@ def test_reachability_violation(tmp_path: Path) -> None:
 
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -538,7 +635,7 @@ def _make_chain_abc(tmp_path: Path) -> None:
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -558,7 +655,7 @@ def _make_chain_abc(tmp_path: Path) -> None:
         ref = "develop"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -575,7 +672,7 @@ def _make_chain_abc(tmp_path: Path) -> None:
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["b/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -628,7 +725,7 @@ def test_diamond_closure(tmp_path: Path) -> None:
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -654,7 +751,7 @@ def test_diamond_closure(tmp_path: Path) -> None:
             ref = "main"
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             needs = ["b/build"]
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
@@ -676,7 +773,7 @@ def test_diamond_closure(tmp_path: Path) -> None:
         compiler-inputs = []
         [matrix.test]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["c/build", "d/build"]
         [[matrix.test.include]]
         runs-on = "ubuntu-latest"
@@ -702,7 +799,7 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -719,7 +816,7 @@ def test_external_trigger_pruned(tmp_path: Path) -> None:
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -845,7 +942,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -869,7 +966,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -996,7 +1093,7 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1022,7 +1119,7 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
             ref = "{ref}"
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             needs = ["a/build"]
             [[matrix.build.include]]
             runs-on = "ubuntu-latest"
@@ -1044,7 +1141,7 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["b/build", "c/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1067,13 +1164,13 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
         [matrix.test]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["build"]
         [[matrix.test.include]]
         runs-on = "ubuntu-latest"
@@ -1090,7 +1187,7 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build", "a/test"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1121,7 +1218,7 @@ def test_job_runners(tmp_path: Path) -> None:
         ref = "main"
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "arc-sandbox-cci2"
@@ -1138,7 +1235,7 @@ def test_job_runners(tmp_path: Path) -> None:
         compiler-inputs = []
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["a/build"]
         [[matrix.build.include]]
         runs-on = "arc-sandbox-cci2"
@@ -1160,13 +1257,13 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
     kinds = """
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = {build}
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
         [matrix.build-hpc]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = {build_hpc}
         [[matrix.build-hpc.include]]
         runs-on = "ubuntu-latest"
@@ -1224,7 +1321,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
         )
     return (
         f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
-        '[matrix.build]\ntriggers = ["rebuild-request"]\ndefaults.job-script = "./.ci/build.sh"\n'
+        '[matrix.build]\ntriggers = ["rebuild-request"]\naction = "./.github/actions/build"\n'
         'needs = []\n[[matrix.build.include]]\nruns-on = "ubuntu-latest"\n'
     )
 
@@ -1322,7 +1419,7 @@ def test_cross_package_deps_lane_scoped(tmp_path: Path) -> None:
         """
         [matrix.build]
         triggers = ["upstream-change"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["b/build"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1367,7 +1464,7 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
 {triggers}
         [matrix.build]
         triggers = ["upstream-change", "rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = []
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1394,7 +1491,7 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
             compiler-inputs = []
             [matrix.build]
             triggers = ["upstream-change", "rebuild-request"]
-            defaults.job-script = "./.ci/build.sh"
+            action = "./.github/actions/build"
             needs = ["a/build"]
 {includes}
             """,
@@ -1432,7 +1529,7 @@ _HEADER_MANIFEST: Final = """
 
     [matrix.build]
     triggers = ["upstream-change"]
-    defaults.job-script = "./.ci/build.sh"
+    action = "./.github/actions/build"
     [[matrix.build.include]]
     runs-on = "ubuntu-latest"
     platform = "linux"
@@ -1511,7 +1608,7 @@ def test_schema_violations_still_fail_in_warn_mode(tmp_path: Path, monkeypatch: 
         """
         [matrix.build]
         triggers = ["upstream-change"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         needs = ["nonexistent-kind"]
         [[matrix.build.include]]
         runs-on = "ubuntu-latest"
@@ -1605,7 +1702,7 @@ def _trigger_manifest(name: str, repo: str, targets: list[str]) -> str:
         "compiler-inputs = []\n\n"
         '[[matrix.build.include]]\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n\n'
         '[matrix.build]\ntriggers = ["rebuild-request"]\n'
-        'defaults.job-script = "./.ci/build.sh"\nneeds = []\n' + blocks
+        'action = "./.github/actions/build-x"\nneeds = []\n' + blocks
     )
 
 
@@ -1637,8 +1734,9 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
         """
         [matrix.build]
         triggers = ["upstream-change"]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build-a"
         needs = []
+        ctest = true
         defaults.ctest-args = "-L nightly -E 's_test|s_zombies' -j 8"
 
         [[matrix.build.include]]
@@ -1663,7 +1761,7 @@ _GATE_UPSTREAM: Final = """
     ref = "main"
     [matrix.build]
     triggers = ["upstream-change"]
-    defaults.job-script = "./.ci/build.sh"
+    action = "./.github/actions/build"
     needs = []
     [[matrix.build.include]]
     runs-on = "ubuntu-latest"
@@ -1677,7 +1775,7 @@ _GATE_CONSUMER: Final = """
     compiler-inputs = []
     [matrix.build]
     triggers = ["upstream-change"]
-    defaults.job-script = "./.ci/build.sh"
+    action = "./.github/actions/build"
     needs = ["a/build"]
     [[matrix.build.include]]
     runs-on = "ubuntu-latest"
@@ -1832,7 +1930,7 @@ def _pkg(compiler_inputs: str, legs: str, publishes: bool = True) -> str:
         compiler-inputs = {compiler_inputs}
 
         [matrix.build]
-        defaults.job-script = "./.ci/build.sh"
+        action = "./.github/actions/build"
         {"" if publishes else "publishes = false"}
         {legs}
         """
@@ -1981,7 +2079,7 @@ repo = "org/b"
 ref = "main"
 [matrix.build]
 triggers = ["upstream-change"]
-defaults.job-script = "./.ci/build.sh"
+action = "./.github/actions/build"
 [[matrix.build.include]]
 platform = "p"
 [matrix.build-hpc]
@@ -2000,7 +2098,7 @@ ref = "main"
 compiler-inputs = []
 [matrix.build]
 triggers = ["upstream-change"]
-defaults.job-script = "./.ci/build.sh"
+action = "./.github/actions/build"
 {needs}
 [[matrix.build.include]]
 platform = "p"
@@ -2045,7 +2143,7 @@ def test_two_producer_kinds_for_one_dep_need_an_explicit_choice(tmp_path: Path) 
         + """
 [matrix.build-debug]
 triggers = ["upstream-change"]
-defaults.job-script = "./.ci/build.sh"
+action = "./.github/actions/build"
 [[matrix.build-debug.include]]
 platform = "p"
 build-type = "Debug"
@@ -2060,7 +2158,7 @@ def _diamond(tmp_path: Path, exclude: str = "") -> None:
     kind = """
     [matrix.build]
     triggers = ["upstream-change"]
-    defaults.job-script = "./.ci/build.sh"
+    action = "./.github/actions/build"
     needs = {needs}
     [[matrix.build.include]]
     platform = "p"

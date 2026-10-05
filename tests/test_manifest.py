@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from ci_infrastructure._github_api import ManifestSchemaError
 from ci_infrastructure.manifest import (
@@ -62,6 +62,7 @@ def test_prefix_defaults_to_name() -> None:
     assert validate({"package": {**package, "prefix": "c"}}).package.prefix == "c"
 
 
-def test_hpc_is_no_longer_an_execution() -> None:
-    with pytest.raises(ValidationError):
-        MatrixKindTable.model_validate({"execution": "hpc"})
+@pytest.mark.parametrize("value", ["hpc-atos", "hpc"])
+def test_hpc_atos_is_the_hpc_lane(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert MatrixKindTable.model_validate({"execution": value}).execution == "hpc-atos"
+    assert ("deprecated" in capsys.readouterr().err) == (value == "hpc")

@@ -86,13 +86,13 @@ against its leg. It may use
      - the name of the artifact
    * - ``execution``
      - the lane the leg runs in, ``runner`` or ``hpc-atos``
-   * - ``| quote``
-     - quotes a value as one shell word, as Ansible's filter of that name; ``| sh`` is an older alias
+   * - ``| sh``
+     - quotes a value as one shell word
 
 Any other name is an error, also inside a branch that is never taken,
 since :doc:`cli/ci-infrastructure-generate` checks the names beforehand.
 ``leg['x']`` escapes this check.
-``| quote`` does not suit a list of flags such as ``ctest-args`` or a ``module`` command,
+``| sh`` does not suit a list of flags such as ``ctest-args`` or a ``module`` command,
 which must stay several words.
 The ``CI_*`` variables and ``CMAKE_PREFIX_PATH`` are shell variables, resolved on the cluster, not template names.
 
@@ -101,7 +101,7 @@ To render a leg without a cluster (see :doc:`cli/ci-infrastructure-hpc`):
 .. code:: bash
 
    ci-infrastructure-hpc render --job-script .ci/hpc/build.sh.j2 \
-     --matrix-leg '{"c-compiler": "gcc", "cxx-compiler": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
+     --matrix-leg '{"cc": "gcc", "cxx": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
 
 The shared template
 -------------------

@@ -28,6 +28,8 @@ JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 Execution: TypeAlias = Literal["runner", "hpc-atos"]
 EXECUTION_RUNNER: Final[Execution] = "runner"
 EXECUTION_HPC_ATOS: Final[Execution] = "hpc-atos"
+#: The old name of hpc-atos, still read until #98: as `execution`, and as the workflow suffix.
+LEGACY_HPC: Final = "hpc"
 
 #: Version of hpc/templates/cmake-atos.sh.j2, in every hpc artifact name: consumers load
 #: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
@@ -249,7 +251,9 @@ class WorkflowRuns(NamedTuple):
 
 
 # Any other workflow (e.g. a legacy CI stuck in the queue) must not look like a build in flight.
-_BUILD_WORKFLOWS: Final = frozenset({"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc-atos.yml"})
+_BUILD_WORKFLOWS: Final = frozenset(
+    {"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc-atos.yml", f"cross-repo-trigger-{LEGACY_HPC}.yml"}
+)
 
 
 def _is_build_workflow(run: Mapping[str, Any]) -> bool:
