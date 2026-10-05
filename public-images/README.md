@@ -16,7 +16,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 
 - `base` has system packages, cmake, Python and the baked `ci_infrastructure` package. It has **no compiler**.
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
-- The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP. Nothing else is installed.
+- The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, and `openmpi` a working `mpicc`/`mpirun`. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
 
 [`verify-image.sh`](verify-image.sh) checks this contract.
