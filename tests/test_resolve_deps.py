@@ -46,7 +46,7 @@ from ci_infrastructure.resolve_deps import (
 
 
 def _parse_deps(data: dict[str, Any]) -> list[DepSpec]:
-    return [s for d in data["deps"] for s in _to_dep_specs(DepTable.model_validate(d))]
+    return [s for d in data["deps"] for s in _to_dep_specs(DepTable.model_validate(d), "o/self")]
 
 
 BRANCH_HEAD: Final = "a" * 40

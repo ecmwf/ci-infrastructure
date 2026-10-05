@@ -35,7 +35,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, NewType
 
@@ -127,7 +127,8 @@ class DepSpec:
     repo: Repo
     package: PackageName
     ref: Ref
-    compiler_inputs: Sequence[str]
+    # None: the producer package's own compiler-inputs.
+    compiler_inputs: Sequence[str] | None
     build_type_input: str
     platform_input: str
     needs_python: bool
@@ -139,6 +140,8 @@ class DepSpec:
     # `options` does not propagate, so a `when` on it in a repo with consumers can make both sides disagree.
     when: Mapping[str, frozenset[str]] | None = None
     unless: Mapping[str, frozenset[str]] | None = None
+    # A package of the declaring repo, built from the declaring package's commit; `ref` is unused.
+    sibling: bool = False
 
     def applies_to(self, leg: Mapping[str, Any], lane: Execution) -> bool:
         """Compared as str; a missing field never matches. `execution` is the lane."""
@@ -158,15 +161,32 @@ class PackageSpec:
     compiler_inputs: Sequence[str]
 
 
+@dataclass(frozen=True)
+class PackageInfo:
+    """One package a repo publishes, or its meta `[package]`."""
+
+    prefix: PackageName
+    compiler_inputs: Sequence[str]
+    deps: Sequence[DepSpec]
+    meta: bool = False
+
+
 @dataclass
 class Manifest:
     package: PackageSpec
     deps: list[DepSpec] = field(default_factory=list)
     matrix: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    # Kinds publishing a secondary artifact under their own prefix; others use package.prefix.
-    artifact_prefix_by_kind: dict[str, str] = field(default_factory=dict)
+    # Every package by prefix: `[package]`, `[packages.*]` and each `artifact-prefix`.
+    packages: dict[PackageName, PackageInfo] = field(default_factory=dict)
+    # The prefixes each kind publishes; empty for a kind that publishes nothing.
+    packages_by_kind: dict[str, tuple[PackageName, ...]] = field(default_factory=dict)
     # Picks which of a producer's lane workflows a recovery rebuild fires.
     execution_by_kind: dict[str, Execution] = field(default_factory=dict)
+
+    def external_deps(self) -> list[DepSpec]:
+        """The deps of every package that live in another repo."""
+        infos = self.packages.values() or [PackageInfo(self.package.prefix, (), self.deps)]
+        return [d for info in infos for d in info.deps if not d.sibling]
 
 
 @dataclass(frozen=True)
@@ -216,6 +236,7 @@ class ResolvedOwn:
     build_type: str
     python_version: str | None
     deps_hash: str | None
+    direct_artifact_names: tuple[ArtifactName, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -231,18 +252,17 @@ class DispatchPlan:
     lane: Execution
 
 
-def _to_dep_specs(t: DepTable) -> list[DepSpec]:
+def _to_dep_specs(t: DepTable, own_repo: str) -> list[DepSpec]:
     """One spec per package of a list-valued `package`."""
-    packages = (t.package,) if isinstance(t.package, str) else t.package
-    return [_to_dep_spec(t, p) for p in packages]
+    return [_to_dep_spec(t, p, own_repo) for p in t.packages]
 
 
-def _to_dep_spec(t: DepTable, package: str) -> DepSpec:
+def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
     return DepSpec(
-        repo=Repo(t.repo),
+        repo=Repo(t.repo or own_repo),
         package=PackageName(package),
-        ref=Ref(t.ref),
-        compiler_inputs=list(t.compiler_inputs),
+        ref=Ref(t.ref or ""),
+        compiler_inputs=None if t.compiler_inputs is None else list(t.compiler_inputs),
         build_type_input=t.build_type_input,
         platform_input=t.platform_input,
         needs_python=t.needs_python,
@@ -251,6 +271,7 @@ def _to_dep_spec(t: DepTable, package: str) -> DepSpec:
         options_input=t.options_input,
         when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
         unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
+        sibling=t.repo is None,
     )
 
 
@@ -275,6 +296,25 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         if any(not isinstance(leg.get("ctest-args", ""), str) for leg in matrix[kind]):
             raise ValueError(f"[matrix.{kind}] ctest-args must be a string")
 
+    own_deps = [s for d in raw.deps for s in _to_dep_specs(d, repo)]
+    own = PackageInfo(
+        prefix=PackageName(raw.package.prefix),
+        compiler_inputs=list(raw.package.compiler_inputs),
+        deps=own_deps,
+        meta=raw.package.meta,
+    )
+    packages = {own.prefix: own}
+    for prefix, entry in raw.packages.items():
+        packages[PackageName(prefix)] = PackageInfo(
+            prefix=PackageName(prefix),
+            compiler_inputs=list(entry.compiler_inputs),
+            deps=[s for d in entry.deps for s in _to_dep_specs(d, repo)],
+        )
+    # An artifact-prefix is [package] under another name: same compilers, same deps.
+    for body in raw.matrix.values():
+        if body.artifact_prefix is not None and body.artifact_prefix not in packages:
+            packages[PackageName(body.artifact_prefix)] = replace(own, prefix=PackageName(body.artifact_prefix))
+
     return Manifest(
         package=PackageSpec(
             name=raw.package.name,
@@ -282,9 +322,10 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
             repo=as_repo(repo),
             compiler_inputs=list(raw.package.compiler_inputs),
         ),
-        deps=[s for d in raw.deps for s in _to_dep_specs(d)],
+        deps=own_deps,
         matrix=matrix,
-        artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
+        packages=packages,
+        packages_by_kind={k: tuple(PackageName(p) for p in raw.published_by(k)) for k in raw.matrix},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
@@ -300,8 +341,16 @@ def _resolve_own_sha(own_repo: str, current_branch: str, token: str | None) -> S
     return resolve_ref_to_sha(Repo(own_repo), Ref(current_branch), token)
 
 
-def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, Any]) -> bool:
-    """True if some producer leg matches on the discriminators both declare, and on options."""
+def _legs_publishing(producer_manifest: Manifest, package: str | None) -> list[Mapping[str, Any]]:
+    """The legs of the kinds that publish `package`; every leg when no kind names it."""
+    kinds = [k for k, pkgs in producer_manifest.packages_by_kind.items() if package in pkgs]
+    return [leg for k, legs in producer_manifest.matrix.items() if not kinds or k in kinds for leg in legs]
+
+
+def producer_can_build(
+    producer_manifest: Manifest, matrix_entry: Mapping[str, Any], package: str | None = None
+) -> bool:
+    """True if a leg publishing `package` matches on the discriminators both declare, and on options."""
     if not producer_manifest.matrix:
         return True
     # Unlike the other discriminators, an omitted `options` is the concrete plain config.
@@ -313,7 +362,7 @@ def producer_can_build(producer_manifest: Manifest, matrix_entry: Mapping[str, A
             return False
         return _as_option(leg.get("options"), context="producer leg option") == req_option
 
-    return any(_leg_matches(leg) for legs in producer_manifest.matrix.values() for leg in legs)
+    return any(_leg_matches(leg) for leg in _legs_publishing(producer_manifest, package))
 
 
 def is_normal_ref(
@@ -472,9 +521,9 @@ def _classify_orphan_pin(
 ) -> Literal["triggered rebuild"]:
     """Artifact missing, no producer CI in flight: raise, or (timing skew) record a DispatchPlan."""
     producer_manifest = manifest_cache.get((spec.repo, ref))
-    if producer_manifest is not None and not producer_can_build(producer_manifest, matrix_entry):
+    if producer_manifest is not None and not producer_can_build(producer_manifest, matrix_entry, spec.package):
         # Only the fields the producer discriminates on are negotiable.
-        producer_keys = set().union(*(leg.keys() for legs in producer_manifest.matrix.values() for leg in legs))
+        producer_keys = set().union(*(leg.keys() for leg in _legs_publishing(producer_manifest, spec.package)))
         relevant_keys = _MATRIX_DISCRIMINATORS & matrix_entry.keys() & producer_keys
         relevant = {k: matrix_entry[k] for k in sorted(relevant_keys)}
         req_option = _as_option(matrix_entry.get("options"), context="requested option")
@@ -512,14 +561,17 @@ def _classify_orphan_pin(
             "auto-recovery via consumer-driven dispatch."
         )
 
-    if producer_manifest is not None and lane not in producer_manifest.execution_by_kind.values():
-        raise ResolveError(
-            f"dep '{spec.package}' from {spec.repo}@{ref} is missing its {lane} artifact "
-            f"'{artifact_name}', but the producer's manifest declares no [matrix.<kind>] with "
-            f"execution = '{lane}', so it has no cross-repo-trigger{lane_suffix(lane)}.yml to rebuild "
-            "it. Add the lane to the producer, or drop the dep from this consumer's "
-            f"{lane} kinds."
-        )
+    if producer_manifest is not None:
+        publishing = [k for k, pkgs in producer_manifest.packages_by_kind.items() if spec.package in pkgs]
+        lanes = {producer_manifest.execution_by_kind[k] for k in publishing or producer_manifest.execution_by_kind}
+        if lane not in lanes:
+            raise ResolveError(
+                f"dep '{spec.package}' from {spec.repo}@{ref} is missing its {lane} artifact "
+                f"'{artifact_name}', but the producer's manifest declares no [matrix.<kind>] with "
+                f"execution = '{lane}', so it has no cross-repo-trigger{lane_suffix(lane)}.yml to rebuild "
+                "it. Add the lane to the producer, or drop the dep from this consumer's "
+                f"{lane} kinds."
+            )
 
     # Keyed by lane too: a producer needed by both lanes needs two dispatches.
     dispatch_plans.setdefault((spec.repo, ref, lane), DispatchPlan(repo=spec.repo, ref=ref, sha=sha, lane=lane))
@@ -543,15 +595,41 @@ def resolve_leg(
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     own_prefix_override: str | None = None,
     pins: Mapping[Repo, Ref] | None = None,
+    own_ref: Ref = Ref(""),
+    own_compiler_inputs: Sequence[str] | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
-    """Transitive deps (leaves first) and the OWN artifact of one matrix entry."""
+    """Transitive deps (leaves first) and the OWN artifact of one matrix entry.
+
+    `own_ref` is the commit's ref, for deps on packages of the own repo (siblings).
+    """
     pins = pins or {}
     visited: dict[PackageName, ResolvedDep] = {}
+    expanded: dict[PackageName, list[ResolvedDep]] = {}
     requests: dict[PackageName, tuple[str, dict[str, Any]]] = {}
     order: list[PackageName] = []
 
-    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any], declared_by: str) -> ResolvedDep:
-        compiler = _join_compilers(spec.compiler_inputs, parent_ctx, context=f"dep '{spec.package}'")
+    def visit(spec: DepSpec, parent_ctx: Mapping[str, Any], declared_by: str, parent_ref: Ref) -> list[ResolvedDep]:
+        """The artifact `spec` names, or the members of a meta package."""
+        if spec.sibling:
+            ref = parent_ref
+        elif spec.repo in pins:
+            ref = pins[spec.repo]
+        elif sync_branch and sync_exists_by_repo.get(spec.repo, False):
+            ref = sync_branch
+        else:
+            ref = spec.ref
+        producer = manifest_cache.get((spec.repo, ref))
+        info = producer.packages.get(spec.package) if producer is not None else None
+
+        compiler_inputs = spec.compiler_inputs
+        if compiler_inputs is None and info is not None:
+            compiler_inputs = info.compiler_inputs
+        if compiler_inputs is None:
+            raise ResolveError(
+                f"dep '{spec.package}' (declared by '{declared_by}') takes its compiler-inputs from its producer, "
+                f"but {spec.repo}@{ref} declares no package '{spec.package}'"
+            )
+        compiler = _join_compilers(compiler_inputs, parent_ctx, context=f"dep '{spec.package}'")
 
         build_type = str(parent_ctx.get(spec.build_type_input, "Release"))
         platform = str(parent_ctx.get(spec.platform_input, ""))
@@ -565,13 +643,6 @@ def resolve_leg(
         else:
             dep_option = ""
 
-        if spec.repo in pins:
-            ref = pins[spec.repo]
-        elif sync_branch and sync_exists_by_repo.get(spec.repo, False):
-            ref = sync_branch
-        else:
-            ref = spec.ref
-
         # The ref, not its SHA: two lookups of one branch may see different commits.
         request = {
             "repo": spec.repo,
@@ -582,7 +653,7 @@ def resolve_leg(
             "python-version": python_version,
             "option": dep_option,
         }
-        if spec.package in visited:
+        if spec.package in requests:
             first_by, first = requests[spec.package]
             differs = {k: (first[k], v) for k, v in request.items() if first[k] != v}
             if differs:
@@ -591,25 +662,31 @@ def resolve_leg(
                     f"dep '{spec.package}' is declared differently by '{first_by}' and '{declared_by}' "
                     f"({detail}). Declarations of the same package must agree."
                 )
-            return visited[spec.package]
+            return expanded[spec.package]
         requests[spec.package] = (declared_by, request)
+
+        if info is not None and info.meta:
+            members: list[ResolvedDep] = []
+            for member in info.deps:
+                if member.applies_to(parent_ctx, lane):
+                    members += visit(member, parent_ctx, declared_by=spec.package, parent_ref=ref)
+            expanded[spec.package] = _unique(members)
+            return expanded[spec.package]
 
         # Sub-deps first, against the same leg, filtered by `when` exactly as the
         # upstream's own CI did, so deps-hash8 reproduces the published name.
         sub_deps: list[ResolvedDep] = []
-        sub_manifest = manifest_cache.get((spec.repo, ref))
-        if sub_manifest is not None:
-            for sub_spec in sub_manifest.deps:
-                if not sub_spec.applies_to(parent_ctx, lane):
-                    continue
-                sub_deps.append(visit(sub_spec, parent_ctx, declared_by=spec.package))
+        sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
+        for sub_spec in sub_specs:
+            if sub_spec.applies_to(parent_ctx, lane):
+                sub_deps += visit(sub_spec, parent_ctx, declared_by=spec.package, parent_ref=ref)
 
         sha_key = (spec.repo, ref)
         if sha_key not in sha_cache:
             sha_cache[sha_key] = Sha(ref) if spec.repo in pins else resolve_ref_to_sha(spec.repo, ref, token)
         sha = sha_cache[sha_key]
 
-        deps_hash8 = compute_deps_hash8([d.artifact_name for d in sub_deps])
+        deps_hash8 = compute_deps_hash8([d.artifact_name for d in _unique(sub_deps)])
 
         artifact_name = make_artifact_name(
             prefix=spec.package,
@@ -675,17 +752,24 @@ def resolve_leg(
             deps_hash=deps_hash8,
         )
         visited[spec.package] = resolved
+        expanded[spec.package] = [resolved]
         order.append(spec.package)
-        return resolved
+        return [resolved]
 
-    applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry, lane)]
-    for spec in applicable_deps:
-        visit(spec, matrix_entry, declared_by=own.name)
+    direct: list[ResolvedDep] = []
+    for spec in own_deps:
+        if spec.applies_to(matrix_entry, lane):
+            direct += visit(spec, matrix_entry, declared_by=own.name, parent_ref=own_ref)
+    direct = _unique(direct)
 
     deps_resolved = [visited[name] for name in order]
 
-    direct_dep_artifact_names = [visited[s.package].artifact_name for s in applicable_deps]
-    own_compiler = _join_compilers(own.compiler_inputs, matrix_entry, context=f"[package] '{own.name}'")
+    direct_dep_artifact_names = [d.artifact_name for d in direct]
+    own_compiler = _join_compilers(
+        own.compiler_inputs if own_compiler_inputs is None else own_compiler_inputs,
+        matrix_entry,
+        context=f"[package] '{own.name}'",
+    )
     own_build_type = str(matrix_entry.get("build-type", "Release"))
     own_platform = compute_platform_slug(str(matrix_entry.get("platform", "")))
     # The leg's python-version decides, not needs-python (which only drives pip installs of deps).
@@ -713,7 +797,16 @@ def resolve_leg(
         build_type=own_build_type,
         python_version=own_python,
         deps_hash=own_deps_hash,
+        direct_artifact_names=tuple(direct_dep_artifact_names),
     )
+
+
+def _unique(deps: Sequence[ResolvedDep]) -> list[ResolvedDep]:
+    """First occurrence wins; a package reached through two members appears once."""
+    out: dict[PackageName, ResolvedDep] = {}
+    for d in deps:
+        out.setdefault(d.name, d)
+    return list(out.values())
 
 
 def bfs_load_manifests(
@@ -761,7 +854,7 @@ def bfs_load_manifests(
             except ValueError as e:
                 raise ResolveError(f"Failed to parse manifest from {repo}@{ref}: {e}") from e
             manifest_cache[(repo, ref)] = m
-            for sub in m.deps:
+            for sub in m.external_deps():
                 next_queue.append((sub.repo, pins.get(sub.repo, sub.ref)))
 
         queue = next_queue
@@ -840,14 +933,18 @@ def _run(
     own_sha = _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
 
     manifest_cache, sync_exists = bfs_load_manifests(
-        root_deps=local_manifest.deps,
+        root_deps=local_manifest.external_deps(),
         sync_branch=sync_branch,
         token=token,
         manifest_path=upstream_manifest_path,
         pins=pins,
     )
 
-    sha_cache: dict[tuple[Repo, Ref], Sha] = {}
+    own_ref = Ref(current_branch)
+    own_repo = local_manifest.package.repo
+    # Packages of this repo resolve against this commit.
+    manifest_cache[(own_repo, own_ref)] = local_manifest
+    sha_cache: dict[tuple[Repo, Ref], Sha] = {(own_repo, own_ref): own_sha}
     artifact_cache: dict[ArtifactName, bool] = {}
     run_state_cache: dict[tuple[Repo, Sha], bool] = {}
     matrices_out: dict[str, dict[str, Any]] = {}
@@ -866,12 +963,19 @@ def _run(
             continue
 
         out_include: list[dict[str, Any]] = []
-        own_prefix_override = local_manifest.artifact_prefix_by_kind.get(mname)
+        published = local_manifest.packages_by_kind.get(mname, ())
+        if len(published) > 1:
+            raise ResolveError(
+                f"[matrix.{mname}] publishes {list(published)}; one job publishing several packages is not "
+                "supported yet, give each its own kind"
+            )
+        prefix = published[0] if published else local_manifest.package.prefix
+        package = local_manifest.packages.get(prefix, local_manifest.packages[local_manifest.package.prefix])
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         for entry in include:
             deps_resolved, own = resolve_leg(
                 own=local_manifest.package,
-                own_deps=local_manifest.deps,
+                own_deps=package.deps,
                 own_sha=own_sha,
                 matrix_entry=entry,
                 manifest_cache=manifest_cache,
@@ -884,8 +988,10 @@ def _run(
                 can_dispatch=can_dispatch,
                 lane=lane,
                 dispatch_plans=dispatch_plans,
-                own_prefix_override=own_prefix_override,
+                own_prefix_override=None if prefix == local_manifest.package.prefix else prefix,
                 pins=pins,
+                own_ref=own_ref,
+                own_compiler_inputs=package.compiler_inputs,
             )
             cmake_paths = [str(d.install_path) for d in deps_resolved]
             all_artifact_names = [d.artifact_name for d in deps_resolved]
@@ -904,13 +1010,8 @@ def _run(
                 "own-deps-hash": own.deps_hash or "",
                 "own-tar-name": f"{own.artifact_name}.tar.gz",
                 "deps": [d.to_json() for d in deps_resolved],
-                # Scoped-out deps were not resolved; next() would raise on them.
-                "direct-artifact-names": " ".join(
-                    next(d.artifact_name for d in deps_resolved if d.name == s.package)
-                    for s in local_manifest.deps
-                    if s.applies_to(entry, lane)
-                ),
-                "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
+                "direct-artifact-names": " ".join(own.direct_artifact_names),
+                "job-name": job_names.name_suffix(entry, include, package.compiler_inputs),
             }
             out_include.append({**entry, "_resolved": resolved_block})
 
