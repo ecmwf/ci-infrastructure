@@ -115,7 +115,7 @@ and consists of these blocks:
    * - block
      - content
    * - ``sbatch``
-     - ``--qos=nf``, one node, ``--ntasks``, ``--cpus-per-task`` and ``--mem`` if set, ``--gres=ssdtmp:``, ``--time``
+     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` and ``--mem`` if set, ``--gres=ssdtmp:``, ``--time``
    * - ``preflight``
      - prints the compiler and CMake versions
    * - ``configure``
@@ -144,6 +144,10 @@ A leg may omit these fields:
 
    * - field
      - default
+   * - ``qos``
+     - ``nf``
+   * - ``nodes``
+     - ``1``
    * - ``time``
      - ``01:00:00``
    * - ``ntasks``
@@ -160,6 +164,9 @@ A leg may omit these fields:
      - ``c-compiler``, ``cxx-compiler``
    * - ``fortran-compiler-binary``
      - ``fortran-compiler``; without it ``""``, i.e. no Fortran
+
+A template defaults a field it reads through ``| default(...)``;
+``qos`` to ``ssdtmp`` are defaulted that way in ``cmake-atos.sh.j2``, the others in Python.
 
 ``configure`` uses the preset named by ``options``, or ``ci`` if it is empty.
 The feature flags thus live in the package's ``CMakePresets.json``,
