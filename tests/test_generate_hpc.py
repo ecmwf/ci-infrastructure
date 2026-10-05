@@ -284,10 +284,10 @@ def _hpc_repo(tmp_path: Path, body: str, recipe: str | None = None) -> Path:
 _TEMPLATED_MANIFEST = """
     [[matrix.build.include]]
     platform = "hpc-atos-gnu"
-    cc = "gcc"
+    c-compiler = "gcc"
     [[matrix.build.include]]
     platform = "hpc-atos-intel"
-    cc = "icx"
+    c-compiler = "icx"
     [matrix.build]
     execution = "hpc-atos"
     defaults.job-script = "./.ci/hpc/build.sh.j2"
@@ -299,8 +299,8 @@ _BASE_MANIFEST = """
     platform = "hpc-atos-gnu"
     build-type = "RelWithDebInfo"
     modules = ["load cmake"]
-    cc = "gcc"
-    cxx = "g++"
+    c-compiler = "gcc"
+    cxx-compiler = "g++"
     [matrix.build]
     execution = "hpc-atos"
     defaults.job-script = "./.ci/hpc/build.sh.j2"
@@ -318,7 +318,7 @@ def test_hpc_step_forwards_the_matrix_leg(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("body", "recipe"),
     [
-        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ cc }}\n"),
+        (_TEMPLATED_MANIFEST, "#!/bin/bash\nexport CC={{ c_compiler }}\n"),
         (_BASE_MANIFEST, _EXTENDS),
         (_TEMPLATED_MANIFEST.replace("build.sh.j2", "nowhere.sh"), None),
     ],
@@ -357,12 +357,11 @@ def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         [[matrix.build.include]]
         platform = "hpc-atos-gnu"
         cxx-compiler = "g++-8"
-        cc = "gcc"
+        cxx-compiler-binary = "g++"
         modules = ["load prgenv/gnu"]
         [[matrix.build.include]]
         platform = "hpc-atos-intel"
         cxx-compiler = "icpx"
-        cc = "icx"
         modules = ["load prgenv/intel-llvm"]
         [matrix.build]
         execution = "hpc-atos"

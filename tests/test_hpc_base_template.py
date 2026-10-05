@@ -24,8 +24,8 @@ LEG: dict[str, Any] = {
     "build-type": "RelWithDebInfo",
     "platform": "hpc-atos-gnu",
     "modules": ["load prgenv/gnu", "load cmake"],
-    "cc": "gcc",
-    "cxx": "g++",
+    "c-compiler": "gcc",
+    "cxx-compiler": "g++",
 }
 
 
@@ -87,7 +87,9 @@ def test_sbatch_block_stays_in_the_wrapped_header() -> None:
 
 def test_rendered_recipe_is_valid_bash(tmp_path: Path) -> None:
     script = tmp_path / "job.sh"
-    script.write_text(_render(leg={"fc": "gfortran", "options": "with-geo", "ctest-args": "-L nightly -j 8"}))
+    script.write_text(
+        _render(leg={"fortran-compiler": "gfortran", "options": "with-geo", "ctest-args": "-L nightly -j 8"})
+    )
     subprocess.run(["bash", "-n", str(script)], check=True)
 
 
@@ -115,8 +117,9 @@ def test_options_name_the_configure_preset(options: str, preset: str) -> None:
     assert f"cmake --preset {preset} -S" in _render(leg={"options": options})
 
 
-def test_fc_adds_the_fortran_compiler() -> None:
-    assert '  -DCMAKE_Fortran_COMPILER="$(command -v gfortran)" \\' in _render(leg={"fc": "gfortran"}).splitlines()
+def test_fortran_compiler_adds_the_fortran_compiler() -> None:
+    leg = {"fortran-compiler": "gfortran"}
+    assert '  -DCMAKE_Fortran_COMPILER="$(command -v gfortran)" \\' in _render(leg=leg).splitlines()
 
 
 def test_ctest_args_replace_the_default_parallelism() -> None:
@@ -147,7 +150,7 @@ def test_child_overrides_blocks_and_keeps_the_base_with_super() -> None:
 
 def test_static_check_follows_extends() -> None:
     assert jobscript.undeclared_template_names(EXTENDS, LEG, template_name="t") == set()
-    without_cxx = {k: v for k, v in LEG.items() if k != "cxx"}
+    without_cxx = {k: v for k, v in LEG.items() if k != "cxx-compiler"}
     assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx_compiler_binary"}
 
 
@@ -280,11 +283,9 @@ def test_static_check_follows_both_lanes_of_all_lanes() -> None:
 def test_the_compiler_binary_defaults_to_the_compiler_and_may_differ() -> None:
     assert "$(command -v g++-13)" in _render_runner()
     hpc_leg = {**LEG, "cxx-compiler": "g++-8", "cxx-compiler-binary": "g++"}
-    hpc_leg.pop("cxx")
     assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render(leg=hpc_leg)
-    assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render()  # the old `cxx`, until #98
 
 
-def test_the_old_names_still_read_the_binary_until_98() -> None:
-    src = RUNNER + "{% block build %}{{ cc }} {{ cxx }} {{ fc }}{% endblock %}\n"
-    assert "gcc-13 g++-13 gfortran-13" in _render_runner(src)
+def test_cc_no_longer_names_the_binary() -> None:
+    leg = {**{k: v for k, v in LEG.items() if k != "c-compiler"}, "cc": "gcc"}
+    assert jobscript.undeclared_template_names(EXTENDS, leg, template_name="t") == {"c_compiler_binary"}

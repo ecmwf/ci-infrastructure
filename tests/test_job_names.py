@@ -65,8 +65,18 @@ def test_options_slot_omitted_when_no_leg_has_them() -> None:
 def test_toolchain_keys_do_not_become_the_title() -> None:
     """Only artifact-name fields may be the title."""
     legs = [
-        {"platform": "hpc-atos-gnu", "cxx-compiler": "g++-8", "cc": "gcc", "modules": ["load prgenv/gnu"]},
-        {"platform": "hpc-atos-intel", "cxx-compiler": "icpx", "cc": "icx", "modules": ["load prgenv/intel-llvm"]},
+        {
+            "platform": "hpc-atos-gnu",
+            "cxx-compiler": "g++-8",
+            "cxx-compiler-binary": "g++",
+            "modules": ["load prgenv/gnu"],
+        },
+        {
+            "platform": "hpc-atos-intel",
+            "cxx-compiler": "icpx",
+            "cxx-compiler-binary": "icpx",
+            "modules": ["load prgenv/intel-llvm"],
+        },
     ]
     assert display_fields(legs, ("cxx-compiler",)) == ["platform", "cxx-compiler"]
 
@@ -93,10 +103,10 @@ def test_a_constant_second_compiler_input_is_left_out() -> None:
     assert display_fields(legs, ("cxx-compiler", "fortran-compiler")) == ["platform", "cxx-compiler"]
 
 
-def test_without_compiler_inputs_the_templated_cxx_names_the_job() -> None:
+def test_without_compiler_inputs_the_cxx_binary_names_the_job() -> None:
     legs = [
-        {"platform": "hpc-atos-gnu", "cc": "gcc", "cxx": "g++"},
-        {"platform": "hpc-atos-intel", "cc": "icx", "cxx": "icpx"},
+        {"platform": "hpc-atos-gnu", "c-compiler-binary": "gcc", "cxx-compiler-binary": "g++"},
+        {"platform": "hpc-atos-intel", "c-compiler-binary": "icx", "cxx-compiler-binary": "icpx"},
     ]
     assert _suffixes(legs) == ["hpc-atos-gnu, g++", "hpc-atos-intel, icpx"]
 

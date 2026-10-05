@@ -21,11 +21,11 @@ def _leg_values(legs: Sequence[Mapping[str, Any]], key: str) -> set[Any]:
 def _compiler_fields(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[str]) -> list[str]:
     """Toolchain fields for the title, shown even when constant.
 
-    `compiler-inputs` (else a template's `cxx`/`cc`); the varying ones if any vary.
+    `compiler-inputs` (else `cxx-compiler-binary`/`c-compiler-binary`); the varying ones if any vary.
     """
     fields = [f for f in sorted(compiler_inputs) if any(f in leg for leg in legs)]
     if not fields:
-        fields = [f for f in ("cxx", "cc") if any(f in leg for leg in legs)][:1]
+        fields = [f for f in ("cxx-compiler-binary", "c-compiler-binary") if any(f in leg for leg in legs)][:1]
     varying = [f for f in fields if len(_leg_values(legs, f)) > 1]
     return varying or fields
 

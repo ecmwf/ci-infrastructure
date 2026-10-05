@@ -101,7 +101,7 @@ To render a leg without a cluster (see :doc:`cli/ci-infrastructure-hpc`):
 .. code:: bash
 
    ci-infrastructure-hpc render --job-script .ci/hpc/build.sh.j2 \
-     --matrix-leg '{"cc": "gcc", "cxx": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
+     --matrix-leg '{"c-compiler": "gcc", "cxx-compiler": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
 
 The shared template
 -------------------

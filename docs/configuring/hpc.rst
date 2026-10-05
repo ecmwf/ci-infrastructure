@@ -137,7 +137,7 @@ To see what a leg produces, without a cluster, use :doc:`../reference/cli/ci-inf
 .. code:: bash
 
    ci-infrastructure-hpc render --job-script .ci/hpc/build.sh.j2 \
-     --matrix-leg '{"cc": "gcc", "cxx": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
+     --matrix-leg '{"c-compiler": "gcc", "cxx-compiler": "g++", "build-type": "Release", "modules": ["load prgenv/gnu"]}'
 
 The ``ci.yml`` runs :action:`build-on-hpc` in place of the build step,
 and its log shows every rendered job script before it is submitted.

@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Sample templated HPC recipe; see docs/howto/hpc.rst, "Templated recipes".
+# Sample templated HPC recipe; see docs/reference/hpc.rst.
 
 #SBATCH --qos=nf
 #SBATCH --gres=ssdtmp:30G
@@ -16,12 +16,12 @@
 module {{ m }}
 {% endfor %}
 
-echo "Using: $(command -v {{ cxx }}) ($($(command -v {{ cxx }}) --version | head -1))"
+echo "Using: $(command -v {{ cxx_compiler_binary }}) ($($(command -v {{ cxx_compiler_binary }}) --version | head -1))"
 
 cmake -S "$CI_SOURCE_DIR" -B "${TMPDIR:-/tmp}/build" \
   -DCMAKE_BUILD_TYPE={{ build_type }} \
-  -DCMAKE_C_COMPILER="$(command -v {{ cc }})" \
-  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx }})" \
+  -DCMAKE_C_COMPILER="$(command -v {{ c_compiler_binary }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx_compiler_binary }})" \
 {% if options == "with-geo" %}
   -DENABLE_GEOGRAPHY=1 \
 {% endif %}
