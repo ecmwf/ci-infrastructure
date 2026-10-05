@@ -18,6 +18,7 @@ from typing import Any, Final
 
 import jinja2
 import jinja2.meta
+import jinja2.nodes
 
 from .._github_api import Execution
 
@@ -75,14 +76,10 @@ _COMPILER_BINARIES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     }
 )
 
-#: Optional knobs of the shared base template; a leg's own value wins.
+#: Optional knobs shared by every lane; a leg's own value wins. Lane-specific ones are
+#: defaulted in their template with `| default(...)`.
 JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
     {
-        "time": "01:00:00",
-        "ntasks": 8,
-        "cpus_per_task": "",
-        "mem": "",
-        "ssdtmp": "20G",
         "tests": True,
         "ctest_args": "",
         "fc": "",
@@ -179,10 +176,14 @@ def undeclared_template_names(
     template_name: str,
     search_path: Path | None = None,
 ) -> set[str]:
-    """Names the template (or what it extends/includes) reads that the leg lacks; static, so misses ``leg['x']``."""
+    """Names the template (or what it extends/includes) reads that neither the leg nor a ``| default`` provides.
+
+    Static, so misses ``leg['x']``.
+    """
     env = job_template_environment(search_path)
     assert env.loader is not None
     names: set[str] = set()
+    defaulted: set[str] = set()
     seen = {template_name}
     pending = [(template_source, template_name)]
     while pending:
@@ -192,6 +193,11 @@ def undeclared_template_names(
         except jinja2.TemplateSyntaxError as exc:
             raise JobTemplateError(f"{name}:{exc.lineno}: {exc.message}") from exc
         names |= jinja2.meta.find_undeclared_variables(ast)
+        defaulted |= {
+            f.node.name
+            for f in ast.find_all(jinja2.nodes.Filter)
+            if f.name == "default" and isinstance(f.node, jinja2.nodes.Name)
+        }
         for ref in jinja2.meta.find_referenced_templates(ast):
             if ref is None:
                 raise JobTemplateError(
@@ -206,7 +212,7 @@ def undeclared_template_names(
             except jinja2.TemplateNotFound as exc:
                 raise JobTemplateError(f"{name}: template {ref!r} not found") from exc
             pending.append((ref_source, ref))
-    return names - declared_template_names(leg)
+    return names - defaulted - declared_template_names(leg)
 
 
 def render_job_template(
@@ -231,7 +237,8 @@ def render_job_template(
         raise JobTemplateError(
             f"{template_name}: {exc.message}. The matrix leg declares {declared or '(nothing)'}; "
             f"a template may only read those (hyphens as underscores), plus `leg`, "
-            f"`artifact_name`, `execution` and the defaults {sorted(JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
+            f"`artifact_name`, `execution`, the defaults {sorted(JOB_TEMPLATE_DEFAULTS)} and what a template "
+            f"reads through `| default(...)`. Add the key to the "
             f"leg in .ci/manifest.toml, or drop it from the recipe -- the two are meant to say the "
             f"same thing."
         ) from exc

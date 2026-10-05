@@ -445,8 +445,9 @@ def validate_job_templates(m: Manifest) -> None:
                 raise SchemaError(
                     f"{m.path}: [matrix.{kind}] recipe '{spec}' reads {sorted(missing)}, which this "
                     f"leg does not declare. The leg has {declared}; a template may read those "
-                    f"(hyphens as underscores), plus `leg`, `artifact_name` and the defaults "
-                    f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)}. Add the key to the "
+                    f"(hyphens as underscores), plus `leg`, `artifact_name`, the defaults "
+                    f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)} and what a template reads through "
+                    f"`| default(...)`. Add the key to the "
                     f"leg, or drop it from the recipe — they are meant to say the same thing."
                     + "".join(
                         f" `{name}` comes from `{name.removesuffix('_binary').replace('_', '-')}`, or "

@@ -50,7 +50,14 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     out = _render()
     lines = out.splitlines()
     assert lines[0] == "#!/bin/bash"
-    assert {"#SBATCH --ntasks=8", "#SBATCH --time=01:00:00", "#SBATCH --gres=ssdtmp:20G"} <= set(lines)
+    assert lines[1:6] == [
+        "#SBATCH --qos=nf",
+        "#SBATCH --nodes=1",
+        "#SBATCH --ntasks=8",
+        "#SBATCH --gres=ssdtmp:20G",
+        "#SBATCH --time=01:00:00",
+    ]
+    assert 'jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-8}}"' in lines
     assert "module load prgenv/gnu" in lines
     assert 'cmake --preset ci -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \\' in lines
     assert "  -DCMAKE_BUILD_TYPE=RelWithDebInfo \\" in lines
@@ -85,8 +92,22 @@ def test_rendered_recipe_is_valid_bash(tmp_path: Path) -> None:
 
 
 def test_leg_values_beat_the_defaults() -> None:
-    lines = _render(leg={"ntasks": 2, "time": "00:40:00", "ssdtmp": "10G"}).splitlines()
-    assert {"#SBATCH --ntasks=2", "#SBATCH --time=00:40:00", "#SBATCH --gres=ssdtmp:10G"} <= set(lines)
+    leg = {"qos": "np", "nodes": 2, "ntasks": 2, "time": "00:40:00", "ssdtmp": "10G"}
+    lines = _render(leg=leg).splitlines()
+    assert {
+        "#SBATCH --qos=np",
+        "#SBATCH --nodes=2",
+        "#SBATCH --ntasks=2",
+        "#SBATCH --time=00:40:00",
+        "#SBATCH --gres=ssdtmp:10G",
+    } <= set(lines)
+    assert 'jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-2}}"' in lines
+
+
+def test_a_repo_block_sees_the_defaulted_ntasks() -> None:
+    src = EXTENDS + "{% block preflight %}echo {{ ntasks }}{% endblock %}\n"
+    assert "echo 8" in _render(src).splitlines()
+    assert jobscript.undeclared_template_names(src, LEG, template_name="t") == set()
 
 
 @pytest.mark.parametrize(("options", "preset"), [("", "ci"), ("with-geo", "with-geo")])
@@ -128,6 +149,22 @@ def test_static_check_follows_extends() -> None:
     assert jobscript.undeclared_template_names(EXTENDS, LEG, template_name="t") == set()
     without_cxx = {k: v for k, v in LEG.items() if k != "cxx"}
     assert jobscript.undeclared_template_names(EXTENDS, without_cxx, template_name="t") == {"cxx_compiler_binary"}
+
+
+@pytest.mark.parametrize("base", ["cmake-runner.sh.j2", "cmake-atos.sh.j2"])
+def test_set_environment_runs_after_setup_and_before_preflight(base: str) -> None:
+    src = f'{{% extends "ci-infrastructure/{base}" %}}\n{{% block set_environment %}}\nsource venv\n{{% endblock %}}\n'
+    lines = _render(src).splitlines()
+    assert (
+        lines.index('gen_flag=""')
+        < lines.index("source venv")
+        < lines.index('echo "Using: $(command -v gcc) ($(gcc --version | head -1))"')
+    )
+
+
+def test_static_check_accepts_a_name_read_through_default() -> None:
+    src = "{{ a | default(1) }}{{ b }}\n"
+    assert jobscript.undeclared_template_names(src, LEG, template_name="t") == {"b"}
 
 
 def test_static_check_sees_a_child_block_and_not_super() -> None:
@@ -198,8 +235,8 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "a3026ff4a7115f5970bbccd19bd5a5993c772546e339806245f6bddbe38b359c"
-TEMPLATE_VERSION: Final = 1
+TEMPLATE_SHA256: Final = "2a32ac7c93d229a85731342d18dbfa4ea967884c9836b8b4c73bff3d4a1a366d"
+TEMPLATE_VERSION: Final = 2
 
 
 def test_base_template_change_bumps_the_template_version() -> None:

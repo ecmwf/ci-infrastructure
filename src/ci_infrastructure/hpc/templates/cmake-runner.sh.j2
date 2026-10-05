@@ -16,6 +16,7 @@ jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 gen_flag=""
 {% endblock %}
 
+{% block set_environment %}{% endblock %}
 {% block preflight %}
 echo "Using: $(command -v {{ c_compiler_binary | sh }}) ($({{ c_compiler_binary | sh }} --version | head -1))"
 echo "Using: $(command -v {{ cxx_compiler_binary | sh }}) ($({{ cxx_compiler_binary | sh }} --version | head -1))"

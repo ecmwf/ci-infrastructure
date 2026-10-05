@@ -5,20 +5,23 @@
    The runner template plus what a SLURM job on Atos needs: the #SBATCH header,
    the modules, the node-local build tree and the install archive.
 
-   Any change here must bump _github_api.HPC_TEMPLATE_VERSION. #}
+   Any change here must bump _github_api.HPC_TEMPLATE_VERSION.
+
+   A leg field read through `| default(...)` may be omitted from the manifest. #}
+{% set ntasks = ntasks | default(8) %}
 {% block header %}
 {% block sbatch %}
-#SBATCH --qos=nf
-#SBATCH --nodes=1
+#SBATCH --qos={{ qos | default("nf") }}
+#SBATCH --nodes={{ nodes | default(1) }}
 #SBATCH --ntasks={{ ntasks }}
-{% if cpus_per_task %}
+{% if cpus_per_task | default("") %}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
 {% endif %}
-{% if mem %}
+{% if mem | default("") %}
 #SBATCH --mem={{ mem }}
 {% endif %}
-#SBATCH --gres=ssdtmp:{{ ssdtmp }}
-#SBATCH --time={{ time }}
+#SBATCH --gres=ssdtmp:{{ ssdtmp | default("20G") }}
+#SBATCH --time={{ time | default("01:00:00") }}
 {% endblock %}
 
 {% for m in modules %}
