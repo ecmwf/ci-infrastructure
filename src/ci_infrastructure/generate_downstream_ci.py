@@ -164,6 +164,14 @@ class TriggerDownstream:
 class DepRef:
     repo: str
     package: str
+    when: Mapping[str, tuple[str, ...]] | None = None
+    unless: Mapping[str, tuple[str, ...]] | None = None
+
+    def excluded_from(self, lane: Execution) -> bool:
+        """Only `execution` is known before a run; anything else might still match."""
+        if self.when is not None and "execution" in self.when and lane not in self.when["execution"]:
+            return True
+        return self.unless is not None and set(self.unless) == {"execution"} and lane in self.unless["execution"]
 
 
 @dataclass
@@ -213,7 +221,11 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
-        deps=[DepRef(repo=d.repo, package=d.package) for d in raw.deps],
+        deps=[
+            DepRef(repo=d.repo, package=p, when=d.when, unless=d.unless)
+            for d in raw.deps
+            for p in ((d.package,) if isinstance(d.package, str) else d.package)
+        ],
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
         downstream_exclude=raw.downstream.exclude if raw.downstream else (),
@@ -295,7 +307,7 @@ def derive_cross_repo_needs(manifests: Sequence[Manifest]) -> None:
             derived: list[str] = []
             for dep in m.deps:
                 up = by_repo.get(dep.repo)
-                if up is None or not any(t.repo == m.repo for t in up.triggers):
+                if dep.excluded_from(mk.execution) or up is None or not any(t.repo == m.repo for t in up.triggers):
                     continue
                 candidates = [
                     k
