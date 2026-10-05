@@ -127,7 +127,7 @@ A kind may publish several packages: one job builds them, each after the package
 and publishes one artifact per package.
 Its recipe loops over ``ci_packages``, which lists them in that order, and installs each to ``$CI_INSTALL_ROOT/<name>``.
 A kind that publishes a package also waits for the other kinds that publish packages it depends on.
-On HPC a kind publishes one package for now.
+On HPC the job script archives each package after the recipe, so the recipe only installs them.
 
 The build configurations
 ------------------------

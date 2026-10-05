@@ -289,11 +289,6 @@ def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
                 f"`job-script`; there is no recipe to run. Set it in [matrix.{kind}.defaults] or on the leg"
             )
         published = raw.published_by(kind)
-        if len(published) > 1 and body.execution == EXECUTION_HPC_ATOS:
-            raise SchemaError(
-                f"{path}: [matrix.{kind}] publishes {list(published)}; an HPC job publishing several packages "
-                "is not supported yet, give each its own kind"
-            )
 
         resolved[kind] = MatrixKind(
             name=kind,
@@ -963,6 +958,26 @@ def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
     return step
 
 
+def _publish_steps(m: Manifest, kind: str, root_output: str, found: str | None = None) -> list[Step]:
+    """One publish step per package of a kind that publishes several, from `<root>/<name>`."""
+    steps: list[Step] = []
+    for p in build_order(m, kind):
+        with_block = {
+            "install-path": f"${{{{ steps.build.outputs.{root_output} }}}}/{p}",
+            "artifact-name": f"${{{{ matrix._resolved.packages['{p}']['own-artifact-name'] }}}}",
+        }
+        if found is not None:
+            with_block["found"] = found
+        steps.append(
+            {
+                "name": f"Publish {p}",
+                "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
+                "with": with_block,
+            }
+        )
+    return steps
+
+
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
@@ -1013,20 +1028,12 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     )
     if is_hpc:
         steps.append(_hpc_build_step(mk))
+        if len(mk.packages) > 1:
+            steps += _publish_steps(m, kind, "install-path", found="${{ steps.build.outputs.cache-hit }}")
     else:
         steps.append(_job_script_step(m, mk))
         if len(mk.packages) > 1:
-            steps += [
-                {
-                    "name": f"Publish {p}",
-                    "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
-                    "with": {
-                        "install-path": f"${{{{ steps.build.outputs.install-root }}}}/{p}",
-                        "artifact-name": f"${{{{ matrix._resolved.packages['{p}']['own-artifact-name'] }}}}",
-                    },
-                }
-                for p in build_order(m, kind)
-            ]
+            steps += _publish_steps(m, kind, "install-root")
         elif mk.publishes:
             steps.append(
                 {

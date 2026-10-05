@@ -16,7 +16,7 @@ from conftest import parse_all, write_repo
 
 from ci_infrastructure import resolve_deps
 from ci_infrastructure._github_api import EXECUTION_RUNNER, ManifestSchemaError
-from ci_infrastructure.generate_downstream_ci import SchemaError, derive_cross_repo_needs, validate_graph
+from ci_infrastructure.generate_downstream_ci import derive_cross_repo_needs, validate_graph
 from ci_infrastructure.manifest import validate
 from ci_infrastructure.resolve_deps import (
     DepSpec,
@@ -360,11 +360,59 @@ def test_a_batch_kind_publishes_each_package(tmp_path: Path) -> None:
     }
 
 
-def test_an_hpc_batch_kind_is_not_supported_yet(tmp_path: Path) -> None:
-    body = _BATCH.replace("[matrix.build]\n", '[matrix.build]\nexecution = "hpc-atos"\n')
-    write_repo(tmp_path, "stack", body)
-    with pytest.raises(SchemaError, match="HPC job publishing several packages"):
-        parse_all(tmp_path)
+def test_an_hpc_batch_kind_publishes_each_package_unless_cached(tmp_path: Path) -> None:
+    import yaml
+    from conftest import render_single
+
+    from ci_infrastructure._github_api import EXECUTION_HPC_ATOS
+
+    body = _BATCH.replace("[matrix.build]\n", '[matrix.build]\nexecution = "hpc-atos"\n').replace(
+        'platform = "ubuntu-24.04"', 'platform = "hpc-atos-gnu"\nruns-on = "hpc"\nsite = "hpc-batch"'
+    )
+    jobs = yaml.safe_load(render_single(tmp_path, body, lane=EXECUTION_HPC_ATOS, name="stack"))["jobs"]
+    publish = [s for job in jobs.values() for s in job.get("steps", []) if s.get("name", "").startswith("Publish")]
+    assert [s["name"] for s in publish] == ["Publish libaec", "Publish sqlite3", "Publish proj"]
+    assert publish[0]["with"]["install-path"] == "${{ steps.build.outputs.install-path }}/libaec"
+    assert publish[0]["with"]["found"] == "${{ steps.build.outputs.cache-hit }}"
+
+
+def test_an_hpc_batch_job_archives_each_package() -> None:
+    from ci_infrastructure.hpc import jobscript
+
+    script = jobscript.render_job_script(
+        repo_script="#!/bin/bash\nbuild\n",
+        output_path="/o",
+        cmake_prefix_path="",
+        install_path="/w/install/a",
+        packages=["sqlite3", "proj"],
+    ).splitlines()
+    assert 'export CI_INSTALL_ROOT="/w/install/a"' in script
+    archives = [line for line in script if line.startswith("mv ")]
+    assert archives == [
+        'mv "/w/install/a/sqlite3.install.tar.zst.part" "/w/install/a/sqlite3.install.tar.zst"',
+        'mv "/w/install/a/proj.install.tar.zst.part" "/w/install/a/proj.install.tar.zst"',
+    ]
+    assert (
+        script.index("build")
+        < script.index(archives[0])
+        < script.index(jobscript.sentinel_echo(jobscript.SENTINEL_SUCCESS))
+    )
+    single = jobscript.render_job_script(
+        repo_script="build\n", output_path="/o", cmake_prefix_path="", install_path="/i"
+    )
+    assert "CI_INSTALL_ROOT" not in single
+
+
+def test_submit_wait_reads_the_batch_from_the_leg() -> None:
+    import json
+
+    from ci_infrastructure.hpc.orchestrate import batch_packages
+
+    two = {"_resolved": {"packages": {"sqlite3": {"own-artifact-name": "s"}, "proj": {"own-artifact-name": "p"}}}}
+    one = {"_resolved": {"packages": {"eckit": {"own-artifact-name": "e"}}}}
+    assert batch_packages(json.dumps(two)) == {"sqlite3": "s", "proj": "p"}
+    assert batch_packages(json.dumps(one)) == {}
+    assert batch_packages("") == {}
 
 
 def test_the_recipe_sees_the_packages_in_build_order(tmp_path: Path) -> None:
