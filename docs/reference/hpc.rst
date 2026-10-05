@@ -86,13 +86,13 @@ against its leg. It may use
      - the name of the artifact
    * - ``execution``
      - the lane the leg runs in, ``runner`` or ``hpc-atos``
-   * - ``| sh``
-     - quotes a value as one shell word
+   * - ``| quote``
+     - quotes a value as one shell word, as Ansible's filter of that name; ``| sh`` is an older alias
 
 Any other name is an error, also inside a branch that is never taken,
 since :doc:`cli/ci-infrastructure-generate` checks the names beforehand.
 ``leg['x']`` escapes this check.
-``| sh`` does not suit a list of flags such as ``ctest-args`` or a ``module`` command,
+``| quote`` does not suit a list of flags such as ``ctest-args`` or a ``module`` command,
 which must stay several words.
 The ``CI_*`` variables and ``CMAKE_PREFIX_PATH`` are shell variables, resolved on the cluster, not template names.
 

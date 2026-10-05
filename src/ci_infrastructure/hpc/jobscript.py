@@ -113,7 +113,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
         loader=jinja2.ChoiceLoader(loaders),
         # A name the leg does not declare fails instead of rendering empty.
         undefined=jinja2.StrictUndefined,
-        # Shell, not markup; quote per use with the `sh` filter.
+        # Shell, not markup; quote per use with the `quote` (alias `sh`) filter.
         autoescape=False,
         # Keeps a templated #SBATCH block contiguous for _split_header.
         trim_blocks=True,
@@ -122,7 +122,7 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
         newline_sequence="\n",
     )
     # For a single shell word only; a list of flags must stay unquoted.
-    env.filters["sh"] = shlex.quote
+    env.filters["quote"] = env.filters["sh"] = shlex.quote
     return env
 
 

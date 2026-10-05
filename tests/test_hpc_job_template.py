@@ -92,9 +92,11 @@ def test_shell_metacharacters_survive_verbatim() -> None:
     assert _render("a && b > c || d 'e'\n") == "a && b > c || d 'e'\n"
 
 
-def test_sh_filter_quotes_a_hostile_value() -> None:
+@pytest.mark.parametrize("name", ["quote", "sh"])
+def test_quote_filter_quotes_a_hostile_value(name: str) -> None:
     leg = {"ctest-args": "-E 's_test|s_zombies'"}
-    assert _render("ctest {{ ctest_args | sh }}\n", leg) == "ctest '-E '\"'\"'s_test|s_zombies'\"'\"''\n"
+    expected = "ctest '-E '\"'\"'s_test|s_zombies'\"'\"''\n"
+    assert _render(f"ctest {{{{ ctest_args | {name} }}}}\n", leg) == expected
 
 
 def test_a_module_loop_leaves_no_blank_lines() -> None:
