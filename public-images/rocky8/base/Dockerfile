@@ -17,6 +17,7 @@ RUN dnf -y install dnf-plugins-core \
     bison \
     flex \
     curl \
+    ncurses-devel \
     wget \
     ca-certificates \
     gnupg2 \
