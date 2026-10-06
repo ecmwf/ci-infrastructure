@@ -108,6 +108,22 @@ EOF
   echo "openmp: $binary"
 }
 
+# As CMake's FindMPI does: the wrapper's flags with the named compiler, not the
+# wrapper's default `gcc`. Four ranks, as the MPI tests ask for, on few cores.
+expect_openmpi() {
+  local cc="$1" out
+  [ -n "$cc" ] || fail "'$variant' names openmpi but no gcc to build with"
+  printf '%s\n' '#include <mpi.h>' '#include <stdio.h>' \
+    'int main(int c, char** v) { int r; MPI_Init(&c, &v); MPI_Comm_rank(MPI_COMM_WORLD, &r);' \
+    '  printf("rank %d\n", r); MPI_Finalize(); return 0; }' >"$omp_tmp/mpi.c"
+  # shellcheck disable=SC2046
+  "$cc" $(mpicc -showme:compile) "$omp_tmp/mpi.c" -o "$omp_tmp/mpi.bin" $(mpicc -showme:link) \
+    || fail "$cc cannot build an MPI program with mpicc's flags"
+  out="$(mpirun -np 4 "$omp_tmp/mpi.bin" 2>&1)" || { printf '%s\n' "$out" >&2; fail "mpirun -np 4 failed"; }
+  [ "$(grep -c '^rank ' <<<"$out")" -eq 4 ] || { printf '%s\n' "$out" >&2; fail "mpirun -np 4 did not start 4 ranks"; }
+  echo "openmpi: $(mpirun --version | head -1)"
+}
+
 variant="${DECLARES#*/}"
 declares_gcc=""
 for token in ${variant//-/ }; do
@@ -135,13 +151,16 @@ fi
 
 for token in ${variant//-/ }; do
   case "$token" in
-    gcc[0-9]*)      expect_pair "gcc-${token#gcc}" "g++-${token#gcc}" "${token#gcc}" ;;
-    gcc)            expect_pair gcc g++ "" ;;
+    gcc[0-9]*)      expect_pair "gcc-${token#gcc}" "g++-${token#gcc}" "${token#gcc}"
+                    mpi_cc="gcc-${token#gcc}" ;;
+    gcc)            expect_pair gcc g++ ""
+                    mpi_cc=gcc ;;
     clang[0-9]*)    expect_pair "clang-${token#clang}" "clang++-${token#clang}" "${token#clang}" ;;
     gfortran[0-9]*) expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
                     expect_openmp "gfortran-${token#gfortran}" f ;;
     gfortran)       expect_compiler gfortran ""
                     expect_openmp gfortran f ;;
+    openmpi)        expect_openmpi "${mpi_cc:-}" ;;
   esac
 done
 
