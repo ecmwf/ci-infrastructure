@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import time
@@ -47,6 +48,19 @@ def truncate_remote_file(conn: Connection, *, path: str) -> None:
     parent = str(PurePosixPath(path).parent)
     _run_remote(conn, ["mkdir", "-p", parent], what=f"Remote mkdir of {parent}")
     _run_remote(conn, ["sh", "-c", f": > {shlex.quote(path)}"], what=f"Remote truncate of {path}")
+
+
+_SAFE_DEP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def remote_dep_names(local_prefixes: Sequence[str]) -> list[str]:
+    """Each prefix's directory name on the cluster: its own name, as on the runner, so a
+    library's relative RPATH ($ORIGIN/../../<package>/lib) resolves the same on both.
+    The index when names collide or are unsafe."""
+    names = [PurePosixPath(p.rstrip("/")).name for p in local_prefixes]
+    if len(set(names)) == len(names) and all(_SAFE_DEP_NAME.fullmatch(n) for n in names):
+        return names
+    return [str(i) for i in range(len(local_prefixes))]
 
 
 def _marker_path(staging_dir: str) -> str:
@@ -198,11 +212,11 @@ def ship_source(
     conn.sendfile(local_tgz, remote_tgz)
     local_tgz.unlink()
     if remote_deps_dir is not None:
-        for index, prefix in enumerate(local_prefixes):
+        for index, (prefix, name) in enumerate(zip(local_prefixes, remote_dep_names(local_prefixes), strict=True)):
             push_tree(
                 conn,
                 local_dir=prefix,
-                remote_dir=f"{remote_deps_dir.rstrip('/')}/{index}",
+                remote_dir=f"{remote_deps_dir.rstrip('/')}/{name}",
                 tar_dir=tar_dir,
                 tarball_suffix="",
                 local_tar_name=f"{run_id}.dep{index}.tgz",

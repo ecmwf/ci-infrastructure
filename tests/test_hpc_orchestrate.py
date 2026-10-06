@@ -64,7 +64,10 @@ class LocalShell:
     ("spec", "remote", "locals_"),
     [
         ("", "", []),
-        ("/run/a:/run/b;/run/c", "/s/art/deps/0:/s/art/deps/1:/s/art/deps/2", ["/run/a", "/run/b", "/run/c"]),
+        ("/run/a:/run/b;/run/c", "/s/art/deps/a:/s/art/deps/b:/s/art/deps/c", ["/run/a", "/run/b", "/run/c"]),
+        # a collision or an unsafe name falls back to the index
+        ("/x/a:/y/a", "/s/art/deps/0:/s/art/deps/1", ["/x/a", "/y/a"]),
+        ("/x/a b:/y/c", "/s/art/deps/0:/s/art/deps/1", ["/x/a b", "/y/c"]),
     ],
 )
 def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps(spec: str, remote: str, locals_: list[str]) -> None:

@@ -59,6 +59,14 @@ def _parse_matrix_leg(raw: str) -> dict[str, Any]:
     return leg
 
 
+def batch_packages(matrix_leg: str) -> dict[str, str]:
+    """Package -> artifact name for a kind that publishes several; empty for one."""
+    packages = (_parse_matrix_leg(matrix_leg).get("_resolved") or {}).get("packages") or {}
+    if len(packages) < 2:
+        return {}
+    return {name: str(info["own-artifact-name"]) for name, info in packages.items()}
+
+
 def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) -> str:
     source = repo_script.read_text()
     if not jobscript.is_job_template(repo_script):
@@ -108,10 +116,13 @@ class RemotePaths(NamedTuple):
 
 
 def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str, list[str], str]:
-    """Map runner-local dep prefixes to ``<staging_dir>/deps/<i>``: (cluster prefix path, local prefixes, deps dir)."""
+    """Map runner-local dep prefixes to ``<staging_dir>/deps/<name>``.
+
+    Returns (cluster prefix path, local prefixes, deps dir).
+    """
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
-    remote_prefixes = [f"{remote_deps_dir}/{index}" for index in range(len(local_prefixes))]
+    remote_prefixes = [f"{remote_deps_dir}/{name}" for name in transfer.remote_dep_names(local_prefixes)]
     return ":".join(remote_prefixes), local_prefixes, remote_deps_dir
 
 
@@ -501,11 +512,15 @@ def submit_wait(
             "would write outside the intended paths."
         )
 
+    packages = batch_packages(matrix_leg)
+    batch = "true" if packages else "false"
+
     def cache_hit() -> bool:
-        if dryrun or no_publish or not s3_store.object_exists(artifact_name):
+        names = list(packages.values()) or [artifact_name]
+        if dryrun or no_publish or not all(s3_store.object_exists(n) for n in names):
             return False
-        print(f"submit-wait: artifact '{artifact_name}' already in the store — skipping build (cache hit).")
-        write_outputs({"install-path": local_install_path, "cache-hit": "true"})
+        print(f"submit-wait: {', '.join(repr(n) for n in names)} already in the store — skipping build (cache hit).")
+        write_outputs({"install-path": local_install_path, "cache-hit": "true", "batch": batch})
         return True
 
     if cache_hit():
@@ -539,6 +554,7 @@ def submit_wait(
         staging_dir=paths.staging if ships_source else None,
         run_id=run_id if ships_source else None,
         marker_wait_timeout=marker_wait_timeout,
+        packages=list(packages),
     )
     print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
     print(rendered)
@@ -626,13 +642,13 @@ def submit_wait(
             print(f"submit-wait: job {jid} finished successfully (test-only; nothing to publish).")
             return
         print(f"submit-wait: job {jid} finished successfully. Fetching install tree...")
-        transfer.fetch_install(
-            site._connection,
-            remote_install_dir=paths.install,
-            local_install_dir=local_install_path,
-            tar_dir=tar_dir,
-        )
-        write_outputs({"install-path": local_install_path, "cache-hit": "false"})
+        for remote, local in [(f"{paths.install}/{p}", f"{local_install_path}/{p}") for p in packages] or [
+            (paths.install, local_install_path)
+        ]:
+            transfer.fetch_install(
+                site._connection, remote_install_dir=remote, local_install_dir=local, tar_dir=tar_dir
+            )
+        write_outputs({"install-path": local_install_path, "cache-hit": "false", "batch": batch})
         return
 
     detail = {

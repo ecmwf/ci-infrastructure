@@ -11,7 +11,7 @@ the job waits for that marker, unpacks into node-local ``$TMPDIR`` and builds.
 from __future__ import annotations
 
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Final
@@ -60,7 +60,7 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages")
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -154,6 +154,8 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     context["leg"] = dict(leg)
     context["artifact_name"] = artifact_name
     context["execution"] = execution
+    # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
+    context["ci_packages"] = list((leg.get("_resolved") or {}).get("packages") or {})
     return context
 
 
@@ -299,7 +301,9 @@ def render_job_script(
     run_id: str | None = None,
     marker_wait_timeout: int = DEFAULT_MARKER_WAIT_TIMEOUT,
     env: Mapping[str, str] | None = None,
+    packages: Sequence[str] = (),
 ) -> str:
+    """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here."""
     shebang, header, body = _split_header(repo_script)
 
     out: list[str] = [shebang or "#!/bin/bash"]
@@ -316,6 +320,8 @@ def render_job_script(
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
     out.append(f'export CI_INSTALL_PREFIX="{install_path}"')
     out.append(f'export CI_INSTALL_ARCHIVE="{install_archive_path(install_path)}"')
+    if packages:
+        out.append(f'export CI_INSTALL_ROOT="{install_path}"')
     for key, value in (env or {}).items():
         out.append(f'export {key}="{value}"')
     # Armed before the marker wait and body.
@@ -327,5 +333,10 @@ def render_job_script(
         out.append("")
     out.extend(body)
     out.append("")
+    for name in packages:
+        archive = install_archive_path(f"{install_path}/{name}")
+        # .part + mv, so the fetcher only ever sees a complete archive.
+        out.append(f'tar -cf - -C "$CI_INSTALL_ROOT/{name}" . | zstd -T0 -q -o "{archive}.part"')
+        out.append(f'mv "{archive}.part" "{archive}"')
     out.append(sentinel_echo(SENTINEL_SUCCESS))
     return "\n".join(out) + "\n"

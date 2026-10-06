@@ -89,6 +89,9 @@ outputs:
   cache-hit:
     description: '"true" if the artifact already existed and no job was submitted'
     value: ${{ steps.submit.outputs.cache-hit }}
+  batch:
+    description: '"true" for a kind that publishes several packages: install-path holds one tree per package, which the caller publishes'
+    value: ${{ steps.submit.outputs.batch }}
 
 runs:
   using: composite
@@ -163,7 +166,7 @@ runs:
         "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
     - name: Publish
-      if: ${{ inputs.publish != 'false' }}
+      if: ${{ inputs.publish != 'false' && steps.submit.outputs.batch != 'true' }}
       uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
       with:
         install-path: ${{ steps.submit.outputs.install-path }}

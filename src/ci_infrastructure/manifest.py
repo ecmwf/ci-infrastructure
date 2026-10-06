@@ -83,6 +83,11 @@ class PackageTable(_Table):
     submodules: Literal["true", "recursive"] | None = Field(
         default=None, description="`actions/checkout` `submodules` for the build jobs."
     )
+    meta: bool = Field(
+        strict=True,
+        default=False,
+        description="An umbrella package: no artifact of its own. A dep on it stands for its `[[deps]]`.",
+    )
 
     @field_validator("repo")
     @classmethod
@@ -103,18 +108,22 @@ class PackageTable(_Table):
 class DepTable(_Table):
     """`[[deps]]`: one upstream package whose artifact every applicable leg fetches."""
 
-    repo: str = Field(description="`owner/name` of the upstream repo.")
+    repo: str | None = Field(
+        default=None, description="`owner/name` of the upstream repo; absent for a package of this repo."
+    )
     package: str | tuple[str, ...] = Field(
         description="The upstream's `[package].prefix`; a list declares one dep per package, sharing the other fields."
     )
-    ref: str = Field(
-        description="Branch, tag or 40-char SHA. A `sync-branch/` or `feature/` branch of the same name in the "
-        "upstream overrides it."
+    ref: str | None = Field(
+        default=None,
+        description="Branch, tag or 40-char SHA; required with `repo`. A `sync-branch/` or `feature/` branch of the "
+        "same name in the upstream overrides it. A package of this repo is built from the same commit.",
     )
-    compiler_inputs: tuple[str, ...] = Field(
+    compiler_inputs: tuple[str, ...] | None = Field(
+        default=None,
         alias="compiler-inputs",
-        description="Leg fields holding the upstream's compilers; must match the upstream's "
-        "`[package].compiler-inputs`. `[]` if the upstream is compiler-independent.",
+        description="Leg fields holding the upstream's compilers; must match the upstream package's "
+        "`compiler-inputs`, which apply when this is omitted. `[]` if the upstream is compiler-independent.",
     )
     build_type_input: str = Field(
         default="build-type", alias="build-type-input", description="Leg field selecting the upstream's build type."
@@ -155,21 +164,35 @@ class DepTable(_Table):
 
     @field_validator("repo")
     @classmethod
-    def _repo_shape(cls, v: str) -> str:
-        return _check_repo(v)
+    def _repo_shape(cls, v: str | None) -> str | None:
+        return v if v is None else _check_repo(v)
 
     @field_validator("compiler_inputs")
     @classmethod
-    def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        return _check_compiler_inputs(v)
+    def _compiler_inputs(cls, v: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        return v if v is None else _check_compiler_inputs(v)
 
     @field_validator("ref")
     @classmethod
-    def _ref_nonempty(cls, v: str) -> str:
+    def _ref_nonempty(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         s = v.strip()
         if not s:
             raise ValueError('must be a branch, tag or 40-char SHA, e.g. "main"')
         return s
+
+    @model_validator(mode="after")
+    def _ref_goes_with_repo(self) -> DepTable:
+        if self.repo is not None and self.ref is None:
+            raise ValueError("needs a 'ref' with its 'repo'")
+        if self.repo is None and self.ref is not None:
+            raise ValueError("'ref' without 'repo': a package of this repo is built from the same commit")
+        return self
+
+    @property
+    def packages(self) -> tuple[str, ...]:
+        return (self.package,) if isinstance(self.package, str) else self.package
 
     @field_validator("options", mode="before")
     @classmethod
@@ -215,6 +238,20 @@ class DepTable(_Table):
                 raise ValueError(f"{name}.execution names no lane: {bad}; lanes are {sorted(_LANES)}")
             out[str(key)] = tuple(str(x) for x in values)
         return out
+
+
+class PackageEntry(_Table):
+    """`[packages.<prefix>]`: a further package of this repo, published under `<prefix>`."""
+
+    compiler_inputs: tuple[str, ...] = Field(
+        alias="compiler-inputs", description="As `[package].compiler-inputs`, for this package."
+    )
+    deps: tuple[DepTable, ...] = Field(default=(), description="As `[[deps]]`, for this package.")
+
+    @field_validator("compiler_inputs")
+    @classmethod
+    def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_compiler_inputs(v)
 
 
 class TriggerDownstreamTable(_Table):
@@ -286,6 +323,11 @@ class MatrixKindTable(_Table):
         default=None,
         alias="artifact-prefix",
         description="Publish under this prefix instead of `[package].prefix`, for a secondary artifact.",
+    )
+    packages: tuple[str, ...] | None = Field(
+        default=None,
+        description="The packages this kind publishes: `[package].prefix` or keys of `[packages]`. By default "
+        "`[package]`, or every `[packages]` entry when `[package]` is `meta`.",
     )
     container_credentials: bool = Field(
         strict=True,
@@ -365,10 +407,83 @@ class ManifestFile(_Table):
 
     package: PackageTable
     deps: tuple[DepTable, ...] = ()
+    packages: dict[str, PackageEntry] = Field(default_factory=dict)
     trigger_downstream: tuple[TriggerDownstreamTable, ...] = Field(default=(), alias="trigger-downstream")
     downstream: DownstreamTable | None = None
     generated: GeneratedTable | None = None
     matrix: dict[str, MatrixKindTable] = Field(default_factory=dict)
+
+    def published_by(self, kind: str) -> tuple[str, ...]:
+        """The prefixes `kind` publishes; empty for a kind that publishes nothing."""
+        body = self.matrix[kind]
+        if not body.publishes:
+            return ()
+        if body.packages is not None:
+            return body.packages
+        if body.artifact_prefix is not None:
+            return (body.artifact_prefix,)
+        return tuple(self.packages) if self.package.meta else (self.package.prefix,)
+
+    def deps_of(self, prefix: str) -> tuple[DepTable, ...]:
+        """A package's own `deps`; `[[deps]]` for `[package]` and an `artifact-prefix`."""
+        entry = self.packages.get(prefix)
+        return self.deps if entry is None else entry.deps
+
+    @model_validator(mode="after")
+    def _packages_consistent(self) -> ManifestFile:
+        own = self.package.prefix
+        for key in self.packages:
+            if not _ARTIFACT_PREFIX_RE.fullmatch(key):
+                raise ValueError(f"[packages.{key}] is not a valid prefix ({_ARTIFACT_PREFIX_RE.pattern})")
+            if key == own:
+                raise ValueError(f"[packages.{key}] repeats [package].prefix")
+        publishable = set(self.packages) | ({own} if not self.package.meta else set())
+        for where, deps in [("[[deps]]", self.deps), *((f"[packages.{k}]", e.deps) for k, e in self.packages.items())]:
+            for d in deps:
+                if d.repo is not None:
+                    continue
+                unknown = [p for p in d.packages if p not in publishable]
+                if unknown:
+                    raise ValueError(
+                        f"{where} names {unknown} of this repo, which declares no such package; "
+                        f"its packages are {sorted(publishable)}"
+                    )
+        self._no_sibling_cycle()
+        for kind, body in self.matrix.items():
+            if body.packages is not None and body.artifact_prefix is not None:
+                raise ValueError(f"[matrix.{kind}] sets both packages and artifact-prefix; use packages")
+            if body.packages is not None:
+                if not body.packages or len(set(body.packages)) != len(body.packages):
+                    raise ValueError(f"[matrix.{kind}].packages must list distinct packages, got {list(body.packages)}")
+                unknown = [p for p in body.packages if p not in publishable]
+                if unknown:
+                    raise ValueError(
+                        f"[matrix.{kind}].packages names {unknown}; this repo publishes {sorted(publishable)}"
+                    )
+            if self.package.meta and body.publishes and not self.published_by(kind):
+                raise ValueError(
+                    f"[matrix.{kind}] would publish the meta package {own!r}, which has no artifact; "
+                    "list its [packages] or set publishes = false"
+                )
+        return self
+
+    def _no_sibling_cycle(self) -> None:
+        edges = {k: [p for d in e.deps if d.repo is None for p in d.packages] for k, e in self.packages.items()}
+        edges[self.package.prefix] = [p for d in self.deps if d.repo is None for p in d.packages]
+        state: dict[str, int] = {}
+
+        def walk(node: str, path: list[str]) -> None:
+            if state.get(node) == 2:
+                return
+            if state.get(node) == 1:
+                raise ValueError(f"packages of this repo depend on each other in a cycle: {' -> '.join(path)}")
+            state[node] = 1
+            for nxt in edges.get(node, []):
+                walk(nxt, [*path, nxt])
+            state[node] = 2
+
+        for node in edges:
+            walk(node, [node])
 
     @model_validator(mode="after")
     def _no_duplicate_triggers(self) -> ManifestFile:
@@ -402,6 +517,7 @@ _LOC_HEADS: Final = {
     "trigger-downstream": "array",
     "deps": "array",
     "matrix": "subtable",
+    "packages": "subtable",
     "package": "table",
     "generated": "table",
     "downstream": "table",

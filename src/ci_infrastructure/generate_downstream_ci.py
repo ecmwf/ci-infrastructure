@@ -48,7 +48,8 @@ from .manifest import (
     TRIGGER_UPSTREAM_CHANGE,
     VISIBILITY_PRIVATE,
     VISIBILITY_PUBLIC,
-    MatrixKindTable,
+    DepTable,
+    ManifestFile,
     Visibility,
 )
 from .manifest import validate as validate_manifest
@@ -152,6 +153,8 @@ class MatrixKind:
     publishes: bool
     container_credentials: bool
     artifact_prefix: str | None = None
+    # The prefixes this kind publishes; empty when it publishes nothing.
+    packages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -174,6 +177,15 @@ class DepRef:
         return self.unless is not None and set(self.unless) == {"execution"} and lane in self.unless["execution"]
 
 
+@dataclass(frozen=True)
+class PackageRef:
+    compiler_inputs: tuple[str, ...]
+    # Deps in other repos; a dep on a package of this repo is in `siblings`.
+    deps: tuple[DepRef, ...]
+    siblings: tuple[str, ...] = ()
+    meta: bool = False
+
+
 @dataclass
 class Manifest:
     path: Path
@@ -189,6 +201,7 @@ class Manifest:
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
     downstream_exclude: tuple[str, ...] = ()
     generated_header: str = ""
+    packages: dict[str, PackageRef] = field(default_factory=dict)
 
 
 def parse_manifest(path: Path) -> Manifest:
@@ -210,7 +223,28 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
     if raw.package.repo is None:
         raise SchemaError(f"{path}: [package].repo is required")
 
-    matrices = _resolve_matrices(path, raw.matrix)
+    matrices = _resolve_matrices(path, raw)
+
+    def refs(deps: Sequence[DepTable]) -> PackageRef:
+        return PackageRef(
+            compiler_inputs=(),
+            deps=tuple(
+                DepRef(repo=d.repo, package=p, when=d.when, unless=d.unless)
+                for d in deps
+                if d.repo is not None
+                for p in d.packages
+            ),
+            siblings=tuple(p for d in deps if d.repo is None for p in d.packages),
+        )
+
+    packages = {
+        raw.package.prefix: replace(refs(raw.deps), compiler_inputs=raw.package.compiler_inputs, meta=raw.package.meta)
+    }
+    for prefix, entry in raw.packages.items():
+        packages[prefix] = replace(refs(entry.deps), compiler_inputs=entry.compiler_inputs)
+    for mk in matrices.values():
+        for prefix in mk.packages:
+            packages.setdefault(prefix, replace(packages[raw.package.prefix], meta=False))
 
     return Manifest(
         path=path,
@@ -221,19 +255,17 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
-        deps=[
-            DepRef(repo=d.repo, package=p, when=d.when, unless=d.unless)
-            for d in raw.deps
-            for p in ((d.package,) if isinstance(d.package, str) else d.package)
-        ],
+        deps=_distinct([d for info in packages.values() for d in info.deps]),
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
         downstream_exclude=raw.downstream.exclude if raw.downstream else (),
         generated_header=_normalise_header(raw.generated.header if raw.generated else ""),
+        packages=packages,
     )
 
 
-def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> dict[str, MatrixKind]:
+def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
+    raw_matrix = raw.matrix
     blocks = {
         k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw_matrix.items()
     }
@@ -256,6 +288,7 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
                 f"{path}: [matrix.{kind}] declares triggers = {sorted(body.triggers)!r} but a leg has no "
                 f"`job-script`; there is no recipe to run. Set it in [matrix.{kind}.defaults] or on the leg"
             )
+        published = raw.published_by(kind)
 
         resolved[kind] = MatrixKind(
             name=kind,
@@ -267,6 +300,7 @@ def _resolve_matrices(path: Path, raw_matrix: Mapping[str, MatrixKindTable]) -> 
             publishes=body.publishes,
             container_credentials=body.container_credentials,
             artifact_prefix=body.artifact_prefix,
+            packages=published,
         )
     return resolved
 
@@ -302,29 +336,75 @@ def derive_cross_repo_needs(manifests: Sequence[Manifest]) -> None:
     by_repo = {m.repo: m for m in manifests}
     for m in manifests:
         for kind, mk in m.matrices.items():
-            if not mk.triggers or any("/" in n for n in mk.needs):
-                continue
-            derived: list[str] = []
-            for dep in m.deps:
-                up = by_repo.get(dep.repo)
-                if dep.excluded_from(mk.execution) or up is None or not any(t.repo == m.repo for t in up.triggers):
-                    continue
-                candidates = [
-                    k
-                    for k, uk in up.matrices.items()
-                    if uk.triggers
-                    and uk.publishes
-                    and uk.execution == mk.execution
-                    and (uk.artifact_prefix or up.prefix) == dep.package
-                ]
-                if len(candidates) > 1:
-                    raise SchemaError(
-                        f"{m.path}: [matrix.{kind}] cannot derive its needs on {dep.package!r}: "
-                        f"{up.path} publishes it from {candidates}; name the one in needs"
-                    )
-                derived += [f"{up.package_name}/{k}" for k in candidates]
+            own = [m.packages[p] for p in mk.packages] or [m.packages[m.prefix]]
+            local = [
+                k
+                for p in dict.fromkeys(s for info in own for s in info.siblings)
+                for k, other in m.matrices.items()
+                if k != kind and other.execution == mk.execution and p in other.packages
+            ]
+            derived: list[str] = [k for k in dict.fromkeys(local) if k not in mk.needs]
+            if mk.triggers and not any("/" in n for n in mk.needs):
+                for dep in _expand_meta([d for info in own for d in info.deps], by_repo, mk.execution):
+                    up = by_repo.get(dep.repo)
+                    if up is None or not any(t.repo == m.repo for t in up.triggers):
+                        continue
+                    candidates = [
+                        k
+                        for k, uk in up.matrices.items()
+                        if uk.triggers and uk.execution == mk.execution and dep.package in uk.packages
+                    ]
+                    if len(candidates) > 1:
+                        raise SchemaError(
+                            f"{m.path}: [matrix.{kind}] cannot derive its needs on {dep.package!r}: "
+                            f"{up.path} publishes it from {candidates}; name the one in needs"
+                        )
+                    derived += [n for n in (f"{up.package_name}/{k}" for k in candidates) if n not in derived]
             if derived:
                 m.matrices[kind] = replace(mk, needs=(*mk.needs, *derived))
+
+
+def build_order(m: Manifest, kind: str) -> list[str]:
+    """The packages `kind` publishes, each after the packages of this repo it depends on."""
+    wanted = set(m.matrices[kind].packages)
+    out: list[str] = []
+
+    def place(p: str) -> None:
+        if p in out:
+            return
+        for s in m.packages[p].siblings:
+            if s in wanted:
+                place(s)
+        out.append(p)
+
+    for p in m.matrices[kind].packages:
+        place(p)
+    return out
+
+
+def _distinct(deps: Sequence[DepRef]) -> list[DepRef]:
+    """Order-preserving; DepRef holds dicts, so not by hash."""
+    out: list[DepRef] = []
+    for d in deps:
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def _expand_meta(deps: Sequence[DepRef], by_repo: Mapping[str, Manifest], lane: Execution) -> list[DepRef]:
+    """Replace a dep on a meta package by its members in `lane`, recursively; unknown producers stay."""
+    out: list[DepRef] = []
+    for dep in deps:
+        if dep.excluded_from(lane):
+            continue
+        up = by_repo.get(dep.repo)
+        info = up.packages.get(dep.package) if up is not None else None
+        if up is None or info is None or not info.meta:
+            out.append(dep)
+            continue
+        members = [*info.deps, *(DepRef(repo=up.repo, package=s) for s in info.siblings)]
+        out += _expand_meta(members, by_repo, lane)
+    return _distinct(out)
 
 
 def validate_graph(manifests: Sequence[Manifest]) -> None:
@@ -354,24 +434,29 @@ def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
         for kind, mk in m.matrices.items():
             if not mk.publishes:
                 continue
-            seen: dict[tuple[str, ...], dict[str, Any]] = {}
-            for leg in mk.legs:
-                identity = _artifact_identity(leg, m.compiler_inputs)
-                twin = seen.get(identity)
-                if twin is not None:
-                    shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(m.compiler_inputs)), identity))
-                    differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
-                    raise SchemaError(
-                        f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
-                        f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
-                        f"the artifact name, so they would publish different builds under one name. "
-                        f"The name is built from platform + "
-                        f"{sorted(m.compiler_inputs) or '(no compiler fields)'} + build-type + "
-                        f"python-version + options; give them distinct values there. For a different "
-                        f"module set or compiler that means a distinct `platform` slug (e.g. "
-                        f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
-                    )
-                seen[identity] = leg
+            for prefix in mk.packages or (m.prefix,):
+                _check_leg_identities(m, kind, mk, m.packages[prefix].compiler_inputs)
+
+
+def _check_leg_identities(m: Manifest, kind: str, mk: MatrixKind, compiler_inputs: Sequence[str]) -> None:
+    seen: dict[tuple[str, ...], dict[str, Any]] = {}
+    for leg in mk.legs:
+        identity = _artifact_identity(leg, compiler_inputs)
+        twin = seen.get(identity)
+        if twin is not None:
+            shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
+            differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
+            raise SchemaError(
+                f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
+                f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
+                f"the artifact name, so they would publish different builds under one name. "
+                f"The name is built from platform + "
+                f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
+                f"python-version + options; give them distinct values there. For a different "
+                f"module set or compiler that means a distinct `platform` slug (e.g. "
+                f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
+            )
+        seen[identity] = leg
 
 
 def validate_job_templates(m: Manifest) -> None:
@@ -873,6 +958,26 @@ def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
     return step
 
 
+def _publish_steps(m: Manifest, kind: str, root_output: str, found: str | None = None) -> list[Step]:
+    """One publish step per package of a kind that publishes several, from `<root>/<name>`."""
+    steps: list[Step] = []
+    for p in build_order(m, kind):
+        with_block = {
+            "install-path": f"${{{{ steps.build.outputs.{root_output} }}}}/{p}",
+            "artifact-name": f"${{{{ matrix._resolved.packages['{p}']['own-artifact-name'] }}}}",
+        }
+        if found is not None:
+            with_block["found"] = found
+        steps.append(
+            {
+                "name": f"Publish {p}",
+                "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
+                "with": with_block,
+            }
+        )
+    return steps
+
+
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
@@ -923,9 +1028,13 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     )
     if is_hpc:
         steps.append(_hpc_build_step(mk))
+        if len(mk.packages) > 1:
+            steps += _publish_steps(m, kind, "install-path", found="${{ steps.build.outputs.cache-hit }}")
     else:
         steps.append(_job_script_step(m, mk))
-        if mk.publishes:
+        if len(mk.packages) > 1:
+            steps += _publish_steps(m, kind, "install-root")
+        elif mk.publishes:
             steps.append(
                 {
                     "name": "Publish",

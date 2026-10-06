@@ -22,13 +22,14 @@ import click
 from . import job_names
 from ._errors import CIError
 from ._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
-from .generate_downstream_ci import Manifest, SchemaError, parse_manifest
+from .generate_downstream_ci import Manifest, SchemaError, build_order, parse_manifest
 from .hpc import jobscript
 
 _ENV_DEFAULTS: Final[Mapping[str, str]] = {
     "CI_SOURCE_DIR": "$PWD",
     "CI_BUILD_DIR": "$PWD/_ci/build",
     "CI_INSTALL_PREFIX": "$PWD/_ci/install",
+    "CI_INSTALL_ROOT": "$PWD/_ci/install",
     "CMAKE_PREFIX_PATH": "",
 }
 
@@ -97,6 +98,8 @@ def _from_manifest(manifest: Path, leg_title: str) -> tuple[Path, dict[str, Any]
     spec = str(leg.get("job-script") or "")
     if not spec:
         raise CIError(f"[matrix.{kind}] of {manifest} builds through an action, not a job-script; nothing to render")
+    if packages := build_order(m, kind):
+        leg = {**leg, "_resolved": {"packages": {p: {} for p in packages}}}
     return m.repo_root / spec.removeprefix("./"), leg, m.matrices[kind].execution, job_title(m, kind, leg)
 
 

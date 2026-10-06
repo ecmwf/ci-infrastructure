@@ -92,6 +92,43 @@ A library the cluster provides as a module, for example, is fetched only on the 
    otherwise :action:`resolve-deps` stops with an error naming both.
    Only the branch has to agree, not its commit, so a push in between is no conflict.
 
+Several packages in one repository
+----------------------------------
+
+A repository can publish further packages beside ``[package]``,
+each under its own prefix in a ``[packages.<prefix>]`` table with its own ``compiler-inputs`` and ``deps``.
+A dependency without ``repo`` names a package of the same repository and is built from the same commit.
+Each kind lists what it publishes in ``packages``.
+With ``meta = true``, ``[package]`` has no artifact of its own: a dependency on it stands for its ``[[deps]]``,
+so a consumer can take the whole set or only the packages it links:
+
+.. code:: toml
+
+   [package]
+   name = "stack-deps"
+   repo = "ecmwf/stack-dependencies"
+   compiler-inputs = ["cxx-compiler"]
+   meta = true
+
+   [[deps]]
+   package = ["sqlite3", "proj"]
+
+   [packages.sqlite3]
+   compiler-inputs = ["cxx-compiler"]
+
+   [packages.proj]
+   compiler-inputs = ["cxx-compiler"]
+   deps = [{ package = "sqlite3" }]
+
+   [matrix.build]
+   packages = ["sqlite3", "proj"]
+
+A kind may publish several packages: one job builds them, each after the packages of the repository it depends on,
+and publishes one artifact per package.
+Its recipe loops over ``ci_packages``, which lists them in that order, and installs each to ``$CI_INSTALL_ROOT/<name>``.
+A kind that publishes a package also waits for the other kinds that publish packages it depends on.
+On HPC the job script archives each package after the recipe, so the recipe only installs them.
+
 The build configurations
 ------------------------
 
