@@ -20,6 +20,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     bison \
     flex \
     curl \
+    diffutils \
     wget \
     ca-certificates \
     gnupg \
