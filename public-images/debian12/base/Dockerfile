@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y \
     make \
     build-essential \
     python3 \
+    python3-dev \
+    python3-pip \
+    python3-venv \
     libssl-dev \
     zlib1g-dev \
     libncurses-dev \
