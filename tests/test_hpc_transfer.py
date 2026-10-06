@@ -123,8 +123,8 @@ def test_ship_source_ships_and_unpacks_dep_prefixes(tmp_path: Path) -> None:
         remote_deps_dir=str(staging / "deps"),
     )
 
-    assert (staging / "deps" / "0" / "libfoo.a").read_text() == "x"
-    assert (staging / "deps" / "1" / "libbar.a").read_text() == "y"
+    assert (staging / "deps" / "dep0" / "libfoo.a").read_text() == "x"
+    assert (staging / "deps" / "dep1" / "libbar.a").read_text() == "y"
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 

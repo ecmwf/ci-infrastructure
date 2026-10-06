@@ -116,10 +116,13 @@ class RemotePaths(NamedTuple):
 
 
 def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str, list[str], str]:
-    """Map runner-local dep prefixes to ``<staging_dir>/deps/<i>``: (cluster prefix path, local prefixes, deps dir)."""
+    """Map runner-local dep prefixes to ``<staging_dir>/deps/<name>``.
+
+    Returns (cluster prefix path, local prefixes, deps dir).
+    """
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
-    remote_prefixes = [f"{remote_deps_dir}/{index}" for index in range(len(local_prefixes))]
+    remote_prefixes = [f"{remote_deps_dir}/{name}" for name in transfer.remote_dep_names(local_prefixes)]
     return ":".join(remote_prefixes), local_prefixes, remote_deps_dir
 
 
