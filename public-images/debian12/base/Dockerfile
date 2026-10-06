@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     libssl-dev \
     zlib1g-dev \
+    libncurses-dev \
     libbz2-dev \
     libreadline-dev \
     libsqlite3-dev \

@@ -31,6 +31,7 @@ RUN dnf -y install \
     python3-pytest \
     openssl-devel \
     zlib-devel \
+    ncurses-devel \
     gh \
  && dnf clean all && rm -rf /var/cache/dnf
 

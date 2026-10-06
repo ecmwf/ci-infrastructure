@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y \
     python3-pytest \
     python-is-python3 \
     libssl-dev \
+    zlib1g-dev \
+    libncurses-dev \
     build-essential- \
     gcc- \
     g++- \
