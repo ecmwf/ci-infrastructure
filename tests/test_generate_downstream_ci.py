@@ -2030,6 +2030,42 @@ def test_cross_repo_needs_are_derived_per_lane_from_deps(tmp_path: Path) -> None
     assert _derived(tmp_path) == {"build": ["a/build"], "build-hpc": ["a/build-hpc"], "test": ["build"]}
 
 
+@pytest.mark.parametrize(
+    ("predicate", "expected"),
+    [
+        ('unless = { execution = "hpc-atos" }', {"build": ["a/build"], "build-hpc": [], "test": ["build"]}),
+        ('when = { execution = "hpc-atos" }', {"build": [], "build-hpc": ["a/build-hpc"], "test": ["build"]}),
+        # a field other than the lane is only known at run time, so the need stays
+        (
+            'unless = { execution = "hpc-atos", options = "x" }',
+            {"build": ["a/build"], "build-hpc": ["a/build-hpc"], "test": ["build"]},
+        ),
+    ],
+)
+def test_a_dep_scoped_out_of_a_lane_is_not_needed_there(
+    tmp_path: Path, predicate: str, expected: dict[str, list[str]]
+) -> None:
+    write_repo(tmp_path, "a", _PRODUCER)
+    write_repo(
+        tmp_path,
+        "b",
+        _CONSUMER.format(needs="").replace("compiler-inputs = []\n", f"compiler-inputs = []\n{predicate}\n", 1),
+    )
+    manifests = parse_all(tmp_path)
+    derive_cross_repo_needs(manifests)
+    b = next(m for m in manifests if m.package_name == "b")
+    assert {k: list(mk.needs) for k, mk in b.matrices.items()} == expected
+
+
+def test_a_package_list_derives_one_need_per_producer_kind(tmp_path: Path) -> None:
+    write_repo(tmp_path, "a", _PRODUCER)
+    write_repo(tmp_path, "b", _CONSUMER.format(needs="").replace('package = "a"', 'package = ["a"]', 1))
+    manifests = parse_all(tmp_path)
+    derive_cross_repo_needs(manifests)
+    b = next(m for m in manifests if m.package_name == "b")
+    assert b.matrices["build"].needs == ("a/build",)
+
+
 def test_explicit_cross_repo_needs_are_kept(tmp_path: Path) -> None:
     assert _derived(tmp_path, needs='needs = ["a/build-hpc"]')["build"] == ["a/build-hpc"]
 

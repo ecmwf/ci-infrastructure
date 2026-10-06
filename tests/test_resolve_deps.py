@@ -35,7 +35,7 @@ from ci_infrastructure.resolve_deps import (
     Sha,
     _as_option,
     _resolve_own_sha,
-    _to_dep_spec,
+    _to_dep_specs,
     bfs_load_manifests,
     make_artifact_name,
     parse_manifest,
@@ -46,7 +46,7 @@ from ci_infrastructure.resolve_deps import (
 
 
 def _parse_deps(data: dict[str, Any]) -> list[DepSpec]:
-    return [_to_dep_spec(DepTable.model_validate(d)) for d in data["deps"]]
+    return [s for d in data["deps"] for s in _to_dep_specs(DepTable.model_validate(d))]
 
 
 BRANCH_HEAD: Final = "a" * 40
@@ -264,9 +264,59 @@ def test_parse_deps_when_rejects_bad_shape(bad: Any) -> None:
 
 def test_applies_to_requires_every_key_and_ignores_missing_fields() -> None:
     spec = _dep_spec("x", when={"options": frozenset({"extended"}), "build-type": frozenset({"Release"})})
-    assert spec.applies_to({"options": "extended", "build-type": "Release"})
-    assert not spec.applies_to({"options": "extended", "build-type": "Debug"})
-    assert not spec.applies_to({"build-type": "Release"})
+    assert spec.applies_to({"options": "extended", "build-type": "Release"}, EXECUTION_RUNNER)
+    assert not spec.applies_to({"options": "extended", "build-type": "Debug"}, EXECUTION_RUNNER)
+    assert not spec.applies_to({"build-type": "Release"}, EXECUTION_RUNNER)
+
+
+@pytest.mark.parametrize(
+    ("when", "unless", "lane", "expected"),
+    [
+        ({"execution": frozenset({"hpc-atos"})}, None, EXECUTION_HPC_ATOS, True),
+        ({"execution": frozenset({"hpc-atos"})}, None, EXECUTION_RUNNER, False),
+        (None, {"execution": frozenset({"hpc-atos"})}, EXECUTION_HPC_ATOS, False),
+        (None, {"execution": frozenset({"hpc-atos"})}, EXECUTION_RUNNER, True),
+        # unless only excludes where every field matches
+        (None, {"execution": frozenset({"hpc-atos"}), "options": frozenset({"plain"})}, EXECUTION_HPC_ATOS, True),
+        ({"options": frozenset({"mpi"})}, {"execution": frozenset({"hpc-atos"})}, EXECUTION_RUNNER, True),
+        ({"options": frozenset({"mpi"})}, {"execution": frozenset({"hpc-atos"})}, EXECUTION_HPC_ATOS, False),
+    ],
+)
+def test_applies_to_sees_the_lane_and_unless_negates(when: Any, unless: Any, lane: Execution, expected: bool) -> None:
+    spec = _dep_spec("x", when=when, unless=unless)
+    assert spec.applies_to({"options": "mpi"}, lane) is expected
+
+
+def test_a_package_list_declares_one_dep_each() -> None:
+    specs = _parse_deps({"deps": [{**_DEP_BASE, "package": ["libaec", "qhull"], "unless": {"execution": "hpc-atos"}}]})
+    assert [s.package for s in specs] == ["libaec", "qhull"]
+    assert all(s.unless == {"execution": frozenset({"hpc-atos"})} for s in specs)
+
+
+@pytest.mark.parametrize(
+    ("dep", "match"),
+    [
+        ({"package": []}, "package"),
+        ({"package": ["a", "a"]}, "twice"),
+        ({"when": {"execution": "hpc"}}, "names no lane"),
+        ({"unless": {"options": []}}, "unless.options"),
+    ],
+)
+def test_parse_deps_rejects_bad_package_lists_and_lanes(dep: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        _parse_deps({"deps": [{**_DEP_BASE, **dep}]})
+
+
+@pytest.mark.usefixtures("offline")
+def test_unless_on_the_lane_scopes_a_dep_out_of_hpc_legs() -> None:
+    own = _own("consumer")
+    module_on_hpc = _dep_spec("proj", unless={"execution": frozenset({EXECUTION_HPC_ATOS})})
+
+    runner_deps, _ = _resolve(own, [module_on_hpc], dict(_LEG))
+    hpc_deps, _ = _resolve(own, [module_on_hpc], dict(_LEG), lane=EXECUTION_HPC_ATOS)
+
+    assert [d.name for d in runner_deps] == ["proj"]
+    assert hpc_deps == []
 
 
 @pytest.mark.usefixtures("offline")

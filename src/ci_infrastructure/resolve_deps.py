@@ -138,12 +138,16 @@ class DepSpec:
     options_input: str | None = None
     # `options` does not propagate, so a `when` on it in a repo with consumers can make both sides disagree.
     when: Mapping[str, frozenset[str]] | None = None
+    unless: Mapping[str, frozenset[str]] | None = None
 
-    def applies_to(self, leg: Mapping[str, Any]) -> bool:
-        """Compared as str; a missing field never matches."""
-        if self.when is None:
-            return True
-        return all(str(leg.get(field, "")) in accepted for field, accepted in self.when.items())
+    def applies_to(self, leg: Mapping[str, Any], lane: Execution) -> bool:
+        """Compared as str; a missing field never matches. `execution` is the lane."""
+        ctx = {**leg, "execution": lane}
+
+        def matches(predicate: Mapping[str, frozenset[str]]) -> bool:
+            return all(str(ctx.get(field, "")) in accepted for field, accepted in predicate.items())
+
+        return (self.when is None or matches(self.when)) and (self.unless is None or not matches(self.unless))
 
 
 @dataclass(frozen=True)
@@ -227,10 +231,16 @@ class DispatchPlan:
     lane: Execution
 
 
-def _to_dep_spec(t: DepTable) -> DepSpec:
+def _to_dep_specs(t: DepTable) -> list[DepSpec]:
+    """One spec per package of a list-valued `package`."""
+    packages = (t.package,) if isinstance(t.package, str) else t.package
+    return [_to_dep_spec(t, p) for p in packages]
+
+
+def _to_dep_spec(t: DepTable, package: str) -> DepSpec:
     return DepSpec(
         repo=Repo(t.repo),
-        package=PackageName(t.package),
+        package=PackageName(package),
         ref=Ref(t.ref),
         compiler_inputs=list(t.compiler_inputs),
         build_type_input=t.build_type_input,
@@ -240,6 +250,7 @@ def _to_dep_spec(t: DepTable) -> DepSpec:
         option=t.options,
         options_input=t.options_input,
         when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
+        unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
     )
 
 
@@ -271,7 +282,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
             repo=as_repo(repo),
             compiler_inputs=list(raw.package.compiler_inputs),
         ),
-        deps=[_to_dep_spec(d) for d in raw.deps],
+        deps=[s for d in raw.deps for s in _to_dep_specs(d)],
         matrix=matrix,
         artifact_prefix_by_kind={k: b.artifact_prefix for k, b in raw.matrix.items() if b.artifact_prefix is not None},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
@@ -589,7 +600,7 @@ def resolve_leg(
         sub_manifest = manifest_cache.get((spec.repo, ref))
         if sub_manifest is not None:
             for sub_spec in sub_manifest.deps:
-                if not sub_spec.applies_to(parent_ctx):
+                if not sub_spec.applies_to(parent_ctx, lane):
                     continue
                 sub_deps.append(visit(sub_spec, parent_ctx, declared_by=spec.package))
 
@@ -667,7 +678,7 @@ def resolve_leg(
         order.append(spec.package)
         return resolved
 
-    applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry)]
+    applicable_deps = [spec for spec in own_deps if spec.applies_to(matrix_entry, lane)]
     for spec in applicable_deps:
         visit(spec, matrix_entry, declared_by=own.name)
 
@@ -897,7 +908,7 @@ def _run(
                 "direct-artifact-names": " ".join(
                     next(d.artifact_name for d in deps_resolved if d.name == s.package)
                     for s in local_manifest.deps
-                    if s.applies_to(entry)
+                    if s.applies_to(entry, lane)
                 ),
                 "job-name": job_names.name_suffix(entry, include, local_manifest.package.compiler_inputs),
             }

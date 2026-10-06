@@ -13,10 +13,11 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from ._github_api import (
     _OPTION_TOKEN_RE,
+    EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
     Execution,
     ManifestSchemaError,
@@ -25,6 +26,8 @@ from ._github_api import (
 Visibility: TypeAlias = Literal["public", "private"]
 VISIBILITY_PUBLIC: Final[Visibility] = "public"
 VISIBILITY_PRIVATE: Final[Visibility] = "private"
+
+_LANES: Final = frozenset({EXECUTION_RUNNER, EXECUTION_HPC_ATOS})
 
 TRIGGER_UPSTREAM_CHANGE: Final = "upstream-change"
 TRIGGER_REBUILD_REQUEST: Final = "rebuild-request"
@@ -101,7 +104,9 @@ class DepTable(_Table):
     """`[[deps]]`: one upstream package whose artifact every applicable leg fetches."""
 
     repo: str = Field(description="`owner/name` of the upstream repo.")
-    package: str = Field(min_length=1, description="The upstream's `[package].prefix`.")
+    package: str | tuple[str, ...] = Field(
+        description="The upstream's `[package].prefix`; a list declares one dep per package, sharing the other fields."
+    )
     ref: str = Field(
         description="Branch, tag or 40-char SHA. A `sync-branch/` or `feature/` branch of the same name in the "
         "upstream overrides it."
@@ -139,8 +144,13 @@ class DepTable(_Table):
     when: dict[str, tuple[str, ...]] | None = Field(
         default=None,
         description="Leg predicate: the dep applies only to legs where every field has one of the accepted "
-        "values, compared as strings. A scalar is a one-element list. A scoped-out dep is absent from the leg's "
-        "`cmake-prefix-path` and its deps hash.",
+        "values, compared as strings. A scalar is a one-element list. `execution` is the leg's lane "
+        "(`runner` or `hpc-atos`). A scoped-out dep is absent from the leg's `cmake-prefix-path` and its deps hash.",
+    )
+    unless: dict[str, tuple[str, ...]] | None = Field(
+        default=None,
+        description="The negation of `when`, in the same form: the dep does not apply to legs where every field "
+        "has one of the listed values.",
     )
 
     @field_validator("repo")
@@ -170,11 +180,25 @@ class DepTable(_Table):
             raise ValueError(f"invalid build option {v!r}: only [A-Za-z0-9_-] allowed")
         return v
 
-    @field_validator("when", mode="before")
+    @field_validator("package", mode="before")
     @classmethod
-    def _when_shape(cls, v: Any) -> Any:
+    def _package_shape(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            if not v:
+                raise ValueError("must not be empty")
+            return v
+        if not isinstance(v, (list, tuple)) or not v or not all(isinstance(x, str) and x for x in v):
+            raise ValueError(f"must be a package prefix or a non-empty list of them, got {v!r}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"lists a package twice: {list(v)}")
+        return tuple(v)
+
+    @field_validator("when", "unless", mode="before")
+    @classmethod
+    def _predicate_shape(cls, v: Any, info: ValidationInfo) -> Any:
         if v is None:
             return v
+        name = info.field_name
         if not isinstance(v, dict) or not v:
             raise ValueError(
                 f'must be a non-empty table of matrix field to accepted value(s), e.g. {{ options = ["extended"] }}; '
@@ -184,9 +208,11 @@ class DepTable(_Table):
         for key, accepted in v.items():
             values = accepted if isinstance(accepted, (list, tuple)) else [accepted]
             if not values:
-                raise ValueError(f"when.{key} must list at least one accepted value")
+                raise ValueError(f"{name}.{key} must list at least one accepted value")
             if any(isinstance(x, (dict, list, tuple)) for x in values):
-                raise ValueError(f"when.{key} values must be scalars, got {accepted!r}")
+                raise ValueError(f"{name}.{key} values must be scalars, got {accepted!r}")
+            if key == "execution" and (bad := sorted({str(x) for x in values} - _LANES)):
+                raise ValueError(f"{name}.execution names no lane: {bad}; lanes are {sorted(_LANES)}")
             out[str(key)] = tuple(str(x) for x in values)
         return out
 

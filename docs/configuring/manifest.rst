@@ -71,6 +71,20 @@ see :doc:`../using/feature-branches`.
 so that ``eckit`` asks for the ``stack-dependencies`` build made with the same compiler as its own.
 Dependencies are transitive: ``eckit``'s consumers receive ``ecbuild`` and ``stack-dependencies`` without declaring them again.
 
+``package`` may list several packages of one repository; they share the other fields.
+``when`` limits a dependency to the legs whose fields have one of the listed values,
+``unless`` excludes the legs that match it, and ``execution`` stands for the lane, ``runner`` or ``hpc-atos``.
+A library the cluster provides as a module, for example, is fetched only on the runners:
+
+.. code:: toml
+
+   [[deps]]
+   repo = "ecmwf/stack-dependencies"
+   package = ["proj", "qhull"]
+   ref = "master"
+   compiler-inputs = ["cxx-compiler"]
+   unless = { execution = "hpc-atos" }
+
 .. note::
 
    A package may also declare a dependency that it already receives transitively.
