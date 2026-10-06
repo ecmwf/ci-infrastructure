@@ -86,23 +86,6 @@ The rules for images are in
 `public-images/README.md <https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/README.md>`__.
 To add/modify a private image, contact the maintainers of `ci-infrastructure <https://github.com/ecmwf/ci-infrastructure>`__ .
 
-Keep the base images uniform
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Every ``base`` image provides the same environment, whatever the platform,
-so that a recipe that works on one platform does not fail on another for a missing system package.
-Each base lists what it provides explicitly, even where another package would pull it in:
-
-- Python 3 with ``venv``, ``pip`` and its headers,
-- the C libraries zlib, ncurses and OpenSSL with their headers,
-- no compiler; the variants add those.
-
-A library added to one base goes into **every** base, under that distribution's package name,
-e.g. ``zlib-devel`` on Rocky and Fedora, ``zlib1g-dev`` on Debian and Ubuntu, ``zlib`` on Arch.
-Only C libraries belong there: they follow the platform's ABI, so any compiler links them.
-C++ libraries depend on the compiler. They come from ``stack-dependencies``,
-are baked into a derived image (as Boost and Qt in the ``boost-qt`` variants), or are modules on the HPC.
-
 Currently the following public images are supported.
 Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 
@@ -230,3 +213,20 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 
 The one private image is ``eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools``.
 It lives in `ecmwf/ci-container-images <https://github.com/ecmwf/ci-container-images>`__.
+
+Keep the base images uniform
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every ``base`` image provides the same environment, whatever the platform,
+so that a recipe that works on one platform does not fail on another for a missing system package.
+Each base lists what it provides explicitly, even where another package would pull it in:
+
+- Python 3 with ``venv``, ``pip`` and its headers,
+- the C libraries zlib, ncurses and OpenSSL with their headers,
+- no compiler; the variants add those.
+
+A library added to one base goes into **every** base, under that distribution's package name,
+e.g. ``zlib-devel`` on Rocky and Fedora, ``zlib1g-dev`` on Debian and Ubuntu, ``zlib`` on Arch.
+Only C libraries belong there: they follow the platform's ABI, so any compiler links them.
+C++ libraries depend on the compiler. They come from ``stack-dependencies``,
+are baked into a derived image (as Boost and Qt in the ``boost-qt`` variants), or are modules on the HPC.
