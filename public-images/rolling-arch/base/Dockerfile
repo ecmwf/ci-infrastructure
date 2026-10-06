@@ -34,6 +34,8 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     python-pip \
     python-pytest \
     openssl \
+    zlib \
+    ncurses \
     github-cli \
  && pacman -Scc --noconfirm
 
