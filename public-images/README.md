@@ -15,7 +15,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 `public-images/<platform>/<variant>/Dockerfile` is published as `public-ci-images/<platform>-<variant>`.
 
 - `base` has system packages, cmake, Python and the baked `ci_infrastructure` package. It has **no compiler**.
-- Every `base` provides the same libraries and lists each one, even where another package would pull it in: Python 3 with `venv`, `pip` and headers, and the C libraries zlib, ncurses and OpenSSL with headers. A C library has the platform's ABI, so any compiler links it; C++ libraries depend on the compiler and come from stack-dependencies instead.
+- Every `base` provides the same libraries and lists each one, even where another package would pull it in: Python 3 with `venv`, `pip` and headers, and the C libraries zlib, ncurses and OpenSSL with headers. A C library has the platform's ABI, so any compiler links it. C++ libraries depend on the compiler: they come from stack-dependencies, are baked into a derived image (as Boost and Qt in the `boost-qt` variants), or are HPC modules.
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
 - The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, and `openmpi` a working `mpicc`/`mpirun`. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
