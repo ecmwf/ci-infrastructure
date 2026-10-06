@@ -31,6 +31,7 @@ RUN dnf -y install dnf-plugins-core \
     python3-devel \
     python3-pip \
     openssl-devel \
+    zlib-devel \
  && dnf clean all && rm -rf /var/cache/dnf
 
 RUN python3 -m pip install --no-cache-dir pytest
