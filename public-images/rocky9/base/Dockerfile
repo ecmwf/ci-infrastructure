@@ -17,6 +17,7 @@ RUN dnf -y install dnf-plugins-core \
     perl-FindBin \
     perl-File-Compare \
     curl \
+    diffutils \
     ncurses-devel \
     wget \
     ca-certificates \

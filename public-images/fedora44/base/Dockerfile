@@ -15,6 +15,7 @@ RUN dnf -y install \
     perl-FindBin \
     perl-File-Compare \
     curl \
+    diffutils \
     wget \
     ca-certificates \
     gnupg2 \

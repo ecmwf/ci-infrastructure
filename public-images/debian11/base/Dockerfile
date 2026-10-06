@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     bison \
     flex \
     curl \
+    diffutils \
     wget \
     ca-certificates \
     gnupg \

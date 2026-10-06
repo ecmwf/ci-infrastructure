@@ -223,6 +223,7 @@ Each base lists what it provides explicitly, even where another package would pu
 
 - Python 3 with ``venv``, ``pip`` and its headers,
 - the C libraries zlib, ncurses and OpenSSL with their headers,
+- ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
 - no compiler; the variants add those.
 
 A library added to one base goes into **every** base, under that distribution's package name,

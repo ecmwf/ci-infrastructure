@@ -143,7 +143,8 @@ for header in zlib.h ncurses.h openssl/ssl.h; do
   [ -f "/usr/include/$header" ] || fail "/usr/include/$header is missing; every base lists the library providing it"
 done
 python3 -m venv "$omp_tmp/venv" || fail "python3 -m venv fails; on Debian/Ubuntu the base lists python3-venv"
-echo "uniform: zlib, ncurses and OpenSSL headers, python3 venv"
+command -v cmp >/dev/null || fail "cmp is missing; every base lists diffutils"
+echo "uniform: zlib, ncurses and OpenSSL headers, python3 venv, diffutils"
 
 # gfortran-N Depends on gcc-N, so a GNU toolchain can arrive as another package's
 # dependency and become the cc a build silently picks up.
