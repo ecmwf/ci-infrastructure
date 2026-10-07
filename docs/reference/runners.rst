@@ -225,6 +225,8 @@ Each base lists what it provides explicitly, even where another package would pu
 - `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base,
 - the C libraries zlib, ncurses and OpenSSL with their headers,
 - ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
+- the command-line tools ``git``, ``gh``, ``curl``, ``wget``, ``cmake`` (3.26 or newer), ``ninja``, ``make``,
+  ``bison``, ``flex``, ``jq``, ``unzip``, ``zstd``, ``sudo`` and ``gpg``,
 - no compiler; the variants add those.
 
 A library added to one base goes into **every** base, under that distribution's package name,
