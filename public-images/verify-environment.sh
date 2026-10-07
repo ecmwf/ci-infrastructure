@@ -3,44 +3,59 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# verify-image.sh <platform>/<variant>: checks the contract in public-images/README.md
+# verify-environment.sh <platform>/<variant>: checks the contract in public-images/README.md
 # from INSIDE the image (build-image.sh --test, smoke-test-runners.yml).
 # Must be the first bash of its container: BASH_ENV leaves the marker checked last.
+#
+# verify-environment.sh --host: the part a self-hosted runner or a custom image
+# needs too (uv, CMake, headers, tools), without the official images' own checks.
 set -euo pipefail
 
-DECLARES="${1:?usage: verify-image.sh <platform>/<variant>}"
+if [ "${1:-}" = "--host" ]; then
+  mode=host
+  DECLARES="$(hostname)"
+else
+  mode=image
+  DECLARES="${1:?usage: verify-environment.sh <platform>/<variant> | --host}"
+fi
 # The floor libaec sets, which is the highest of any submodule we build.
 MIN_CMAKE=3.26
 
 fail() { echo "::error::$DECLARES: $*"; exit 1; }
 
-: "${CI_INFRASTRUCTURE_PYTHON:?the image should set CI_INFRASTRUCTURE_PYTHON}"
-# ci-infrastructure's interpreter is its own: uv-managed under /opt/ci-infrastructure,
-# and never on PATH, so no build or job step picks it up.
-case "$CI_INFRASTRUCTURE_PYTHON" in
-  /opt/ci-infrastructure/*) ;;
-  *) fail "CI_INFRASTRUCTURE_PYTHON=$CI_INFRASTRUCTURE_PYTHON is not under /opt/ci-infrastructure" ;;
-esac
-case ":$PATH:" in
-  *":$(dirname "$CI_INFRASTRUCTURE_PYTHON"):"*) fail "$(dirname "$CI_INFRASTRUCTURE_PYTHON") is on PATH" ;;
-esac
-"$CI_INFRASTRUCTURE_PYTHON" -I -c 'import ci_infrastructure' || fail "$CI_INFRASTRUCTURE_PYTHON cannot import ci_infrastructure"
-echo "python: $CI_INFRASTRUCTURE_PYTHON ($("$CI_INFRASTRUCTURE_PYTHON" -I -c 'import sys; print(sys.version.split()[0])'))"
+if [ "$mode" = image ]; then
+  : "${CI_INFRASTRUCTURE_PYTHON:?the image should set CI_INFRASTRUCTURE_PYTHON}"
+  # ci-infrastructure's interpreter is its own: uv-managed under /opt/ci-infrastructure,
+  # and never on PATH, so no build or job step picks it up.
+  case "$CI_INFRASTRUCTURE_PYTHON" in
+    /opt/ci-infrastructure/*) ;;
+    *) fail "CI_INFRASTRUCTURE_PYTHON=$CI_INFRASTRUCTURE_PYTHON is not under /opt/ci-infrastructure" ;;
+  esac
+  case ":$PATH:" in
+    *":$(dirname "$CI_INFRASTRUCTURE_PYTHON"):"*) fail "$(dirname "$CI_INFRASTRUCTURE_PYTHON") is on PATH" ;;
+  esac
+  "$CI_INFRASTRUCTURE_PYTHON" -I -c 'import ci_infrastructure' || fail "$CI_INFRASTRUCTURE_PYTHON cannot import ci_infrastructure"
+  echo "python: $CI_INFRASTRUCTURE_PYTHON ($("$CI_INFRASTRUCTURE_PYTHON" -I -c 'import sys; print(sys.version.split()[0])'))"
+fi
 
 command -v uv >/dev/null || fail "uv is not on PATH"
-: "${UV_PYTHON_INSTALL_DIR:?the image should set UV_PYTHON_INSTALL_DIR}"
-echo "uv: $(uv --version), Pythons for builds in $UV_PYTHON_INSTALL_DIR"
+if [ "$mode" = image ]; then
+  : "${UV_PYTHON_INSTALL_DIR:?the image should set UV_PYTHON_INSTALL_DIR}"
+fi
+echo "uv: $(uv --version), Pythons for builds in ${UV_PYTHON_INSTALL_DIR:-the uv default}"
 
-# Each reaches the image through a --build-arg that build-image.sh passes only
-# to Dockerfiles declaring the ARG, so broken wiring leaves it EMPTY, not absent.
-: "${CI_INFRASTRUCTURE_BAKED_REF:?the image should record which commit it baked}"
-: "${CI_IMAGE_NAME:?the image should record its own name}"
-: "${CI_IMAGE_TAG:?the image should record its own tag}"
-: "${CI_IMAGE_CREATED:?the image should record when it was built}"
-: "${CI_IMAGE_DOCKERFILE_URL:?the image should record a link to its Dockerfile}"
-# Catches a variant that did not re-declare CI_IMAGE_*.
-[ "$CI_IMAGE_NAME" = "$DECLARES" ] || fail "image reports itself as '$CI_IMAGE_NAME'"
-echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED, ci-infrastructure $CI_INFRASTRUCTURE_BAKED_REF"
+if [ "$mode" = image ]; then
+  # Each reaches the image through a --build-arg that build-image.sh passes only
+  # to Dockerfiles declaring the ARG, so broken wiring leaves it EMPTY, not absent.
+  : "${CI_INFRASTRUCTURE_BAKED_REF:?the image should record which commit it baked}"
+  : "${CI_IMAGE_NAME:?the image should record its own name}"
+  : "${CI_IMAGE_TAG:?the image should record its own tag}"
+  : "${CI_IMAGE_CREATED:?the image should record when it was built}"
+  : "${CI_IMAGE_DOCKERFILE_URL:?the image should record a link to its Dockerfile}"
+  # Catches a variant that did not re-declare CI_IMAGE_*.
+  [ "$CI_IMAGE_NAME" = "$DECLARES" ] || fail "image reports itself as '$CI_IMAGE_NAME'"
+  echo "image: $CI_IMAGE_NAME:$CI_IMAGE_TAG built $CI_IMAGE_CREATED, ci-infrastructure $CI_INFRASTRUCTURE_BAKED_REF"
+fi
 
 have="$(cmake --version | head -1 | awk '{print $3}')"
 [ "$(printf '%s\n%s\n' "$MIN_CMAKE" "$have" | sort -V | head -1)" = "$MIN_CMAKE" ] \
@@ -137,7 +152,8 @@ expect_openmpi() {
   echo "openmpi: $(mpirun --version | head -1)"
 }
 
-variant="${DECLARES#*/}"
+variant=""
+[ "$mode" = image ] && variant="${DECLARES#*/}"
 declares_gcc=""
 for token in ${variant//-/ }; do
   case "$token" in gcc|gcc[0-9]*) declares_gcc=1 ;; esac
@@ -162,34 +178,40 @@ done
 [ -z "$missing" ] || fail "missing from PATH:$missing; every base lists the package providing each"
 echo "uniform: zlib, ncurses and OpenSSL headers, git, gh, curl, wget, cmake, ninja, make, bison, flex, jq, unzip, zstd, sudo, gpg, diffutils"
 
-# gfortran-N Depends on gcc-N, so a GNU toolchain can arrive as another package's
-# dependency and become the cc a build silently picks up.
-if [ -z "$declares_gcc" ]; then
-  for binary in cc c++ gcc g++; do
-    forbid "$binary" "exists but '$variant' names no gcc; name it or stop installing it"
-  done
-  for path in /usr/bin/gcc-* /usr/bin/g++-* /usr/local/bin/gcc-* /usr/local/bin/g++-*; do
-    [ -e "$path" ] || continue
-    fail "$path exists but '$variant' names no gcc; name it or stop installing it"
+if [ "$mode" = image ]; then
+  # gfortran-N Depends on gcc-N, so a GNU toolchain can arrive as another package's
+  # dependency and become the cc a build silently picks up.
+  if [ -z "$declares_gcc" ]; then
+    for binary in cc c++ gcc g++; do
+      forbid "$binary" "exists but '$variant' names no gcc; name it or stop installing it"
+    done
+    for path in /usr/bin/gcc-* /usr/bin/g++-* /usr/local/bin/gcc-* /usr/local/bin/g++-*; do
+      [ -e "$path" ] || continue
+      fail "$path exists but '$variant' names no gcc; name it or stop installing it"
+    done
+  fi
+
+  for token in ${variant//-/ }; do
+    case "$token" in
+      gcc[0-9]*)      expect_pair "gcc-${token#gcc}" "g++-${token#gcc}" "${token#gcc}"
+                      mpi_cc="gcc-${token#gcc}" ;;
+      gcc)            expect_pair gcc g++ ""
+                      mpi_cc=gcc ;;
+      clang[0-9]*)    expect_pair "clang-${token#clang}" "clang++-${token#clang}" "${token#clang}" ;;
+      gfortran[0-9]*) expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
+                      expect_openmp "gfortran-${token#gfortran}" f ;;
+      gfortran)       expect_compiler gfortran ""
+                      expect_openmp gfortran f ;;
+      openmpi)        expect_openmpi "${mpi_cc:-}" ;;
+    esac
   done
 fi
 
-for token in ${variant//-/ }; do
-  case "$token" in
-    gcc[0-9]*)      expect_pair "gcc-${token#gcc}" "g++-${token#gcc}" "${token#gcc}"
-                    mpi_cc="gcc-${token#gcc}" ;;
-    gcc)            expect_pair gcc g++ ""
-                    mpi_cc=gcc ;;
-    clang[0-9]*)    expect_pair "clang-${token#clang}" "clang++-${token#clang}" "${token#clang}" ;;
-    gfortran[0-9]*) expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
-                    expect_openmp "gfortran-${token#gfortran}" f ;;
-    gfortran)       expect_compiler gfortran ""
-                    expect_openmp gfortran f ;;
-    openmpi)        expect_openmpi "${mpi_cc:-}" ;;
-  esac
-done
-
-: "${BASH_ENV:?the image should point BASH_ENV at its announcer}"
-[ -r "$BASH_ENV" ] || fail "BASH_ENV=$BASH_ENV is not readable"
-[ -e "${CI_IMAGE_ANNOUNCED_MARKER:-/tmp/.ci-image-announced}" ] || fail "$BASH_ENV did not announce on entry"
-echo "image contract holds for $DECLARES"
+if [ "$mode" = image ]; then
+  : "${BASH_ENV:?the image should point BASH_ENV at its announcer}"
+  [ -r "$BASH_ENV" ] || fail "BASH_ENV=$BASH_ENV is not readable"
+  [ -e "${CI_IMAGE_ANNOUNCED_MARKER:-/tmp/.ci-image-announced}" ] || fail "$BASH_ENV did not announce on entry"
+  echo "image contract holds for $DECLARES"
+else
+  echo "environment contract holds for $DECLARES"
+fi

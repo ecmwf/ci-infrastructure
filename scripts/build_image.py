@@ -488,7 +488,7 @@ def test_image(name: str) -> None:
 
     mount = f"{REPO_ROOT}:/repo:ro"
     say(f"::group::image contract ({name})")
-    _run(["docker", "run", "--rm", "-v", mount, ref, "bash", f"/repo/{IMAGES_DIR}/verify-image.sh", name])
+    _run(["docker", "run", "--rm", "-v", mount, ref, "bash", f"/repo/{IMAGES_DIR}/verify-environment.sh", name])
     say("::endgroup::")
 
     say(f"::group::pytest in {name}")

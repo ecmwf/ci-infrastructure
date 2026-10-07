@@ -74,11 +74,18 @@ The official images have ``ci-infrastructure`` baked in.
 Right after a merge to ``main`` the baked copy is stale until the images are republished.
 The action then warns and installs from the checkout.
 
-Your own images work too, but every job installs ``ci-infrastructure`` into a venv.
-That needs `uv <https://docs.astral.sh/uv/>`__ on ``PATH``, which provides the Python,
-or else a Python >= 3.11.2, and outbound access to PyPI and GitHub.
-To skip the install, build ``FROM`` an official ``base`` image.
-Re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
+Your own images usually build ``FROM`` an official ``base`` image and so inherit all of it;
+re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
+An image or a self-hosted runner that does not start from a base needs `uv <https://docs.astral.sh/uv/>`__ on ``PATH``
+and the tools and headers every base has (see :ref:`below <uniform-bases>`);
+every job then installs ``ci-infrastructure`` into a venv, which needs outbound access to PyPI and GitHub.
+Check such an environment with ``public-images/verify-environment.sh --host``,
+which runs the checks that are not specific to the official images:
+
+.. code:: console
+
+   $ public-images/verify-environment.sh --host
+   environment contract holds for my-runner
 
 To add/modify a public image, open a PR in ``ci-infrastructure``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
@@ -214,6 +221,8 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 
 The one private image is ``eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools``.
 It lives in `ecmwf/ci-container-images <https://github.com/ecmwf/ci-container-images>`__.
+
+.. _uniform-bases:
 
 Keep the base images uniform
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

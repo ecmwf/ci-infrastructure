@@ -42,7 +42,7 @@ jobs:
 
       - name: Verify the image contract
         shell: bash
-        run: ./public-images/verify-image.sh ubuntu24.04/base
+        run: ./public-images/verify-environment.sh ubuntu24.04/base
 
       - name: Retrieve secret from Vault
         uses: hashicorp/vault-action@v3.4.0
