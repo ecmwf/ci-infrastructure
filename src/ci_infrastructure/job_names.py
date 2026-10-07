@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-# python-version renders as py<ver>; empty options as "default".
+# python-version renders as py<ver>, and not at all where a leg has none; empty options as "default".
 _PYTHON_FIELD = "python-version"
 _OPTIONS_FIELD = "options"
 
@@ -83,7 +83,8 @@ def name_suffix(leg: Mapping[str, Any], legs: Sequence[Mapping[str, Any]], compi
     for field in display_fields(legs, compiler_inputs):
         value = _render(leg.get(field))
         if field == _PYTHON_FIELD:
-            slots.append(f"py{value}")
+            if value:
+                slots.append(f"py{value}")
         elif field == _OPTIONS_FIELD:
             slots.append(value or "default")
         else:
