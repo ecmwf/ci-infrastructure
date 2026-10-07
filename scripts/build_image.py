@@ -464,10 +464,12 @@ def _layers(ref: str) -> list[str]:
 
 
 # Runs inside the image, against the BAKED package: the import check fails when
-# ci_infrastructure would come from the mounted checkout instead.
+# ci_infrastructure would come from the mounted checkout instead. pytest is not
+# baked, so it goes into the throwaway test container's copy of the venv.
 _IN_IMAGE_PYTEST: Final = """
     set -euo pipefail
-    "$CI_INFRASTRUCTURE_PYTHON" -c "import ci_infrastructure, sys; f = ci_infrastructure.__file__; print(sys.version.split()[0], f); sys.exit(f.startswith(\\"/repo/\\"))"
+    "$CI_INFRASTRUCTURE_PYTHON" -I -c "import ci_infrastructure, sys; f = ci_infrastructure.__file__; print(sys.version.split()[0], f); sys.exit(f.startswith(\\"/repo/\\"))"
+    uv pip install --quiet --no-cache --python "$CI_INFRASTRUCTURE_PYTHON" "pytest>=7"
     "$CI_INFRASTRUCTURE_PYTHON" -m pytest -p no:cacheprovider /repo/tests"""  # noqa: E501
 
 
