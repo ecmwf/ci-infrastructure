@@ -15,7 +15,7 @@ import jinja2.meta
 import jinja2.nodes
 from sphinx.application import Sphinx
 
-_TEMPLATES = Path("src") / "ci_infrastructure" / "hpc" / "templates"
+_TEMPLATES = Path("src") / "ci_infrastructure" / "templates"
 _PREFIX = "ci-infrastructure"
 
 

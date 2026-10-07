@@ -26,13 +26,15 @@ So far the following templates exist:
 
    * - template
      - for
-   * - `ci-infrastructure/cmake-runner.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-runner.sh.j2>`__
+   * - `ci-infrastructure/cmake-runner.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/cmake-runner.sh.j2>`__
      - a GitHub runner: configure, build, test and install one CMake project
-   * - `ci-infrastructure/cmake-atos.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-atos.sh.j2>`__
+   * - `ci-infrastructure/cmake-atos.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/cmake-atos.sh.j2>`__
      - HPC: extends the runner template and adds the ``#SBATCH`` header, the modules,
        the node-local build tree and the install archive
-   * - `ci-infrastructure/cmake-all-lanes.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/hpc/templates/cmake-all-lanes.sh.j2>`__
+   * - `ci-infrastructure/cmake-all-lanes.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/cmake-all-lanes.sh.j2>`__
      - every lane: extends one of the two above, chosen by the leg's ``execution``
+   * - `ci-infrastructure/python.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/python.j2>`__
+     - imported, not extended: ``get_python_via_uv`` (see `A Python for the build`_)
 
 :doc:`../reference/templates` lists every template with its blocks; each name links to its source.
 
