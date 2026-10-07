@@ -31,6 +31,7 @@ from ci_infrastructure.hpc.orchestrate import (
     format_job_status,
     plan_remote_prefixes,
     query_job_status,
+    run_gc,
     submit_or_reattach,
     wait_for_job,
 )
@@ -292,6 +293,48 @@ def test_gc_sweeps_every_tree_a_build_creates() -> None:
     assert build_dirs <= swept, f"unswept build trees: {sorted(build_dirs - swept)}"
     # transfer-e2e holds smoke-test-hpc.yml's per-run trees, left behind on failure on purpose.
     assert swept - build_dirs == {"/scratch/ci/transfer-e2e"}
+
+
+class _LocalConn:
+    """Runs the remote command here, as troika's ssh connection would there."""
+
+    def execute(self, argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(argv, **kwargs)
+
+
+def _aged_tree(root: Path) -> None:
+    old = 10 * 86400
+    for sub in ("staging", "install"):
+        for name in ("old-a", "old-b", "fresh"):
+            entry = root / sub / name
+            entry.mkdir(parents=True)
+            (entry / "f").write_text("x")
+            if name.startswith("old"):
+                past = entry.stat().st_mtime - old
+                os.utime(entry, (past, past))
+
+
+@pytest.mark.parametrize("dryrun", [True, False])
+def test_gc_counts_what_it_removes(tmp_path: Path, capsys: pytest.CaptureFixture[str], dryrun: bool) -> None:
+    _aged_tree(tmp_path)
+    run_gc(_LocalConn(), remote_work_dir=str(tmp_path), older_than_days=7, dryrun=dryrun)
+    out = capsys.readouterr().out
+    verb = "would remove" if dryrun else "removed"
+    assert f"gc: {tmp_path}/staging: {verb} 2 entries" in out
+    assert f"gc: {tmp_path}/hpc-jobs: {verb} 0 entries" in out
+    left = sorted(p.name for p in (tmp_path / "staging").iterdir())
+    assert left == (["fresh", "old-a", "old-b"] if dryrun else ["fresh"])
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
+def test_gc_fails_when_find_fails(tmp_path: Path) -> None:
+    _aged_tree(tmp_path)
+    (tmp_path / "staging").chmod(0)
+    try:
+        with pytest.raises(CIError, match="GC of .*/staging failed"):
+            run_gc(_LocalConn(), remote_work_dir=str(tmp_path), older_than_days=7)
+    finally:
+        (tmp_path / "staging").chmod(0o755)
 
 
 def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[str]) -> None:
