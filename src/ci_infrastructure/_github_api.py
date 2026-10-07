@@ -31,7 +31,7 @@ EXECUTION_HPC_ATOS: Final[Execution] = "hpc-atos"
 
 #: Version of hpc/templates/cmake-atos.sh.j2, in every hpc artifact name: consumers load
 #: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
-HPC_TEMPLATE_VERSION: Final = 3
+HPC_TEMPLATE_VERSION: Final = 2
 
 
 def template_version_for_lane(lane: Execution) -> int:

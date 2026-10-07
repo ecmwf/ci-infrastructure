@@ -246,10 +246,9 @@ Each base has three kinds of Python, which do not interfere:
 - ci-infrastructure runs on its own uv-managed CPython in ``/opt/ci-infrastructure``.
   ``CI_INFRASTRUCTURE_PYTHON`` names it; it is not on ``PATH``,
   and the actions call it with ``-I``, so a job's ``PYTHONPATH`` or venv cannot reach it.
-- A recipe that asks for a leg's ``python-version`` (see :doc:`../configuring/job-scripts`)
-  gets it from uv in ``UV_PYTHON_INSTALL_DIR`` (``/opt/uv/python``), downloaded if the image lacks it.
-  On the HPC the same recipe takes it from the leg's ``python3`` module instead.
+- A recipe that calls ``get_python_via_uv`` (see :doc:`../configuring/job-scripts`)
+  gets the leg's ``python-version`` from uv in ``UV_PYTHON_INSTALL_DIR`` (``/opt/uv/python``),
+  downloaded if the image lacks it.
 
 Workflow steps outside the recipe that need the leg's Python can use
-`astral-sh/setup-uv <https://github.com/astral-sh/setup-uv>`__ with ``python-version`` and ``activate-environment``;
-``uv_venv`` then reuses that venv if its version matches.
+`astral-sh/setup-uv <https://github.com/astral-sh/setup-uv>`__ with ``python-version`` and ``activate-environment``.

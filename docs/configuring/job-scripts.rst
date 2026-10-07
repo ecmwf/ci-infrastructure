@@ -91,28 +91,20 @@ A Python for the build
 ----------------------
 
 A leg sets ``python-version`` as a string, e.g. ``"3.11"``, never a number.
-The recipe then creates a venv with that Python,
-and says for each lane where the Python comes from,
-with the macros of ``ci-infrastructure/python.j2``:
+``get_python_via_uv`` from ``ci-infrastructure/python.j2`` creates a venv with that Python and activates it;
+uv downloads the Python if the image lacks it.
+CMake's FindPython then finds the venv first.
 
 .. code:: jinja
 
-   {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
+   {% extends "ci-infrastructure/cmake-runner.sh.j2" %}
    {% import "ci-infrastructure/python.j2" as py %}
    {% block set_environment %}
-   {{ py.uv_venv(python_version) if execution == "runner" else py.module_venv(python_version) }}
+   {{ py.get_python_via_uv(python_version) }}
    uv pip install -r python/requirements-build.txt
    {% endblock %}
 
-``uv_venv`` takes a uv-managed CPython: from the image, or downloaded.
-``module_venv`` takes the ``python3`` the leg's ``modules`` load, e.g. ``"load python3/3.11.8-01"``,
-and fails if its version differs; nothing is downloaded on the HPC.
-Both leave the venv active, and ``configure`` passes its interpreter to CMake
-as ``Python3_EXECUTABLE`` and ``Python_EXECUTABLE``.
-A recipe that calls neither leaves CMake to find Python itself.
-Call them in ``set_environment``: the template empties ``ci_infra_build_python`` just before it.
-A recipe may also set ``ci_infra_build_python`` itself there, to its own interpreter.
-The macros' shell variables all start with ``ci_infra_``, so they do not overwrite a recipe's.
+On the HPC, load a ``python3`` module in the leg's ``modules`` and create the venv in the recipe yourself.
 
 Reproduce a leg locally
 -----------------------
