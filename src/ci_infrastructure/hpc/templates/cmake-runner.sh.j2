@@ -17,7 +17,7 @@ gen_flag=""
 {% endblock %}
 
 # Set only by the python.j2 macros, never inherited from the job's environment.
-ci_infra_python=""
+ci_infra_build_python=""
 {% block set_environment %}{% endblock %}
 {% block preflight %}
 echo "Using: $(command -v {{ c_compiler_binary | sh }}) ($({{ c_compiler_binary | sh }} --version | head -1))"
@@ -37,7 +37,7 @@ cmake --preset {{ (options or "ci") | sh }} -S "$CI_SOURCE_DIR" -B "$build" $gen
 {% if fortran_compiler_binary %}
   -DCMAKE_Fortran_COMPILER="$(command -v {{ fortran_compiler_binary | sh }})" \
 {% endif %}
-  ${ci_infra_python:+"-DPython3_EXECUTABLE=$ci_infra_python" "-DPython_EXECUTABLE=$ci_infra_python"} \
+  ${ci_infra_build_python:+"-DPython3_EXECUTABLE=$ci_infra_build_python" "-DPython_EXECUTABLE=$ci_infra_build_python"} \
 {% block cmake_args %}{% endblock %}
   -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
   -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \

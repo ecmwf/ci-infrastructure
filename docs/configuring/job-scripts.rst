@@ -110,8 +110,8 @@ and fails if its version differs; nothing is downloaded on the HPC.
 Both leave the venv active, and ``configure`` passes its interpreter to CMake
 as ``Python3_EXECUTABLE`` and ``Python_EXECUTABLE``.
 A recipe that calls neither leaves CMake to find Python itself.
-Call them in ``set_environment``: the template empties ``ci_infra_python`` just before it.
-A recipe may also set ``ci_infra_python`` itself there, to its own interpreter.
+Call them in ``set_environment``: the template empties ``ci_infra_build_python`` just before it.
+A recipe may also set ``ci_infra_build_python`` itself there, to its own interpreter.
 The macros' shell variables all start with ``ci_infra_``, so they do not overwrite a recipe's.
 
 Reproduce a leg locally

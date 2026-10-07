@@ -7,7 +7,7 @@
      {% import "ci-infrastructure/python.j2" as py %}
      {{ py.uv_venv(python_version) if execution == "runner" else py.module_venv(python_version) }}
 
-   Each leaves a venv active and its interpreter in $ci_infra_python, which the shared
+   Each leaves a venv active and its interpreter in $ci_infra_build_python, which the shared
    template's configure passes to CMake. Any change here must bump
    _github_api.HPC_TEMPLATE_VERSION. #}
 
@@ -17,16 +17,16 @@
 ci_infra_want={{ version | sh }}
 ci_infra_have="$("${VIRTUAL_ENV:-/nonexistent}/bin/python" -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
 case "$ci_infra_have" in
-  "$ci_infra_want" | "$ci_infra_want".*) ci_infra_venv="$VIRTUAL_ENV" ;;
+  "$ci_infra_want" | "$ci_infra_want".*) ci_infra_build_venv="$VIRTUAL_ENV" ;;
   *)
     command -v uv >/dev/null || { echo "::error::uv_venv: uv is not on PATH" >&2; exit 1; }
-    ci_infra_venv="${TMPDIR:-/tmp}/ci-python"
-    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$ci_infra_want" "$ci_infra_venv"
+    ci_infra_build_venv="${TMPDIR:-/tmp}/ci-python"
+    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$ci_infra_want" "$ci_infra_build_venv"
     ;;
 esac
-. "$ci_infra_venv/bin/activate"
-ci_infra_python="$ci_infra_venv/bin/python"
-echo "Using: $ci_infra_python ($("$ci_infra_python" --version))"
+. "$ci_infra_build_venv/bin/activate"
+ci_infra_build_python="$ci_infra_build_venv/bin/python"
+echo "Using: $ci_infra_build_python ($("$ci_infra_build_python" --version))"
 {%- endmacro %}
 
 {#- The python3 the leg's modules put on PATH (e.g. "load python3/3.11.8-01"), which
@@ -38,9 +38,9 @@ case "$ci_infra_have" in
   "$ci_infra_want" | "$ci_infra_want".*) ;;
   *) echo "::error::module_venv: want Python $ci_infra_want, but the modules give python3 ${ci_infra_have:-(none)}" >&2; exit 1 ;;
 esac
-ci_infra_venv="${TMPDIR:-/tmp}/ci-python"
-python3 -m venv --clear --system-site-packages "$ci_infra_venv"
-. "$ci_infra_venv/bin/activate"
-ci_infra_python="$ci_infra_venv/bin/python"
-echo "Using: $ci_infra_python ($("$ci_infra_python" --version))"
+ci_infra_build_venv="${TMPDIR:-/tmp}/ci-python"
+python3 -m venv --clear --system-site-packages "$ci_infra_build_venv"
+. "$ci_infra_build_venv/bin/activate"
+ci_infra_build_python="$ci_infra_build_venv/bin/python"
+echo "Using: $ci_infra_build_python ($("$ci_infra_build_python" --version))"
 {%- endmacro %}

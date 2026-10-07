@@ -136,7 +136,7 @@ The blocks share the shell variables ``build`` (the build directory on node-loca
 ``jobs`` (``$SLURM_CPUS_PER_TASK``, else ``$SLURM_NTASKS``),
 ``install_root`` (``$CI_INSTALL_PREFIX``, or the staged tree after a ``DESTDIR`` install),
 ``gen_flag`` (``-GNinja`` if ninja is available)
-and ``ci_infra_python``, set by the macros of ``python.j2``, which ``configure`` passes to CMake.
+and ``ci_infra_build_python``, set by the macros of ``python.j2``, which ``configure`` passes to CMake.
 In a child template, text outside a block is dropped;
 ``{% extends %}`` comes first, and a licence header goes into a ``{# #}`` comment.
 
