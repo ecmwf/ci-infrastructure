@@ -103,6 +103,6 @@ runs:
         ARTIFACT_NAME: ${{ inputs.artifact-name }}
       run: |
         set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.s3_store upload \
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.s3_store upload \
           --name "$ARTIFACT_NAME" \
           --file "$RUNNER_TEMP/${ARTIFACT_NAME}.tar.gz"

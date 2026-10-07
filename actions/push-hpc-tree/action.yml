@@ -62,4 +62,4 @@ runs:
         )
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
-        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc push-tree "${args[@]}"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc push-tree "${args[@]}"

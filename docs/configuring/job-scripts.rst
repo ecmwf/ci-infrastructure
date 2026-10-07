@@ -87,6 +87,25 @@ Where a binary is named differently, e.g. ``g++`` from a module for the ``g++-8`
 the leg sets ``c-compiler-binary``, ``cxx-compiler-binary`` or ``fortran-compiler-binary``.
 Name the C compiler too: left out, CMake picks the image's default ``cc``.
 
+A Python for the build
+----------------------
+
+A leg sets ``python-version`` as a string, e.g. ``"3.11"``, never a number.
+``get_python_via_uv`` from ``ci-infrastructure/python.j2`` creates a venv with that Python and activates it;
+uv downloads the Python if the image lacks it.
+CMake's FindPython then finds the venv first.
+
+.. code:: jinja
+
+   {% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+   {% import "ci-infrastructure/python.j2" as py %}
+   {% block set_environment %}
+   {{ py.get_python_via_uv(python_version) }}
+   uv pip install -r python/requirements-build.txt
+   {% endblock %}
+
+On the HPC, load a ``python3`` module in the leg's ``modules`` and create the venv in the recipe yourself.
+
 Reproduce a leg locally
 -----------------------
 

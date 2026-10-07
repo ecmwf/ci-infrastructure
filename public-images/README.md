@@ -15,12 +15,12 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 `public-images/<platform>/<variant>/Dockerfile` is published as `public-ci-images/<platform>-<variant>`.
 
 - `base` has system packages, cmake, Python and the baked `ci_infrastructure` package. It has **no compiler**.
-- Every `base` provides the same libraries and lists each one, even where another package would pull it in: Python 3 with `venv`, `pip` and headers, the C libraries zlib, ncurses and OpenSSL with headers, and `diffutils`. Only libraries any compiler on the platform can use belong in a base: C libraries and C++ libraries with an `extern "C"` API (the platform's C ABI), and header-only libraries (compiled by the consumer). A C++ library whose binary API passes C++ types depends on the compiler's C++ ABI and standard library: it comes from stack-dependencies, is baked into a derived image (as Boost and Qt in the `boost-qt` variants), or is an HPC module.
+- Every `base` provides the same libraries and lists each one, even where another package would pull it in: uv (the way to a Python; the distribution's `python3` is not guaranteed), the C libraries zlib, ncurses and OpenSSL with headers, `diffutils`, and the command-line tools `verify-environment.sh` checks. Only libraries any compiler on the platform can use belong in a base: C libraries and C++ libraries with an `extern "C"` API (the platform's C ABI), and header-only libraries (compiled by the consumer). A C++ library whose binary API passes C++ types depends on the compiler's C++ ABI and standard library: it comes from stack-dependencies, is baked into a derived image (as Boost and Qt in the `boost-qt` variants), or is an HPC module.
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
 - The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, and `openmpi` a working `mpicc`/`mpirun`. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
 
-[`verify-image.sh`](verify-image.sh) checks this contract.
+[`verify-environment.sh`](verify-environment.sh) checks this contract.
 
 | Platform | gcc | Qt | boost | cmake | Python |
 |---|---|---|---|---|---|
@@ -55,6 +55,8 @@ Copy the block from an existing image.
 
 The base also sets `CI_INFRASTRUCTURE_PYTHON` and `CI_INFRASTRUCTURE_BAKED_REF`.
 `ensure-infrastructure-present` uses them to reuse the baked package, or to reinstall it when it is stale.
+`CI_INFRASTRUCTURE_PYTHON` is a venv on ci-infrastructure's own uv-managed CPython under `/opt/ci-infrastructure`, never on `PATH`.
+Pythons for builds go to `UV_PYTHON_INSTALL_DIR` (`/opt/uv/python`); `verify-environment.sh` checks both.
 
 ## Adding, removing, pruning
 

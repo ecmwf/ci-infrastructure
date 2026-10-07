@@ -131,3 +131,19 @@ def test_action_descriptions_reference_no_workflow_only_context(path: Path) -> N
                 f"{bad}, which a composite action cannot resolve — the action will fail to load. "
                 f"Write the expression without the delimiters."
             )
+
+
+_CI_PYTHON_CALL: Final = re.compile(r'"\$CI_INFRASTRUCTURE_PYTHON"(?! -I )')
+
+
+@pytest.mark.parametrize(
+    "path",
+    [*_action_files(), *sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))],
+    ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
+)
+def test_ci_python_runs_isolated(path: Path) -> None:
+    """-I: a job's PYTHONPATH, PYTHONHOME or user site must not reach ci-infrastructure."""
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        assert not _CI_PYTHON_CALL.search(line), f"{path.name}:{lineno}: call $CI_INFRASTRUCTURE_PYTHON with -I"

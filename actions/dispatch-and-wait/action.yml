@@ -226,7 +226,7 @@ runs:
         ARTIFACT_WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
       run: |
         set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.wait_for_artifacts \
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.wait_for_artifacts \
           --repo "$CONSUMER_REPO" \
           --ref "$REF" \
           --artifact-names "$ARTIFACT_NAMES"

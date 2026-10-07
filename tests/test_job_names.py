@@ -34,6 +34,14 @@ def test_python_version_not_duplicated_when_sole_distinguisher() -> None:
     assert _suffixes(legs) == ["ubuntu-24.04, py3.10", "ubuntu-24.04, py3.12"]
 
 
+def test_python_slot_left_out_where_a_leg_has_no_version() -> None:
+    legs = [
+        {"cxx-compiler": "g++-15", "platform": "ubuntu-26.04"},
+        {"cxx-compiler": "g++-15", "python-version": "3.11", "platform": "ubuntu-26.04"},
+    ]
+    assert _suffixes(legs, ("cxx-compiler",)) == ["ubuntu-26.04, g++-15", "ubuntu-26.04, g++-15, py3.11"]
+
+
 def test_options_slot_separates_legs_that_differ_only_by_options() -> None:
     legs = [
         {"cxx-compiler": "g++-13", "platform": "ubuntu-24.04"},

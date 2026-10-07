@@ -162,6 +162,8 @@ A leg may omit these fields:
      - ``true``
    * - ``ctest-args``, ``options``
      - ``""``
+   * - ``python-version``
+     - ``""``; a string such as ``"3.11"``, never a number (see :doc:`../configuring/job-scripts`)
    * - ``c-compiler-binary``, ``cxx-compiler-binary``
      - ``c-compiler``, ``cxx-compiler``
    * - ``fortran-compiler-binary``

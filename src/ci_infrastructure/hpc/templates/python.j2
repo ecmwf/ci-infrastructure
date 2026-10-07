@@ -1,0 +1,13 @@
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   {% import "ci-infrastructure/python.j2" as py %}
+   {{ py.get_python_via_uv(python_version) }}
+
+   Creates a venv with that uv-managed CPython (downloaded if missing) and
+   activates it; CMake's FindPython then finds the venv first. #}
+
+{% macro get_python_via_uv(version) -%}
+UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python {{ version | sh }} "${TMPDIR:-/tmp}/ci-python"
+. "${TMPDIR:-/tmp}/ci-python/bin/activate"
+{%- endmacro %}

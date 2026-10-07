@@ -74,10 +74,18 @@ The official images have ``ci-infrastructure`` baked in.
 Right after a merge to ``main`` the baked copy is stale until the images are republished.
 The action then warns and installs from the checkout.
 
-Your own images work too, but every job pip-installs ``ci-infrastructure`` into a venv.
-That needs Python >= 3.11.2 in the image and outbound access to PyPI and GitHub.
-To skip the install, build ``FROM`` an official ``base`` image.
-Re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
+Your own images usually build ``FROM`` an official ``base`` image and so inherit all of it;
+re-declare its ``CI_IMAGE_*`` block, as every official image does (follow the links to the base images in the table below).
+An image or a self-hosted runner that does not start from a base needs `uv <https://docs.astral.sh/uv/>`__ on ``PATH``
+and the tools and headers every base has (see :ref:`below <uniform-bases>`);
+every job then installs ``ci-infrastructure`` into a venv, which needs outbound access to PyPI and GitHub.
+Check such an environment with ``public-images/verify-environment.sh --host``,
+which runs the checks that are not specific to the official images:
+
+.. code:: console
+
+   $ public-images/verify-environment.sh --host
+   environment contract holds for my-runner
 
 To add/modify a public image, open a PR in ``ci-infrastructure``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
@@ -214,6 +222,8 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 The one private image is ``eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools``.
 It lives in `ecmwf/ci-container-images <https://github.com/ecmwf/ci-container-images>`__.
 
+.. _uniform-bases:
+
 Keep the base images uniform
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -221,9 +231,11 @@ Every ``base`` image provides the same environment, whatever the platform,
 so that a recipe that works on one platform does not fail on another for a missing system package.
 Each base lists what it provides explicitly, even where another package would pull it in:
 
-- Python 3 with ``venv``, ``pip`` and its headers,
+- `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base, as the way to a Python (below),
 - the C libraries zlib, ncurses and OpenSSL with their headers,
 - ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
+- the command-line tools ``git``, ``gh``, ``curl``, ``wget``, ``cmake`` (3.26 or newer), ``ninja``, ``make``,
+  ``bison``, ``flex``, ``jq``, ``unzip``, ``zstd``, ``sudo`` and ``gpg``,
 - no compiler; the variants add those.
 
 A library added to one base goes into **every** base, under that distribution's package name,
@@ -235,3 +247,21 @@ A C++ library whose binary API passes C++ types (classes, templates, ``std::`` t
 is built against one compiler's C++ ABI and standard library, so it depends on the compiler.
 Such libraries come from ``stack-dependencies``,
 are baked into a derived image (as Boost and Qt in the ``boost-qt`` variants), or are modules on the HPC.
+
+Python in the images
+~~~~~~~~~~~~~~~~~~~~
+
+A recipe gets its Python from uv; the guaranteed entry point is uv, not an installed Python.
+Each base has three kinds of Python, which do not interfere:
+
+- The distribution's ``python3`` is left as it is, for the system's own tools.
+  Its version, headers and packages differ between platforms, so do not rely on it.
+- ci-infrastructure runs on its own uv-managed CPython in ``/opt/ci-infrastructure``.
+  ``CI_INFRASTRUCTURE_PYTHON`` names it; it is not on ``PATH``,
+  and the actions call it with ``-I``, so a job's ``PYTHONPATH`` or venv cannot reach it.
+- A recipe that calls ``get_python_via_uv`` (see :doc:`../configuring/job-scripts`)
+  gets the leg's ``python-version`` from uv in ``UV_PYTHON_INSTALL_DIR`` (``/opt/uv/python``),
+  downloaded if the image lacks it.
+
+Workflow steps outside the recipe that need the leg's Python can use
+`astral-sh/setup-uv <https://github.com/astral-sh/setup-uv>`__ with ``python-version`` and ``activate-environment``.

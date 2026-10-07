@@ -163,7 +163,7 @@ runs:
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
-        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
     - name: Publish
       if: ${{ inputs.publish != 'false' && steps.submit.outputs.batch != 'true' }}

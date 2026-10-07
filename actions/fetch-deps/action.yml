@@ -52,13 +52,13 @@ runs:
         elif [ -n "${pythonLocation:-}" ]; then
           args+=(--consumer-python "${pythonLocation}/bin/python")
         fi
-        "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.fetch_deps "${args[@]}"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.fetch_deps "${args[@]}"
 
     - name: Compose CMAKE_PREFIX_PATH from deps-json
       id: compose-cmake
       shell: bash
       run: |
-        "$CI_INFRASTRUCTURE_PYTHON" - <<'PY' >> "$GITHUB_OUTPUT"
+        "$CI_INFRASTRUCTURE_PYTHON" -I - <<'PY' >> "$GITHUB_OUTPUT"
         import json, os
         deps = json.loads(os.environ["DEPS_JSON"])
         # Expand the resolver's $RUNNER_TEMP template against THIS job's runner.

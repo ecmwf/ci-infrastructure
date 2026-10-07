@@ -71,7 +71,7 @@ runs:
         SCRIPT: ${{ steps.set-paths.outputs.script }}
       run: |
         set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.render_job \
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.render_job \
           --job-script "$GITHUB_WORKSPACE/${JOB_SCRIPT#./}" --matrix-leg "$MATRIX_LEG" -o "$SCRIPT"
         cat "$SCRIPT"
 
