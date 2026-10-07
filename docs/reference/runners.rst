@@ -221,8 +221,7 @@ Every ``base`` image provides the same environment, whatever the platform,
 so that a recipe that works on one platform does not fail on another for a missing system package.
 Each base lists what it provides explicitly, even where another package would pull it in:
 
-- Python 3 with ``venv``, ``pip`` and its headers,
-- `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base,
+- `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base, as the way to a Python (below),
 - the C libraries zlib, ncurses and OpenSSL with their headers,
 - ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
 - the command-line tools ``git``, ``gh``, ``curl``, ``wget``, ``cmake`` (3.26 or newer), ``ninja``, ``make``,
@@ -242,9 +241,11 @@ are baked into a derived image (as Boost and Qt in the ``boost-qt`` variants), o
 Python in the images
 ~~~~~~~~~~~~~~~~~~~~
 
+A recipe gets its Python from uv; the guaranteed entry point is uv, not an installed Python.
 Each base has three kinds of Python, which do not interfere:
 
-- The distribution's ``python3`` is left as it is, for the system's own tools and for builds that find it.
+- The distribution's ``python3`` is left as it is, for the system's own tools.
+  Its version, headers and packages differ between platforms, so do not rely on it.
 - ci-infrastructure runs on its own uv-managed CPython in ``/opt/ci-infrastructure``.
   ``CI_INFRASTRUCTURE_PYTHON`` names it; it is not on ``PATH``,
   and the actions call it with ``-I``, so a job's ``PYTHONPATH`` or venv cannot reach it.
