@@ -239,7 +239,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "a002cf6ff7929f738389dbeb0296ede6c1faf68d3f47bae7dfc956e824b86eda"
+TEMPLATE_SHA256: Final = "bf6dcb58cc02a010bcef7c7f4081e468adbdf58a05dd7a1d74718da687f8df80"
 TEMPLATE_VERSION: Final = 3
 
 
@@ -311,27 +311,27 @@ def _atos_with(leg: dict[str, Any], source: str = PY_RECIPE) -> str:
 
 def test_uv_venv_on_the_runner_takes_a_uv_managed_python() -> None:
     lines = _runner_with({"python-version": "3.11"}).splitlines()
-    assert "want=3.11" in lines
-    assert '    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$want" "$ci_venv"' in lines
-    assert 'ci_python="$ci_venv/bin/python"' in lines
+    assert "ci_infra_want=3.11" in lines
+    assert '    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$ci_infra_want" "$ci_infra_venv"' in lines
+    assert 'ci_infra_python="$ci_infra_venv/bin/python"' in lines
 
 
 def test_module_venv_on_atos_takes_the_module_python_not_uv() -> None:
     out = _atos_with({"python-version": "3.11", "modules": ["load python3/3.11.8-01"]})
     assert "uv " not in out
-    assert 'python3 -m venv --clear --system-site-packages "$ci_venv"' in out.splitlines()
+    assert 'python3 -m venv --clear --system-site-packages "$ci_infra_venv"' in out.splitlines()
     assert "module load python3/3.11.8-01" in out.splitlines()
 
 
 @pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
 def test_configure_passes_the_venv_python_only_when_a_macro_sets_it(render: Any) -> None:
-    line = '  ${ci_python:+"-DPython3_EXECUTABLE=$ci_python" "-DPython_EXECUTABLE=$ci_python"} \\'
+    line = '  ${ci_infra_python:+"-DPython3_EXECUTABLE=$ci_infra_python" "-DPython_EXECUTABLE=$ci_infra_python"} \\'
     bare = render({}, EXTENDS if render is _atos_with else RUNNER)
     lines = bare.splitlines()
     assert line in lines
-    assert lines.index('ci_python=""') < lines.index(line)
-    assert [x for x in lines if x.startswith("ci_python=")] == ['ci_python=""']
-    assert 'ci_python="$ci_venv/bin/python"' in render({"python-version": "3.12"}).splitlines()
+    assert lines.index('ci_infra_python=""') < lines.index(line)
+    assert [x for x in lines if x.startswith("ci_infra_python=")] == ['ci_infra_python=""']
+    assert 'ci_infra_python="$ci_infra_venv/bin/python"' in render({"python-version": "3.12"}).splitlines()
 
 
 @pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
