@@ -15,8 +15,21 @@ MIN_CMAKE=3.26
 fail() { echo "::error::$DECLARES: $*"; exit 1; }
 
 : "${CI_INFRASTRUCTURE_PYTHON:?the image should set CI_INFRASTRUCTURE_PYTHON}"
-"$CI_INFRASTRUCTURE_PYTHON" -c 'import ci_infrastructure' || fail "$CI_INFRASTRUCTURE_PYTHON cannot import ci_infrastructure"
-echo "python: $CI_INFRASTRUCTURE_PYTHON ($("$CI_INFRASTRUCTURE_PYTHON" -c 'import sys; print(sys.version.split()[0])'))"
+# ci-infrastructure's interpreter is its own: uv-managed under /opt/ci-infrastructure,
+# and never on PATH, so no build or job step picks it up.
+case "$CI_INFRASTRUCTURE_PYTHON" in
+  /opt/ci-infrastructure/*) ;;
+  *) fail "CI_INFRASTRUCTURE_PYTHON=$CI_INFRASTRUCTURE_PYTHON is not under /opt/ci-infrastructure" ;;
+esac
+case ":$PATH:" in
+  *":$(dirname "$CI_INFRASTRUCTURE_PYTHON"):"*) fail "$(dirname "$CI_INFRASTRUCTURE_PYTHON") is on PATH" ;;
+esac
+"$CI_INFRASTRUCTURE_PYTHON" -I -c 'import ci_infrastructure' || fail "$CI_INFRASTRUCTURE_PYTHON cannot import ci_infrastructure"
+echo "python: $CI_INFRASTRUCTURE_PYTHON ($("$CI_INFRASTRUCTURE_PYTHON" -I -c 'import sys; print(sys.version.split()[0])'))"
+
+command -v uv >/dev/null || fail "uv is not on PATH"
+: "${UV_PYTHON_INSTALL_DIR:?the image should set UV_PYTHON_INSTALL_DIR}"
+echo "uv: $(uv --version), Pythons for builds in $UV_PYTHON_INSTALL_DIR"
 
 # Each reaches the image through a --build-arg that build-image.sh passes only
 # to Dockerfiles declaring the ARG, so broken wiring leaves it EMPTY, not absent.

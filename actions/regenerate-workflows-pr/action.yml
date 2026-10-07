@@ -57,7 +57,7 @@ runs:
         MANIFEST_PATH_INPUT: ${{ inputs.manifest-path }}
       run: |
         set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci --manifest-path "$MANIFEST_PATH_INPUT"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.generate_downstream_ci --manifest-path "$MANIFEST_PATH_INPUT"
 
     - id: pr
       name: Open, update or close the PR

@@ -47,4 +47,4 @@ runs:
           # A typo must not silently downgrade the gate to a warning.
           *) echo "::error title=Validate generated workflows::fail-on-drift must be 'true' or 'false', got '$FAIL_ON_DRIFT_INPUT'." >&2; exit 1 ;;
         esac
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.generate_downstream_ci "${args[@]}"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.generate_downstream_ci "${args[@]}"

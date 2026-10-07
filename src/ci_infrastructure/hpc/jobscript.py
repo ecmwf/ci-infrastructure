@@ -84,6 +84,7 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
         "ctest_args": "",
         "fortran_compiler_binary": "",
         "options": "",
+        "python_version": "",
         "modules": [],
     }
 )
@@ -146,6 +147,11 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
             )
         origin[name] = key
         context[name] = value
+    if not isinstance(context.get("python_version", ""), str):
+        raise JobTemplateError(
+            f'python-version must be a string such as "3.10", not {context["python_version"]!r}: '
+            f"unquoted, TOML reads 3.10 as the number 3.1"
+        )
     for name, source in _COMPILER_BINARIES.items():
         if name not in context and source in context:
             context[name] = context[source]

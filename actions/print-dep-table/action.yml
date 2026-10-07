@@ -40,7 +40,7 @@ runs:
         TITLE_INPUT: ${{ inputs.title }}
       run: |
         set -euo pipefail
-        "$CI_INFRASTRUCTURE_PYTHON" -m ci_infrastructure.print_dep_table \
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.print_dep_table \
           --resolved "$RESOLVED_INPUT" \
           --own-repo "$OWN_REPO_INPUT" \
           --own-source "$OWN_SOURCE_INPUT" \

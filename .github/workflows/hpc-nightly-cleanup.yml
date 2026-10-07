@@ -56,4 +56,4 @@ jobs:
           )
           if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
           if [ "$DRYRUN" = "true" ]; then args+=(--dryrun); fi
-          "$CI_INFRASTRUCTURE_PYTHON" -u -m ci_infrastructure.hpc gc "${args[@]}"
+          "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc gc "${args[@]}"

@@ -139,10 +139,11 @@ runs:
             echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
-            # A system interpreter, not the consumer's setup-python one; gate = requires-python.
+            # A system interpreter, not the consumer's setup-python one nor an
+            # activated venv (setup-uv, a recipe's); gate = requires-python.
             bootstrap_path="$PATH"
-            if [ -n "${pythonLocation:-}" ]; then
-              exclude="${pythonLocation}/bin"
+            for exclude in "${pythonLocation:+$pythonLocation/bin}" "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin}"; do
+              [ -n "$exclude" ] || continue
               cleaned=""
               IFS=:
               for p in $bootstrap_path; do
@@ -151,7 +152,7 @@ runs:
               done
               unset IFS
               bootstrap_path="$cleaned"
-            fi
+            done
 
             bootstrap_py=""
             for cand in python3.13 python3.12 python3.11 python3; do
@@ -164,7 +165,7 @@ runs:
             done
 
             if [ -z "$bootstrap_py" ]; then
-              echo "::error::ensure-infrastructure-present: no Python >=3.11.2 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}). Install python3.11.2+ in the runner image, or in the consumer container." >&2
+              echo "::error::ensure-infrastructure-present: no Python >=3.11.2 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}) and any activated venv (VIRTUAL_ENV=${VIRTUAL_ENV:-<unset>}). Install python3.11.2+ in the runner image, or in the consumer container." >&2
               exit 1
             fi
 

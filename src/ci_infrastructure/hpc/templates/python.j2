@@ -1,0 +1,46 @@
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   A Python for the build, by where it comes from. A recipe imports this file and
+   calls the macro for each lane's source, typically in set_environment:
+
+     {% import "ci-infrastructure/python.j2" as py %}
+     {{ py.uv_venv(python_version) if execution == "runner" else py.module_venv(python_version) }}
+
+   Each leaves a venv active and its interpreter in $ci_python, which the shared
+   template's configure passes to CMake. Any change here must bump
+   _github_api.HPC_TEMPLATE_VERSION. #}
+
+{#- A uv-managed CPython, downloaded if UV_PYTHON_INSTALL_DIR lacks it; a venv an
+    earlier step activated (astral-sh/setup-uv) is reused when its version matches. #}
+{% macro uv_venv(version) -%}
+want={{ version | sh }}
+have="$("${VIRTUAL_ENV:-/nonexistent}/bin/python" -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
+case "$have" in
+  "$want" | "$want".*) ci_venv="$VIRTUAL_ENV" ;;
+  *)
+    command -v uv >/dev/null || { echo "::error::uv_venv: uv is not on PATH" >&2; exit 1; }
+    ci_venv="${TMPDIR:-/tmp}/ci-python"
+    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$want" "$ci_venv"
+    ;;
+esac
+. "$ci_venv/bin/activate"
+ci_python="$ci_venv/bin/python"
+echo "Using: $ci_python ($("$ci_python" --version))"
+{%- endmacro %}
+
+{#- The python3 the leg's modules put on PATH (e.g. "load python3/3.11.8-01"), which
+    must have the given version; the venv also sees the packages the module ships. #}
+{% macro module_venv(version) -%}
+want={{ version | sh }}
+have="$(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null || true)"
+case "$have" in
+  "$want" | "$want".*) ;;
+  *) echo "::error::module_venv: want Python $want, but the modules give python3 ${have:-(none)}" >&2; exit 1 ;;
+esac
+ci_venv="${TMPDIR:-/tmp}/ci-python"
+python3 -m venv --clear --system-site-packages "$ci_venv"
+. "$ci_venv/bin/activate"
+ci_python="$ci_venv/bin/python"
+echo "Using: $ci_python ($("$ci_python" --version))"
+{%- endmacro %}

@@ -87,6 +87,30 @@ Where a binary is named differently, e.g. ``g++`` from a module for the ``g++-8`
 the leg sets ``c-compiler-binary``, ``cxx-compiler-binary`` or ``fortran-compiler-binary``.
 Name the C compiler too: left out, CMake picks the image's default ``cc``.
 
+A Python for the build
+----------------------
+
+A leg sets ``python-version`` as a string, e.g. ``"3.11"``, never a number.
+The recipe then creates a venv with that Python,
+and says for each lane where the Python comes from,
+with the macros of ``ci-infrastructure/python.j2``:
+
+.. code:: jinja
+
+   {% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}
+   {% import "ci-infrastructure/python.j2" as py %}
+   {% block set_environment %}
+   {{ py.uv_venv(python_version) if execution == "runner" else py.module_venv(python_version) }}
+   uv pip install -r python/requirements-build.txt
+   {% endblock %}
+
+``uv_venv`` takes a uv-managed CPython: from the image, or downloaded.
+``module_venv`` takes the ``python3`` the leg's ``modules`` load, e.g. ``"load python3/3.11.8-01"``,
+and fails if its version differs; nothing is downloaded on the HPC.
+Both leave the venv active, and ``configure`` passes its interpreter to CMake
+as ``Python3_EXECUTABLE`` and ``Python_EXECUTABLE``.
+A recipe that calls neither leaves CMake to find Python itself.
+
 Reproduce a leg locally
 -----------------------
 

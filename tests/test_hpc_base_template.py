@@ -42,7 +42,8 @@ def _render(source: str = EXTENDS, leg: dict[str, Any] | None = None, search_pat
 def _base_source() -> bytes:
     templates = resources.files("ci_infrastructure.hpc") / "templates"
     return b"".join(
-        (templates / name).read_bytes() for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2", "cmake-all-lanes.sh.j2")
+        (templates / name).read_bytes()
+        for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2", "cmake-all-lanes.sh.j2", "python.j2")
     )
 
 
@@ -238,8 +239,8 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "2a32ac7c93d229a85731342d18dbfa4ea967884c9836b8b4c73bff3d4a1a366d"
-TEMPLATE_VERSION: Final = 2
+TEMPLATE_SHA256: Final = "c891a70ed87944d49ef2e4a2dbe263a5b37281cf107ddc56211561f88f69c04e"
+TEMPLATE_VERSION: Final = 3
 
 
 def test_base_template_change_bumps_the_template_version() -> None:
@@ -289,3 +290,56 @@ def test_the_compiler_binary_defaults_to_the_compiler_and_may_differ() -> None:
 def test_cc_no_longer_names_the_binary() -> None:
     leg = {**{k: v for k, v in LEG.items() if k != "c-compiler"}, "cc": "gcc"}
     assert jobscript.undeclared_template_names(EXTENDS, leg, template_name="t") == {"c_compiler_binary"}
+
+
+PY_RECIPE: Final = (
+    '{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}\n'
+    '{% import "ci-infrastructure/python.j2" as py %}\n'
+    "{% block set_environment %}\n"
+    '{{ py.uv_venv(python_version) if execution == "runner" else py.module_venv(python_version) }}\n'
+    "{% endblock %}\n"
+)
+
+
+def _runner_with(leg: dict[str, Any], source: str = PY_RECIPE) -> str:
+    return _render_runner(source, leg={**RUNNER_LEG, **leg})
+
+
+def _atos_with(leg: dict[str, Any], source: str = PY_RECIPE) -> str:
+    return _render(source, leg=leg)
+
+
+def test_uv_venv_on_the_runner_takes_a_uv_managed_python() -> None:
+    lines = _runner_with({"python-version": "3.11"}).splitlines()
+    assert "want=3.11" in lines
+    assert '    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$want" "$ci_venv"' in lines
+    assert 'ci_python="$ci_venv/bin/python"' in lines
+
+
+def test_module_venv_on_atos_takes_the_module_python_not_uv() -> None:
+    out = _atos_with({"python-version": "3.11", "modules": ["load python3/3.11.8-01"]})
+    assert "uv " not in out
+    assert 'python3 -m venv --clear --system-site-packages "$ci_venv"' in out.splitlines()
+    assert "module load python3/3.11.8-01" in out.splitlines()
+
+
+@pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
+def test_configure_passes_the_venv_python_only_when_a_macro_set_it(render: Any) -> None:
+    line = '  ${ci_python:+"-DPython3_EXECUTABLE=$ci_python" "-DPython_EXECUTABLE=$ci_python"} \\'
+    bare = render({}, EXTENDS if render is _atos_with else RUNNER)
+    assert line in bare.splitlines()
+    assert "ci_python=" not in bare
+    assert "ci_python=" in render({"python-version": "3.12"})
+
+
+@pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
+def test_a_numeric_python_version_is_rejected(render: Any) -> None:
+    with pytest.raises(jobscript.JobTemplateError, match="python-version must be a string"):
+        render({"python-version": 3.1})
+
+
+@pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
+def test_python_macros_render_valid_bash(render: Any, tmp_path: Path) -> None:
+    script = tmp_path / "job.sh"
+    script.write_text(render({"python-version": "3.12"}))
+    subprocess.run(["bash", "-n", str(script)], check=True)

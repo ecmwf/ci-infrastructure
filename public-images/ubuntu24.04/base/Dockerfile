@@ -62,18 +62,28 @@ RUN mkdir -p /etc/apt/keyrings \
  && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
+# uv, pinned to the same version in every base. ci-infrastructure gets its own
+# uv-managed CPython and venv under /opt/ci-infrastructure, kept apart from every
+# Python a build may use: recipes create theirs in UV_PYTHON_INSTALL_DIR.
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /usr/local/bin/
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_LINK_MODE=copy
+
 # Install ci-infrastructure from the build context, so an image tagged <sha>
 # contains <sha> (src/, pyproject.toml and LICENSE are tag paths). LICENSE must be
 # copied: setuptools silently builds a wheel without a missing license file. Not
 # editable: ensure-infrastructure-present hashes the installed *.py files.
-COPY pyproject.toml LICENSE /opt/ci-infrastructure/
-COPY src /opt/ci-infrastructure/src
-RUN pip install "/opt/ci-infrastructure[runtime]" \
- && rm -rf /opt/ci-infrastructure
+COPY pyproject.toml LICENSE /tmp/ci-infrastructure/
+COPY src /tmp/ci-infrastructure/src
+RUN UV_PYTHON_INSTALL_DIR=/opt/ci-infrastructure/python \
+    uv venv --no-cache --python 3.12 /opt/ci-infrastructure/venv \
+ && uv pip install --no-cache --python /opt/ci-infrastructure/venv/bin/python "/tmp/ci-infrastructure[runtime]" \
+ && rm -rf /tmp/ci-infrastructure
 
 # ensure-infrastructure-present reuses this interpreter instead of a venv. It
 # lives outside _work, which ARC's Kubernetes mode overlays per job.
-ENV CI_INFRASTRUCTURE_PYTHON=/usr/bin/python3
+ENV CI_INFRASTRUCTURE_PYTHON=/opt/ci-infrastructure/venv/bin/python
 
 # The baked commit, named in ensure-infrastructure-present's mismatch error.
 # Declared late to keep the pip layer cached.

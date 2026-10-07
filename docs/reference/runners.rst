@@ -222,6 +222,7 @@ so that a recipe that works on one platform does not fail on another for a missi
 Each base lists what it provides explicitly, even where another package would pull it in:
 
 - Python 3 with ``venv``, ``pip`` and its headers,
+- `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base,
 - the C libraries zlib, ncurses and OpenSSL with their headers,
 - ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
 - no compiler; the variants add those.
@@ -235,3 +236,20 @@ A C++ library whose binary API passes C++ types (classes, templates, ``std::`` t
 is built against one compiler's C++ ABI and standard library, so it depends on the compiler.
 Such libraries come from ``stack-dependencies``,
 are baked into a derived image (as Boost and Qt in the ``boost-qt`` variants), or are modules on the HPC.
+
+Python in the images
+~~~~~~~~~~~~~~~~~~~~
+
+Each base has three kinds of Python, which do not interfere:
+
+- The distribution's ``python3`` is left as it is, for the system's own tools and for builds that find it.
+- ci-infrastructure runs on its own uv-managed CPython in ``/opt/ci-infrastructure``.
+  ``CI_INFRASTRUCTURE_PYTHON`` names it; it is not on ``PATH``,
+  and the actions call it with ``-I``, so a job's ``PYTHONPATH`` or venv cannot reach it.
+- A recipe that asks for a leg's ``python-version`` (see :doc:`../configuring/job-scripts`)
+  gets it from uv in ``UV_PYTHON_INSTALL_DIR`` (``/opt/uv/python``), downloaded if the image lacks it.
+  On the HPC the same recipe takes it from the leg's ``python3`` module instead.
+
+Workflow steps outside the recipe that need the leg's Python can use
+`astral-sh/setup-uv <https://github.com/astral-sh/setup-uv>`__ with ``python-version`` and ``activate-environment``;
+``uv_venv`` then reuses that venv if its version matches.
