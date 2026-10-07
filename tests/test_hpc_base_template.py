@@ -312,7 +312,10 @@ def _atos_with(leg: dict[str, Any], source: str = PY_RECIPE) -> str:
 def test_uv_venv_on_the_runner_takes_a_uv_managed_python() -> None:
     lines = _runner_with({"python-version": "3.11"}).splitlines()
     assert "ci_infra_want=3.11" in lines
-    assert '    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$ci_infra_want" "$ci_infra_build_venv"' in lines
+    assert (
+        '    UV_PYTHON_PREFERENCE=only-managed uv venv --clear --python "$ci_infra_want" "$ci_infra_build_venv"'
+        in lines
+    )
     assert 'ci_infra_build_python="$ci_infra_build_venv/bin/python"' in lines
 
 
