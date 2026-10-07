@@ -688,6 +688,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
         # Artifacts and sccache live in separate buckets.
         "env": {
             "ARTIFACT_POLL_INTERVAL": "${{ vars.ARTIFACT_POLL_INTERVAL || '60' }}",
+            "ARTIFACT_WAIT_TIMEOUT": "${{ vars.ARTIFACT_WAIT_TIMEOUT || '1800' }}",
             "ARTIFACT_S3_ENDPOINT": "${{ secrets.ARTIFACT_S3_ENDPOINT }}",
             "ARTIFACT_S3_BUCKET": "${{ secrets.ARTIFACT_S3_BUCKET }}",
             "SCCACHE_BUCKET": "${{ secrets.SCCACHE_BUCKET }}",
