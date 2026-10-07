@@ -106,7 +106,7 @@ def template_var(field: str) -> str:
 def job_template_environment(search_path: Path | None = None) -> jinja2.Environment:
     # The shared templates come first, so a repo file cannot shadow them.
     loaders: list[jinja2.BaseLoader] = [
-        jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: jinja2.PackageLoader("ci_infrastructure.hpc", "templates")})
+        jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: jinja2.PackageLoader("ci_infrastructure", "templates")})
     ]
     if search_path:
         loaders.append(jinja2.FileSystemLoader(str(search_path)))

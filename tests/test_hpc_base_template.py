@@ -40,7 +40,7 @@ def _render(source: str = EXTENDS, leg: dict[str, Any] | None = None, search_pat
 
 
 def _base_source() -> bytes:
-    templates = resources.files("ci_infrastructure.hpc") / "templates"
+    templates = resources.files("ci_infrastructure") / "templates"
     return b"".join(
         (templates / name).read_bytes()
         for name in ("cmake-runner.sh.j2", "cmake-atos.sh.j2", "cmake-all-lanes.sh.j2", "python.j2")
