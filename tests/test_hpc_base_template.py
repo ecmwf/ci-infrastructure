@@ -239,7 +239,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "c891a70ed87944d49ef2e4a2dbe263a5b37281cf107ddc56211561f88f69c04e"
+TEMPLATE_SHA256: Final = "a002cf6ff7929f738389dbeb0296ede6c1faf68d3f47bae7dfc956e824b86eda"
 TEMPLATE_VERSION: Final = 3
 
 
@@ -324,12 +324,14 @@ def test_module_venv_on_atos_takes_the_module_python_not_uv() -> None:
 
 
 @pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
-def test_configure_passes_the_venv_python_only_when_a_macro_set_it(render: Any) -> None:
+def test_configure_passes_the_venv_python_only_when_a_macro_sets_it(render: Any) -> None:
     line = '  ${ci_python:+"-DPython3_EXECUTABLE=$ci_python" "-DPython_EXECUTABLE=$ci_python"} \\'
     bare = render({}, EXTENDS if render is _atos_with else RUNNER)
-    assert line in bare.splitlines()
-    assert "ci_python=" not in bare
-    assert "ci_python=" in render({"python-version": "3.12"})
+    lines = bare.splitlines()
+    assert line in lines
+    assert lines.index('ci_python=""') < lines.index(line)
+    assert [x for x in lines if x.startswith("ci_python=")] == ['ci_python=""']
+    assert 'ci_python="$ci_venv/bin/python"' in render({"python-version": "3.12"}).splitlines()
 
 
 @pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
