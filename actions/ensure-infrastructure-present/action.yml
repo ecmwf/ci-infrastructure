@@ -135,23 +135,58 @@ runs:
               rm -rf "$venv"
             fi
             echo "ensure-infrastructure-present: no venv at $venv — creating one now."
-            echo "  This installs ci-infrastructure from $repo_root with uv, pulling its deps"
+            echo "  This installs ci-infrastructure from $repo_root, pulling its deps"
             echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
 
-            # uv is the images' way to a Python (public-images/README.md); the venv
-            # gets the same uv-managed CPython the baked interpreter is.
-            if ! command -v uv >/dev/null 2>&1; then
-              echo "::error::ensure-infrastructure-present: uv is not on PATH. It is in every ci-infrastructure image; on another runner install it (https://docs.astral.sh/uv/getting-started/installation/), e.g. with astral-sh/setup-uv." >&2
-              exit 1
-            fi
             start=$SECONDS
-            echo "  using $(uv --version) with a uv-managed CPython 3.12"
-            UV_PYTHON_PREFERENCE=only-managed uv venv --python 3.12 "$venv"
-            # Not --quiet, so a stall is visible; the timeout makes blocked egress fail fast.
-            echo "  uv pip install ci-infrastructure from $repo_root ..."
-            # [runtime]: the base install is only what the pre-commit hook needs.
-            UV_HTTP_TIMEOUT=60 uv pip install --python "$venv/bin/python" "$repo_root[runtime]"
+            if command -v uv >/dev/null 2>&1; then
+              # uv is the images' way to a Python (public-images/README.md); the venv
+              # gets the same uv-managed CPython the baked interpreter is.
+              echo "  using $(uv --version) with a uv-managed CPython 3.12"
+              UV_PYTHON_PREFERENCE=only-managed uv venv --python 3.12 "$venv"
+              # Not --quiet, so a stall is visible; the timeout makes blocked egress fail fast.
+              echo "  uv pip install ci-infrastructure from $repo_root ..."
+              # [runtime]: the base install is only what the pre-commit hook needs.
+              UV_HTTP_TIMEOUT=60 uv pip install --python "$venv/bin/python" "$repo_root[runtime]"
+            else
+              # A system interpreter, not the consumer's setup-python one nor an
+              # activated venv (setup-uv, a recipe's); gate = requires-python.
+              bootstrap_path="$PATH"
+              for exclude in "${pythonLocation:+$pythonLocation/bin}" "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin}"; do
+                [ -n "$exclude" ] || continue
+                cleaned=""
+                IFS=:
+                for p in $bootstrap_path; do
+                  [ "$p" = "$exclude" ] && continue
+                  cleaned="${cleaned:+$cleaned:}$p"
+                done
+                unset IFS
+                bootstrap_path="$cleaned"
+              done
+
+              bootstrap_py=""
+              for cand in python3.13 python3.12 python3.11 python3; do
+                if path="$(PATH="$bootstrap_path" command -v "$cand" 2>/dev/null)"; then
+                  if "$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11,2) else 1)'; then
+                    bootstrap_py="$path"
+                    break
+                  fi
+                fi
+              done
+
+              if [ -z "$bootstrap_py" ]; then
+                echo "::error::ensure-infrastructure-present: no Python >=3.11.2 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}) and any activated venv (VIRTUAL_ENV=${VIRTUAL_ENV:-<unset>}). Install uv (preferred) or python3.11.2+ in the runner image, or in the consumer container." >&2
+                exit 1
+              fi
+
+              echo "  using bootstrap interpreter: $bootstrap_py ($("$bootstrap_py" --version 2>&1))"
+              "$bootstrap_py" -m venv "$venv"
+              # Not --quiet, so a stall is visible; timeouts make blocked egress fail fast.
+              echo "  pip install ci-infrastructure from $repo_root ..."
+              # [runtime]: the base install is only what the pre-commit hook needs.
+              "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[runtime]"
+            fi
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
           # mtime = last use; drop venvs idle a week.
