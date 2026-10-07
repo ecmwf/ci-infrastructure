@@ -301,13 +301,14 @@ GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "locks", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
-    action = "-print" if dryrun else "-exec rm -rf {} +"
+    # -print in both modes: the listing is what gets counted.
+    action = "-print" if dryrun else "-print -exec rm -rf {} +"
     for sub in GC_SUBDIRS:
         base = f"{remote_work_dir.rstrip('/')}/{sub}"
         quoted = shlex.quote(base)
         find = f"find {quoted} -mindepth 1 -maxdepth 1 -mtime +{older_than_days} {action}"
         proc = conn.execute(
-            ["bash", "-c", f"test -d {quoted} && {find} || true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ["bash", "-c", f"if test -d {quoted}; then {find}; fi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         stdout, stderr = proc.communicate()
         listing = stdout.decode(errors="replace").strip() if isinstance(stdout, bytes) else str(stdout).strip()
