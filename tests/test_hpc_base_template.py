@@ -328,7 +328,10 @@ def test_module_venv_on_atos_takes_the_module_python_not_uv() -> None:
 
 @pytest.mark.parametrize("render", [_runner_with, _atos_with], ids=["runner", "atos"])
 def test_configure_passes_the_venv_python_only_when_a_macro_sets_it(render: Any) -> None:
-    line = '  ${ci_infra_build_python:+"-DPython3_EXECUTABLE=$ci_infra_build_python" "-DPython_EXECUTABLE=$ci_infra_build_python"} \\'
+    line = (
+        '  ${ci_infra_build_python:+"-DPython3_EXECUTABLE=$ci_infra_build_python"'
+        ' "-DPython_EXECUTABLE=$ci_infra_build_python"} \\'
+    )
     bare = render({}, EXTENDS if render is _atos_with else RUNNER)
     lines = bare.splitlines()
     assert line in lines
