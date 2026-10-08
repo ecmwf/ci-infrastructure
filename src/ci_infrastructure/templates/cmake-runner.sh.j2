@@ -81,6 +81,8 @@ export LD_LIBRARY_PATH
 # The git CLI, so cargo's git dependencies follow run-job-script's URL rewrite and token.
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/cargo-target"
+# setup-sccache sets RUSTC_WRAPPER; sccache does not cache incremental builds.
+export CARGO_INCREMENTAL=0
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
 {% block cargo %}
 cargo fmt --all --check

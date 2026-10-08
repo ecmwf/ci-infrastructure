@@ -267,7 +267,7 @@ def test_the_rust_block_runs_a_real_shell(tmp_path: Path) -> None:
     subprocess.run(["bash", "-n"], input=rust, text=True, check=True)
 
 
-TEMPLATE_SHA256: Final = "a99fdf80423f3a8928df0990315cd6fddec6eb226a9539030ae42393976112c7"
+TEMPLATE_SHA256: Final = "170f129d1ab0f65225fe23d6807fdd6a42d64220e8495741526796fb08df2716"
 TEMPLATE_VERSION: Final = 3
 
 
