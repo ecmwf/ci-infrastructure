@@ -78,9 +78,8 @@ for p in ${CMAKE_PREFIX_PATH//;/ }; do
   done
 done
 export LD_LIBRARY_PATH
-# Git dependencies named by ssh URL, fetched anonymously.
-export CARGO_NET_GIT_FETCH_WITH_CLI=true GIT_CONFIG_COUNT=1 \
-  GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=ssh://git@github.com/
+# The git CLI, so cargo's git dependencies follow run-job-script's URL rewrite and token.
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/cargo-target"
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
 {% block cargo %}

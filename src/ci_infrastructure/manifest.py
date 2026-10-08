@@ -88,11 +88,30 @@ class PackageTable(_Table):
         default=False,
         description="An umbrella package: no artifact of its own. A dep on it stands for its `[[deps]]`.",
     )
+    git_read: tuple[str, ...] = Field(
+        default=(),
+        alias="git-read",
+        description="`owner/name` of repos the runner build fetches over git, e.g. a cargo git dependency. "
+        "The job gets a token that can only read these; same owner as `repo`.",
+    )
 
     @field_validator("repo")
     @classmethod
     def _repo_shape(cls, v: str | None) -> str | None:
         return v if v is None else _check_repo(v)
+
+    @field_validator("git_read")
+    @classmethod
+    def _git_read_shape(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(_check_repo(r) for r in v)
+
+    @model_validator(mode="after")
+    def _git_read_same_owner(self) -> PackageTable:
+        owner = (self.repo or "").split("/", 1)[0]
+        foreign = [r for r in self.git_read if self.repo and r.split("/", 1)[0] != owner]
+        if foreign:
+            raise ValueError(f"git-read {foreign!r}: one app token covers one owner, '{owner}'")
+        return self
 
     @field_validator("compiler_inputs")
     @classmethod

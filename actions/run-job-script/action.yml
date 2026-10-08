@@ -23,6 +23,10 @@ inputs:
     description: 'Semicolon-separated prefixes of the resolved deps'
     required: false
     default: ''
+  git-token:
+    description: 'Read token for the git fetches of the script (the manifest''s git-read); empty fetches anonymously'
+    required: false
+    default: ''
 
 outputs:
   install-path:
@@ -83,4 +87,19 @@ runs:
         CI_INSTALL_ROOT: ${{ steps.prefix.outputs.base }}
         CI_BUILD_DIR: ${{ steps.set-paths.outputs.build-dir }}
         CMAKE_PREFIX_PATH: ${{ inputs.cmake-prefix-path }}
-      run: CI_SOURCE_DIR="$GITHUB_WORKSPACE" bash "$SCRIPT"
+        GIT_TOKEN: ${{ inputs.git-token }}
+      run: |
+        # GitHub over https for every git the script runs, with the token if there is
+        # one; from the environment, so no ~/.gitconfig keeps it.
+        if [ -n "$GIT_TOKEN" ]; then
+          export GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0="url.https://x-access-token:$GIT_TOKEN@github.com/.insteadOf" \
+            GIT_CONFIG_VALUE_0=ssh://git@github.com/ \
+            GIT_CONFIG_KEY_1="url.https://x-access-token:$GIT_TOKEN@github.com/.insteadOf" \
+            GIT_CONFIG_VALUE_1=https://github.com/
+        else
+          export GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=ssh://git@github.com/
+        fi
+        unset GIT_TOKEN
+        CI_SOURCE_DIR="$GITHUB_WORKSPACE" bash "$SCRIPT"
