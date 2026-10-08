@@ -34,6 +34,7 @@ RUN dnf -y install dnf-plugins-core \
     python3.12-pip \
     openssl-devel \
     zlib-devel \
+    libcurl-devel \
  && dnf -y update expat \
  && dnf clean all && rm -rf /var/cache/dnf
 

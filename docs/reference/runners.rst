@@ -232,7 +232,7 @@ so that a recipe that works on one platform does not fail on another for a missi
 Each base lists what it provides explicitly, even where another package would pull it in:
 
 - `uv <https://docs.astral.sh/uv/>`__, the same pinned version in every base, as the way to a Python (below),
-- the C libraries zlib, ncurses and OpenSSL with their headers,
+- the C libraries zlib, ncurses, OpenSSL and libcurl with their headers,
 - ``diffutils`` (``cmp``, ``diff``), which tests use to compare output,
 - the command-line tools ``git``, ``gh``, ``curl``, ``wget``, ``cmake`` (3.26 or newer), ``ninja``, ``make``,
   ``bison``, ``flex``, ``jq``, ``unzip``, ``zstd``, ``sudo`` and ``gpg``,

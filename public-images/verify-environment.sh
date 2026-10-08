@@ -171,12 +171,15 @@ fi
 for header in zlib.h ncurses.h openssl/ssl.h; do
   [ -f "/usr/include/$header" ] || fail "/usr/include/$header is missing; every base lists the library providing it"
 done
+# Debian and Ubuntu install it under the multiarch directory.
+compgen -G "/usr/include/curl/curl.h" >/dev/null || compgen -G "/usr/include/*/curl/curl.h" >/dev/null \
+  || fail "curl/curl.h is missing; every base lists libcurl's development package"
 missing=""
 for tool in git gh curl wget cmake ninja make bison flex jq unzip zstd sudo gpg cmp diff; do
   command -v "$tool" >/dev/null || missing="$missing $tool"
 done
 [ -z "$missing" ] || fail "missing from PATH:$missing; every base lists the package providing each"
-echo "uniform: zlib, ncurses and OpenSSL headers, git, gh, curl, wget, cmake, ninja, make, bison, flex, jq, unzip, zstd, sudo, gpg, diffutils"
+echo "uniform: zlib, ncurses, OpenSSL and libcurl headers, git, gh, curl, wget, cmake, ninja, make, bison, flex, jq, unzip, zstd, sudo, gpg, diffutils"
 
 if [ "$mode" = image ]; then
   # gfortran-N Depends on gcc-N, so a GNU toolchain can arrive as another package's
