@@ -108,6 +108,34 @@ CMake's FindPython then finds the venv first.
 
 On the HPC, load a ``python3`` module in the leg's ``modules`` and create the venv in the recipe yourself.
 
+Rust bindings
+-------------
+
+A leg names its Rust toolchain in ``rust-compiler``, e.g. ``"rust-1.90"``, as it names ``g++-13``;
+the image provides it, e.g. ``ubuntu24.04-gcc13-gfortran13-rust1.90`` (see :doc:`../reference/runners`).
+On such a leg the runner template's ``rust`` block runs after the install:
+``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``,
+with the ``-sys`` crates in ``system`` mode, so they link the library just installed instead of building it again.
+Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
+``cargo_workspace`` for another directory:
+
+.. code:: toml
+
+   [[matrix.build.include]]
+   cxx-compiler = "g++-13"
+   c-compiler = "gcc-13"
+   rust-compiler = "rust-1.90"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-rust1.90:latest"
+   platform = "ubuntu-24.04"
+
+.. code:: jinja
+
+   {% block cargo_features %}--no-default-features --features system,raw{% endblock %}
+   {% block cargo_doc %}{% endblock %}
+
+Keep ``rust-compiler`` out of ``compiler-inputs`` in a C++ package:
+the Rust bindings are tested, not published, and consumers without Rust must find the same artifact.
+
 Reproduce a leg locally
 -----------------------
 

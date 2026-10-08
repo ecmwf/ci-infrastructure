@@ -17,7 +17,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 - `base` has system packages, cmake, Python and the baked `ci_infrastructure` package. It has **no compiler**.
 - Every `base` provides the same libraries and lists each one, even where another package would pull it in: uv (the way to a Python; the distribution's `python3` is not guaranteed), the C libraries zlib, ncurses, OpenSSL and libcurl with headers, `diffutils`, and the command-line tools `verify-environment.sh` checks. Only libraries any compiler on the platform can use belong in a base: C libraries and C++ libraries with an `extern "C"` API (the platform's C ABI), and header-only libraries (compiled by the consumer). A C++ library whose binary API passes C++ types depends on the compiler's C++ ABI and standard library: it comes from stack-dependencies, is baked into a derived image (as Boost and Qt in the `boost-qt` variants), or is an HPC module.
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
-- The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, and `openmpi` a working `mpicc`/`mpirun`. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
+- The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, `openmpi` a working `mpicc`/`mpirun`, and `rust<X.Y>` that Rust toolchain with `clippy` and `rustfmt`, linking with the named gcc. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
 
 [`verify-environment.sh`](verify-environment.sh) checks this contract.

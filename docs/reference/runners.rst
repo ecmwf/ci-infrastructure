@@ -118,6 +118,8 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
    |                  | `ubuntu24.04-gcc13-gfortran13-boost-qt6`_ |
    |                  +-------------------------------------------+
    |                  | `ubuntu24.04-gcc13-gfortran13-openmpi`_   |
+   |                  +-------------------------------------------+
+   |                  | `ubuntu24.04-gcc13-gfortran13-rust1.90`_  |
    +------------------+-------------------------------------------+
    | ``ubuntu26.04``  | `ubuntu26.04-base`_                       |
    |                  +-------------------------------------------+
@@ -188,6 +190,7 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 .. _ubuntu24.04-clang18: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/clang18/Dockerfile
 .. _ubuntu24.04-gcc13-gfortran13-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6/Dockerfile
 .. _ubuntu24.04-gcc13-gfortran13-openmpi: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13-openmpi/Dockerfile
+.. _ubuntu24.04-gcc13-gfortran13-rust1.90: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13-rust1.90/Dockerfile
 .. _ubuntu26.04-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/base/Dockerfile
 .. _ubuntu26.04-gcc15-gfortran15: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15/Dockerfile
 .. _ubuntu26.04-gcc15-gfortran15-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15-boost-qt6/Dockerfile

@@ -42,6 +42,19 @@ def test_python_slot_left_out_where_a_leg_has_no_version() -> None:
     assert _suffixes(legs, ("cxx-compiler",)) == ["ubuntu-26.04, g++-15", "ubuntu-26.04, g++-15, py3.11"]
 
 
+def test_rust_compiler_shown_on_the_leg_that_has_it() -> None:
+    legs = [
+        {"cxx-compiler": "clang++-18", "platform": "ubuntu-24.04"},
+        {"cxx-compiler": "g++-13", "rust-compiler": "rust-1.90", "platform": "ubuntu-24.04"},
+    ]
+    assert _suffixes(legs, ("cxx-compiler",)) == ["ubuntu-24.04, clang++-18", "ubuntu-24.04, g++-13, rust-1.90"]
+
+
+def test_rust_compiler_as_a_compiler_input_is_not_repeated() -> None:
+    legs = [{"rust-compiler": "rust-1.90", "platform": "ubuntu-24.04"}]
+    assert _suffixes(legs, ("rust-compiler",)) == ["ubuntu-24.04, rust-1.90"]
+
+
 def test_options_slot_separates_legs_that_differ_only_by_options() -> None:
     legs = [
         {"cxx-compiler": "g++-13", "platform": "ubuntu-24.04"},

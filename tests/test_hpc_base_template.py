@@ -239,8 +239,36 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "099770b804f8c4410e8d22582de28e68eb5c65861fdd410047bc92a13b991722"
-TEMPLATE_VERSION: Final = 2
+def test_rust_runs_only_on_a_leg_naming_a_rust_compiler() -> None:
+    assert "cargo" not in _render_runner()
+    assert "cargo" not in _render(leg={"rust-compiler": ""})
+    out = _render_runner(leg={**RUNNER_LEG, "rust-compiler": "rust-1.90"})
+    assert "rust_version=1.90\n" in out
+    assert 'export CC="$(command -v gcc-13)" CXX="$(command -v g++-13)"' in out
+    assert "cargo test --workspace --no-default-features --features system\n" in out
+    assert out.index('cmake --install "$build"') < out.index("cargo fmt --all --check")
+    assert jobscript.undeclared_template_names(RUNNER, RUNNER_LEG, template_name="t") == set()
+
+
+def test_a_recipe_sets_the_cargo_features_and_skips_the_docs() -> None:
+    source = RUNNER + (
+        "{% block cargo_features %}--no-default-features --features system,raw{% endblock %}\n"
+        "{% block cargo_doc %}{% endblock %}\n"
+    )
+    out = _render_runner(source, {**RUNNER_LEG, "rust-compiler": "rust-1.90"})
+    assert "cargo clippy --workspace --all-targets --no-default-features --features system,raw -- \\" in out
+    assert "cargo test --workspace --no-default-features --features system,raw\n" in out
+    assert "cargo doc" not in out
+
+
+def test_the_rust_block_runs_a_real_shell(tmp_path: Path) -> None:
+    out = _render_runner(leg={**RUNNER_LEG, "rust-compiler": "rust-1.90"})
+    rust = out[out.index("rust_version=") : out.index('cd "$CI_SOURCE_DIR/rust"')]
+    subprocess.run(["bash", "-n"], input=rust, text=True, check=True)
+
+
+TEMPLATE_SHA256: Final = "7865ab8ae2c072429efa656a3b5c4f7d0f352e70f45f53fea41337430339aedc"
+TEMPLATE_VERSION: Final = 3
 
 
 def test_base_template_change_bumps_the_template_version() -> None:
