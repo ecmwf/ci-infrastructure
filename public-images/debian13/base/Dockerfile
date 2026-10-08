@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     python-is-python3 \
     libssl-dev \
     zlib1g-dev \
+    libcurl4-openssl-dev \
     libncurses-dev \
     build-essential- \
     gcc- \

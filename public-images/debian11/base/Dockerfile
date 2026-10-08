@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     libssl-dev \
     zlib1g-dev \
+    libcurl4-openssl-dev \
     libncurses-dev \
     libbz2-dev \
     libreadline-dev \
