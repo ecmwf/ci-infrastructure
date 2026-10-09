@@ -488,3 +488,13 @@ def test_a_kind_that_publishes_nothing_resolves_the_deps_of_its_packages() -> No
         dispatch_plans={},
     )
     assert [d.name for d in to_fetch] == ["cxxmath"]
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_dep_carries_the_dirs_its_package_puts_on_path() -> None:
+    producer = _BINDINGS.replace('repo = "org/cxxmath"\n', 'repo = "org/cxxmath"\nadd-to-path = ["bin"]\n', 1)
+    m = parse_manifest(producer)
+    deps, _ = _resolve(
+        [replace(_consumer_dep("cxxmath"), repo=Repo("org/cxxmath"))], {(Repo("org/cxxmath"), Ref("master")): m}
+    )
+    assert [d.to_json()["add-to-path"] for d in deps] == [["bin"]]

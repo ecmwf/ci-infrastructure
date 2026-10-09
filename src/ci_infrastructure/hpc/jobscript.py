@@ -60,7 +60,7 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "ci_dep_refs")
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -162,6 +162,8 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     context["execution"] = execution
     # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
     context["ci_packages"] = list((leg.get("_resolved") or {}).get("packages") or {})
+    # The ref resolve-deps took each dep's repo from, e.g. a sync-branch/ of the same name.
+    context["ci_dep_refs"] = {d["repo"]: d["ref"] for d in (leg.get("_resolved") or {}).get("deps") or []}
     return context
 
 
@@ -353,8 +355,10 @@ def render_job_script(
     marker_wait_timeout: int = DEFAULT_MARKER_WAIT_TIMEOUT,
     env: Mapping[str, str] | None = None,
     packages: Sequence[str] = (),
+    path_dirs: Sequence[str] = (),
 ) -> str:
-    """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here."""
+    """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here.
+    `path_dirs`: what the deps declare in add-to-path, on the cluster."""
     shebang, header, body = _split_header(repo_script)
 
     out: list[str] = [shebang or "#!/bin/bash"]
@@ -373,6 +377,8 @@ def render_job_script(
     lib_dirs = ":".join(f"{p}/lib64:{p}/lib" for p in cmake_prefix_path.split(":") if p)
     if lib_dirs:
         out.append(f'export LD_LIBRARY_PATH="{lib_dirs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"')
+    if path_dirs:
+        out.append(f'export PATH="{":".join(path_dirs)}:$PATH"')
     out.append(f'export CI_INSTALL_PREFIX="{install_path}"')
     out.append(f'export CI_INSTALL_ARCHIVE="{install_archive_path(install_path)}"')
     if packages:

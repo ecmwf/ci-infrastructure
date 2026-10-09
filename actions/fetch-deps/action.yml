@@ -6,7 +6,8 @@ name: Fetch resolved deps
 description: >
   Download each resolved dep from the S3 store (`ARTIFACT_S3_*`, `AWS_*` in the
   job env) into its install path, emit the CMAKE_PREFIX_PATH covering them and
-  prepend their lib dirs to LD_LIBRARY_PATH for later steps.
+  prepend their lib dirs to LD_LIBRARY_PATH, and the dirs each declares in add-to-path
+  to PATH, for later steps.
 
 inputs:
   deps-json:
@@ -55,7 +56,7 @@ runs:
         fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.fetch_deps "${args[@]}"
 
-    - name: Compose CMAKE_PREFIX_PATH and LD_LIBRARY_PATH from deps-json
+    - name: Compose CMAKE_PREFIX_PATH, LD_LIBRARY_PATH and PATH from deps-json
       id: compose-cmake
       shell: bash
       run: |
@@ -71,6 +72,11 @@ runs:
             old = os.environ.get("LD_LIBRARY_PATH", "")
             with open(os.environ["GITHUB_ENV"], "a") as env:
                 env.write(f"LD_LIBRARY_PATH={':'.join(lib_dirs + ([old] if old else []))}\n")
+        # The dirs a producer declares in add-to-path, e.g. eccodes' bin for grib_ls. Each line
+        # is prepended, so the last written comes first: reversed keeps the deps' order.
+        path_dirs = [f"{p}/{rel}" for p, d in zip(paths, deps) for rel in d.get("add-to-path") or []]
+        with open(os.environ["GITHUB_PATH"], "a") as gh_path:
+            gh_path.writelines(f"{d}\n" for d in reversed(path_dirs))
         PY
       env:
         DEPS_JSON: ${{ inputs.deps-json }}

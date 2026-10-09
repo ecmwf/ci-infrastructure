@@ -23,7 +23,8 @@ It submits the job first, which claims the place in the queue,
 and then copies the source and the dependencies into a staging directory on the cluster.
 A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
-``CMAKE_PREFIX_PATH`` points at the shipped dependencies, and ``LD_LIBRARY_PATH`` at their libraries.
+``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
+and ``PATH`` at the directories each declares in ``add-to-path``.
 The cluster therefore needs neither a GitHub token nor access to S3.
 
 The staging directory belongs to the artifact, not to the run.

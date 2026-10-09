@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
@@ -39,6 +40,14 @@ _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 def _check_repo(v: str) -> str:
     if v.count("/") != 1 or not all(v.split("/", 1)):
         raise ValueError(f"repo must be 'owner/name', got {v!r}")
+    return v
+
+
+def _check_install_dirs(v: tuple[str, ...]) -> tuple[str, ...]:
+    for d in v:
+        parts = PurePosixPath(d).parts
+        if not d or d.startswith("/") or ".." in parts or any(c in d for c in ":;$`\\\n"):
+            raise ValueError(f"'add-to-path' takes directories inside the install tree, e.g. \"bin\"; got {d!r}")
     return v
 
 
@@ -88,6 +97,12 @@ class PackageTable(_Table):
         default=False,
         description="An umbrella package: no artifact of its own. A dep on it stands for its `[[deps]]`.",
     )
+    add_to_path: tuple[str, ...] = Field(
+        default=(),
+        alias="add-to-path",
+        description="Directories of the install tree, relative to it, that a consumer's build job puts on `PATH`, "
+        'e.g. `["bin"]` for tools the consumer\'s tests run. Nothing by default.',
+    )
     git_read: tuple[str, ...] = Field(
         default=(),
         alias="git-read",
@@ -117,6 +132,11 @@ class PackageTable(_Table):
     @classmethod
     def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         return _check_compiler_inputs(v)
+
+    @field_validator("add_to_path")
+    @classmethod
+    def _add_to_path(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_install_dirs(v)
 
     @model_validator(mode="after")
     def _prefix_defaults_to_name(self) -> PackageTable:
@@ -266,11 +286,19 @@ class PackageEntry(_Table):
         alias="compiler-inputs", description="As `[package].compiler-inputs`, for this package."
     )
     deps: tuple[DepTable, ...] = Field(default=(), description="As `[[deps]]`, for this package.")
+    add_to_path: tuple[str, ...] = Field(
+        default=(), alias="add-to-path", description="As `[package].add-to-path`, for this package."
+    )
 
     @field_validator("compiler_inputs")
     @classmethod
     def _compiler_inputs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         return _check_compiler_inputs(v)
+
+    @field_validator("add_to_path")
+    @classmethod
+    def _add_to_path(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        return _check_install_dirs(v)
 
 
 class TriggerDownstreamTable(_Table):

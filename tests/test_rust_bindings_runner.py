@@ -33,7 +33,7 @@ def test_cargo_checks_the_workspace_with_the_legs_toolchain() -> None:
     assert 'export CC="$(command -v gcc-13)" CXX="$(command -v g++-13)"' in out
     assert 'cd "$CI_SOURCE_DIR/rust"' in out
     assert out.index("cargo fmt --all --check") < out.index(
-        "cargo test --workspace --no-default-features --features system"
+        'cargo test "${cargo_patches[@]}" --workspace --no-default-features --features system'
     )
     assert "cmake" not in out
 
@@ -46,8 +46,8 @@ def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs() -> None:
     )
     out = _render(source)
     assert 'cd "$CI_SOURCE_DIR/bindings"' in out
-    assert "cargo clippy --workspace --all-targets --features ssl -- -D warnings\n" in out
-    assert "cargo test --workspace --features ssl\n" in out
+    assert 'cargo clippy "${cargo_patches[@]}" --workspace --all-targets --features ssl -- -D warnings\n' in out
+    assert 'cargo test "${cargo_patches[@]}" --workspace --features ssl\n' in out
     assert "cargo doc" not in out
 
 
@@ -59,3 +59,12 @@ def test_a_leg_without_rust_compiler_is_refused() -> None:
 
 def test_the_rendered_script_is_valid_bash() -> None:
     subprocess.run(["bash", "-n"], input=_render(), text=True, check=True)
+
+
+def test_crates_follow_the_branch_their_repo_was_resolved_to() -> None:
+    deps = [{"repo": "ecmwf/eckit", "ref": "sync-branch/x"}, {"repo": "ecmwf/ecbuild", "ref": "develop"}]
+    out = _render(leg={**LEG, "_resolved": {"deps": deps}})
+    refs = "--ref ecmwf/ecbuild=develop --ref ecmwf/eckit=sync-branch/x)"
+    assert f'"$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches {refs}' in out
+    assert "cargo_patches.py" not in out and "cargo metadata" not in _render()
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
