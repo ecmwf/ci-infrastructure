@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""cargo-runner.sh.j2: a Rust workspace checked against its deps' install trees."""
+"""rust-bindings-runner.sh.j2: Rust bindings checked against their deps' install trees."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Final
 
 from ci_infrastructure.hpc import jobscript
 
-CARGO: Final = '{% extends "ci-infrastructure/cargo-runner.sh.j2" %}\n'
+CARGO: Final = '{% extends "ci-infrastructure/rust-bindings-runner.sh.j2" %}\n'
 
 LEG: Final[dict[str, Any]] = {
     "c-compiler": "gcc-13",

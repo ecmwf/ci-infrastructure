@@ -140,14 +140,14 @@ The kind builds a package that publishes nothing and depends on the library:
 
 ``rust-compiler`` names the toolchain as ``cxx-compiler`` names g++; the image provides it
 (see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
-The recipe extends ``cargo-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
+The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
 with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
 Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
 ``cargo_workspace`` for another directory:
 
 .. code:: jinja
 
-   {% extends "ci-infrastructure/cargo-runner.sh.j2" %}
+   {% extends "ci-infrastructure/rust-bindings-runner.sh.j2" %}
    {% block cargo_features %}--no-default-features --features system,raw{% endblock %}
    {% block cargo_doc %}{% endblock %}
 
