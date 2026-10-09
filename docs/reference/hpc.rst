@@ -172,6 +172,12 @@ A leg may omit these fields:
 A template defaults a field it reads through ``| default(...)``;
 ``qos`` to ``ssdtmp`` are defaulted that way in ``cmake-atos.sh.j2``, the others in Python.
 
+Any other name a template reads must be a field of every leg that uses it,
+or set by the template itself outside its blocks with ``{% set %}``, ``{% import %}`` or a macro.
+Rendering checks this before it runs, as the workflow generator does,
+so a recipe that reads an undeclared field fails in the pull request,
+even in a branch the leg never takes.
+
 ``configure`` uses the preset named by ``options``, or ``ci`` if it is empty.
 The feature flags thus live in the package's ``CMakePresets.json``,
 which the runner build can use as well; an option preset inherits ``ci``.

@@ -176,6 +176,34 @@ def test_static_check_sees_a_child_block_and_not_super() -> None:
     assert jobscript.undeclared_template_names(src, LEG, template_name="t") == {"boost_root"}
 
 
+@pytest.mark.parametrize(
+    "outside",
+    [
+        '{% set fortran = "x" in ci_packages %}',
+        '{% import "ci-infrastructure/python.j2" as py %}{% set fortran = py is defined %}',
+        "{% macro flag() %}{% endmacro %}{% if true %}{% set fortran = false %}{% endif %}",
+    ],
+)
+def test_names_a_recipe_assigns_outside_its_blocks_are_not_leg_fields(outside: str) -> None:
+    src = (
+        EXTENDS + outside + '\n{% block cmake_args %}  -DFORTRAN={{ "ON" if fortran else "OFF" }} \\\n{% endblock %}\n'
+    )
+    assert jobscript.undeclared_template_names(src, LEG, template_name="t") == set()
+    assert "-DFORTRAN=" in _render(src)
+
+
+def test_a_name_set_only_inside_another_block_is_still_undeclared() -> None:
+    src = EXTENDS + "{% block preflight %}{% set x = 1 %}{% endblock %}{% block install %}{{ x }}{% endblock %}\n"
+    assert jobscript.undeclared_template_names(src, LEG, template_name="t") == {"x"}
+
+
+def test_rendering_refuses_what_the_workflow_generator_refuses() -> None:
+    """A branch this leg never takes still reads `lustre`: Jinja alone would render it."""
+    src = EXTENDS + '{% block cmake_args %}{% if execution == "nowhere" %}{{ lustre }}{% endif %}{% endblock %}\n'
+    with pytest.raises(jobscript.JobTemplateError, match=r"reads \['lustre'\], which this leg does not declare"):
+        _render(src)
+
+
 def test_static_check_follows_include_from_the_recipe_directory(tmp_path: Path) -> None:
     (tmp_path / "_part.sh.j2").write_text("{{ nope }}\n")
     src = '{% include "_part.sh.j2" %}\n'

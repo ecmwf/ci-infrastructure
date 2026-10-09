@@ -171,6 +171,28 @@ def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
     return names | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
 
+def _assigned_outside_blocks(node: jinja2.nodes.Node) -> set[str]:
+    """Names a template sets, imports or defines as a macro outside its blocks; Jinja runs that first."""
+    names: set[str] = set()
+    for child in node.iter_child_nodes():
+        if isinstance(child, (jinja2.nodes.Assign, jinja2.nodes.AssignBlock)):
+            target = child.target
+            names |= (
+                {target.name}
+                if isinstance(target, jinja2.nodes.Name)
+                else {n.name for n in target.find_all(jinja2.nodes.Name)}
+            )
+        elif isinstance(child, jinja2.nodes.Import):
+            names.add(child.target)
+        elif isinstance(child, jinja2.nodes.FromImport):
+            names |= {n if isinstance(n, str) else n[1] for n in child.names}
+        elif isinstance(child, jinja2.nodes.Macro):
+            names.add(child.name)
+        if not isinstance(child, (jinja2.nodes.Block, jinja2.nodes.Macro, jinja2.nodes.For, jinja2.nodes.With)):
+            names |= _assigned_outside_blocks(child)
+    return names
+
+
 def undeclared_template_names(
     template_source: str,
     leg: Mapping[str, Any],
@@ -186,6 +208,7 @@ def undeclared_template_names(
     assert env.loader is not None
     names: set[str] = set()
     defaulted: set[str] = set()
+    assigned: set[str] = set()
     seen = {template_name}
     pending = [(template_source, template_name)]
     while pending:
@@ -195,6 +218,7 @@ def undeclared_template_names(
         except jinja2.TemplateSyntaxError as exc:
             raise JobTemplateError(f"{name}:{exc.lineno}: {exc.message}") from exc
         names |= jinja2.meta.find_undeclared_variables(ast)
+        assigned |= _assigned_outside_blocks(ast)
         defaulted |= {
             f.node.name
             for f in ast.find_all(jinja2.nodes.Filter)
@@ -214,7 +238,25 @@ def undeclared_template_names(
             except jinja2.TemplateNotFound as exc:
                 raise JobTemplateError(f"{name}: template {ref!r} not found") from exc
             pending.append((ref_source, ref))
-    return names - defaulted - declared_template_names(leg)
+    return names - defaulted - assigned - declared_template_names(leg)
+
+
+def undeclared_names_message(recipe: str, missing: set[str], leg: Mapping[str, Any]) -> str:
+    declared = sorted(k for k in leg if k != "_resolved")
+    return (
+        f"recipe '{recipe}' reads {sorted(missing)}, which this "
+        f"leg does not declare. The leg has {declared}; a template may read those "
+        f"(hyphens as underscores), plus `leg`, `artifact_name`, the defaults "
+        f"{sorted(JOB_TEMPLATE_DEFAULTS)} and what a template reads through "
+        f"`| default(...)`. Add the key to the "
+        f"leg, or drop it from the recipe — they are meant to say the same thing."
+        + "".join(
+            f" `{name}` comes from `{name.removesuffix('_binary').replace('_', '-')}`, or "
+            f"`{name.replace('_', '-')}` when the binary to call is named differently."
+            for name in sorted(missing)
+            if name.endswith("_compiler_binary")
+        )
+    )
 
 
 def render_job_template(
@@ -226,6 +268,9 @@ def render_job_template(
     artifact_name: str = "",
     search_path: Path | None = None,
 ) -> str:
+    # The check the workflow generator runs, so a recipe it rejects fails in the pull request already.
+    if missing := undeclared_template_names(template_source, leg, template_name=template_name, search_path=search_path):
+        raise JobTemplateError(undeclared_names_message(template_name, missing, leg))
     env = job_template_environment(search_path)
     try:
         template = env.from_string(template_source)
