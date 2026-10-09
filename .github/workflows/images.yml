@@ -47,9 +47,10 @@ on:
         required: false
 
 concurrency:
-  # Never cancel a run mid-push to the registry.
+  # Never cancel a run mid-push to the registry. A pull request pushes nothing and
+  # has its own ref, so its newer commit cancels the older run instead of queueing.
   group: images-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Push for pushes to main; never for pull_request validation. Matched by prefix:
