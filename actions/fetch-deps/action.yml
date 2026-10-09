@@ -5,7 +5,8 @@
 name: Fetch resolved deps
 description: >
   Download each resolved dep from the S3 store (`ARTIFACT_S3_*`, `AWS_*` in the
-  job env) into its install path and emit the CMAKE_PREFIX_PATH covering them.
+  job env) into its install path, emit the CMAKE_PREFIX_PATH covering them and
+  prepend their lib dirs to LD_LIBRARY_PATH for later steps.
 
 inputs:
   deps-json:
@@ -54,7 +55,7 @@ runs:
         fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.fetch_deps "${args[@]}"
 
-    - name: Compose CMAKE_PREFIX_PATH from deps-json
+    - name: Compose CMAKE_PREFIX_PATH and LD_LIBRARY_PATH from deps-json
       id: compose-cmake
       shell: bash
       run: |
@@ -64,6 +65,12 @@ runs:
         # Expand the resolver's $RUNNER_TEMP template against THIS job's runner.
         paths = [os.path.expandvars(d["install-path"]) for d in deps]
         print(f"cmake-prefix-path={';'.join(paths)}")
+        # For dlopen (findlibs) in later steps; linked code finds its deps by RPATH.
+        lib_dirs = [d for p in paths for d in (f"{p}/lib64", f"{p}/lib") if os.path.isdir(d)]
+        if lib_dirs:
+            old = os.environ.get("LD_LIBRARY_PATH", "")
+            with open(os.environ["GITHUB_ENV"], "a") as env:
+                env.write(f"LD_LIBRARY_PATH={':'.join(lib_dirs + ([old] if old else []))}\n")
         PY
       env:
         DEPS_JSON: ${{ inputs.deps-json }}
