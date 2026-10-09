@@ -40,7 +40,7 @@ from ci_infrastructure.resolve_deps import (
     make_artifact_name,
     parse_manifest,
     parse_pin,
-    producer_can_build,
+    producer_variants,
     resolve_leg,
 )
 
@@ -129,17 +129,16 @@ def _producer(*legs: dict[str, Any]) -> Manifest:
 _LEG: Final = {"cxx-compiler": "clang++-18", "build-type": "Release", "platform": "ubuntu-24.04"}
 
 
-def test_producer_can_build_matches_requested_option() -> None:
-    prod = _producer(_LEG, {**_LEG, "options": "stochastic-moments"})
-    assert producer_can_build(prod, {**_LEG, "options": ""})
-    assert producer_can_build(prod, {**_LEG, "options": "stochastic-moments"})
-    assert not producer_can_build(prod, {**_LEG, "options": "fastmath"})
+def test_producer_variants_name_what_each_leg_publishes() -> None:
+    prod = _producer(_LEG, {**_LEG, "options": "stochastic-moments", "python-version": "3.12"})
+    assert [str(v) for v in producer_variants(prod, "cxxmath") or []] == [
+        "ubuntu-24.04-clang++-18-Release (runner)",
+        "ubuntu-24.04-clang++-18-py3.12-Release-opts.stochastic-moments (runner)",
+    ]
 
 
-def test_producer_plain_leg_cannot_satisfy_moments() -> None:
-    prod = _producer(_LEG)
-    assert producer_can_build(prod, {**_LEG, "options": ""})
-    assert not producer_can_build(prod, {**_LEG, "options": "stochastic-moments"})
+def test_producer_without_a_matrix_cannot_tell() -> None:
+    assert producer_variants(replace(_producer(), matrix={}), "cxxmath") is None
 
 
 _DEP_BASE: Final = {"repo": "o/x", "package": "x", "ref": "main", "compiler-inputs": ["cxx-compiler"]}
@@ -467,6 +466,125 @@ def test_differing_compiler_inputs_fail() -> None:
     base, middle = _dep_spec("base"), _dep_spec("middle")
     with pytest.raises(ResolveError, match="compiler"):
         _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
+
+
+_OPTIONED_MIDDLE_MANIFEST: Final = """
+[package]
+name = "middle"
+prefix = "middle"
+repo = "o/middle"
+compiler-inputs = ["cxx-compiler"]
+
+[[deps]]
+repo = "o/base"
+package = "base"
+ref = "main"
+compiler-inputs = []
+options-input = "options"
+
+[[deps]]
+repo = "o/extra"
+package = "extra"
+ref = "main"
+compiler-inputs = []
+when = { options = ["geo"] }
+"""
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize("consumer_options", ["", "atlas"])
+def test_a_dep_variant_resolves_its_deps_as_its_own_ci_did(consumer_options: str) -> None:
+    """`options-input` and `when` of a dep's deps read the variant requested, not the consumer's leg."""
+    manifest = parse_manifest(_OPTIONED_MIDDLE_MANIFEST)
+    leg = {**_LEG, "options": consumer_options}
+
+    deps, _ = _resolve(
+        _own("top"),
+        [_dep_spec("middle", option="geo")],
+        leg,
+        manifest_cache={(Repo("o/middle"), Ref("main")): manifest},
+    )
+    _, published = _resolve(manifest.package, manifest.deps, {**_LEG, "options": "geo"})
+
+    by_name = {str(d.name): d for d in deps}
+    assert by_name["base"].artifact_name.endswith("-opts.geo")
+    assert "extra" in by_name
+    assert by_name["middle"].artifact_name.replace("c" * 40, "d" * 40) == published.artifact_name
+
+
+_PY_LEG_PRODUCER: Final = """
+[package]
+name = "up"
+prefix = "up"
+repo = "o/up"
+compiler-inputs = ["cxx-compiler"]
+
+[[matrix.build.include]]
+cxx-compiler = "clang++-18"
+build-type = "Release"
+platform = "ubuntu-24.04"
+python-version = "3.11"
+"""
+
+
+def _in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
+
+
+@pytest.mark.parametrize("needs_python", [False, True])
+def test_a_name_no_producer_leg_publishes_fails_without_waiting_for_its_ci(
+    monkeypatch: pytest.MonkeyPatch, needs_python: bool
+) -> None:
+    """The producer's legs carry python-version, so only a needs-python request can ever be published."""
+    _in_flight(monkeypatch)
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
+    leg = {**_LEG, "python-version": "3.11"}
+    dep = _dep_spec("up", needs_python=needs_python)
+
+    if needs_python:
+        [resolved], _ = _resolve(_own("top"), [dep], leg, manifest_cache=cache)
+        assert resolved.source == "artifact"  # fetch-deps waits for the in-flight run
+    else:
+        with pytest.raises(ResolveError, match=r"(?s)no leg of the producer.*ubuntu-24.04-clang\+\+-18-py3.11-Release"):
+            _resolve(_own("top"), [dep], leg, manifest_cache=cache)
+
+
+_META_MANIFEST: Final = """
+[package]
+name = "umbrella"
+prefix = "umbrella"
+repo = "o/umbrella"
+compiler-inputs = []
+meta = true
+
+[[deps]]
+package = "lib"
+
+[packages.lib]
+compiler-inputs = []
+"""
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize(
+    ("override", "named"),
+    [
+        ({"option": "x"}, "options"),
+        ({"options_input": "options"}, "options-input"),
+        ({"build_type_input": "dep-build-type"}, "build-type-input"),
+        ({"needs_python": True}, "needs-python"),
+    ],
+)
+def test_a_meta_dep_rejects_what_it_could_not_pass_on(override: dict[str, Any], named: str) -> None:
+    cache = {(Repo("o/umbrella"), Ref("main")): parse_manifest(_META_MANIFEST)}
+    spec = _dep_spec("umbrella", compiler_inputs=None)
+
+    deps, _ = _resolve(_own("top"), [spec], dict(_LEG), manifest_cache=cache)
+    assert [d.name for d in deps] == ["lib"]
+    with pytest.raises(ResolveError, match=f"meta package.*{named}"):
+        _resolve(_own("top"), [replace(spec, **override)], dict(_LEG), manifest_cache=cache)
 
 
 def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatch) -> None:
