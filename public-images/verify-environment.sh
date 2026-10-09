@@ -152,6 +152,25 @@ expect_openmpi() {
   echo "openmpi: $(mpirun --version | head -1)"
 }
 
+# cargo links with the leg's C compiler, as a recipe sets it: the image has no `cc`.
+expect_rust() {
+  local version="$1" cc="$2" got host
+  for tool in rustc cargo rustup; do
+    command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+  done
+  got="$(rustc --version | awk '{print $2}')"
+  case "$got" in "$version" | "$version".*) ;; *) fail "rustc reports $got, expected $version" ;; esac
+  cargo clippy --version >/dev/null || fail "cargo clippy is missing"
+  cargo fmt --version >/dev/null || fail "cargo fmt is missing"
+  [ -n "$cc" ] || fail "'$variant' names rust but no gcc to link with"
+  host="$(rustc -vV | sed -n 's/^host: //p')"
+  printf 'fn main() { println!("rust ok"); }\n' >"$omp_tmp/main.rs"
+  rustc -C linker="$(command -v "$cc")" --target "$host" "$omp_tmp/main.rs" -o "$omp_tmp/rust.bin" \
+    || fail "rustc cannot link a program with $cc"
+  [ "$("$omp_tmp/rust.bin")" = "rust ok" ] || fail "rustc built a program that does not run"
+  echo "rust: $(rustc --version), $(cargo --version)"
+}
+
 variant=""
 [ "$mode" = image ] && variant="${DECLARES#*/}"
 declares_gcc=""
@@ -197,15 +216,16 @@ if [ "$mode" = image ]; then
   for token in ${variant//-/ }; do
     case "$token" in
       gcc[0-9]*)      expect_pair "gcc-${token#gcc}" "g++-${token#gcc}" "${token#gcc}"
-                      mpi_cc="gcc-${token#gcc}" ;;
+                      gnu_cc="gcc-${token#gcc}" ;;
       gcc)            expect_pair gcc g++ ""
-                      mpi_cc=gcc ;;
+                      gnu_cc=gcc ;;
       clang[0-9]*)    expect_pair "clang-${token#clang}" "clang++-${token#clang}" "${token#clang}" ;;
       gfortran[0-9]*) expect_compiler "gfortran-${token#gfortran}" "${token#gfortran}"
                       expect_openmp "gfortran-${token#gfortran}" f ;;
       gfortran)       expect_compiler gfortran ""
                       expect_openmp gfortran f ;;
-      openmpi)        expect_openmpi "${mpi_cc:-}" ;;
+      openmpi)        expect_openmpi "${gnu_cc:-}" ;;
+      rust[0-9]*)     expect_rust "${token#rust}" "${gnu_cc:-}" ;;
     esac
   done
 fi

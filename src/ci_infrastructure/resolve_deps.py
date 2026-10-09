@@ -169,6 +169,8 @@ class Manifest:
     packages: dict[PackageName, PackageInfo] = field(default_factory=dict)
     # The prefixes each kind publishes; empty for a kind that publishes nothing.
     packages_by_kind: dict[str, tuple[PackageName, ...]] = field(default_factory=dict)
+    # The prefixes each kind builds, published or not.
+    built_by_kind: dict[str, tuple[PackageName, ...]] = field(default_factory=dict)
     # Picks which of a producer's lane workflows a recovery rebuild fires.
     execution_by_kind: dict[str, Execution] = field(default_factory=dict)
 
@@ -316,6 +318,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         matrix=matrix,
         packages=packages,
         packages_by_kind={k: tuple(PackageName(p) for p in raw.published_by(k)) for k in raw.matrix},
+        built_by_kind={k: tuple(PackageName(p) for p in raw.built_by(k)) for k in raw.matrix},
         execution_by_kind={k: b.execution for k, b in raw.matrix.items()},
     )
 
@@ -1088,8 +1091,8 @@ def _run(
             continue
 
         out_include: list[dict[str, Any]] = []
-        published = build_order(local_manifest, local_manifest.packages_by_kind.get(mname, ()))
-        prefixes = published or [local_manifest.package.prefix]
+        built = build_order(local_manifest, local_manifest.built_by_kind.get(mname, ()))
+        prefixes = built or [local_manifest.package.prefix]
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         package = local_manifest.packages.get(prefixes[0], local_manifest.packages[local_manifest.package.prefix])
         for entry in include:

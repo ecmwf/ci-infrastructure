@@ -431,3 +431,60 @@ def test_rendering_a_batch_leg_by_hand_passes_the_packages(tmp_path: Path) -> No
     (manifest.parent / "build.sh.j2").write_text("{% for p in ci_packages %}echo {{ p }}\n{% endfor %}")
     _, leg, _, _ = _from_manifest(manifest, "build (ubuntu-24.04, g++-13)")
     assert list(leg["_resolved"]["packages"]) == ["libaec", "sqlite3", "proj"]
+
+
+# --- a kind that tests a package without publishing it ----------------------------------------------------
+
+_BINDINGS: Final = """
+[package]
+name = "cxxmath"
+repo = "org/cxxmath"
+compiler-inputs = ["cxx-compiler"]
+
+[packages.cxxmath-rust]
+compiler-inputs = ["cxx-compiler"]
+deps = [{ package = "cxxmath" }]
+
+[matrix.build]
+defaults.job-script = "./b.sh"
+[[matrix.build.include]]
+platform = "ubuntu-24.04"
+cxx-compiler = "g++-13"
+
+[matrix.rust]
+packages = ["cxxmath-rust"]
+publishes = false
+defaults.job-script = "./r.sh"
+[[matrix.rust.include]]
+platform = "ubuntu-24.04"
+cxx-compiler = "g++-13"
+rust-compiler = "rust-1.90"
+"""
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_kind_that_publishes_nothing_resolves_the_deps_of_its_packages() -> None:
+    from ci_infrastructure.resolve_deps import resolve_packages
+
+    m = parse_manifest(_BINDINGS)
+    assert m.packages_by_kind["rust"] == ()  # nobody fetches cxxmath-rust
+    assert m.built_by_kind["rust"] == ("cxxmath-rust",)
+    sha = Sha("c" * 40)
+    to_fetch, _ = resolve_packages(
+        m,
+        list(m.built_by_kind["rust"]),
+        own_sha=sha,
+        own_ref=Ref("main"),
+        matrix_entry=dict(_LEG),
+        manifest_cache={(Repo("org/cxxmath"), Ref("main")): m},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={(Repo("org/cxxmath"), Ref("main")): sha},
+        artifact_cache={},
+        run_state_cache={},
+        token=None,
+        can_dispatch=False,
+        lane=EXECUTION_RUNNER,
+        dispatch_plans={},
+    )
+    assert [d.name for d in to_fetch] == ["cxxmath"]

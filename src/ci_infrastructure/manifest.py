@@ -88,11 +88,30 @@ class PackageTable(_Table):
         default=False,
         description="An umbrella package: no artifact of its own. A dep on it stands for its `[[deps]]`.",
     )
+    git_read: tuple[str, ...] = Field(
+        default=(),
+        alias="git-read",
+        description="`owner/name` of repos the runner build fetches over git, e.g. a cargo git dependency. "
+        "The job gets a token that can only read these; same owner as `repo`.",
+    )
 
     @field_validator("repo")
     @classmethod
     def _repo_shape(cls, v: str | None) -> str | None:
         return v if v is None else _check_repo(v)
+
+    @field_validator("git_read")
+    @classmethod
+    def _git_read_shape(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(_check_repo(r) for r in v)
+
+    @model_validator(mode="after")
+    def _git_read_same_owner(self) -> PackageTable:
+        owner = (self.repo or "").split("/", 1)[0]
+        foreign = [r for r in self.git_read if self.repo and r.split("/", 1)[0] != owner]
+        if foreign:
+            raise ValueError(f"git-read {foreign!r}: one app token covers one owner, '{owner}'")
+        return self
 
     @field_validator("compiler_inputs")
     @classmethod
@@ -327,7 +346,8 @@ class MatrixKindTable(_Table):
     packages: tuple[str, ...] | None = Field(
         default=None,
         description="The packages this kind publishes: `[package].prefix` or keys of `[packages]`. By default "
-        "`[package]`, or every `[packages]` entry when `[package]` is `meta`.",
+        "`[package]`, or every `[packages]` entry when `[package]` is `meta`. With `publishes = false`, the "
+        "packages it builds and tests against their deps without publishing them.",
     )
     container_credentials: bool = Field(
         strict=True,
@@ -423,6 +443,13 @@ class ManifestFile(_Table):
         if body.artifact_prefix is not None:
             return (body.artifact_prefix,)
         return tuple(self.packages) if self.package.meta else (self.package.prefix,)
+
+    def built_by(self, kind: str) -> tuple[str, ...]:
+        """The prefixes `kind` builds: what it publishes, or its `packages` when it publishes nothing."""
+        body = self.matrix[kind]
+        if not body.publishes and body.packages is not None:
+            return body.packages
+        return self.published_by(kind)
 
     def deps_of(self, prefix: str) -> tuple[DepTable, ...]:
         """A package's own `deps`; `[[deps]]` for `[package]` and an `artifact-prefix`."""

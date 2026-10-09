@@ -11,6 +11,8 @@ from typing import Any
 
 # python-version renders as py<ver>, and not at all where a leg has none; empty options as "default".
 _PYTHON_FIELD = "python-version"
+# Shown where a leg has it: in a package with Rust bindings it is not a compiler-input.
+_RUST_FIELD = "rust-compiler"
 _OPTIONS_FIELD = "options"
 
 
@@ -58,8 +60,11 @@ def display_fields(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[
     compilers = _compiler_fields(legs, compiler_inputs)
     fields = ["platform", *compilers]
     distinguishing = first_distinguishing_field(legs, compiler_inputs)
-    if distinguishing is not None and distinguishing not in {"platform", _PYTHON_FIELD, _OPTIONS_FIELD, *compilers}:
+    shown_anyway = {"platform", _PYTHON_FIELD, _RUST_FIELD, _OPTIONS_FIELD, *compilers}
+    if distinguishing is not None and distinguishing not in shown_anyway:
         fields.append(distinguishing)
+    if any(_RUST_FIELD in leg for leg in legs) and _RUST_FIELD not in fields:
+        fields.append(_RUST_FIELD)
     if any(_PYTHON_FIELD in leg for leg in legs):
         fields.append(_PYTHON_FIELD)
     # Present on only some legs, so legs differing only by options still get distinct titles.
@@ -85,6 +90,9 @@ def name_suffix(leg: Mapping[str, Any], legs: Sequence[Mapping[str, Any]], compi
         if field == _PYTHON_FIELD:
             if value:
                 slots.append(f"py{value}")
+        elif field == _RUST_FIELD:
+            if value:
+                slots.append(value)
         elif field == _OPTIONS_FIELD:
             slots.append(value or "default")
         else:

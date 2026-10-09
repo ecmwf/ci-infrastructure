@@ -196,6 +196,7 @@ class Manifest:
     compiler_inputs: tuple[str, ...] = ()
     visibility: Visibility = VISIBILITY_PRIVATE
     submodules: str | None = None
+    git_read: tuple[str, ...] = ()
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
@@ -255,6 +256,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         compiler_inputs=raw.package.compiler_inputs,
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
+        git_read=raw.package.git_read,
         deps=_distinct([d for info in packages.values() for d in info.deps]),
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
@@ -767,6 +769,21 @@ def _mint_step() -> Step:
     }
 
 
+def _git_read_mint_step(m: Manifest) -> Step:
+    """A second token, read-only on `git-read` alone: the job script runs the PR's code."""
+    return {
+        "id": "git-read",
+        "uses": "actions/create-github-app-token@v3",
+        "with": {
+            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+            "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+            "owner": "${{ github.repository_owner }}",
+            "repositories": ",".join(r.split("/", 1)[1] for r in m.git_read),
+            "permission-contents": "read",
+        },
+    }
+
+
 # An upstream change is tested at its commit; a rebuild request comes from a consumer and pins nothing.
 _PIN_CHANGE_UNDER_TEST: Final = (
     "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
@@ -885,6 +902,7 @@ def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
             "matrix-leg": "${{ toJSON(matrix) }}",
             "package": m.package_name,
             "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
+            **({"git-token": "${{ steps.git-read.outputs.token }}"} if m.git_read else {}),
         },
     }
 
@@ -1018,6 +1036,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         if len(mk.packages) > 1:
             steps += _publish_steps(m, kind, "install-path", found="${{ steps.build.outputs.cache-hit }}")
     else:
+        if m.git_read:
+            steps.append(_git_read_mint_step(m))
         steps.append(_job_script_step(m, mk))
         if len(mk.packages) > 1:
             steps += _publish_steps(m, kind, "install-root")

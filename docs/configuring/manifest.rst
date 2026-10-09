@@ -285,3 +285,38 @@ so its actions start without installing it first.
 The environment variables point the actions at the artifact store.
 ``eckit`` additionally mints a GitHub App token for :action:`resolve-deps` and :action:`fetch-deps`,
 which raises the API rate limit and gives access to private repositories.
+
+Repositories the build fetches over git
+---------------------------------------
+
+The job script fetches from GitHub over ``https``, anonymously;
+an ``ssh://git@github.com/`` URL is rewritten to it.
+A build that fetches a private repository itself, such as a cargo git dependency,
+lists it in ``[package]``:
+
+.. code:: toml
+
+   [package]
+   git-read = ["ecmwf/bindman"]
+
+The generated workflows then mint a second token for the job script, read-only and on these repositories alone,
+because the script runs the pull request's code.
+A ``ci.yml`` does the same before its build step:
+
+.. code:: yaml
+
+   - id: git-read
+     uses: actions/create-github-app-token@v3
+     with:
+       client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
+       private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
+       owner: ${{ github.repository_owner }}
+       repositories: bindman
+       permission-contents: read
+   - id: build
+     uses: ecmwf/ci-infrastructure/actions/run-job-script@main
+     with:
+       # ... as above
+       git-token: ${{ steps.git-read.outputs.token }}
+
+The GitHub App must be installed on the listed repositories.

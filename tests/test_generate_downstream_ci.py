@@ -183,6 +183,23 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
         ),
         pytest.param(
             """
+            [package]
+            name = "a"
+            prefix = "a"
+            repo = "org/a"
+            git-read = ["other/bindman"]
+            compiler-inputs = []
+            [matrix.build]
+            triggers = ["rebuild-request"]
+            defaults.job-script = "./.ci/build.sh"
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            """,
+            "one app token covers one owner, 'org'",
+            id="git-read-foreign-owner",
+        ),
+        pytest.param(
+            """
             [generated]
             header = "name: not-a-comment"
             """,
@@ -898,6 +915,33 @@ def test_submodules_reach_the_build_checkout(tmp_path: Path, lane: Execution) ->
     )
     checkouts = _build_checkouts(tmp_path, lane)
     assert checkouts and all(c["submodules"] == "recursive" for c in checkouts)
+
+
+def _build_steps(tmp_path: Path, lane: Execution) -> list[dict[str, Any]]:
+    doc = yaml.safe_load(_consumer(tmp_path, "a", lane))
+    return [step for job in doc["jobs"].values() for step in job.get("steps", []) if job.get("strategy")]
+
+
+@pytest.mark.parametrize("lane", [EXECUTION_RUNNER, EXECUTION_HPC_ATOS])
+def test_git_read_mints_a_read_only_token_for_the_runner_script(tmp_path: Path, lane: Execution) -> None:
+    _make_chain_ab(tmp_path, hpc=True)
+    assert not any(s.get("id") == "git-read" for s in _build_steps(tmp_path, lane))
+    manifest = tmp_path / "a" / ".ci" / "manifest.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "compiler-inputs = []", 'compiler-inputs = []\ngit-read = ["org/bindman", "org/tools"]', 1
+        )
+    )
+    steps = _build_steps(tmp_path, lane)
+    mints = [s for s in steps if s.get("id") == "git-read"]
+    scripts = [s for s in steps if str(s.get("uses", "")).startswith("ecmwf/ci-infrastructure/actions/run-job-script")]
+    if lane == EXECUTION_HPC_ATOS:
+        assert not mints
+        return
+    assert mints and all(
+        m["with"]["repositories"] == "bindman,tools" and m["with"]["permission-contents"] == "read" for m in mints
+    )
+    assert scripts and all(s["with"]["git-token"] == "${{ steps.git-read.outputs.token }}" for s in scripts)
 
 
 def test_visibility_absent_is_private(tmp_path: Path) -> None:
