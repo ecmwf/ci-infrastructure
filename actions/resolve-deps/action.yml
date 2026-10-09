@@ -28,7 +28,8 @@ inputs:
     default: ''
   matrix:
     description: >
-      Comma-separated [matrix.<name>] blocks to expand; each becomes a
+      Comma-separated [matrix.<name>] blocks to expand. Each is in the json
+      output under its name; only the kinds listed under outputs also get a
       matrix-<name> output.
     required: false
     default: 'build'
@@ -103,7 +104,9 @@ outputs:
     description: 'Resolved matrix for [matrix.ci].'
     value: ${{ steps.r.outputs.matrix-ci }}
   json:
-    description: 'Full resolved tree, keyed by matrix name.'
+    description: >
+      Full resolved tree, keyed by matrix name. The way to read a kind without
+      its own matrix-<name> output, e.g. toJSON(fromJSON(steps.r.outputs.json).fortran).
     value: ${{ steps.r.outputs.json }}
   app-token:
     description: 'App-minted token, same job only (masked values arrive empty through job outputs).'

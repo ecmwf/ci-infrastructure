@@ -263,6 +263,17 @@ In addition, :action:`resolve-deps` attaches a ``_resolved`` object to every leg
 - ``_resolved.own-artifact-name``: the name under which :action:`publish-artifact` stores the result
 - ``_resolved.job-name``: a readable title for the leg
 
+A composite action can only return outputs it names in advance,
+so ``matrix-<kind>`` exists for the common kinds such as ``build`` and ``build-hpc``.
+Every requested kind is in the ``json`` output under its name,
+which is how a ``ci.yml`` reads a kind of its own:
+
+.. code:: yaml
+
+   outputs:
+     fortran-matrix: ${{ toJSON(fromJSON(steps.r.outputs.json).fortran) }}
+     fortran-hpc-matrix: ${{ toJSON(fromJSON(steps.r.outputs.json)['fortran-hpc']) }}
+
 Both jobs run in an official image, which has ``ci-infrastructure`` baked in,
 so its actions start without installing it first.
 The environment variables point the actions at the artifact store.
