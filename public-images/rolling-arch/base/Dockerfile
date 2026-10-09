@@ -21,6 +21,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     flex \
     curl \
     diffutils \
+    procps-ng \
     wget \
     ca-certificates \
     gnupg \
