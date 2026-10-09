@@ -84,25 +84,39 @@ def _ship_lock_path(staging_dir: str) -> str:
     return f"{staging_dir.rstrip('/')}{SHIP_LOCK_SUFFIX}"
 
 
+#: The claim's exit code when `mkdir` failed and left no lock: nobody holds it, the
+#: filesystem refused (quota, permissions), and waiting would only time out.
+_LOCK_UNCREATABLE: Final = 2
+
+
 def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
     """One atomic ``mkdir`` (no ``-p``) claim, breaking a lock older than ``stale_minutes``."""
     q_lock = shlex.quote(lock_dir)
     q_owner = shlex.quote(f"{lock_dir}/owner")
     q_parent = shlex.quote(str(PurePosixPath(lock_dir).parent))
-    claim = f"mkdir {q_lock} 2>/dev/null && {{ echo {shlex.quote(run_id)} > {q_owner} 2>/dev/null || true; }}"
+    owner = f"{{ echo {shlex.quote(run_id)} > {q_owner} 2>/dev/null || true; }}"
     # Newline-joined: `then; rm ...` is a bash syntax error.
     script = "\n".join(
         [
             f"mkdir -p {q_parent} 2>/dev/null || true",
-            f"if {claim}; then exit 0; fi",
+            f"if err=$(mkdir {q_lock} 2>&1); then {owner}; exit 0; fi",
+            f'if [ ! -d {q_lock} ]; then echo "$err" >&2; exit {_LOCK_UNCREATABLE}; fi',
             f'if [ -n "$(find {q_lock} -maxdepth 0 -mmin +{stale_minutes} 2>/dev/null)" ]; then',
             f"  rm -rf {q_lock} 2>/dev/null || true",
-            f"  if {claim}; then exit 0; fi",
+            f"  if mkdir {q_lock} 2>/dev/null; then {owner}; exit 0; fi",
             "fi",
             "exit 1",
         ]
     )
-    return _probe_remote(conn, ["bash", "-c", script]) == 0
+    proc = conn.execute(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _stdout, stderr = proc.communicate()
+    if proc.returncode == _LOCK_UNCREATABLE:
+        detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
+        raise CIError(
+            f"Cannot create the lock {lock_dir}: {detail}. No other run holds it; "
+            "check the filesystem (quota, permissions) on the cluster."
+        )
+    return int(proc.returncode) == 0
 
 
 @contextmanager
