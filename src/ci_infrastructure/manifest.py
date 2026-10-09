@@ -346,7 +346,8 @@ class MatrixKindTable(_Table):
     packages: tuple[str, ...] | None = Field(
         default=None,
         description="The packages this kind publishes: `[package].prefix` or keys of `[packages]`. By default "
-        "`[package]`, or every `[packages]` entry when `[package]` is `meta`.",
+        "`[package]`, or every `[packages]` entry when `[package]` is `meta`. With `publishes = false`, the "
+        "packages it builds and tests against their deps without publishing them.",
     )
     container_credentials: bool = Field(
         strict=True,
@@ -442,6 +443,13 @@ class ManifestFile(_Table):
         if body.artifact_prefix is not None:
             return (body.artifact_prefix,)
         return tuple(self.packages) if self.package.meta else (self.package.prefix,)
+
+    def built_by(self, kind: str) -> tuple[str, ...]:
+        """The prefixes `kind` builds: what it publishes, or its `packages` when it publishes nothing."""
+        body = self.matrix[kind]
+        if not body.publishes and body.packages is not None:
+            return body.packages
+        return self.published_by(kind)
 
     def deps_of(self, prefix: str) -> tuple[DepTable, ...]:
         """A package's own `deps`; `[[deps]]` for `[package]` and an `artifact-prefix`."""

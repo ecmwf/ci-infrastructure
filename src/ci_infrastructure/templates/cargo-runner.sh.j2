@@ -1,0 +1,50 @@
+#!/bin/bash
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   Check a Rust workspace with cargo on a GitHub runner, against the libraries the leg's deps put on `CMAKE_PREFIX_PATH`; publishes nothing.
+
+   The leg names its toolchain in `rust-compiler`, e.g. "rust-1.90", and the
+   C/C++ compilers cargo builds and links native code with. #}
+{% block header %}
+{% endblock %}
+
+{% block setup %}
+jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+{% endblock %}
+
+{% block set_environment %}{% endblock %}
+{% block preflight %}
+rust_version={{ rust_compiler | replace("rust-", "", 1) | sh }}
+case "$(rustc --version | awk '{print $2}')" in
+  "$rust_version" | "$rust_version".*) ;;
+  *) echo "::error::$(rustc --version) is not {{ rust_compiler }}"; exit 1 ;;
+esac
+echo "Using: $(command -v cargo) ($(cargo --version))"
+echo "Using: $(command -v {{ c_compiler_binary | sh }}) ($({{ c_compiler_binary | sh }} --version | head -1))"
+echo "Using: $(command -v {{ cxx_compiler_binary | sh }}) ($({{ cxx_compiler_binary | sh }} --version | head -1))"
+{% endblock %}
+
+{% block environment %}
+export CC="$(command -v {{ c_compiler_binary | sh }})" CXX="$(command -v {{ cxx_compiler_binary | sh }})"
+host="$(rustc -vV | sed -n 's/^host: //p')"
+export "CARGO_TARGET_$(tr 'a-z-' 'A-Z_' <<<"$host")_LINKER=$CC"
+# The git CLI, so cargo's git dependencies follow run-job-script's URL rewrite and token.
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+export CARGO_TARGET_DIR="${CI_BUILD_DIR:-${TMPDIR:-/tmp}/cargo-target}"
+export CARGO_BUILD_JOBS="$jobs"
+# setup-sccache sets RUSTC_WRAPPER; sccache does not cache incremental builds.
+export CARGO_INCREMENTAL=0
+{% endblock %}
+
+cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
+{% block cargo %}
+cargo fmt --all --check
+cargo clippy --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- \
+  -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used \
+  -A clippy::module_name_repetitions -A clippy::missing_errors_doc -D warnings
+cargo test --workspace {{ self.cargo_features() }}
+{% block cargo_doc %}
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps {{ self.cargo_features() }}
+{% endblock %}
+{% endblock %}

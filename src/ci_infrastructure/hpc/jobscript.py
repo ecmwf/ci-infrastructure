@@ -85,7 +85,6 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
         "fortran_compiler_binary": "",
         "options": "",
         "python_version": "",
-        "rust_compiler": "",
         "modules": [],
     }
 )

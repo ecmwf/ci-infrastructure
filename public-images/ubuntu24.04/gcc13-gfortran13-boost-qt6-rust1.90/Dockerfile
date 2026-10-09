@@ -4,10 +4,16 @@
 # SPDX-License-Identifier: Apache-2.0
 FROM eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
 
+# The boost-qt6 image's packages, so ecflow's Rust bindings can build ecFlow too.
 RUN apt-get update && apt-get install -y \
     gcc-13 \
     g++-13 \
     gfortran-13 \
+    libboost-all-dev \
+    qt6-base-dev \
+    qt6-svg-dev \
+    qt6-5compat-dev \
+    qt6-charts-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # One pinned toolchain, the default, as g++-13 is the only g++. The proxies go

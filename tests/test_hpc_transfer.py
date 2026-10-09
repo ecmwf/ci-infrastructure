@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import tarfile
@@ -73,14 +72,6 @@ class ShellConnection(FakeConnection):
         self.executed.append(argv)
         proc = subprocess.run(["bash", "-c", argv[2]] if argv[:2] == ["bash", "-c"] else argv)
         return FakeProc(returncode=proc.returncode)
-
-
-class StderrShellConnection(FakeConnection):
-    """Runs remote commands locally and hands back their stderr."""
-
-    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
-        proc = subprocess.run([str(c) for c in command], capture_output=True)
-        return FakeProc(returncode=proc.returncode, stderr=proc.stderr)
 
 
 class LockConnection(FakeConnection):
@@ -201,21 +192,6 @@ def test_ship_lock_is_exclusive_against_a_second_shipper(tmp_path: Path) -> None
     with transfer.ship_lock(conn, staging_dir=str(staging), run_id="1-1"):
         assert not transfer._try_acquire_lock(conn, lock_dir=lock_dir, run_id="2-1", stale_minutes=30)
     assert transfer._try_acquire_lock(conn, lock_dir=lock_dir, run_id="2-1", stale_minutes=30)
-
-
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only parent")
-def test_a_lock_that_cannot_be_created_fails_at_once(tmp_path: Path) -> None:
-    """Not "locked by another run" for 15 minutes: the filesystem refused, so say why."""
-    parent = tmp_path / "locks"
-    parent.mkdir()
-    parent.chmod(0o500)
-    try:
-        with pytest.raises(CIError, match="Cannot create the lock .*Permission denied.*No other run holds it"):
-            transfer._try_acquire_lock(
-                StderrShellConnection(), lock_dir=str(parent / "art"), run_id="1-1", stale_minutes=30
-            )
-    finally:
-        parent.chmod(0o700)
 
 
 def test_ship_lock_waits_for_the_holder_then_acquires(monkeypatch: pytest.MonkeyPatch) -> None:

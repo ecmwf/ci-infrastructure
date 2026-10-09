@@ -111,30 +111,48 @@ On the HPC, load a ``python3`` module in the leg's ``modules`` and create the ve
 Rust bindings
 -------------
 
-A leg names its Rust toolchain in ``rust-compiler``, e.g. ``"rust-1.90"``, as it names ``g++-13``;
-the image provides it, e.g. ``ubuntu24.04-gcc13-gfortran13-rust1.90`` (see :doc:`../reference/runners`).
-On such a leg the runner template's ``rust`` block runs after the install:
-``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``,
-with the ``-sys`` crates in ``system`` mode, so they link the library just installed instead of building it again.
-Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
-``cargo_workspace`` for another directory:
+Rust bindings are checked in a kind of their own, against the artifact of the library they bind,
+so a failing ``cargo`` step fails only that kind and the library is still published.
+The kind builds a package that publishes nothing and depends on the library:
 
 .. code:: toml
 
-   [[matrix.build.include]]
+   [packages.eckit-rust]
+   compiler-inputs = ["cxx-compiler"]
+
+   [[packages.eckit-rust.deps]]
+   package = "eckit"
+   options-input = "options"
+
+   [matrix.rust]
+   packages = ["eckit-rust"]
+   publishes = false
+
+   [matrix.rust.defaults]
+   job-script = "./.ci/rust.sh.j2"
    cxx-compiler = "g++-13"
    c-compiler = "gcc-13"
-   rust-compiler = "rust-1.90"
-   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-rust1.90:latest"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-boost-qt6-rust1.90"
    platform = "ubuntu-24.04"
+
+   [[matrix.rust.include]]
+   rust-compiler = "rust-1.90"
+
+``rust-compiler`` names the toolchain as ``cxx-compiler`` names g++; the image provides it
+(see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
+The recipe extends ``cargo-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
+with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
+Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
+``cargo_workspace`` for another directory:
 
 .. code:: jinja
 
+   {% extends "ci-infrastructure/cargo-runner.sh.j2" %}
    {% block cargo_features %}--no-default-features --features system,raw{% endblock %}
    {% block cargo_doc %}{% endblock %}
 
-Keep ``rust-compiler`` out of ``compiler-inputs`` in a C++ package:
-the Rust bindings are tested, not published, and consumers without Rust must find the same artifact.
+A ``-sys`` crate that builds its library from source itself needs only the library's deps,
+which the dependency on the library brings along.
 
 Reproduce a leg locally
 -----------------------

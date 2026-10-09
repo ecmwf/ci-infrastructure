@@ -58,42 +58,4 @@ ctest --test-dir "$build" --output-on-failure -j "$jobs"
 {% block install %}
 cmake --install "$build"
 {% endblock %}
-{% block rust %}
-{% if rust_compiler %}
-# The Rust bindings, built against the install above: the -sys crates' `system` mode.
-rust_version={{ rust_compiler | replace("rust-", "", 1) | sh }}
-case "$(rustc --version | awk '{print $2}')" in
-  "$rust_version" | "$rust_version".*) ;;
-  *) echo "::error::$(rustc --version) is not {{ rust_compiler }}"; exit 1 ;;
-esac
-echo "Using: $(command -v cargo) ($(cargo --version))"
-export CC="$(command -v {{ c_compiler_binary | sh }})" CXX="$(command -v {{ cxx_compiler_binary | sh }})"
-host="$(rustc -vV | sed -n 's/^host: //p')"
-export "CARGO_TARGET_$(tr 'a-z-' 'A-Z_' <<<"$host")_LINKER=$CC"
-export CMAKE_PREFIX_PATH="$CI_INSTALL_PREFIX${CMAKE_PREFIX_PATH:+;$CMAKE_PREFIX_PATH}"
-# cargo links against the prefixes; the tests also have to load from them.
-for p in ${CMAKE_PREFIX_PATH//;/ }; do
-  for d in "$p/lib64" "$p/lib"; do
-    if [ -d "$d" ]; then LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$d"; fi
-  done
-done
-export LD_LIBRARY_PATH
-# The git CLI, so cargo's git dependencies follow run-job-script's URL rewrite and token.
-export CARGO_NET_GIT_FETCH_WITH_CLI=true
-export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/cargo-target"
-# setup-sccache sets RUSTC_WRAPPER; sccache does not cache incremental builds.
-export CARGO_INCREMENTAL=0
-cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
-{% block cargo %}
-cargo fmt --all --check
-cargo clippy --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- \
-  -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used \
-  -A clippy::module_name_repetitions -A clippy::missing_errors_doc -D warnings
-cargo test --workspace {{ self.cargo_features() }}
-{% block cargo_doc %}
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps {{ self.cargo_features() }}
-{% endblock %}
-{% endblock %}
-{% endif %}
-{% endblock %}
 {% block publish %}{% endblock %}

@@ -130,8 +130,6 @@ and consists of these blocks:
      - ``ctest`` with ``ctest_args``, else ``-j "$jobs"``; skipped if ``tests`` is false
    * - ``install``
      - ``cmake --install "$build"``
-   * - ``rust``
-     - only with ``rust-compiler``: cargo against the install, see :doc:`../configuring/job-scripts`
 
 Afterwards the template archives ``$install_root``.
 The blocks share the shell variables ``build`` (the build directory on node-local disk),
@@ -166,8 +164,6 @@ A leg may omit these fields:
      - ``""``
    * - ``python-version``
      - ``""``; a string such as ``"3.11"``, never a number (see :doc:`../configuring/job-scripts`)
-   * - ``rust-compiler``
-     - ``""``, i.e. no Rust
    * - ``c-compiler-binary``, ``cxx-compiler-binary``
      - ``c-compiler``, ``cxx-compiler``
    * - ``fortran-compiler-binary``
