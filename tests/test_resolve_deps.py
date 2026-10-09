@@ -365,7 +365,6 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
             ref=Ref("main"),
             sha=Sha(BRANCH_HEAD),
             artifact_name=ArtifactName(f"up-{BRANCH_HEAD}-{lane}"),
-            matrix_entry={},
             manifest_cache={},
             sync_branch=None,
             sync_exists_by_repo={},
@@ -630,7 +629,7 @@ def test_a_dep_resolves_its_deps_against_the_producer_leg_not_the_consumers() ->
     _, published = _resolve(manifest.package, manifest.deps, dict(manifest.matrix["build"][0]))
 
     assert "fortranlib" in [d.name for d in deps]
-    assert {d.name: d for d in deps}["middle"].artifact_name.replace("c" * 40, "d" * 40) == published.artifact_name
+    assert {str(d.name): d for d in deps}["middle"].artifact_name.replace("c" * 40, "d" * 40) == published.artifact_name
 
 
 @pytest.mark.usefixtures("offline")
@@ -648,3 +647,11 @@ def test_legs_naming_one_variant_must_agree_on_what_the_deps_read() -> None:
     cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_FORTRAN_WHEN_MANIFEST + same)}
     deps, _ = _resolve(_own("top"), [_dep_spec("middle")], dict(_LEG), manifest_cache=cache)
     assert "fortranlib" in [d.name for d in deps]
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_name_no_producer_leg_publishes_fails_even_if_an_old_artifact_has_it() -> None:
+    """The store may still hold it from a leg the producer dropped; the producer no longer builds it."""
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
+    with pytest.raises(ResolveError, match="no leg of the producer's manifest publishes"):
+        _resolve(_own("top"), [_dep_spec("up")], {**_LEG, "python-version": "3.11"}, manifest_cache=cache)

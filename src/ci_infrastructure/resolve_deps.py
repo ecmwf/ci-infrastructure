@@ -569,7 +569,6 @@ def _classify_orphan_pin(
     ref: Ref,
     sha: Sha,
     artifact_name: ArtifactName,
-    matrix_entry: Mapping[str, Any],
     manifest_cache: Mapping[tuple[Repo, Ref], Manifest],
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
@@ -745,18 +744,27 @@ def resolve_leg(
             return expanded[spec.package]
 
         # The leg the upstream's own CI built this variant on: sub-deps resolve and filter
-        # by `when` against it, so deps-hash8 reproduces the published name. Without the
-        # producer's matrix, the requested variant over this leg stands in for it.
+        # by `when` against it, so deps-hash8 reproduces the published name.
         sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
         requested = Variant(lane, platform_slug, compiler, build_type, python_version, dep_option)
-        own_leg = producer_leg(producer, spec.package, requested, sub_specs) if producer is not None else None
-        dep_ctx = (
-            dict(own_leg)
-            if own_leg is not None
-            else {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
-        )
-        if own_leg is None and python_version is not None:
-            dep_ctx["python-version"] = python_version
+        variants = producer_variants(producer, spec.package) if producer is not None else None
+        if variants is None:
+            # No matrix to tell (no manifest upstream): the requested variant over this leg stands in.
+            dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
+            if python_version is not None:
+                dep_ctx["python-version"] = python_version
+        else:
+            assert producer is not None
+            own_leg = producer_leg(producer, spec.package, requested, sub_specs)
+            if own_leg is None:
+                published = "".join(f"\n  {v}" for v in variants) or " none"
+                raise ResolveError(
+                    f"dep '{spec.package}' (declared by '{declared_by}') from {spec.repo}@{ref} is requested as "
+                    f"{requested}, which no leg of the producer's manifest publishes, so it can never be built. "
+                    f"The producer publishes:{published}\n"
+                    "Add the leg to the producer, or change what this consumer requests."
+                )
+            dep_ctx = dict(own_leg)
 
         sub_deps: list[ResolvedDep] = []
         for sub_spec in sub_specs:
@@ -786,17 +794,6 @@ def resolve_leg(
             artifact_cache[artifact_name] = s3_store.object_exists(artifact_name)
         cached = artifact_cache[artifact_name]
 
-        if not cached and producer is not None:
-            variants = producer_variants(producer, spec.package)
-            if variants is not None and requested not in variants:
-                published = "".join(f"\n  {v}" for v in variants) or " none"
-                raise ResolveError(
-                    f"dep '{spec.package}' (declared by '{declared_by}') from {spec.repo}@{ref} is requested as "
-                    f"{requested}, which no leg of the producer's manifest publishes, so '{artifact_name}' "
-                    f"can never appear. The producer publishes:{published}\n"
-                    "Add the leg to the producer, or change what this consumer requests."
-                )
-
         if cached:
             source: Literal["artifact", "triggered rebuild"] = "artifact"
         else:
@@ -811,7 +808,6 @@ def resolve_leg(
                     ref=ref,
                     sha=sha,
                     artifact_name=artifact_name,
-                    matrix_entry=dep_ctx,
                     manifest_cache=manifest_cache,
                     sync_branch=sync_branch,
                     sync_exists_by_repo=sync_exists_by_repo,
