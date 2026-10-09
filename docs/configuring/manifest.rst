@@ -73,6 +73,8 @@ see :doc:`../using/feature-branches`.
 so that ``eckit`` asks for the ``stack-dependencies`` build made with the same compiler as its own.
 Dependencies are transitive: ``eckit``'s consumers receive ``ecbuild`` and ``stack-dependencies`` without declaring them again.
 Their own dependencies resolve as on the upstream's leg that builds the requested variant.
+Two of the upstream's legs that publish the same variant therefore have to agree on every field its dependencies read,
+such as one a ``when`` names; otherwise :action:`resolve-deps` stops and names the legs.
 A variant that none of the upstream's legs publishes stops :action:`resolve-deps` at once,
 instead of waiting for an upstream CI that cannot produce it.
 
