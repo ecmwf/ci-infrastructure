@@ -33,6 +33,8 @@ Since it becomes part of file names and object-store keys,
 it may contain only letters, digits, ``-`` and ``_``.
 ``compiler-inputs`` lists the fields of a build configuration that name the compilers.
 It is a list because a package may compile several languages, e.g. both C++ and Fortran.
+A leg that does not set one of them, say a ``clang++`` leg without ``fortran-compiler``,
+leaves it out of the artifact name, so that build is told apart from the ones with a Fortran compiler.
 A package that compiles nothing, such as ``ecbuild``, declares ``compiler-inputs = []``.
 
 There is an additional, optional field ``visibility`` which can be set to ``"private"`` or ``"public"``.

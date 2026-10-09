@@ -484,17 +484,17 @@ def _join_compilers(
     matrix_entry: Mapping[str, Any],
     context: str,
 ) -> str | None:
-    """In alphabetical field-name order."""
+    """In alphabetical field-name order; a field the leg does not set is left out."""
     if not compiler_inputs:
         return None
+    present = [f for f in sorted(compiler_inputs) if f in matrix_entry]
+    if not present:
+        raise ResolveError(
+            f"{context}: compiler-inputs names {sorted(compiler_inputs)}, none of which is set "
+            f"on this matrix entry. Available fields: {sorted(matrix_entry)}"
+        )
     parts: list[str] = []
-    for field_name in sorted(compiler_inputs):
-        if field_name not in matrix_entry:
-            raise ResolveError(
-                f"{context}: compiler-inputs references matrix field "
-                f"'{field_name}', which is not set on this matrix entry. "
-                f"Available fields: {sorted(matrix_entry)}"
-            )
+    for field_name in present:
         value = matrix_entry[field_name]
         if not value:
             raise ResolveError(

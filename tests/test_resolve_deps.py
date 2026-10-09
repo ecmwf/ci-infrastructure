@@ -477,3 +477,29 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
     base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
     deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
     assert [d.name for d in deps] == ["base", "middle"]
+
+
+_FORTRAN_INPUTS: Final = ["cxx-compiler", "fortran-compiler"]
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize(
+    ("leg", "compiler"),
+    [
+        (_LEG, "clang++-18"),
+        ({**_LEG, "cxx-compiler": "g++-13", "fortran-compiler": "gfortran-13"}, "g++-13-gfortran-13"),
+    ],
+)
+def test_a_compiler_input_the_leg_does_not_set_is_left_out_of_the_name(leg: dict[str, str], compiler: str) -> None:
+    own = replace(_own("top"), compiler_inputs=_FORTRAN_INPUTS)
+    deps, resolved_own = _resolve(own, [_dep_spec("up", compiler_inputs=_FORTRAN_INPUTS)], leg)
+
+    assert deps[0].compiler == resolved_own.compiler == compiler
+    assert resolved_own.artifact_name.endswith(f"-ubuntu-24.04-{compiler}-Release")
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_leg_setting_none_of_the_compiler_inputs_fails() -> None:
+    leg = {"build-type": "Release", "platform": "ubuntu-24.04"}
+    with pytest.raises(ResolveError, match=r"none of which is set"):
+        _resolve(replace(_own("top"), compiler_inputs=_FORTRAN_INPUTS), [], leg)
