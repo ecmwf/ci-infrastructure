@@ -478,21 +478,7 @@ def validate_job_templates(m: Manifest) -> None:
             except jobscript.JobTemplateError as exc:
                 raise SchemaError(f"{m.path}: [matrix.{kind}] {exc}") from exc
             if missing:
-                declared = sorted(k for k in leg if k != "_resolved")
-                raise SchemaError(
-                    f"{m.path}: [matrix.{kind}] recipe '{spec}' reads {sorted(missing)}, which this "
-                    f"leg does not declare. The leg has {declared}; a template may read those "
-                    f"(hyphens as underscores), plus `leg`, `artifact_name`, the defaults "
-                    f"{sorted(jobscript.JOB_TEMPLATE_DEFAULTS)} and what a template reads through "
-                    f"`| default(...)`. Add the key to the "
-                    f"leg, or drop it from the recipe — they are meant to say the same thing."
-                    + "".join(
-                        f" `{name}` comes from `{name.removesuffix('_binary').replace('_', '-')}`, or "
-                        f"`{name.replace('_', '-')}` when the binary to call is named differently."
-                        for name in sorted(missing)
-                        if name.endswith("_compiler_binary")
-                    )
-                )
+                raise SchemaError(f"{m.path}: [matrix.{kind}] {jobscript.undeclared_names_message(spec, missing, leg)}")
 
 
 def _check_subset_invariant(manifests: Sequence[Manifest], by_repo: Mapping[str, Manifest]) -> None:
