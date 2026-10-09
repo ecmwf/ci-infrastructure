@@ -11,6 +11,12 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # A newer commit of a pull request cancels its older run. Any other run gets a
+  # group of its own, so a main run, which pushes images, is never cancelled or queued.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   pre-commit:
     runs-on: ubuntu-slim
