@@ -154,6 +154,10 @@ Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
 A ``-sys`` crate that builds its library from source itself needs only the library's deps,
 which the dependency on the library brings along.
 
+Where :action:`resolve-deps` took an upstream repo from a ``sync-branch/`` or ``feature/`` branch,
+or a pinned commit, the crates ``Cargo.toml`` fetches from that repo over git follow it too,
+through ``cargo --config patch...``, so the Rust code matches the C++ artifact it links against.
+
 Reproduce a leg locally
 -----------------------
 

@@ -34,6 +34,8 @@ it may contain only letters, digits, ``-`` and ``_``.
 ``compiler-inputs`` lists the fields of a build configuration that name the compilers.
 It is a list because a package may compile several languages, e.g. both C++ and Fortran.
 A package that compiles nothing, such as ``ecbuild``, declares ``compiler-inputs = []``.
+A package whose tools its consumers' tests run lists the directories of its install tree to put on their ``PATH``,
+e.g. ``add-to-path = ["bin"]`` for ``eccodes``' ``grib_ls``; by default nothing goes on ``PATH``.
 
 There is an additional, optional field ``visibility`` which can be set to ``"private"`` or ``"public"``.
 **Setting this field should only happen once both the security and exposure risks are understood.**

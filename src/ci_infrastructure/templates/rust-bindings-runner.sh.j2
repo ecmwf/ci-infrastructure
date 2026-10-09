@@ -38,12 +38,21 @@ export CARGO_INCREMENTAL=0
 {% endblock %}
 
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
+# Crates from an upstream repo follow the branch resolve-deps built its C++ from, e.g. a
+# sync-branch/ of the same name, rather than the one Cargo.toml names.
+cargo_patches=()
+{% if ci_dep_refs %}
+while IFS= read -r patch; do cargo_patches+=(--config "$patch"); done < <(
+  cargo metadata --format-version 1 |
+    "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, ref in ci_dep_refs | dictsort %} --ref {{ (repo ~ "=" ~ ref) | sh }}{% endfor %})
+for patch in "${cargo_patches[@]}"; do echo "cargo: $patch"; done
+{% endif %}
 {% block cargo %}
 cargo fmt --all --check
 # The lints are the workspace's own, e.g. its .cargo/config.toml; warnings fail.
-cargo clippy --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- -D warnings
-cargo test --workspace {{ self.cargo_features() }}
+cargo clippy "${cargo_patches[@]}" --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- -D warnings
+cargo test "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
 {% block cargo_doc %}
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps {{ self.cargo_features() }}
+RUSTDOCFLAGS="-D warnings" cargo doc "${cargo_patches[@]}" --workspace --no-deps {{ self.cargo_features() }}
 {% endblock %}
 {% endblock %}

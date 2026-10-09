@@ -65,3 +65,13 @@ def test_prefix_defaults_to_name() -> None:
 def test_hpc_is_no_longer_an_execution() -> None:
     with pytest.raises(ValidationError):
         MatrixKindTable.model_validate({"execution": "hpc"})
+
+
+def test_add_to_path_takes_dirs_inside_the_install_tree() -> None:
+    assert PackageTable.model_validate({**_PACKAGE, "add-to-path": ["bin", "libexec/tools"]}).add_to_path == (
+        "bin",
+        "libexec/tools",
+    )
+    for bad in ["/usr/bin", "../bin", "bin:sbin", ""]:
+        with pytest.raises(ValidationError, match="add-to-path"):
+            PackageTable.model_validate({**_PACKAGE, "add-to-path": [bad]})

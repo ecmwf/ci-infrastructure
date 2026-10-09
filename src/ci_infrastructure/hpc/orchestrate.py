@@ -14,6 +14,7 @@ not ``squeue``, is the verdict; ``squeue`` is only a slow liveness guard.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shlex
@@ -21,7 +22,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Any, Final, Literal, NamedTuple
@@ -124,6 +125,16 @@ def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str,
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
     remote_prefixes = [f"{remote_deps_dir}/{name}" for name in transfer.remote_dep_names(local_prefixes)]
     return ":".join(remote_prefixes), local_prefixes, remote_deps_dir
+
+
+def deps_path_dirs(matrix_leg: str, on_cluster: Mapping[str, str]) -> list[str]:
+    """The dirs the leg's deps declare in add-to-path, under their prefixes on the cluster."""
+    deps = (json.loads(matrix_leg).get("_resolved") or {}).get("deps") or [] if matrix_leg else []
+    out: list[str] = []
+    for dep in deps:
+        local = os.path.expandvars(dep["install-path"])
+        out += [f"{on_cluster.get(local, local)}/{rel}" for rel in dep.get("add-to-path") or []]
+    return out
 
 
 def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> int | None:
@@ -546,6 +557,8 @@ def submit_wait(
     else:
         remote_cmake_prefix, local_prefixes, remote_deps_dir = cmake_prefix_path, [], ""
     job_name = jobscript.job_name_for(artifact_name)
+    on_cluster = dict(zip(local_prefixes, remote_cmake_prefix.split(":"))) if local_prefixes else {}
+    path_dirs = deps_path_dirs(matrix_leg, on_cluster)
     rendered = jobscript.render_job_script(
         repo_script=recipe,
         output_path=paths.output,
@@ -556,6 +569,7 @@ def submit_wait(
         run_id=run_id if ships_source else None,
         marker_wait_timeout=marker_wait_timeout,
         packages=list(packages),
+        path_dirs=path_dirs,
     )
     print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
     print(rendered)

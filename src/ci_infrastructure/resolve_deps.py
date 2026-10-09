@@ -158,6 +158,7 @@ class PackageInfo:
     compiler_inputs: Sequence[str]
     deps: Sequence[DepSpec]
     meta: bool = False
+    add_to_path: Sequence[str] = ()
 
 
 @dataclass
@@ -200,8 +201,10 @@ class ResolvedDep:
     build_type: str
     python_version: str | None
     deps_hash: str | None
+    # Install-relative dirs the producer asks its consumers to put on PATH.
+    add_to_path: Sequence[str] = ()
 
-    def to_json(self) -> dict[str, str | bool | None]:
+    def to_json(self) -> dict[str, str | bool | list[str] | None]:
         return {
             "name": self.name,
             "repo": self.repo,
@@ -217,6 +220,7 @@ class ResolvedDep:
             "build-type": self.build_type,
             "python-version": self.python_version or "",
             "deps-hash": self.deps_hash or "",
+            "add-to-path": list(self.add_to_path),
         }
 
 
@@ -294,6 +298,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         compiler_inputs=list(raw.package.compiler_inputs),
         deps=own_deps,
         meta=raw.package.meta,
+        add_to_path=raw.package.add_to_path,
     )
     packages = {own.prefix: own}
     for prefix, entry in raw.packages.items():
@@ -301,6 +306,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
             prefix=PackageName(prefix),
             compiler_inputs=list(entry.compiler_inputs),
             deps=[s for d in entry.deps for s in _to_dep_specs(d, repo)],
+            add_to_path=entry.add_to_path,
         )
     # An artifact-prefix is [package] under another name: same compilers, same deps.
     for body in raw.matrix.values():
@@ -785,6 +791,7 @@ def resolve_leg(
             build_type=build_type,
             python_version=python_version,
             deps_hash=deps_hash8,
+            add_to_path=tuple(info.add_to_path) if info is not None else (),
         )
         visited[spec.package] = resolved
         expanded[spec.package] = [resolved]

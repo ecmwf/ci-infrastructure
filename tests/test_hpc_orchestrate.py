@@ -466,3 +466,21 @@ def test_wait_for_job_ticks_more_often_than_it_checks_the_queue() -> None:
         tick_interval=30,
     )
     assert (verdict, len(ticks), len(checks)) == ("SUCCESS", 4, 0)
+
+
+def test_jobscript_puts_the_declared_dirs_on_path() -> None:
+    script = _script(path_dirs=["/s/deps/eccodes/bin", "/s/deps/x/libexec"])
+    assert 'export PATH="/s/deps/eccodes/bin:/s/deps/x/libexec:$PATH"' in script
+    assert "export PATH=" not in _script()
+
+
+def test_declared_path_dirs_follow_their_dep_onto_the_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", "/r")
+    leg = (
+        '{"_resolved": {"deps": ['
+        '{"install-path": "$RUNNER_TEMP/install/eccodes", "add-to-path": ["bin"]},'
+        '{"install-path": "$RUNNER_TEMP/install/eckit", "add-to-path": []}]}}'
+    )
+    on_cluster = {"/r/install/eccodes": "/s/deps/eccodes", "/r/install/eckit": "/s/deps/eckit"}
+    assert orch.deps_path_dirs(leg, on_cluster) == ["/s/deps/eccodes/bin"]
+    assert orch.deps_path_dirs("", on_cluster) == []
