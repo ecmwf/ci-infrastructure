@@ -361,28 +361,67 @@ def producer_variants(producer_manifest: Manifest, package: str) -> list[Variant
     """What the producer's own legs name `package`; None if it declares no matrix to tell."""
     if not producer_manifest.matrix:
         return None
+    return [v for v, _ in _publishing_legs(producer_manifest, package)]
+
+
+def _publishing_legs(producer_manifest: Manifest, package: str) -> list[tuple[Variant, Mapping[str, Any]]]:
+    """Each leg that publishes `package`, with the variant it names."""
     info = producer_manifest.packages.get(PackageName(package))
     compiler_inputs = info.compiler_inputs if info is not None else producer_manifest.package.compiler_inputs
     kinds = [k for k, pkgs in producer_manifest.packages_by_kind.items() if package in pkgs]
-    variants: list[Variant] = []
+    out: list[tuple[Variant, Mapping[str, Any]]] = []
     for kind, legs in producer_manifest.matrix.items():
         if kinds and kind not in kinds:
             continue
         for leg in legs:
             try:
-                variants.append(
-                    Variant(
-                        lane=producer_manifest.execution_by_kind.get(kind, EXECUTION_RUNNER),
-                        platform=compute_platform_slug(str(leg.get("platform", ""))),
-                        compiler=_join_compilers(compiler_inputs, leg, context=f"[matrix.{kind}]"),
-                        build_type=str(leg.get("build-type", "Release")),
-                        python_version=str(leg.get("python-version", "")).strip() or None,
-                        option=_as_option(leg.get("options"), context=f"[matrix.{kind}]"),
-                    )
+                variant = Variant(
+                    lane=producer_manifest.execution_by_kind.get(kind, EXECUTION_RUNNER),
+                    platform=compute_platform_slug(str(leg.get("platform", ""))),
+                    compiler=_join_compilers(compiler_inputs, leg, context=f"[matrix.{kind}]"),
+                    build_type=str(leg.get("build-type", "Release")),
+                    python_version=str(leg.get("python-version", "")).strip() or None,
+                    option=_as_option(leg.get("options"), context=f"[matrix.{kind}]"),
                 )
             except (ResolveError, ValueError):
                 continue  # a leg the producer's own resolve rejects publishes nothing
-    return variants
+            out.append((variant, leg))
+    return out
+
+
+def _fields_read_by(specs: Sequence[DepSpec], compiler_inputs: Sequence[str]) -> set[str]:
+    """The leg fields that decide which deps apply and what each resolves to."""
+    fields = set(compiler_inputs)
+    for s in specs:
+        fields |= set(s.when or {}) | set(s.unless or {}) | set(s.compiler_inputs or ())
+        fields |= {s.build_type_input, s.platform_input}
+        fields |= {s.python_version_input} if s.needs_python else set()
+        fields |= {s.options_input} if s.options_input else set()
+    return fields - {"execution"}
+
+
+def producer_leg(
+    producer_manifest: Manifest, package: str, variant: Variant, specs: Sequence[DepSpec]
+) -> Mapping[str, Any] | None:
+    """The producer's own leg that publishes `variant` of `package`; None if none does.
+
+    Legs that publish the same variant must agree on every field `specs` read, or the
+    artifact name would depend on which of them ran.
+    """
+    legs = [leg for v, leg in _publishing_legs(producer_manifest, package) if v == variant]
+    if not legs:
+        return None
+    info = producer_manifest.packages.get(PackageName(package))
+    compiler_inputs = info.compiler_inputs if info is not None else producer_manifest.package.compiler_inputs
+    fields = sorted(_fields_read_by(specs, compiler_inputs))
+    differing = [f for f in fields if len({str(leg.get(f, "")) for leg in legs}) > 1]  # unset reads as ""
+    if differing:
+        raise ResolveError(
+            f"{producer_manifest.package.repo} has {len(legs)} legs publishing {package} as {variant}, "
+            f"which differ in {differing}, fields its deps read; the artifact name would depend on "
+            "which leg ran. Make them differ in the name too (e.g. options), or drop one."
+        )
+    return legs[0]
 
 
 def is_normal_ref(
@@ -530,7 +569,6 @@ def _classify_orphan_pin(
     ref: Ref,
     sha: Sha,
     artifact_name: ArtifactName,
-    matrix_entry: Mapping[str, Any],
     manifest_cache: Mapping[tuple[Repo, Ref], Manifest],
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
@@ -707,12 +745,28 @@ def resolve_leg(
 
         # The leg the upstream's own CI built this variant on: sub-deps resolve and filter
         # by `when` against it, so deps-hash8 reproduces the published name.
-        dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
-        if python_version is not None:
-            dep_ctx["python-version"] = python_version
+        sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
+        requested = Variant(lane, platform_slug, compiler, build_type, python_version, dep_option)
+        variants = producer_variants(producer, spec.package) if producer is not None else None
+        if variants is None:
+            # No matrix to tell (no manifest upstream): the requested variant over this leg stands in.
+            dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
+            if python_version is not None:
+                dep_ctx["python-version"] = python_version
+        else:
+            assert producer is not None
+            own_leg = producer_leg(producer, spec.package, requested, sub_specs)
+            if own_leg is None:
+                published = "".join(f"\n  {v}" for v in variants) or " none"
+                raise ResolveError(
+                    f"dep '{spec.package}' (declared by '{declared_by}') from {spec.repo}@{ref} is requested as "
+                    f"{requested}, which no leg of the producer's manifest publishes, so it can never be built. "
+                    f"The producer publishes:{published}\n"
+                    "Add the leg to the producer, or change what this consumer requests."
+                )
+            dep_ctx = dict(own_leg)
 
         sub_deps: list[ResolvedDep] = []
-        sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
         for sub_spec in sub_specs:
             if sub_spec.applies_to(dep_ctx, lane):
                 sub_deps += visit(sub_spec, dep_ctx, declared_by=spec.package, parent_ref=ref)
@@ -740,18 +794,6 @@ def resolve_leg(
             artifact_cache[artifact_name] = s3_store.object_exists(artifact_name)
         cached = artifact_cache[artifact_name]
 
-        if not cached and producer is not None:
-            variants = producer_variants(producer, spec.package)
-            requested = Variant(lane, platform_slug, compiler, build_type, python_version, dep_option)
-            if variants is not None and requested not in variants:
-                published = "".join(f"\n  {v}" for v in variants) or " none"
-                raise ResolveError(
-                    f"dep '{spec.package}' (declared by '{declared_by}') from {spec.repo}@{ref} is requested as "
-                    f"{requested}, which no leg of the producer's manifest publishes, so '{artifact_name}' "
-                    f"can never appear. The producer publishes:{published}\n"
-                    "Add the leg to the producer, or change what this consumer requests."
-                )
-
         if cached:
             source: Literal["artifact", "triggered rebuild"] = "artifact"
         else:
@@ -766,7 +808,6 @@ def resolve_leg(
                     ref=ref,
                     sha=sha,
                     artifact_name=artifact_name,
-                    matrix_entry=dep_ctx,
                     manifest_cache=manifest_cache,
                     sync_branch=sync_branch,
                     sync_exists_by_repo=sync_exists_by_repo,
