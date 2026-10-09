@@ -40,9 +40,8 @@ export CARGO_INCREMENTAL=0
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
 {% block cargo %}
 cargo fmt --all --check
-cargo clippy --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- \
-  -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used \
-  -A clippy::module_name_repetitions -A clippy::missing_errors_doc -D warnings
+# The lints are the workspace's own, e.g. its .cargo/config.toml; warnings fail.
+cargo clippy --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- -D warnings
 cargo test --workspace {{ self.cargo_features() }}
 {% block cargo_doc %}
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps {{ self.cargo_features() }}

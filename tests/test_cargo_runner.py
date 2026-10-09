@@ -46,7 +46,7 @@ def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs() -> None:
     )
     out = _render(source)
     assert 'cd "$CI_SOURCE_DIR/bindings"' in out
-    assert "cargo clippy --workspace --all-targets --features ssl -- \\" in out
+    assert "cargo clippy --workspace --all-targets --features ssl -- -D warnings\n" in out
     assert "cargo test --workspace --features ssl\n" in out
     assert "cargo doc" not in out
 
