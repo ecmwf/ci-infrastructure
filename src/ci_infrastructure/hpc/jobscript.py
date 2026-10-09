@@ -324,6 +324,10 @@ def render_job_script(
     out.append("")
     out.append("set -euo pipefail")
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
+    # For dlopen (findlibs); linked code finds its deps by RPATH. Missing dirs are harmless.
+    lib_dirs = ":".join(f"{p}/lib64:{p}/lib" for p in cmake_prefix_path.split(":") if p)
+    if lib_dirs:
+        out.append(f'export LD_LIBRARY_PATH="{lib_dirs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"')
     out.append(f'export CI_INSTALL_PREFIX="{install_path}"')
     out.append(f'export CI_INSTALL_ARCHIVE="{install_archive_path(install_path)}"')
     if packages:

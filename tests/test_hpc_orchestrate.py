@@ -282,6 +282,13 @@ def test_render_without_shebang_still_starts_with_one() -> None:
     assert "#SBATCH --time=00:10:00" in script
 
 
+def test_jobscript_exports_ld_library_path_of_the_deps() -> None:
+    script = _script(cmake_prefix_path="/s/deps/a:/s/deps/b")
+    dirs = "/s/deps/a/lib64:/s/deps/a/lib:/s/deps/b/lib64:/s/deps/b/lib"
+    assert f'export LD_LIBRARY_PATH="{dirs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"' in script
+    assert "LD_LIBRARY_PATH" not in _script(cmake_prefix_path="")
+
+
 def test_jobscript_exports_the_install_archive_path() -> None:
     assert 'export CI_INSTALL_ARCHIVE="/scratch/install/art.install.tar.zst"' in _script()
     assert jobscript.install_archive_path("/scratch/install/art") == "/scratch/install/art.install.tar.zst"
