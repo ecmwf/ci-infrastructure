@@ -23,7 +23,7 @@ It submits the job first, which claims the place in the queue,
 and then copies the source and the dependencies into a staging directory on the cluster.
 A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
-``CMAKE_PREFIX_PATH`` points at the shipped dependencies.
+``CMAKE_PREFIX_PATH`` points at the shipped dependencies, and ``LD_LIBRARY_PATH`` at their libraries.
 The cluster therefore needs neither a GitHub token nor access to S3.
 
 The staging directory belongs to the artifact, not to the run.
@@ -43,7 +43,7 @@ The build script
 ----------------
 
 ``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
-the variables ``CMAKE_PREFIX_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
+the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
 the shared template does this, a hand-written script does it itself:
