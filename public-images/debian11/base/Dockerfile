@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y \
     flex \
     curl \
     diffutils \
+    procps \
     wget \
     ca-certificates \
     gnupg \

@@ -18,6 +18,7 @@ RUN dnf -y install dnf-plugins-core \
     flex \
     curl \
     diffutils \
+    procps-ng \
     ncurses-devel \
     wget \
     ca-certificates \

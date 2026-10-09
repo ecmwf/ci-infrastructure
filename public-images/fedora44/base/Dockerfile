@@ -16,6 +16,7 @@ RUN dnf -y install \
     perl-File-Compare \
     curl \
     diffutils \
+    procps-ng \
     wget \
     ca-certificates \
     gnupg2 \
