@@ -683,13 +683,17 @@ def resolve_leg(
             expanded[spec.package] = _unique(members)
             return expanded[spec.package]
 
-        # Sub-deps first, against the same leg, filtered by `when` exactly as the
-        # upstream's own CI did, so deps-hash8 reproduces the published name.
+        # The leg the upstream's own CI built this variant on: sub-deps resolve and filter
+        # by `when` against it, so deps-hash8 reproduces the published name.
+        dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
+        if python_version is not None:
+            dep_ctx["python-version"] = python_version
+
         sub_deps: list[ResolvedDep] = []
         sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
         for sub_spec in sub_specs:
-            if sub_spec.applies_to(parent_ctx, lane):
-                sub_deps += visit(sub_spec, parent_ctx, declared_by=spec.package, parent_ref=ref)
+            if sub_spec.applies_to(dep_ctx, lane):
+                sub_deps += visit(sub_spec, dep_ctx, declared_by=spec.package, parent_ref=ref)
 
         sha_key = (spec.repo, ref)
         if sha_key not in sha_cache:
@@ -723,19 +727,12 @@ def resolve_leg(
             if run_state_cache[run_key]:
                 source = "artifact"  # fetch_deps polls for the in-flight upload
             else:
-                # Match what THIS dep requests: build-type / platform / options can differ per dep.
-                requested_ctx = {
-                    **parent_ctx,
-                    "build-type": build_type,
-                    "platform": platform,
-                    "options": dep_option,
-                }
                 source = _classify_orphan_pin(
                     spec=spec,
                     ref=ref,
                     sha=sha,
                     artifact_name=artifact_name,
-                    matrix_entry=requested_ctx,
+                    matrix_entry=dep_ctx,
                     manifest_cache=manifest_cache,
                     sync_branch=sync_branch,
                     sync_exists_by_repo=sync_exists_by_repo,
