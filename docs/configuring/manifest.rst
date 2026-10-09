@@ -70,6 +70,9 @@ see :doc:`../using/feature-branches`.
 ``compiler-inputs`` must match the upstream's own ``[package].compiler-inputs``,
 so that ``eckit`` asks for the ``stack-dependencies`` build made with the same compiler as its own.
 Dependencies are transitive: ``eckit``'s consumers receive ``ecbuild`` and ``stack-dependencies`` without declaring them again.
+Their own dependencies resolve as on the upstream's leg that builds the requested variant.
+A variant that none of the upstream's legs publishes stops :action:`resolve-deps` at once,
+instead of waiting for an upstream CI that cannot produce it.
 
 ``package`` may list several packages of one repository; they share the other fields.
 ``when`` limits a dependency to the legs whose fields have one of the listed values,
@@ -100,7 +103,10 @@ each under its own prefix in a ``[packages.<prefix>]`` table with its own ``comp
 A dependency without ``repo`` names a package of the same repository and is built from the same commit.
 Each kind lists what it publishes in ``packages``.
 With ``meta = true``, ``[package]`` has no artifact of its own: a dependency on it stands for its ``[[deps]]``,
-so a consumer can take the whole set or only the packages it links:
+so a consumer can take the whole set or only the packages it links.
+Its members resolve as if the consumer had declared them,
+so a dependency on it takes no ``options``, ``options-input``, ``build-type-input``, ``platform-input``,
+``needs-python`` or ``python-version-input``; a consumer that needs them declares the members instead:
 
 .. code:: toml
 
