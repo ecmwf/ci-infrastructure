@@ -18,10 +18,14 @@ inputs:
     description: 'GitHub token (App token preferred for higher rate limits)'
     required: false
     default: ''
-  install-python-deps:
+  stage-only:
     description: >-
-      "false" only stages the deps for shipment (HPC legs): needs-python wheels are not installed,
+      "true" only stages the deps for shipment (HPC legs): needs-python wheels are not installed,
       and nothing goes on LD_LIBRARY_PATH or PATH, as the deps are built for another machine.
+    required: false
+    default: 'false'
+  install-python-deps:
+    description: 'Deprecated: "false" means stage-only "true".'
     required: false
     default: 'true'
 
@@ -44,14 +48,14 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         DEPS_JSON: ${{ inputs.deps-json }}
-        INSTALL_PYTHON_DEPS: ${{ inputs.install-python-deps }}
+        STAGE_ONLY: ${{ inputs.stage-only == 'true' || inputs.install-python-deps == 'false' }}
       run: |
         # needs-python wheels go into the setup-python interpreter
         # ($pythonLocation), never $CI_INFRASTRUCTURE_PYTHON; with
-        # install-python-deps=false they are only staged (HPC installs them).
+        # stage-only they are only staged (HPC installs them).
         echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
         args=(--deps-json "$DEPS_JSON")
-        if [ "${INSTALL_PYTHON_DEPS:-true}" = "false" ]; then
+        if [ "$STAGE_ONLY" = "true" ]; then
           args+=(--no-python-install)
         elif [ -n "${pythonLocation:-}" ]; then
           args+=(--consumer-python "${pythonLocation}/bin/python")
@@ -70,7 +74,7 @@ runs:
         print(f"cmake-prefix-path={';'.join(paths)}")
         # Staged deps can't run here: their libs would shadow this container's own
         # (e.g. an icpx-built liblz4 breaking zstd). The HPC job script sets both.
-        if os.environ["INSTALL_PYTHON_DEPS"] == "false":
+        if os.environ["STAGE_ONLY"] == "true":
             raise SystemExit(0)
         # For dlopen (findlibs) in later steps; linked code finds its deps by RPATH.
         lib_dirs = [d for p in paths for d in (f"{p}/lib64", f"{p}/lib") if os.path.isdir(d)]
@@ -86,4 +90,4 @@ runs:
         PY
       env:
         DEPS_JSON: ${{ inputs.deps-json }}
-        INSTALL_PYTHON_DEPS: ${{ inputs.install-python-deps }}
+        STAGE_ONLY: ${{ inputs.stage-only == 'true' || inputs.install-python-deps == 'false' }}

@@ -51,7 +51,7 @@ def hpc_yaml(tmp_path: Path) -> str:
         "actions/fetch-deps@main",
         "cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}",
         "troika-user: ${{ secrets.HPC_CI_SSH_USER }}",
-        "install-python-deps: 'false'",
+        "stage-only: 'true'",
         "runs-on: ${{ matrix['runs-on'] }}",
         "image: ${{ matrix.container || '' }}",
     ],

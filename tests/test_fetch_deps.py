@@ -38,13 +38,11 @@ def test_needs_python_without_consumer_python_fails_loud() -> None:
     assert result.exit_code != 0
     assert "cxxmath-python" in result.output
     assert "--consumer-python" in result.output
-    assert "install-python-deps" in result.output
+    assert "stage-only" in result.output
 
 
-@pytest.mark.parametrize(("install_python_deps", "exported"), [("true", True), ("false", False)])
-def test_compose_exports_lib_dirs_only_for_deps_that_run_here(
-    tmp_path: Path, install_python_deps: str, exported: bool
-) -> None:
+@pytest.mark.parametrize(("stage_only", "exported"), [("false", True), ("true", False)])
+def test_compose_exports_lib_dirs_only_for_deps_that_run_here(tmp_path: Path, stage_only: str, exported: bool) -> None:
     """Staged HPC deps stay off LD_LIBRARY_PATH: an icpx-built liblz4 there broke the container's zstd."""
     doc = yaml.safe_load((REPO_ROOT / "actions" / "fetch-deps" / "action.yml").read_text(encoding="utf-8"))
     (step,) = [s for s in doc["runs"]["steps"] if s.get("id") == "compose-cmake"]
@@ -57,7 +55,7 @@ def test_compose_exports_lib_dirs_only_for_deps_that_run_here(
         "PATH": os.environ["PATH"],
         "CI_INFRASTRUCTURE_PYTHON": sys.executable,
         "DEPS_JSON": json.dumps([{"install-path": str(dep), "add-to-path": ["bin"]}]),
-        "INSTALL_PYTHON_DEPS": install_python_deps,
+        "STAGE_ONLY": stage_only,
         **{k: str(v) for k, v in files.items()},
     }
     subprocess.run(["bash", "-c", step["run"]], env=env, check=True)
