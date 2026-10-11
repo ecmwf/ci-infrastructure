@@ -1021,8 +1021,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         "token": "${{ steps.mint.outputs.token }}",
     }
     if is_hpc:
-        # The job script installs wheels on the compute node.
-        fetch_with["install-python-deps"] = "false"
+        # Built for the cluster: only staged here, the job script sets them up on the node.
+        fetch_with["stage-only"] = "true"
     steps.append(
         {
             "name": "Fetch resolved deps",

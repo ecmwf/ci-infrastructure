@@ -299,7 +299,7 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
                 "Run actions/setup-python before fetch-deps so $pythonLocation is set, "
                 "or pass --consumer-python explicitly. On a leg that installs the wheels "
                 "elsewhere (e.g. an HPC job script on the compute node), pass "
-                "install-python-deps: 'false' to fetch-deps instead."
+                "stage-only: 'true' to fetch-deps instead."
             )
         consumer_python = Path(consumer_python_arg)
         if not consumer_python.is_file():
