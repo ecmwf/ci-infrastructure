@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -184,6 +185,23 @@ def remote_lock(
         )
 
 
+def _tree_stats(path: str | Path) -> tuple[int, int]:
+    """(files, bytes) under ``path``, for the transfer timings."""
+    files = size = 0
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            files += 1
+            try:
+                size += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return files, size
+
+
+def _mib(size: int) -> str:
+    return f"{size / 2**20:.1f} MiB"
+
+
 def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> None:
     """Rename-aside, avoiding ``ENOTEMPTY`` races; call only under :func:`ship_lock`."""
     trash = f"{staging_dir.rstrip('/')}.trash.{run_id}"
@@ -220,10 +238,19 @@ def ship_source(
     remote_tgz = str(PurePosixPath(staging_dir) / jobscript.SOURCE_TARBALL_NAME)
     local_tgz = Path(tar_dir) / f"{run_id}.src.tgz"
 
+    start = time.monotonic()
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
+    files, size = _tree_stats(local_source_dir)
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_source_dir), "."], check=True)
+    tarred = time.monotonic()
     _reset_staging_dir(conn, staging_dir=staging_dir, run_id=run_id)
+    reset = time.monotonic()
     conn.sendfile(local_tgz, remote_tgz)
+    sent = time.monotonic()
+    print(
+        f"ship: source ({files} files, {_mib(size)}, {_mib(local_tgz.stat().st_size)} gzipped): "
+        f"tar {tarred - start:.0f}s, staging reset {reset - tarred:.0f}s, send {sent - reset:.0f}s"
+    )
     local_tgz.unlink()
     if remote_deps_dir is not None:
         for index, (prefix, name) in enumerate(zip(local_prefixes, remote_dep_names(local_prefixes), strict=True)):
@@ -236,6 +263,7 @@ def ship_source(
                 local_tar_name=f"{run_id}.dep{index}.tgz",
             )
     _run_remote(conn, ["touch", _marker_path(staging_dir)], what="Transfer-complete marker")
+    print(f"ship: done in {time.monotonic() - start:.0f}s")
 
 
 def fetch_tree(
@@ -283,15 +311,24 @@ def push_tree(
     local_tgz = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
     remote_tgz = f"{remote_dir.rstrip('/')}{ext}"
 
+    start = time.monotonic()
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
+    files, size = _tree_stats(local_dir)
     subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_dir), "."], check=True)
+    tarred = time.monotonic()
     _run_remote(conn, ["mkdir", "-p", remote_dir], what=f"Remote mkdir of {remote_dir}")
     conn.sendfile(local_tgz, remote_tgz)
+    sent = time.monotonic()
+    gzipped = local_tgz.stat().st_size
     local_tgz.unlink()
     _run_remote(
         conn,
         ["bash", "-c", f"tar -xzf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)}"],
         what="Remote tree unpack",
+    )
+    print(
+        f"ship: {Path(local_dir).name} ({files} files, {_mib(size)}, {_mib(gzipped)} gzipped): "
+        f"tar {tarred - start:.0f}s, send {sent - tarred:.0f}s, unpack {time.monotonic() - sent:.0f}s"
     )
 
 
