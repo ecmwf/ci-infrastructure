@@ -19,6 +19,11 @@ on:
         type: string
         required: false
         default: 'ci/regenerate-workflows'
+      direct-push:
+        description: 'Push the regenerated workflows to the default branch instead of opening a PR.'
+        type: boolean
+        required: false
+        default: false
     secrets:
       CI_PERMISSIONS_APP_CLIENT_ID:
         required: false
@@ -75,3 +80,4 @@ jobs:
           app-slug: ${{ steps.write.outputs.app-slug }}
           branch: ${{ inputs.branch }}
           labels: ${{ inputs.labels }}
+          direct-push: ${{ inputs.direct-push }}

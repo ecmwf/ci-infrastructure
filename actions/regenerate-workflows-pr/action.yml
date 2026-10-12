@@ -6,7 +6,9 @@ name: Open a PR regenerating downstream-CI workflows
 description: >
   Regenerate this repo's generated downstream-CI workflows from the manifests
   and, if they drifted, force-push the result to `branch` and open (or update)
-  a PR into `base`; once nothing drifts, close that PR. `write-token` must be an
+  a PR into `base`; once nothing drifts, close that PR. With `direct-push`, push
+  the commit to `base` instead, falling back to the PR if that push is rejected
+  (e.g. by branch protection the App may not bypass). `write-token` must be an
   App token with contents, pull-requests and workflows write: GITHUB_TOKEN may
   not push workflow files, and PRs it opens trigger no CI.
 
@@ -36,10 +38,14 @@ inputs:
     description: 'Comma-separated labels for a newly opened PR; each must exist in the repo.'
     required: false
     default: ''
+  direct-push:
+    description: "Push the regenerated workflows to base instead of opening a PR; the App must be allowed to bypass base's protection."
+    required: false
+    default: 'false'
 
 outputs:
   status:
-    description: "'up-to-date', 'pr-opened', 'pr-updated' or 'pr-unchanged'."
+    description: "'up-to-date', 'pushed', 'pr-opened', 'pr-updated' or 'pr-unchanged'."
     value: ${{ steps.pr.outputs.status }}
   pr-url:
     description: 'URL of the open PR; empty when up to date.'
@@ -69,6 +75,7 @@ runs:
         BRANCH: ${{ inputs.branch }}
         BASE: ${{ inputs.base || github.ref_name }}
         LABELS: ${{ inputs.labels }}
+        DIRECT_PUSH: ${{ inputs.direct-push }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         set -euo pipefail
@@ -88,6 +95,20 @@ runs:
         bot_id=$(gh api "users/$bot" --jq .id)
         git add -A -- .github/workflows
         git -c user.name="$bot" -c user.email="${bot_id}+${bot}@users.noreply.github.com" commit -q -m "$title"
+
+        # Not forced: a concurrent push to base is rejected and the PR takes over.
+        if [ "$DIRECT_PUSH" = true ]; then
+          if git -c http.https://github.com/.extraheader= push -q \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BASE"; then
+            if [ -n "$open_pr" ]; then
+              gh pr close "$open_pr" --delete-branch --comment "Pushed the regenerated workflows to \`$BASE\` directly ($RUN_URL)."
+            fi
+            echo "::notice title=Regenerate workflows::Pushed $(git rev-parse HEAD) to $BASE."
+            echo "status=pushed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::warning title=Regenerate workflows::Could not push to $BASE; opening a PR instead."
+        fi
 
         # Rewriting an identical tree would retrigger CI on the PR every night.
         remote_tree=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.commit.tree.sha 2>/dev/null || true)
