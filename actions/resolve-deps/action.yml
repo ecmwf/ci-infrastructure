@@ -107,7 +107,9 @@ outputs:
     description: >
       Full resolved tree, keyed by matrix name. The way to read a kind without
       its own matrix-<name> output, e.g. toJSON(fromJSON(steps.r.outputs.json).fortran).
-    value: ${{ steps.r.outputs.json }}
+      '{}' when resolving failed, so that such job outputs still evaluate and the
+      resolve error stays the one reported.
+    value: ${{ steps.r.outputs.json || '{}' }}
   app-token:
     description: 'App-minted token, same job only (masked values arrive empty through job outputs).'
     value: ${{ steps.mint.outputs.token }}
