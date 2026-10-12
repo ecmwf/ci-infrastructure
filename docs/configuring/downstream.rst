@@ -58,6 +58,8 @@ The generated files must follow the manifests, also those of the other repositor
 :action:`validate-generated-workflows` reports when they have drifted.
 A bot runs :action:`regenerate-workflows-pr` on every push to the default branch and nightly,
 and opens a pull request with the regenerated workflows.
+With ``direct-push: true`` in the caller of ``regenerate-workflows.yml``, it pushes them to the default branch instead;
+this needs the bot App on the bypass list of the branch protection, otherwise it falls back to the pull request.
 So it is sufficient to change the manifest: once that is merged, the bot takes care of the rest.
 
 .. note::
