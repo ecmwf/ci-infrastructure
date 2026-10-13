@@ -137,6 +137,27 @@ def test_ship_source_ships_and_unpacks_dep_prefixes(tmp_path: Path) -> None:
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
+def test_ship_source_reports_each_step(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    dep = _make_tree(tmp_path / "eckit", "libeckit.a", "x")
+    staging = tmp_path / "remote" / "staging" / "art"
+
+    transfer.ship_source(
+        CopyingConnection(),
+        local_source_dir=str(src),
+        staging_dir=str(staging),
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+        local_prefixes=[str(dep)],
+        remote_deps_dir=str(staging / "deps"),
+    )
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("ship: source (1 files, ") and "staging reset" in out[0] and "send" in out[0]
+    assert out[1].startswith("ship: eckit (1 files, ") and out[1].endswith("s") and "unpack" in out[1]
+    assert out[2].startswith("ship: done in ")
+
+
 def test_ship_source_raises_on_remote_failure(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
     conn = FakeConnection(exec_returncode=1, exec_stderr=b"permission denied")
