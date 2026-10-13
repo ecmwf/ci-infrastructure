@@ -116,7 +116,7 @@ and consists of these blocks:
    * - block
      - content
    * - ``sbatch``
-     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` and ``--mem`` if set, ``--gres=ssdtmp:``, ``--time``
+     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` if set, ``--mem``, ``--gres=ssdtmp:``, ``--time``
    * - ``set_environment``
      - empty; for venvs, ``export`` and ``source``, before anything is printed or configured
    * - ``preflight``
@@ -155,10 +155,12 @@ A leg may omit these fields:
      - ``01:00:00``
    * - ``ntasks``
      - ``8``
-   * - ``cpus-per-task``, ``mem``
+   * - ``cpus-per-task``
      - unset
+   * - ``mem``
+     - ``64GB``
    * - ``ssdtmp``
-     - ``20G``
+     - ``30G``
    * - ``tests``
      - ``true``
    * - ``ctest-args``, ``options``

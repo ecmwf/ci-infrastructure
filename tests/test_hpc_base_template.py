@@ -51,11 +51,12 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     out = _render()
     lines = out.splitlines()
     assert lines[0] == "#!/bin/bash"
-    assert lines[1:6] == [
+    assert lines[1:7] == [
         "#SBATCH --qos=nf",
         "#SBATCH --nodes=1",
         "#SBATCH --ntasks=8",
-        "#SBATCH --gres=ssdtmp:20G",
+        "#SBATCH --mem=64GB",
+        "#SBATCH --gres=ssdtmp:30G",
         "#SBATCH --time=01:00:00",
     ]
     assert 'jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-8}}"' in lines
@@ -67,13 +68,13 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     assert 'tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"' in lines
 
 
-def test_cpus_per_task_and_mem_render_only_when_set() -> None:
+def test_cpus_per_task_renders_only_when_set_and_mem_ssdtmp_can_be_overridden() -> None:
     bare = _render().splitlines()
-    assert not [line for line in bare if line.startswith(("#SBATCH --cpus-per-task", "#SBATCH --mem"))]
-    lines = _render(leg={"cpus-per-task": 64, "mem": "64GB"}).splitlines()
-    assert lines[lines.index("#SBATCH --ntasks=8") + 1 : lines.index("#SBATCH --gres=ssdtmp:20G")] == [
+    assert not [line for line in bare if line.startswith("#SBATCH --cpus-per-task")]
+    lines = _render(leg={"cpus-per-task": 64, "mem": "128GB", "ssdtmp": "50G"}).splitlines()
+    assert lines[lines.index("#SBATCH --ntasks=8") + 1 : lines.index("#SBATCH --gres=ssdtmp:50G")] == [
         "#SBATCH --cpus-per-task=64",
-        "#SBATCH --mem=64GB",
+        "#SBATCH --mem=128GB",
     ]
 
 
@@ -267,7 +268,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "099770b804f8c4410e8d22582de28e68eb5c65861fdd410047bc92a13b991722"
+TEMPLATE_SHA256: Final = "0b9da54cee81b1b4ed095464361a5ed528d109dd5619c3987686749528351ceb"
 TEMPLATE_VERSION: Final = 2
 
 
