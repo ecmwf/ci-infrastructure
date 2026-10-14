@@ -15,6 +15,7 @@ import pytest
 import yaml
 from conftest import parse_all, render_single, write_repo
 
+from ci_infrastructure import check_ci_approval
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
@@ -817,8 +818,8 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert '["a/build"]' in yaml
     assert "  validate:\n" in yaml
     assert "actions/validate-generated-workflows@main" in yaml
-    assert "needs:\n    - context\n    - label-gate\n    - validate\n" in yaml
-    assert "needs:\n    - context\n    - label-gate\n    - validate\n    - b\n" in yaml
+    assert "needs:\n    - ci-approval\n    - context\n    - label-gate\n    - validate\n" in yaml
+    assert "needs:\n    - ci-approval\n    - context\n    - label-gate\n    - validate\n    - b\n" in yaml
     assert "actions/create-github-app-token@v3" in yaml
     assert "  report-start:\n" in yaml
     assert "  report-result:\n" in yaml
@@ -1143,6 +1144,7 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     doc = yaml.safe_load(_orch(tmp_path))
     assert sorted(doc["jobs"]) == [
         "b",
+        "ci-approval",
         "context",
         "label-gate",
         "report-ci-failure",
@@ -1242,6 +1244,7 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
     assert sorted(doc["jobs"]) == [
         "b",
         "c",
+        "ci-approval",
         "context",
         "label-gate",
         "report-ci-failure",
@@ -1249,8 +1252,8 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         "report-start",
         "validate",
     ]
-    assert doc["jobs"]["b"]["needs"] == ["context", "label-gate", "validate"]
-    assert doc["jobs"]["c"]["needs"] == ["context", "label-gate", "validate", "b"]
+    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "label-gate", "validate"]
+    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert _render_orch(tmp_path, EXECUTION_HPC_ATOS) is None
@@ -1324,7 +1327,7 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
     assert "downstream/runner" in start
 
     result = doc["jobs"]["report-result"]
-    assert result["needs"] == ["context", "label-gate", "validate", "b"]
+    assert result["needs"] == ["ci-approval", "context", "label-gate", "validate", "b"]
     assert (
         result["if"] == "${{ (always() && needs.context.outputs.ci-conclusion == 'success') && "
         "needs['label-gate'].outputs.run == 'true' }}"
@@ -1746,7 +1749,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     assert "if" not in doc["jobs"]["label-gate"], "report-ci-failure needs the gate on the failure path"
     for jid, job in doc["jobs"].items():
         # context runs first: the gate looks its PR up by the commit context resolves.
-        if jid in ("label-gate", "context"):
+        if jid in ("label-gate", "context", "ci-approval"):
             continue
         assert "label-gate" in job["needs"], jid
         # Index syntax: `needs.label-gate` would parse the hyphen as minus.
@@ -1824,16 +1827,27 @@ def test_a_completed_ci_run_or_a_label_is_the_entry_point(tmp_path: Path) -> Non
     }
 
 
-def test_no_ci_approval_gate(tmp_path: Path) -> None:
-    """Under workflow_run the approval gate would always pass; a green CI for the head SHA is the gate."""
+def test_ci_approval_gate_fronts_every_job(tmp_path: Path) -> None:
+    """The same gate as ci.yml: the pull_request trigger reaches our runners."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
-    assert "ci-approval" not in doc["jobs"]
-    assert "require-ci-approval" not in yaml.dump(doc)
+    assert doc["jobs"]["ci-approval"] == {
+        "runs-on": "ubuntu-slim",
+        "permissions": {"pull-requests": "write"},
+        "steps": [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}],
+    }
     for jid, job in doc["jobs"].items():
-        if jid == "context":
-            continue
-        assert "context" in job["needs"], jid
+        if jid != "ci-approval":
+            assert job["needs"][0] == "ci-approval", jid
+
+
+def test_generated_orchestrator_passes_check_ci_approval(tmp_path: Path) -> None:
+    write_repo(tmp_path, "a", _GATE_UPSTREAM)
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    workflow = tmp_path / ".github" / "workflows" / "trigger-downstream.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(_orch(tmp_path))
+    assert check_ci_approval.check(workflow) == []
 
 
 def test_the_label_filter_sits_only_on_the_label_gate_job(tmp_path: Path) -> None:
@@ -1861,7 +1875,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     assert orch.count("github.event.workflow_run") == 1
 
     ctx = doc["jobs"]["context"]
-    assert "needs" not in ctx
+    assert ctx["needs"] == ["ci-approval"]
     assert sorted(ctx["outputs"]) == ["ci-conclusion", "ci-summary", "ci-url", "head-branch", "head-sha"]
     resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
     assert resolve["uses"] == "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main"
