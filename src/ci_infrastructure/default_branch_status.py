@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
@@ -113,10 +114,9 @@ def _query(repos: Sequence[str]) -> str:
             '  manifest: object(expression: "HEAD:.ci/manifest.toml") { ... on Blob { text } }\n'
             "  defaultBranchRef { name target { ... on Commit {\n"
             f"    history(first: {_HISTORY}) {{ nodes {{\n"
-            "      oid url messageHeadline\n"
+            "      oid url messageHeadline message\n"
             "      parents(first: 1) { nodes { oid } }\n"
             "      author { name user { login } }\n"
-            "      associatedPullRequests(first: 10) { nodes { number url merged baseRefName } }\n"
             "    } }\n"
             "  } } }\n"
             "}"
@@ -146,10 +146,15 @@ def first_parent(nodes: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return chain
 
 
-def _merged_pr(node: Mapping[str, Any], branch: str) -> tuple[int, str] | None:
-    for pr in node["associatedPullRequests"]["nodes"]:
-        if pr["merged"] and pr["baseRefName"] == branch:
-            return int(pr["number"]), str(pr["url"])
+# GitHub's merge and squash commit subjects (messageHeadline truncates them); associatedPullRequests
+# needs pull-requests: read, which CI_PERMISSIONS_APP lacks. A rebase merge counts as a direct push.
+_PR_HEADLINE: Final = re.compile(r"^Merge pull request #(\d+) |\(#(\d+)\)$")
+
+
+def _merged_pr(headline: str, repo: str) -> tuple[int, str] | None:
+    if m := _PR_HEADLINE.search(headline):
+        number = int(m.group(1) or m.group(2))
+        return number, f"https://github.com/{repo}/pull/{number}"
     return None
 
 
@@ -185,7 +190,7 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], repos:
             url=n["url"],
             headline=n["messageHeadline"],
             author=(n["author"]["user"] or {}).get("login") or n["author"]["name"] or "",
-            pr=_merged_pr(n, branch),
+            pr=_merged_pr(n["message"].split("\n", 1)[0].strip(), repo),
             run=run_of.get(n["oid"]),
         )
         for n in first_parent(ref["target"]["history"]["nodes"])
@@ -385,7 +390,6 @@ jobs:
           owner: ${{{{ github.repository_owner }}}}
           permission-contents: read
           permission-actions: read
-          permission-pull-requests: read
 
       - uses: ./actions/ensure-infrastructure-present
 
