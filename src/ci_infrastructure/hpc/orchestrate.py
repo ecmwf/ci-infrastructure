@@ -42,7 +42,7 @@ ACTIVE_STATES: Final = frozenset(
 _DEFAULT_GUARD_INTERVAL: Final = 120
 _STATUS_INTERVAL: Final = 30  # the step log shows the queue state this often
 _DEFAULT_WAIT_TIMEOUT: Final = 6 * 60 * 60
-_GRACE_SECONDS: Final = 10  # last look for a late-flushed sentinel after the job leaves the queue
+_GRACE_SECONDS: Final = 20  # last look for a late-flushed sentinel after the job leaves the queue
 _WAITER_GRACE_SECONDS: Final = 15  # slack over the remote timeout before we give up on the tail itself
 
 Verdict = Literal["SUCCESS", "FAILURE", "VANISHED", "TIMEOUT"]

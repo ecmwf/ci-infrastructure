@@ -17,10 +17,8 @@
 {% if cpus_per_task | default("") %}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
 {% endif %}
-{% if mem | default("") %}
-#SBATCH --mem={{ mem }}
-{% endif %}
-#SBATCH --gres=ssdtmp:{{ ssdtmp | default("20G") }}
+#SBATCH --mem={{ mem | default("64GB") }}
+#SBATCH --gres=ssdtmp:{{ ssdtmp | default("30G") }}
 #SBATCH --time={{ time | default("01:00:00") }}
 {% endblock %}
 
