@@ -116,7 +116,7 @@ and consists of these blocks:
    * - block
      - content
    * - ``sbatch``
-     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` if set, ``--mem``, ``--gres=ssdtmp:``, ``--time``
+     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` and ``--gpus-per-task`` if set, ``--mem``, ``--gres=ssdtmp:`` unless empty, ``--time``
    * - ``set_environment``
      - empty; for venvs, ``export`` and ``source``, before anything is printed or configured
    * - ``preflight``
@@ -155,12 +155,12 @@ A leg may omit these fields:
      - ``01:00:00``
    * - ``ntasks``
      - ``8``
-   * - ``cpus-per-task``
+   * - ``cpus-per-task``, ``gpus-per-task``
      - unset
    * - ``mem``
      - ``64GB``
    * - ``ssdtmp``
-     - ``30G``
+     - ``30G``; ``""`` for a partition without node-local SSD, such as the GPU nodes
    * - ``tests``
      - ``true``
    * - ``ctest-args``, ``options``
