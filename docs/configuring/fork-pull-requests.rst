@@ -17,7 +17,8 @@ whereas ``pull_request_target`` runs in the context of the base repository with 
 In addition, :action:`require-ci-approval` keeps a fork's run off the self-hosted runners
 until a maintainer has reviewed the change and set the ``approved-for-ci`` label.
 Setting a label does not start ``CI``, so the maintainer then re-runs it.
-The downstream CI never starts for a fork's pull request.
+The downstream CI never starts for a fork's pull request;
+its generated workflows carry the same gate in front of every job.
 No workflow checks out a fork's code in a trusted context:
 ``actions/checkout`` refuses this under ``pull_request_target`` and ``workflow_run``,
 and nothing sets ``allow-unsafe-pr-checkout`` to override it.
