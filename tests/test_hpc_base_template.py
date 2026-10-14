@@ -68,14 +68,19 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     assert 'tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"' in lines
 
 
-def test_cpus_per_task_renders_only_when_set_and_mem_ssdtmp_can_be_overridden() -> None:
+def test_cpus_gpus_per_task_render_only_when_set_and_mem_ssdtmp_can_be_overridden() -> None:
     bare = _render().splitlines()
-    assert not [line for line in bare if line.startswith("#SBATCH --cpus-per-task")]
-    lines = _render(leg={"cpus-per-task": 64, "mem": "128GB", "ssdtmp": "50G"}).splitlines()
+    assert not [line for line in bare if line.startswith(("#SBATCH --cpus-per-task", "#SBATCH --gpus-per-task"))]
+    lines = _render(leg={"cpus-per-task": 64, "gpus-per-task": 1, "mem": "128GB", "ssdtmp": "50G"}).splitlines()
     assert lines[lines.index("#SBATCH --ntasks=8") + 1 : lines.index("#SBATCH --gres=ssdtmp:50G")] == [
         "#SBATCH --cpus-per-task=64",
+        "#SBATCH --gpus-per-task=1",
         "#SBATCH --mem=128GB",
     ]
+
+
+def test_empty_ssdtmp_drops_the_gres() -> None:
+    assert not [line for line in _render(leg={"ssdtmp": ""}).splitlines() if line.startswith("#SBATCH --gres")]
 
 
 def test_sbatch_block_stays_in_the_wrapped_header() -> None:
@@ -268,7 +273,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "0b9da54cee81b1b4ed095464361a5ed528d109dd5619c3987686749528351ceb"
+TEMPLATE_SHA256: Final = "0b62df2cfeb9a2c8c0d7c2d6be273d69741200d9343112cec0045404cb233b92"
 TEMPLATE_VERSION: Final = 2
 
 
