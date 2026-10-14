@@ -83,3 +83,6 @@ The build context is the repo root. `docker buildx` is required.
 | `PUBLIC_ECCR_ROBOT_NAME` / `_TOKEN` | pushing |
 | `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `_TOKEN` | registry cleanup (delete rights, no push) |
 | `CI_PERMISSIONS_APP_CLIENT_ID` / `_PRIVATE_KEY` | dispatching the private image rebuild |
+| `SCRATCH_ECCR_ROBOT_NAME` / `_TOKEN` | handing a rebuilt base to its variants through the scratch registry (push, delete) |
+
+The variable `SCRATCH_REGISTRY` (e.g. `eccr.ecmwf.int/ci-scratch`) names that registry project. A base is pushed there as `<platform>-base:run-<run id>`, pulled anonymously by its variants and deleted after a green run; the project's retention rule and garbage collection remove the rest.

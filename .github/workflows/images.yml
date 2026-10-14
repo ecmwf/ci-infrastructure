@@ -19,6 +19,10 @@ on:
         required: false
       PUBLIC_ECCR_ROBOT_TOKEN:
         required: false
+      SCRATCH_ECCR_ROBOT_NAME:
+        required: false
+      SCRATCH_ECCR_ROBOT_TOKEN:
+        required: false
       CI_PERMISSIONS_APP_CLIENT_ID:
         required: false
       CI_PERMISSIONS_APP_PRIVATE_KEY:
@@ -102,21 +106,21 @@ jobs:
         run: ./build-image.sh "$IMAGE"
       - name: Test ${{ matrix.name }}
         run: ./build-image.sh --test "$IMAGE"
-      - name: Export for dependents
+      # Through the scratch registry rather than an Actions artifact: unchanged
+      # layers are not uploaded again, and nothing counts against Actions storage.
+      - name: Hand ${{ matrix.name }} to its dependents
         if: ${{ matrix.export }}
         env:
           REF: ${{ matrix.ref }}
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/${{ matrix.flat }}:run-${{ github.run_id }}
+          SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
+          SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
         run: |
           set -euo pipefail
-          docker save "$REF" | zstd -T0 -3 > "$RUNNER_TEMP/image.tar.zst"
-      - if: ${{ matrix.export }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: image-${{ matrix.flat }}
-          path: ${{ runner.temp }}/image.tar.zst
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
+          printf '%s' "$SCRATCH_ECCR_ROBOT_TOKEN" | docker login "${SCRATCH%%/*}" -u "$SCRATCH_ECCR_ROBOT_NAME" --password-stdin
+          docker tag "$REF" "$SCRATCH"
+          docker push "$SCRATCH"
+          docker logout "${SCRATCH%%/*}"
       - name: Push ${{ matrix.name }}
         if: ${{ env.PUSH == 'true' }}
         env:
@@ -130,7 +134,7 @@ jobs:
   build-dependents:
     needs: [discover, build-base]
     # One broken base must not hold back every platform; a dependent whose base
-    # failed has no artifact to load and fails there.
+    # failed has nothing to pull and fails there.
     if: ${{ !cancelled()
             && needs.discover.result == 'success'
             && needs.discover.outputs.dependent-matrix != '{"include":[]}' }}
@@ -150,16 +154,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - if: ${{ matrix.base_ref != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: image-${{ matrix.base }}
-          path: ${{ runner.temp }}/base
+      # The scratch project is public: pulling needs no credentials.
       - name: Load base ${{ matrix.base }}
         if: ${{ matrix.base_ref != '' }}
+        env:
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/${{ matrix.base }}:run-${{ github.run_id }}
         run: |
           set -euo pipefail
-          zstd -dc "$RUNNER_TEMP/base/image.tar.zst" | docker load
+          docker pull "$SCRATCH"
+          docker tag "$SCRATCH" "$BASE_IMAGE"
           docker image inspect "$BASE_IMAGE" >/dev/null
       - name: Build ${{ matrix.name }}
         run: ./build-image.sh "$IMAGE"
@@ -172,25 +175,30 @@ jobs:
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
         run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
-  # The exported bases are only for build-dependents; artifact storage is billed
-  # for as long as they are kept, and retention-days cannot go below 1.
-  delete-image-artifacts:
-    needs: [build-base, build-dependents]
-    if: ${{ always() && needs.build-base.result != 'skipped' }}
+  # After a green run only: a failed one keeps its bases for re-running the
+  # failed jobs. The scratch project's retention rule removes whatever is left.
+  delete-scratch-images:
+    needs: [discover, build-base, build-dependents]
+    if: ${{ !cancelled()
+            && needs.build-base.result == 'success'
+            && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
     runs-on: ubuntu-slim
-    permissions:
-      actions: write
     steps:
-      - name: Delete this run's image artifacts
+      - name: Delete this run's bases from the scratch registry
         env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
+          SCRATCH_REGISTRY: ${{ vars.SCRATCH_REGISTRY }}
+          BASE_MATRIX: ${{ needs.discover.outputs.base-matrix }}
+          TAG: run-${{ github.run_id }}
+          SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
+          SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
         run: |
           set -euo pipefail
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name | startswith("image-")) | .id' |
-          while read -r id; do
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+          host="${SCRATCH_REGISTRY%%/*}"
+          project="${SCRATCH_REGISTRY#*/}"
+          for repo in $(jq -r '.include[] | select(.export) | .flat' <<<"$BASE_MATRIX"); do
+            curl -fsS -X DELETE -u "$SCRATCH_ECCR_ROBOT_NAME:$SCRATCH_ECCR_ROBOT_TOKEN" \
+              "https://$host/api/v2.0/projects/$project/repositories/$repo/artifacts/$TAG" \
+              || echo "::warning::could not delete $SCRATCH_REGISTRY/$repo:$TAG; the retention rule will"
           done
 
   # The private images in ecmwf/ci-container-images FROM our base and rebuild on
