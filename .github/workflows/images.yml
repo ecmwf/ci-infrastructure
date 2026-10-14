@@ -112,7 +112,7 @@ jobs:
         if: ${{ matrix.export }}
         env:
           REF: ${{ matrix.ref }}
-          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/${{ matrix.flat }}:run-${{ github.run_id }}
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.flat }}:base
           SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
           SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
         run: |
@@ -158,7 +158,7 @@ jobs:
       - name: Load base ${{ matrix.base }}
         if: ${{ matrix.base_ref != '' }}
         env:
-          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/${{ matrix.base }}:run-${{ github.run_id }}
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.base }}:base
         run: |
           set -euo pipefail
           docker pull "$SCRATCH"
@@ -177,6 +177,7 @@ jobs:
 
   # After a green run only: a failed one keeps its bases for re-running the
   # failed jobs. The scratch project's retention rule removes whatever is left.
+  # Each run has repositories of its own, so deleting them cannot touch another run's.
   delete-scratch-images:
     needs: [discover, build-base, build-dependents]
     if: ${{ !cancelled()
@@ -188,17 +189,18 @@ jobs:
         env:
           SCRATCH_REGISTRY: ${{ vars.SCRATCH_REGISTRY }}
           BASE_MATRIX: ${{ needs.discover.outputs.base-matrix }}
-          TAG: run-${{ github.run_id }}
+          RUN: run-${{ github.run_id }}
           SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
           SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
         run: |
           set -euo pipefail
           host="${SCRATCH_REGISTRY%%/*}"
           project="${SCRATCH_REGISTRY#*/}"
-          for repo in $(jq -r '.include[] | select(.export) | .flat' <<<"$BASE_MATRIX"); do
+          for base in $(jq -r '.include[] | select(.export) | .flat' <<<"$BASE_MATRIX"); do
+            # Harbor wants the slash in a repository name encoded twice.
             curl -fsS -X DELETE -u "$SCRATCH_ECCR_ROBOT_NAME:$SCRATCH_ECCR_ROBOT_TOKEN" \
-              "https://$host/api/v2.0/projects/$project/repositories/$repo/artifacts/$TAG" \
-              || echo "::warning::could not delete $SCRATCH_REGISTRY/$repo:$TAG; the retention rule will"
+              "https://$host/api/v2.0/projects/$project/repositories/$RUN%252F$base" \
+              || echo "::warning::could not delete $SCRATCH_REGISTRY/$RUN/$base; the retention rule will"
           done
 
   # The private images in ecmwf/ci-container-images FROM our base and rebuild on
