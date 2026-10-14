@@ -12,6 +12,7 @@ from typing import Any, Final
 from ci_infrastructure.hpc import jobscript
 
 CARGO: Final = '{% extends "ci-infrastructure/rust-bindings-runner.sh.j2" %}\n'
+FEATURES: Final = "--workspace --no-default-features --features system"
 
 LEG: Final[dict[str, Any]] = {
     "c-compiler": "gcc-13",
@@ -32,23 +33,29 @@ def test_cargo_checks_the_workspace_with_the_legs_toolchain() -> None:
     assert "rust_version=1.90\n" in out
     assert 'export CC="$(command -v gcc-13)" CXX="$(command -v g++-13)"' in out
     assert 'cd "$CI_SOURCE_DIR/rust"' in out
-    assert out.index("cargo fmt --all --check") < out.index(
-        'cargo test "${cargo_patches[@]}" --workspace --no-default-features --features system'
-    )
+    assert out.index("cargo fmt --all --check") < out.index(f'cargo test "${{cargo_patches[@]}}" {FEATURES}')
     assert "cmake" not in out
 
 
-def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs() -> None:
+def test_the_crates_are_packaged_last_and_published_only_on_a_release() -> None:
+    out = _render()
+    publish = f'cargo publish "${{dry_run[@]}}" "${{cargo_patches[@]}}" {FEATURES}\n'
+    assert out.index("cargo doc") < out.index(publish)
+    assert "dry_run=(--dry-run)" in out and 'if [ -n "${CI_CARGO_PUBLISH:-}" ]' in out
+
+
+def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs_and_the_package() -> None:
     source = CARGO + (
         "{% block cargo_workspace %}bindings{% endblock %}\n"
         "{% block cargo_features %}--features ssl{% endblock %}\n"
         "{% block cargo_doc %}{% endblock %}\n"
+        "{% block cargo_package %}{% endblock %}\n"
     )
     out = _render(source)
     assert 'cd "$CI_SOURCE_DIR/bindings"' in out
     assert 'cargo clippy "${cargo_patches[@]}" --workspace --all-targets --features ssl -- -D warnings\n' in out
     assert 'cargo test "${cargo_patches[@]}" --workspace --features ssl\n' in out
-    assert "cargo doc" not in out
+    assert "cargo doc" not in out and "cargo publish" not in out
 
 
 def test_a_leg_without_rust_compiler_is_refused() -> None:
