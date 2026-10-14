@@ -21,3 +21,20 @@ Their developers then debug a failure that is not theirs,
 which collectively costs far more than 5 minutes of one developer's time.
 
 Whether a pull request also builds and tests its downstream consumers is described in :doc:`downstream-ci`.
+
+Dashboard
+---------
+
+The `Default-branch status <https://github.com/ecmwf/ci-infrastructure/actions/workflows/default-branch-status.yml>`__ workflow
+runs every 6 hours, and on demand, over the default branches of the repositories that use this CI.
+Its summary shows, per repository, whether the last ``ci.yml`` run passed,
+and the recent commits with their CI result, their author and the pull request that brought them in;
+a commit pushed without a pull request is marked ❗ with the name of the person who pushed it.
+
+Each repository is a job that needs the jobs of its upstream repositories, as the ``[[deps]]`` of its manifest declare.
+A repository whose own CI is green but whose upstream is red is shown as ⛔ *blocked by* that upstream,
+and its job fails, as does every job downstream of it.
+
+The repositories are listed in ``REPOS`` of ``default_branch_status.py``;
+:doc:`ci-infrastructure-default-branch-status <../reference/cli/ci-infrastructure-default-branch-status>` ``generate-workflow``
+rewrites the workflow when a repository is added or its dependencies change.
