@@ -1233,7 +1233,7 @@ def render_orchestrator_workflow(
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
     jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
-    jobs = _require_context(jobs)
+    jobs = _require_approval(_require_context(jobs))
 
     # Labelling a pull request starts its downstream CI without re-running its CI.
     on: dict[str, Any] = {
@@ -1436,8 +1436,25 @@ def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int]) -> dict[s
     return gated
 
 
+_APPROVAL_JOB_ID: Final = "ci-approval"
+
+
+def _require_approval(jobs: dict[str, Any]) -> dict[str, Any]:
+    """The same approval gate as ci.yml in front of every job; a fork pull request needs a fresh approval."""
+    ordered: dict[str, Any] = {
+        _APPROVAL_JOB_ID: {
+            "runs-on": SLIM_RUNNER,
+            "permissions": {"pull-requests": "write"},
+            "steps": [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}],
+        }
+    }
+    for jid, job in jobs.items():
+        _prepend_need(job, _APPROVAL_JOB_ID)
+        ordered[jid] = job
+    return ordered
+
+
 def _require_context(jobs: dict[str, Any]) -> dict[str, Any]:
-    """No approval gate needed: work jobs demand a green CI run on the head SHA, which passed its own."""
     ordered: dict[str, Any] = {_CONTEXT_JOB_ID: _context_job()}
     for jid, job in jobs.items():
         _prepend_need(job, _CONTEXT_JOB_ID)
