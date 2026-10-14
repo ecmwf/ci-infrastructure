@@ -172,6 +172,27 @@ jobs:
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
         run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
+  # The exported bases are only for build-dependents; artifact storage is billed
+  # for as long as they are kept, and retention-days cannot go below 1.
+  delete-image-artifacts:
+    needs: [build-base, build-dependents]
+    if: ${{ always() && needs.build-base.result != 'skipped' }}
+    runs-on: ubuntu-slim
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this run's image artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("image-")) | .id' |
+          while read -r id; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+          done
+
   # The private images in ecmwf/ci-container-images FROM our base and rebuild on
   # any trigger, so a bare dispatch is enough.
   notify-container-images:
