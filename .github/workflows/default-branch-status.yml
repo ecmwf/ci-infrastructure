@@ -74,6 +74,45 @@ jobs:
           echo "$MESSAGE"
           if [ "$OK" != true ]; then echo "::error title=stack-dependencies::$MESSAGE"; exit 1; fi
 
+  metkit:
+    needs: [collect]
+    if: ${{ !cancelled() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-slim
+    steps:
+      - shell: bash
+        env:
+          OK: ${{ fromJSON(needs.collect.outputs.verdicts)['metkit'].ok }}
+          MESSAGE: ${{ fromJSON(needs.collect.outputs.verdicts)['metkit'].message }}
+        run: |
+          echo "$MESSAGE"
+          if [ "$OK" != true ]; then echo "::error title=metkit::$MESSAGE"; exit 1; fi
+
+  fdb:
+    needs: [collect]
+    if: ${{ !cancelled() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-slim
+    steps:
+      - shell: bash
+        env:
+          OK: ${{ fromJSON(needs.collect.outputs.verdicts)['fdb'].ok }}
+          MESSAGE: ${{ fromJSON(needs.collect.outputs.verdicts)['fdb'].message }}
+        run: |
+          echo "$MESSAGE"
+          if [ "$OK" != true ]; then echo "::error title=fdb::$MESSAGE"; exit 1; fi
+
+  mir:
+    needs: [collect]
+    if: ${{ !cancelled() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-slim
+    steps:
+      - shell: bash
+        env:
+          OK: ${{ fromJSON(needs.collect.outputs.verdicts)['mir'].ok }}
+          MESSAGE: ${{ fromJSON(needs.collect.outputs.verdicts)['mir'].message }}
+        run: |
+          echo "$MESSAGE"
+          if [ "$OK" != true ]; then echo "::error title=mir::$MESSAGE"; exit 1; fi
+
   eckit:
     needs: [collect, ecbuild, stack-dependencies]
     if: ${{ !cancelled() && needs.collect.result == 'success' }}
@@ -112,3 +151,29 @@ jobs:
         run: |
           echo "$MESSAGE"
           if [ "$OK" != true ]; then echo "::error title=eccodes::$MESSAGE"; exit 1; fi
+
+  fckit:
+    needs: [collect, ecbuild, eckit]
+    if: ${{ !cancelled() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-slim
+    steps:
+      - shell: bash
+        env:
+          OK: ${{ fromJSON(needs.collect.outputs.verdicts)['fckit'].ok }}
+          MESSAGE: ${{ fromJSON(needs.collect.outputs.verdicts)['fckit'].message }}
+        run: |
+          echo "$MESSAGE"
+          if [ "$OK" != true ]; then echo "::error title=fckit::$MESSAGE"; exit 1; fi
+
+  atlas:
+    needs: [collect, ecbuild, stack-dependencies, eckit, fckit]
+    if: ${{ !cancelled() && needs.collect.result == 'success' }}
+    runs-on: ubuntu-slim
+    steps:
+      - shell: bash
+        env:
+          OK: ${{ fromJSON(needs.collect.outputs.verdicts)['atlas'].ok }}
+          MESSAGE: ${{ fromJSON(needs.collect.outputs.verdicts)['atlas'].message }}
+        run: |
+          echo "$MESSAGE"
+          if [ "$OK" != true ]; then echo "::error title=atlas::$MESSAGE"; exit 1; fi

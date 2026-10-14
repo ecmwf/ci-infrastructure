@@ -73,7 +73,18 @@ def test_a_red_upstream_blocks_every_transitive_consumer() -> None:
     assert blockers == {"o/ecbuild": (), "o/eckit": (), "o/fckit": ("o/eckit",), "o/atlas": ("o/eckit",)}
     assert dbs.status(states["o/atlas"], blockers["o/atlas"]) == dbs.Status("⛔", "blocked by eckit", False)
     assert dbs.status(states["o/eckit"], blockers["o/eckit"]) == dbs.Status("❌", "CI failed", False)
-    assert dbs.verdicts(states)["ecbuild"] == {"ok": True, "message": "✅ ecbuild: CI green"}
+    assert dbs.verdicts(states, list(states))["ecbuild"] == {"ok": True, "message": "✅ ecbuild: CI green"}
+
+
+def test_a_repo_without_manifest_is_skipped_and_passes() -> None:
+    states = _graph(set())
+    repos = [*states, "o/mir"]
+    assert dbs.verdicts(states, repos)["mir"] == {
+        "ok": True,
+        "message": "⚪ mir: no .ci/manifest.toml on the default branch yet, skipped",
+    }
+    assert dbs.job_graph(states, repos)["o/mir"] == ()
+    assert dbs.job_graph(states, repos)["o/atlas"] == ("o/eckit", "o/fckit")
 
 
 def test_own_failure_names_the_failing_upstream_too() -> None:
@@ -108,7 +119,6 @@ ref = "main"
 compiler-inputs = []
 """
     assert dbs.upstream_of(text, "o/atlas", ("o/eckit", "o/atlas")) == ("o/eckit",)
-    assert dbs.upstream_of(None, "o/atlas", ("o/eckit",)) == ()
     assert dbs.upstream_of("not = [toml", "o/atlas", ("o/eckit",)) == ()
 
 

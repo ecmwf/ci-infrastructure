@@ -36,5 +36,6 @@ A repository whose own CI is green but whose upstream is red is shown as ⛔ *bl
 and its job fails, as does every job downstream of it.
 
 The repositories are listed in ``REPOS`` of ``default_branch_status.py``;
+one without a ``.ci/manifest.toml`` on its default branch yet is skipped, and its job passes.
 :doc:`ci-infrastructure-default-branch-status <../reference/cli/ci-infrastructure-default-branch-status>` ``generate-workflow``
 rewrites the workflow when a repository is added or its dependencies change.
