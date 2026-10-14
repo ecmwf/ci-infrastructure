@@ -2,7 +2,7 @@
 {# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
    SPDX-License-Identifier: Apache-2.0
 
-   Check a C++ package's Rust bindings with cargo on a GitHub runner, against the libraries the leg's deps put on `CMAKE_PREFIX_PATH`; publishes nothing.
+   Check a C++ package's Rust bindings with cargo on a GitHub runner, against the libraries the leg's deps put on `CMAKE_PREFIX_PATH`; publishes no artifact. A release workflow sets CI_CARGO_PUBLISH=1 and the crates go to the registry.
 
    The leg names its toolchain in `rust-compiler`, e.g. "rust-1.90", and the
    C/C++ compilers cargo builds and links native code with. #}
@@ -54,5 +54,19 @@ cargo clippy "${cargo_patches[@]}" --workspace --all-targets {% block cargo_feat
 cargo test "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
 {% block cargo_doc %}
 RUSTDOCFLAGS="-D warnings" cargo doc "${cargo_patches[@]}" --workspace --no-deps {{ self.cargo_features() }}
+{% endblock %}
+{% block cargo_package %}
+# CI checks that every crate packages and builds from its package. A release workflow sets
+# CI_CARGO_PUBLISH=1 and cargo's registry token (CARGO_REGISTRY_TOKEN, or CARGO_REGISTRY_DEFAULT
+# with CARGO_REGISTRIES_<NAME>_TOKEN), and the same script publishes instead.
+dry_run=(--dry-run)
+if [ -n "${CI_CARGO_PUBLISH:-}" ]; then
+  if [ -n "${cargo_patches[*]}" ]; then
+    echo "::error::not publishing crates verified against a patched dependency; release from a branch that resolves to the default refs"
+    exit 1
+  fi
+  dry_run=()
+fi
+cargo publish "${dry_run[@]}" "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
 {% endblock %}
 {% endblock %}
