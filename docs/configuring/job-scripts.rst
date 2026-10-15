@@ -174,6 +174,17 @@ which ``rust-1.90`` is the first toolchain to do.
 The script refuses to publish when :action:`resolve-deps` patched a crate's git dependency:
 release from a tag whose upstream refs are the manifest's.
 
+A registry never takes a version twice.
+A crate that moves on its own schedule, so that a release finds its version on crates.io already,
+is named in the leg's ``cargo-skip-published``, and the release leaves it out:
+
+.. code:: toml
+
+   [matrix.rust.defaults]
+   cargo-skip-published = ["foo-compat"]
+
+Any other crate the registry has at its version fails the release, as a forgotten version bump should.
+
 A ``release.yml`` on a tag, condensed; the ``rust`` kind has one leg, as a second would publish the crates again:
 
 .. code:: yaml
