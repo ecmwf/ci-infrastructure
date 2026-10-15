@@ -31,11 +31,11 @@ Its summary shows, per repository, whether the last ``ci.yml`` run passed,
 and the recent commits with their CI result, their author and the pull request that brought them in;
 a commit pushed without a pull request is marked ❗ with the name of the person who pushed it.
 
-Each repository is a job that needs the jobs of its upstream repositories, as the ``[[deps]]`` of its manifest declare.
-A repository whose own CI is green but whose upstream is red is shown as ⛔ *blocked by* that upstream,
-and its job fails, as does every job downstream of it.
+A repository whose own CI is green but whose upstream is red, as the ``[[deps]]`` of its manifest declare,
+is shown as ⛔ *blocked by* that upstream.
+The workflow fails while any default branch is ❌ or ⛔, with one error per such repository.
 
-The repositories are listed in ``REPOS`` of ``default_branch_status.py``;
-one without a ``.ci/manifest.toml`` on its default branch yet is skipped, and its job passes.
-:doc:`ci-infrastructure-default-branch-status <../reference/cli/ci-infrastructure-default-branch-status>` ``generate-workflow``
-rewrites the workflow when a repository is added or its dependencies change.
+The repositories are found from ``ecbuild``,
+following the ``[[deps]]`` and ``[[trigger-downstream]]`` of each manifest on its default branch,
+so a repository appears once another manifest names it; nothing needs updating when one is rolled out.
+One without a ``.ci/manifest.toml`` on its default branch yet is skipped.

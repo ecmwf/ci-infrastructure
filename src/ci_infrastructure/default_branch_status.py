@@ -6,13 +6,12 @@
 
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR.
 
-`collect` writes the dashboard to $GITHUB_STEP_SUMMARY and one verdict per repo to $GITHUB_OUTPUT;
-`generate-workflow` writes the workflow whose jobs need each other as the manifests' `[[deps]]` do.
+The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
+Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -25,27 +24,14 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 import click
-import yaml
 
 from . import manifest
 from ._errors import CIError
 from ._github_api import IN_PROGRESS_STATUSES, ManifestSchemaError, _alias, gh_api_graphql, gh_api_rest, select_token
 
-#: Repos rolled out, or being rolled out; one without .ci/manifest.toml on its default branch is skipped.
-REPOS: Final = (
-    "ecmwf/ecbuild",
-    "ecmwf/stack-dependencies",
-    "ecmwf/eckit",
-    "ecmwf/eccodes",
-    "ecmwf/ecflow",
-    "ecmwf/fckit",
-    "ecmwf/metkit",
-    "ecmwf/fdb",
-    "ecmwf/mir",
-    "ecmwf/atlas",
-)
+#: Where discovery starts: the bottom of the stack, whose manifest names its consumers.
+SEEDS: Final = ("ecmwf/ecbuild",)
 CI_WORKFLOW: Final = "ci.yml"
-WORKFLOW_PATH: Final = ".github/workflows/default-branch-status.yml"
 _HISTORY: Final = 100  # commits fetched to walk the first-parent chain
 _TIMELINE: Final = 15  # first-parent commits shown per repo
 
@@ -124,14 +110,22 @@ def _query(repos: Sequence[str]) -> str:
     return "{\n" + "\n".join(parts) + "\n}"
 
 
-def upstream_of(manifest_text: str, repo: str, repos: Sequence[str]) -> tuple[str, ...]:
-    """The repos among `repos` that `repo`'s manifest depends on."""
+@dataclass(frozen=True)
+class Edges:
+    upstream: tuple[str, ...]  # repos it depends on, in any of its packages
+    downstream: tuple[str, ...]  # its [[trigger-downstream]] repos
+
+
+def edges_of(manifest_text: str, repo: str) -> Edges:
+    """The other repos `repo`'s manifest names."""
     try:
-        deps = manifest.validate(tomllib.loads(manifest_text)).deps
+        m = manifest.validate(tomllib.loads(manifest_text))
     except (tomllib.TOMLDecodeError, ManifestSchemaError) as exc:
-        print(f"::warning::{repo}: unreadable manifest, no upstream edges: {exc}", file=sys.stderr)
-        return ()
-    return tuple(r for r in repos if r != repo and any(d.repo == r for d in deps))
+        print(f"::warning::{repo}: unreadable manifest, no edges: {exc}", file=sys.stderr)
+        return Edges((), ())
+    deps = [*m.deps, *(d for entry in m.packages.values() for d in entry.deps)]
+    upstream = dict.fromkeys(d.repo for d in deps if d.repo and d.repo != repo)
+    return Edges(tuple(upstream), tuple(dict.fromkeys(t.repo for t in m.trigger_downstream)))
 
 
 def first_parent(nodes: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -178,7 +172,7 @@ def _runs(repo: str, branch: str, token: str | None) -> tuple[Run, ...]:
     )
 
 
-def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], repos: Sequence[str]) -> RepoState:
+def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstream: tuple[str, ...]) -> RepoState:
     ref = data["defaultBranchRef"]
     branch = ref["name"]
     run_of: dict[str, Run] = {}
@@ -195,8 +189,6 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], repos:
         )
         for n in first_parent(ref["target"]["history"]["nodes"])
     )
-    text = _manifest(data)
-    upstream = upstream_of(text, repo, repos) if text is not None else ()
     return RepoState(repo, branch, upstream, commits, runs)
 
 
@@ -204,10 +196,14 @@ def _manifest(data: Mapping[str, Any]) -> str | None:
     return (data.get("manifest") or {}).get("text")
 
 
-def fetch(repos: Sequence[str], token: str | None) -> dict[str, RepoState]:
-    """The repos with a manifest on their default branch; the others are skipped."""
-    nodes = {}
-    for repo in repos:
+def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
+    """Every repo reachable from `seeds` through manifests on default branches; one without a manifest is skipped."""
+    owner = seeds[0].split("/", 1)[0]
+    nodes: dict[str, Mapping[str, Any]] = {}
+    edges: dict[str, Edges] = {}
+    queue, seen = list(seeds), set(seeds)
+    while queue:
+        repo = queue.pop(0)
         # one query per repo: all of them in one exceeds what GitHub answers (HTTP 502)
         result = gh_api_graphql(_query([repo]), token)
         data = result.get("data") if isinstance(result, dict) else None
@@ -215,20 +211,26 @@ def fetch(repos: Sequence[str], token: str | None) -> dict[str, RepoState]:
             raise CIError(f"{repo}: the GraphQL query for the default branch failed")
         node = data.get(f"r_{_alias(repo)}")
         if not node or not node.get("defaultBranchRef"):
-            raise CIError(f"{repo}: not readable with this token")
-        if _manifest(node) is None:
+            print(f"::warning::{repo}: not readable with this token; skipped", file=sys.stderr)
+            continue
+        text = _manifest(node)
+        if text is None:
             print(f"::notice::{repo}: no .ci/manifest.toml on the default branch yet; skipped", file=sys.stderr)
             continue
-        nodes[repo] = node
+        nodes[repo], edges[repo] = node, edges_of(text, repo)
+        for nxt in (*edges[repo].upstream, *edges[repo].downstream):
+            if nxt not in seen and nxt.split("/", 1)[0] == owner:
+                seen.add(nxt)
+                queue.append(nxt)
     return {
-        repo: repo_state(repo, node, _runs(repo, node["defaultBranchRef"]["name"], token), list(nodes))
+        repo: repo_state(
+            repo,
+            node,
+            _runs(repo, node["defaultBranchRef"]["name"], token),
+            tuple(u for u in edges[repo].upstream if u in nodes),
+        )
         for repo, node in nodes.items()
     }
-
-
-def job_graph(states: Mapping[str, RepoState], repos: Sequence[str] = REPOS) -> dict[str, tuple[str, ...]]:
-    """Every repo's upstream repos; a skipped repo has none."""
-    return {r: states[r].upstream if r in states else () for r in repos}
 
 
 def ordered(upstream: Mapping[str, Sequence[str]]) -> list[str]:
@@ -333,131 +335,25 @@ def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
     return "\n".join(lines) + "\n"
 
 
-def verdicts(states: Mapping[str, RepoState], repos: Sequence[str] = REPOS) -> dict[str, dict[str, Any]]:
+def failures(states: Mapping[str, RepoState]) -> list[str]:
+    """One line per repo whose default branch is red or blocked, upstream first."""
     blockers = red_upstream(states)
-    out = {}
-    for repo in repos:
-        name = repo.split("/", 1)[1]
-        if repo not in states:
-            out[name] = {"ok": True, "message": f"⚪ {name}: no .ci/manifest.toml on the default branch yet, skipped"}
-            continue
+    out = []
+    for repo in ordered({r: s.upstream for r, s in states.items()}):
         st = status(states[repo], blockers[repo])
-        out[name] = {"ok": st.ok, "message": f"{st.icon} {name}: {st.text}"}
+        if not st.ok:
+            out.append(f"{states[repo].name}: {st.text}")
     return out
 
 
-_CHECKOUT: Final = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6"
-_APP_TOKEN: Final = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3"
-
-
-def render_workflow(upstream: Mapping[str, Sequence[str]]) -> str:
-    head = f"""\
-# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
-#
-# SPDX-License-Identifier: Apache-2.0
-
-# Generated by `ci-infrastructure-default-branch-status generate-workflow`; do not edit.
-# A repo's job needs its upstream repos' jobs, and runs even when one failed, to fail with the reason.
-name: Default-branch status
-
-on:
-  schedule:
-    - cron: '17 */6 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: default-branch-status
-  cancel-in-progress: true
-
-jobs:
-  collect:
-    runs-on: ubuntu-slim
-    outputs:
-      verdicts: ${{{{ steps.collect.outputs.verdicts }}}}
-    steps:
-      - uses: {_CHECKOUT}
-        with:
-          persist-credentials: false
-
-      - id: token
-        uses: {_APP_TOKEN}
-        with:
-          client-id: ${{{{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}}}
-          private-key: ${{{{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}}}
-          owner: ${{{{ github.repository_owner }}}}
-          permission-contents: read
-          permission-actions: read
-
-      - uses: ./actions/ensure-infrastructure-present
-
-      - id: collect
-        shell: bash
-        env:
-          GH_TOKEN: ${{{{ steps.token.outputs.token }}}}
-        run: |
-          "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.default_branch_status \\
-            collect --workflow {WORKFLOW_PATH}
-"""
-    jobs = []
-    for repo in ordered(upstream):
-        name = repo.split("/", 1)[1]
-        needs = ", ".join(["collect", *(u.split("/", 1)[1] for u in upstream[repo])])
-        verdict = f"fromJSON(needs.collect.outputs.verdicts)['{name}']"
-        jobs.append(f"""
-  {name}:
-    needs: [{needs}]
-    if: ${{{{ !cancelled() && needs.collect.result == 'success' }}}}
-    runs-on: ubuntu-slim
-    steps:
-      - shell: bash
-        env:
-          OK: ${{{{ {verdict}.ok }}}}
-          MESSAGE: ${{{{ {verdict}.message }}}}
-        run: |
-          echo "$MESSAGE"
-          if [ "$OK" != true ]; then echo "::error title={name}::$MESSAGE"; exit 1; fi
-""")
-    return head + "".join(jobs)
-
-
-def _upstream_from_workflow(text: str) -> dict[str, tuple[str, ...]]:
-    jobs = yaml.safe_load(text)["jobs"]
-    by_name = {r.split("/", 1)[1]: r for r in REPOS}
-    return {
-        by_name[job]: tuple(by_name[n] for n in body["needs"] if n != "collect")
-        for job, body in jobs.items()
-        if job != "collect"
-    }
-
-
-def _write_output(name: str, value: str) -> None:
-    path = os.environ.get("GITHUB_OUTPUT")
-    if path:
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(f"{name}={value}\n")
-    else:
-        print(f"{name}={value}")
-
-
-@click.group()
+@click.command()
 def main() -> None:
-    """Dashboard of the rolled-out repos' default branches."""
+    """Write the dashboard of the rolled-out repos' default branches to $GITHUB_STEP_SUMMARY.
 
-
-@main.command()
-@click.option(
-    "--workflow",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="The generated workflow; a warning if its job graph no longer matches the manifests.",
-)
-def collect(workflow: Path | None) -> None:
-    """Write the dashboard to $GITHUB_STEP_SUMMARY and the per-repo verdicts to $GITHUB_OUTPUT."""
+    Fails when a default branch is red or blocked by a red upstream.
+    """
     try:
-        states = fetch(REPOS, select_token())
+        states = fetch(SEEDS, select_token())
         summary = render_summary(states, datetime.now(UTC))
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -466,28 +362,12 @@ def collect(workflow: Path | None) -> None:
         Path(summary_path).write_text(summary, encoding="utf-8")
     else:
         click.echo(summary)
-    _write_output("verdicts", json.dumps(verdicts(states), ensure_ascii=False))
-    if workflow is not None:
-        if _upstream_from_workflow(workflow.read_text()) != job_graph(states):
-            print(
-                f"::warning::{workflow}'s job graph differs from the manifests;"
-                " run `ci-infrastructure-default-branch-status generate-workflow`",
-                file=sys.stderr,
-            )
-
-
-@main.command("generate-workflow")
-@click.option(
-    "--output", type=click.Path(dir_okay=False, path_type=Path), default=Path(WORKFLOW_PATH), show_default=True
-)
-def generate_workflow(output: Path) -> None:
-    """Write the workflow, with one job per repo that needs its upstream repos' jobs."""
-    try:
-        states = fetch(REPOS, select_token())
-        text = render_workflow(job_graph(states))
-    except CIError as exc:
-        raise click.ClickException(str(exc)) from exc
-    output.write_text(text, encoding="utf-8")
+    failed = failures(states)
+    for line in failed:
+        name, _, text = line.partition(": ")
+        print(f"::error title={name}::{text}")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
