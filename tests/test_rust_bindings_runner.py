@@ -39,9 +39,10 @@ def test_cargo_checks_the_workspace_with_the_legs_toolchain() -> None:
 
 def test_the_crates_are_packaged_last_and_published_only_on_a_release() -> None:
     out = _render()
-    dry_run = f'cargo publish --dry-run "${{cargo_patches[@]}}" {FEATURES}\n'
-    assert out.index("cargo doc") < out.index(dry_run)
-    assert 'if [ -z "${CI_CARGO_PUBLISH:-}" ]' in out
+    # Neither runs unless CI_CARGO_PUBLISH asks: not every crate is ready to publish yet.
+    dry_run = f'  cargo publish --dry-run "${{cargo_patches[@]}}" {FEATURES}\n'
+    assert out.index("cargo doc") < out.index('case "${CI_CARGO_PUBLISH:-}" in') < out.index(dry_run)
+    assert "\ndry-run)\n" in out and "\npublish)\n" in out
     assert f'cargo publish "${{skip[@]}}" {FEATURES}\n' in out
     assert "cargo_published" not in out
 

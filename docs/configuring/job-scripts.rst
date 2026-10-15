@@ -140,13 +140,15 @@ The kind builds a package that publishes nothing and depends on the library:
 
 ``rust-compiler`` names the toolchain as ``cxx-compiler`` names g++; the image provides it
 (see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
-The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test``, ``doc``
-and ``publish --dry-run`` in ``rust/``
+The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
 with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
-The dry run proves that every crate packages and builds from its package, as a registry would see it;
+With ``CI_CARGO_PUBLISH=dry-run`` in the environment a ``cargo publish --dry-run`` follows,
+which proves that every crate packages and builds from its package, as a registry would see it;
 it needs every dependency to carry a ``version``, a git dependency too.
+CI does not set the variable, as not every crate is ready to publish yet:
+set it by hand, locally or in a manual workflow run (see `Publish the crates on a release`_).
 Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
-``cargo_package`` to skip the dry run, ``cargo_workspace`` for another directory:
+``cargo_package`` for the publish step, ``cargo_workspace`` for another directory:
 
 .. code:: jinja
 
@@ -164,8 +166,8 @@ through ``cargo --config patch...``, so the Rust code matches the C++ artifact i
 Publish the crates on a release
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A release runs the same recipe with ``CI_CARGO_PUBLISH=1`` in the environment,
-and ``cargo publish`` takes the place of the dry run, after ``fmt``, ``clippy``, ``test`` and ``doc`` passed once more.
+A release runs the same recipe with ``CI_CARGO_PUBLISH=publish`` in the environment,
+and ``cargo publish`` runs after ``fmt``, ``clippy``, ``test`` and ``doc`` passed once more.
 Cargo takes the registry token from ``CARGO_REGISTRY_TOKEN``;
 a registry other than crates.io is named in ``CARGO_REGISTRY_DEFAULT``,
 with its token in ``CARGO_REGISTRIES_<NAME>_TOKEN`` and its index in the workspace's ``.cargo/config.toml``.
@@ -185,15 +187,23 @@ is named in the leg's ``cargo-skip-published``, and the release leaves it out:
 
 Any other crate the registry has at its version fails the release, as a forgotten version bump should.
 
-A ``release.yml`` on a tag, condensed; the ``rust`` kind has one leg, as a second would publish the crates again:
+A ``publish.yml``, condensed; the ``rust`` kind has one leg, as a second would publish the crates again.
+A release publishes; a manual run, from the Actions UI or ``gh workflow run publish.yml -f mode=dry-run``,
+does what ``mode`` says:
 
 .. code:: yaml
 
-   name: Release crates
+   name: publish
 
    on:
-     push:
-       tags: ['v*']
+     release:
+       types: [published]
+     workflow_dispatch:
+       inputs:
+         mode:
+           type: choice
+           options: [dry-run, publish]
+           default: dry-run
 
    permissions:
      contents: read
@@ -227,7 +237,7 @@ A ``release.yml`` on a tag, condensed; the ``rust`` kind has one leg, as a secon
        strategy:
          matrix: ${{ fromJSON(needs.resolve.outputs.rust-matrix) }}
        env:
-         CI_CARGO_PUBLISH: "1"
+         CI_CARGO_PUBLISH: ${{ github.event_name == 'release' && 'publish' || inputs.mode }}
          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
        steps:
          - uses: ecmwf/ci-infrastructure/actions/announce-image@main
@@ -243,8 +253,8 @@ A ``release.yml`` on a tag, condensed; the ``rust`` kind has one leg, as a secon
              package: eckit-rust
              cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}
 
-The tag's code runs with the registry token, as a pull request's never does: only a push of a tag starts the workflow.
-Run ``cargo publish`` by hand the same way, with ``ci-infrastructure-render`` and ``CI_CARGO_PUBLISH=1`` in the shell.
+The release's code runs with the registry token, as a pull request's never does: only a release or a manual run starts the workflow.
+Run either by hand the same way, with ``ci-infrastructure-render`` and ``CI_CARGO_PUBLISH=dry-run`` or ``publish`` in the shell.
 
 Reproduce a leg locally
 -----------------------
