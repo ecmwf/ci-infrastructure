@@ -10,6 +10,7 @@
     from an upstream orchestrator or via `workflow_dispatch` (`rebuild-request`).
   - trigger-downstream{-hpc}.yml (repos with consumers only): on a completed
     CI run, fan out one job per transitive consumer and post a `downstream/<lane>` status.
+  - ci-fork.yml (with `fork-pull-requests` only): runs ci.yml for an approved fork pull request.
 
 Sibling manifests are fetched over the GitHub GraphQL API (GH_TOKEN, or gh's own auth).
 --check compares parsed documents, so hand-added comments never count as drift.
@@ -59,6 +60,13 @@ GENERATED_HEADER: Final = (
     "# Regenerate via the ci-infrastructure-generate CLI.\n"
     "# Source of truth: each repo's .ci/manifest.toml.\n"
 )
+
+FORK_CI_WORKFLOW: Final = "ci-fork.yml"
+FORK_CI_NAME: Final = "CI (fork)"
+FORK_CI_RUN_NAME: Final = (
+    "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
+)
+APPROVAL_LABEL: Final = "approved-for-ci"
 
 
 def _normalise_header(header: str) -> str:
@@ -197,6 +205,7 @@ class Manifest:
     visibility: Visibility = VISIBILITY_PRIVATE
     submodules: str | None = None
     git_read: tuple[str, ...] = ()
+    fork_pull_requests: bool = False
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
@@ -257,6 +266,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         visibility=raw.package.visibility,
         submodules=raw.package.submodules,
         git_read=raw.package.git_read,
+        fork_pull_requests=raw.package.fork_pull_requests,
         deps=_distinct([d for info in packages.values() for d in info.deps]),
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
@@ -1233,23 +1243,32 @@ def render_orchestrator_workflow(
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
     jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
-    jobs = _require_approval(_require_context(jobs))
+    jobs = _require_approval(_require_context(jobs, fork_pull_requests=m.fork_pull_requests))
 
     # Labelling a pull request starts its downstream CI without re-running its CI.
     on: dict[str, Any] = {
         "workflow_run": {
-            "workflows": ["CI"],
+            "workflows": ["CI", FORK_CI_NAME] if m.fork_pull_requests else ["CI"],
             "types": ["completed"],
         },
         "pull_request": {"types": ["labeled"]},
+        # Write access only, and the workflow file is a branch of this repository.
+        "workflow_dispatch": {"inputs": _orchestrator_dispatch_inputs()},
     }
+    # A fork's run carries the base branch's commit, so its run-name names the pull request.
+    run_key = "github.event.workflow_run.head_sha"
+    if m.fork_pull_requests:
+        run_key = (
+            f"(github.event.workflow_run.name == '{FORK_CI_NAME}' && github.event.workflow_run.display_title) "
+            f"|| {run_key}"
+        )
     doc: dict[str, Any] = {
         "name": f"Downstream {_lane_label(lane)} ({m.package_name})",
         "on": on,
         # Concurrency cannot see `needs`, so the commit comes from the event.
         "concurrency": {
             "group": f"trigger-downstream-{lane}-"
-            + "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}",
+            + f"${{{{ {run_key} || github.event.pull_request.head.sha || inputs.pull-request }}}}",
             "cancel-in-progress": True,
         },
         "jobs": jobs,
@@ -1454,15 +1473,32 @@ def _require_approval(jobs: dict[str, Any]) -> dict[str, Any]:
     return ordered
 
 
-def _require_context(jobs: dict[str, Any]) -> dict[str, Any]:
-    ordered: dict[str, Any] = {_CONTEXT_JOB_ID: _context_job()}
+def _orchestrator_dispatch_inputs() -> dict[str, dict[str, Any]]:
+    return {
+        "pull-request": {
+            "description": "Number of the pull request whose commit to run downstream CI for",
+            "required": True,
+            "type": "string",
+        },
+        "level": {
+            "description": "'all', or the highest consumer level to run (as the run-downstream-ci labels)",
+            "required": True,
+            "default": "1",
+            "type": "string",
+        },
+    }
+
+
+def _require_context(jobs: dict[str, Any], *, fork_pull_requests: bool = False) -> dict[str, Any]:
+    ordered: dict[str, Any] = {_CONTEXT_JOB_ID: _context_job(fork_pull_requests=fork_pull_requests)}
     for jid, job in jobs.items():
         _prepend_need(job, _CONTEXT_JOB_ID)
         ordered[jid] = job
     return ordered
 
 
-#: On a label event, only a run-downstream-ci label of a branch in this repository; fork PRs are unsupported.
+#: On a label event, only a run-downstream-ci label of a branch in this repository: a fork's label event has
+#: no secrets. Its downstream CI starts when its approved fork CI completes, or by dispatch.
 _LABEL_EVENT_FILTER: Final = (
     "${{ github.event_name != 'pull_request' || "
     "(startsWith(github.event.label.name, 'run-downstream-ci') && "
@@ -1470,23 +1506,28 @@ _LABEL_EVENT_FILTER: Final = (
 )
 
 
-def _context_job() -> dict[str, Any]:
+def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
+    with_: dict[str, str] = {"pull-request": "${{ inputs.pull-request }}"}
+    if fork_pull_requests:
+        with_["fork-ci-workflow"] = FORK_CI_WORKFLOW
     return {
         "if": _LABEL_EVENT_FILTER,
         "runs-on": SLIM_RUNNER,
-        "permissions": {"actions": "read"},
+        "permissions": {"actions": "read", "pull-requests": "read"},
         "outputs": {
             "head-sha": "${{ steps.ctx.outputs.head-sha }}",
             "head-branch": "${{ steps.ctx.outputs.head-branch }}",
             "ci-conclusion": "${{ steps.ctx.outputs.ci-conclusion }}",
             "ci-url": "${{ steps.ctx.outputs.ci-url }}",
             "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
+            "pull-request": "${{ steps.ctx.outputs.pull-request }}",
         },
         "steps": [
             {
                 "name": "Resolve the commit under test",
                 "id": "ctx",
                 "uses": "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main",
+                "with": with_,
             },
         ],
     }
@@ -1506,7 +1547,11 @@ def _label_gate_job() -> dict[str, Any]:
                 "name": "Check the downstream-CI label",
                 "id": "gate",
                 "uses": "ecmwf/ci-infrastructure/actions/should-downstream-run@main",
-                "with": {"sha": _HEAD_SHA},
+                "with": {
+                    "sha": _HEAD_SHA,
+                    "pull-request": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.pull-request }}}}",
+                    "level": "${{ inputs.level }}",
+                },
             },
         ],
     }
@@ -1838,25 +1883,53 @@ def _render_one_repo(
     changed: list[Change] = []
     wf_dir = m.repo_root / ".github" / "workflows"
 
+    rendered: list[tuple[str, str | None]] = [(FORK_CI_WORKFLOW, render_fork_workflow(m))]
     for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
         suffix = lane_suffix(lane)
-        for basename, content in (
+        rendered += [
             (f"cross-repo-trigger{suffix}.yml", render_workflow(m, by_pkg, lane=lane)),
             (
                 f"trigger-downstream{suffix}.yml",
                 render_orchestrator_workflow(m, by_pkg, by_repo, closures, lane=lane),
             ),
-        ):
-            path = wf_dir / basename
-            existed = path.exists()
-            needed, where = _write_or_check_path(path, content, check)
-            if needed:
-                if content is None:
-                    changed.append(Change("delete", path, where))
-                else:
-                    changed.append(Change("update" if existed else "create", path, where))
+        ]
+    for basename, content in rendered:
+        path = wf_dir / basename
+        existed = path.exists()
+        needed, where = _write_or_check_path(path, content, check)
+        if needed:
+            if content is None:
+                changed.append(Change("delete", path, where))
+            else:
+                changed.append(Change("update" if existed else "create", path, where))
 
     return changed
+
+
+def render_fork_workflow(m: Manifest) -> str | None:
+    """`ci.yml` again for an approved fork pull request, with the base repo's secrets; None without the opt-in."""
+    if not m.fork_pull_requests:
+        return None
+    doc: dict[str, Any] = {
+        "name": FORK_CI_NAME,
+        # The run itself carries the base branch's commit; resolve-dispatch-context reads these back.
+        "run-name": FORK_CI_RUN_NAME,
+        # pull_request_target: the workflow files are the base branch's, never the fork's.
+        "on": {"pull_request_target": {"types": ["labeled", "synchronize", "reopened"]}},
+        "permissions": {"contents": "read", "pull-requests": "write"},
+        "jobs": {
+            "ci": {
+                # synchronize/reopened still run, so the gate in ci.yml spends a stale approval.
+                "if": (
+                    "github.event.pull_request.head.repo.full_name != github.repository && "
+                    f"(github.event.action != 'labeled' || github.event.label.name == '{APPROVAL_LABEL}')"
+                ),
+                "uses": "./.github/workflows/ci.yml",
+                "secrets": "inherit",
+            }
+        },
+    }
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
 def _regen_command(manifest_path: str) -> str:

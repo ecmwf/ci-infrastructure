@@ -802,7 +802,7 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     )
     assert (
         "group: trigger-downstream-runner-"
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in yaml
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}" in yaml
     )
     assert "cancel-in-progress: true" in yaml
     assert "dispatch-and-wait" not in yaml
@@ -1298,6 +1298,21 @@ def test_lane_split_consumer_files(tmp_path: Path) -> None:
     assert "group: cross-repo-trigger-hpc-atos-b-${{ github.ref }}" in hpc
 
 
+_DISPATCH_INPUTS: Final = {
+    "pull-request": {
+        "description": "Number of the pull request whose commit to run downstream CI for",
+        "required": True,
+        "type": "string",
+    },
+    "level": {
+        "description": "'all', or the highest consumer level to run (as the run-downstream-ci labels)",
+        "required": True,
+        "default": "1",
+        "type": "string",
+    },
+}
+
+
 def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path, hpc=True)
     for lane, suffix, label in ((EXECUTION_RUNNER, "", "runner"), (EXECUTION_HPC_ATOS, "-hpc-atos", "HPC")):
@@ -1308,8 +1323,8 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         assert doc[True] == {
             "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
             "pull_request": {"types": ["labeled"]},
+            "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
         }
-        assert "inputs" not in orch
         gate = "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
         assert doc["jobs"]["validate"]["if"] == gate
         assert doc["jobs"]["report-start"]["if"] == gate
@@ -1777,7 +1792,11 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     assert not any("run" in s for s in steps)
     gate = next(s for s in steps if s.get("id") == "gate")
     assert gate["uses"] == "ecmwf/ci-infrastructure/actions/should-downstream-run@main"
-    assert gate["with"] == {"sha": "${{ needs.context.outputs.head-sha }}"}
+    assert gate["with"] == {
+        "sha": "${{ needs.context.outputs.head-sha }}",
+        "pull-request": "${{ needs.context.outputs.pull-request }}",
+        "level": "${{ inputs.level }}",
+    }
 
 
 def test_downstream_gate_reads_its_own_repo_with_the_plain_token(tmp_path: Path) -> None:
@@ -1793,10 +1812,10 @@ def test_downstream_gate_reads_its_own_repo_with_the_plain_token(tmp_path: Path)
 def test_the_context_job_reads_its_own_actions_runs_with_the_plain_token(tmp_path: Path) -> None:
     job = _render_gate(tmp_path, _GATE_UPSTREAM)["jobs"]["context"]
 
-    assert job["permissions"] == {"actions": "read"}
+    assert job["permissions"] == {"actions": "read", "pull-requests": "read"}
     assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
     ctx = next(s for s in job["steps"] if s.get("id") == "ctx")
-    assert "with" not in ctx
+    assert "token" not in ctx["with"]
 
 
 @pytest.mark.parametrize("jid", ["report-start", "report-ci-failure", "report-result"])
@@ -1824,6 +1843,7 @@ def test_a_completed_ci_run_or_a_label_is_the_entry_point(tmp_path: Path) -> Non
     assert doc[True] == {
         "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
         "pull_request": {"types": ["labeled"]},
+        "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
     }
 
 
@@ -1869,14 +1889,21 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
 
     doc: dict[str, Any] = yaml.safe_load(orch)
     assert (
-        doc["concurrency"]["group"]
-        == "trigger-downstream-runner-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
+        doc["concurrency"]["group"] == "trigger-downstream-runner-"
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}"
     )
     assert orch.count("github.event.workflow_run") == 1
 
     ctx = doc["jobs"]["context"]
     assert ctx["needs"] == ["ci-approval"]
-    assert sorted(ctx["outputs"]) == ["ci-conclusion", "ci-summary", "ci-url", "head-branch", "head-sha"]
+    assert sorted(ctx["outputs"]) == [
+        "ci-conclusion",
+        "ci-summary",
+        "ci-url",
+        "head-branch",
+        "head-sha",
+        "pull-request",
+    ]
     resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
     assert resolve["uses"] == "ecmwf/ci-infrastructure/actions/resolve-dispatch-context@main"
 
@@ -2220,7 +2247,7 @@ def test_orchestrator_starts_on_a_downstream_label_without_ci(tmp_path: Path) ->
     assert "startsWith(github.event.label.name, 'run-downstream-ci')" in context_if
     assert "github.event.pull_request.head.repo.full_name == github.repository" in context_if
     assert doc["concurrency"]["group"].endswith(
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}"
+        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}"
     )
     assert doc["jobs"]["report-ci-failure"]["if"] == (
         "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') && "

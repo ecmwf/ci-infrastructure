@@ -46,6 +46,9 @@ this can expose internal logs to the public.
 Leaving ``visibility`` undeclared assumes the safer option in both cases, i.e. approval is required for outside code
 and logs shall not be exposed.
 
+A public repository can run CI for approved pull requests from forks with ``fork-pull-requests = true``;
+see :doc:`fork-pull-requests` before setting it.
+
 
 The dependencies
 ----------------

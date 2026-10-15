@@ -65,3 +65,46 @@ def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str])
 def test_other_labels_are_ignored(tmp_path: Path) -> None:
     code, out, _ = _gate(tmp_path, ["documentation", f"{LABEL}-extra", f"{LABEL}:1"])
     assert (code, out["run"], out["depth"]) == (0, "true", "1")
+
+
+def _run_gate(tmp_path: Path, gh_output: object, **inputs: str) -> tuple[int, dict[str, str], str]:
+    payload = tmp_path / "gh.json"
+    payload.write_text(json.dumps(gh_output))
+    outputs = tmp_path / "outputs.txt"
+    gh = 'echo "$*" > ' + f"{tmp_path}/call; cat {payload}"
+    env = {
+        **os.environ,
+        "PATH": f"{stub_gh(tmp_path, gh)}:{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(outputs),
+        "GITHUB_REPOSITORY": "ecmwf/ecbuild",
+        "RUNNER_TEMP": str(tmp_path),
+        "LABEL_INPUT": LABEL,
+        "SHA_INPUT": "abc123",
+        **inputs,
+    }
+    proc = subprocess.run(
+        ["bash", "-c", action_run_body("should-downstream-run")], env=env, capture_output=True, text=True, check=False
+    )
+    out = dict(line.split("=", 1) for line in outputs.read_text().splitlines()) if outputs.exists() else {}
+    return proc.returncode, out, proc.stderr
+
+
+@pytest.mark.parametrize("level", ["all", "2"])
+def test_a_dispatched_level_replaces_the_label(tmp_path: Path, level: str) -> None:
+    code, out, _ = _run_gate(tmp_path, [], LEVEL_INPUT=level)
+    assert (code, out["run"], out["depth"]) == (0, "true", level)
+    assert not (tmp_path / "call").exists()
+
+
+def test_a_dispatched_level_must_be_a_level(tmp_path: Path) -> None:
+    code, _, err = _run_gate(tmp_path, [], LEVEL_INPUT="0")
+    assert code == 1
+    assert "level must be 'all' or a level from 1" in err
+
+
+def test_a_named_pull_request_is_read_directly(tmp_path: Path) -> None:
+    """A fork's commit is not one `commits/<sha>/pulls` finds."""
+    pr = {"state": "open", "labels": [{"name": f"{LABEL}:1"}]}
+    code, out, _ = _run_gate(tmp_path, pr, PULL_REQUEST_INPUT="7")
+    assert (code, out["run"], out["depth"]) == (0, "true", "1")
+    assert "/repos/ecmwf/ecbuild/pulls/7" in (tmp_path / "call").read_text()

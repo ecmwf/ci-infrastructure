@@ -1106,7 +1106,9 @@ def _run(
     pins = parse_pin(pin)
     token = select_token()
 
-    own_sha = _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
+    own_pin = pins.get(Repo(str(local_manifest.package.repo)))
+    # A fork's branch lives in the fork, never in this repo: it names nothing here.
+    own_sha = Sha(own_pin) if own_pin else _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
 
     manifest_cache, sync_exists = bfs_load_manifests(
         root_deps=local_manifest.external_deps(),

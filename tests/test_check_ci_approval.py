@@ -293,3 +293,107 @@ def test_the_linter_imports_nothing_optional() -> None:
             imported.add(node.module.split(".")[0])
 
     assert not imported & (_OPTIONAL_DEPS | {"ci_infrastructure"}), imported
+
+
+FORK_CI_YML = """
+on:
+  pull_request:
+  workflow_call:
+jobs:
+  ci-approval:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-slim
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+  build:
+    needs: ci-approval
+    runs-on: arc-runner-normal
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+        with:
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+      - uses: actions/checkout@v6
+        with:
+          repository: ecmwf/ecbuild
+"""
+
+FORK_CALLER = """
+on:
+  pull_request_target:
+    types: [labeled, synchronize, reopened]
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+"""
+
+
+SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
+OPT_IN = "allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}"
+
+
+def _opt_in(tmp_path: Path, opted: bool = True) -> None:
+    (tmp_path / ".ci").mkdir(exist_ok=True)
+    (tmp_path / ".ci" / "manifest.toml").write_text(
+        f'[package]\nname = "a"\nvisibility = "public"\nfork-pull-requests = {str(opted).lower()}\n', encoding="utf-8"
+    )
+
+
+def test_a_fork_ci_yml_and_its_caller_pass(tmp_path: Path) -> None:
+    _opt_in(tmp_path)
+    ci = write_wf(tmp_path, "ci.yml", FORK_CI_YML)
+    caller = write_wf(tmp_path, "ci-fork.yml", FORK_CALLER)
+    assert check(ci) == []
+    assert check(caller) == []
+
+
+def test_the_caller_is_ungated_when_ci_yml_is(tmp_path: Path) -> None:
+    _opt_in(tmp_path)
+    write_wf(tmp_path, "ci.yml", FORK_CI_YML.replace("    needs: ci-approval\n", ""))
+    caller = write_wf(tmp_path, "ci-fork.yml", FORK_CALLER)
+    assert any("no job uses" in p for p in check(caller))
+
+
+def test_a_fork_caller_without_the_opt_in_fails(tmp_path: Path) -> None:
+    _opt_in(tmp_path, opted=False)
+    write_wf(tmp_path, "ci.yml", FORK_CI_YML)
+    caller = write_wf(tmp_path, "ci-fork.yml", FORK_CALLER)
+    assert any("does not set fork-pull-requests = true" in p for p in check(caller))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "needle"),
+    [
+        ("  workflow_call:\n", "", "no `workflow_call`"),
+        (f"    if: github.event_name != 'pull_request' || {SAME_REPO}\n", "", "must skip a fork's pull_request run"),
+        (
+            f"      - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main\n"
+            f"        with:\n          {OPT_IN}\n",
+            "      - uses: actions/checkout@v6\n",
+            "use ecmwf/ci-infrastructure/actions/checkout-under-test",
+        ),
+        (OPT_IN, "allow-unsafe-pr-checkout: true", "must pass allow-unsafe-pr-checkout"),
+        ("  ci-approval:\n", "  gate:\n", "must be the job 'ci-approval'"),
+    ],
+    ids=["no-workflow-call", "no-fork-skip", "plain-checkout", "unconditional-opt-in", "gate-renamed"],
+)
+def test_ci_yml_must_be_fit_for_the_fork_caller(tmp_path: Path, old: str, new: str, needle: str) -> None:
+    _opt_in(tmp_path)
+    assert old in FORK_CI_YML
+    body = FORK_CI_YML.replace(old, new).replace(
+        "needs: ci-approval", "needs: gate" if new == "  gate:\n" else "needs: ci-approval"
+    )
+    problems = check(write_wf(tmp_path, "ci.yml", body))
+    assert any(needle in p for p in problems), problems
+
+
+def test_without_the_opt_in_ci_yml_is_not_held_to_it(tmp_path: Path) -> None:
+    _opt_in(tmp_path, opted=False)
+    body = FORK_CI_YML.replace("  workflow_call:\n", "")
+    assert check(write_wf(tmp_path, "ci.yml", body)) == []
+
+
+def test_an_expression_for_allow_unsafe_pr_checkout_needs_the_gate(tmp_path: Path) -> None:
+    _opt_in(tmp_path, opted=False)
+    body = FORK_CI_YML.replace("    needs: ci-approval\n", "")
+    assert any("sets allow-unsafe-pr-checkout" in p for p in check(write_wf(tmp_path, "ci.yml", body)))

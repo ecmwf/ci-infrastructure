@@ -7,7 +7,8 @@ description: >
   For workflow_run orchestrators (no PR or labels in the payload): read the
   level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
   `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run.
-  Fails unless the PR carries at most one, valid level label.
+  Fails unless the PR carries at most one, valid level label. A dispatch passes
+  `level` instead; a fork's PR, which `sha` does not find, comes as `pull-request`.
 
 inputs:
   label:
@@ -17,6 +18,14 @@ inputs:
   sha:
     description: 'Commit to resolve a pull request for (e.g. workflow_run.head_sha).'
     required: true
+  pull-request:
+    description: 'Number of the pull request to read the label from, instead of looking it up by `sha`.'
+    required: false
+    default: ''
+  level:
+    description: "'all' or a level from 1, e.g. a dispatch input; replaces the label."
+    required: false
+    default: ''
   token:
     description: 'Token with pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
     required: false
@@ -39,6 +48,8 @@ runs:
         GH_TOKEN: ${{ inputs.token || github.token }}
         LABEL_INPUT: ${{ inputs.label }}
         SHA_INPUT: ${{ inputs.sha }}
+        PULL_REQUEST_INPUT: ${{ inputs.pull-request }}
+        LEVEL_INPUT: ${{ inputs.level }}
       run: |
         set -euo pipefail
 
@@ -53,8 +64,23 @@ runs:
           exit 1
         fi
 
+        if [ -n "${LEVEL_INPUT:-}" ]; then
+          if [ "$LEVEL_INPUT" != all ] && ! [[ "$LEVEL_INPUT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error title=Label gate::level must be 'all' or a level from 1, got '$LEVEL_INPUT'" >&2
+            exit 1
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "depth=$LEVEL_INPUT" >> "$GITHUB_OUTPUT"
+          echo "Label gate: level '$LEVEL_INPUT' requested"
+          exit 0
+        fi
+
         pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"
-        gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
+        if [ -n "${PULL_REQUEST_INPUT:-}" ]; then
+          gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_INPUT}" | jq '[.]' > "$pulls"
+        else
+          gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
+        fi
 
         depth=""
         if [ "$(jq '[.[] | select(.state == "open")] | length' "$pulls")" -eq 0 ]; then

@@ -82,5 +82,41 @@ Fork pull requests
 ------------------
 
 A pull request from a fork runs this workflow as well, only without access to secrets.
-On a self-hosted runner this means outside code on our hardware.
-This is why fork pull requests are not supported yet, see :doc:`fork-pull-requests`.
+On a self-hosted runner this means outside code on our hardware,
+so :action:`require-ci-approval` stops it unless a maintainer approved it.
+Even then it cannot build anything without the secrets.
+
+A repository with ``fork-pull-requests = true`` (see :doc:`fork-pull-requests`)
+runs an approved fork commit through ``ci-fork.yml``, which calls this workflow.
+For that, ``ci.yml`` needs three changes:
+
+.. code:: yaml
+
+   on:
+     # ... the existing triggers, unchanged ...
+     workflow_call:
+
+   jobs:
+     ci-approval:
+       # A fork's own pull_request run does nothing; ci-fork.yml runs this workflow instead.
+       if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+       runs-on: ubuntu-slim
+       permissions:
+         pull-requests: write
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
+
+     build:
+       needs: [ci-approval, resolve]
+       steps:
+         # Not actions/checkout: under pull_request_target that is the base branch.
+         - uses: ecmwf/ci-infrastructure/actions/checkout-under-test@main
+           with:
+             allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+- ``on:`` also has ``workflow_call``.
+- The gate job is called ``ci-approval`` and skips a fork's ``pull_request`` run.
+- Every checkout of the repository itself uses :action:`checkout-under-test` with exactly this ``allow-unsafe-pr-checkout``;
+  checkouts of other repositories (with ``repository:``) may stay ``actions/checkout``.
+
+The ``check-ci-approval`` pre-commit hook checks all three.
