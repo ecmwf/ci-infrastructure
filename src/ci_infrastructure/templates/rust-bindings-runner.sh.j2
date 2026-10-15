@@ -59,14 +59,21 @@ RUSTDOCFLAGS="-D warnings" cargo doc "${cargo_patches[@]}" --workspace --no-deps
 # CI checks that every crate packages and builds from its package. A release workflow sets
 # CI_CARGO_PUBLISH=1 and cargo's registry token (CARGO_REGISTRY_TOKEN, or CARGO_REGISTRY_DEFAULT
 # with CARGO_REGISTRIES_<NAME>_TOKEN), and the same script publishes instead.
-dry_run=(--dry-run)
-if [ -n "${CI_CARGO_PUBLISH:-}" ]; then
-  if [ -n "${cargo_patches[*]}" ]; then
-    echo "::error::not publishing crates verified against a patched dependency; release from a branch that resolves to the default refs"
-    exit 1
-  fi
-  dry_run=()
+if [ -z "${CI_CARGO_PUBLISH:-}" ]; then
+  cargo publish --dry-run "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
+elif [ -n "${cargo_patches[*]}" ]; then
+  echo "::error::not publishing crates verified against a patched dependency; release from a branch that resolves to the default refs"
+  exit 1
+else
+  skip=()
+{% if cargo_skip_published %}
+  # A registry never takes a version twice: these crates move on their own schedule.
+  while IFS= read -r crate; do skip+=(--exclude "$crate"); done < <(
+    cargo metadata --no-deps --format-version 1 |
+      "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_published{% for crate in cargo_skip_published %} {{ crate | sh }}{% endfor %})
+  for crate in "${skip[@]}"; do echo "cargo: $crate"; done
+{% endif %}
+  cargo publish "${skip[@]}" --workspace {{ self.cargo_features() }}
 fi
-cargo publish "${dry_run[@]}" "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
 {% endblock %}
 {% endblock %}

@@ -39,9 +39,18 @@ def test_cargo_checks_the_workspace_with_the_legs_toolchain() -> None:
 
 def test_the_crates_are_packaged_last_and_published_only_on_a_release() -> None:
     out = _render()
-    publish = f'cargo publish "${{dry_run[@]}}" "${{cargo_patches[@]}}" {FEATURES}\n'
-    assert out.index("cargo doc") < out.index(publish)
-    assert "dry_run=(--dry-run)" in out and 'if [ -n "${CI_CARGO_PUBLISH:-}" ]' in out
+    dry_run = f'cargo publish --dry-run "${{cargo_patches[@]}}" {FEATURES}\n'
+    assert out.index("cargo doc") < out.index(dry_run)
+    assert 'if [ -z "${CI_CARGO_PUBLISH:-}" ]' in out
+    assert f'cargo publish "${{skip[@]}}" {FEATURES}\n' in out
+    assert "cargo_published" not in out
+
+
+def test_a_release_leaves_out_the_named_crates_the_registry_has() -> None:
+    out = _render(leg={**LEG, "cargo-skip-published": ["foo-compat", "foo bar"]})
+    assert "\"$CI_INFRASTRUCTURE_PYTHON\" -I -m ci_infrastructure.cargo_published foo-compat 'foo bar')" in out
+    assert 'skip+=(--exclude "$crate")' in out
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
 
 
 def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs_and_the_package() -> None:
