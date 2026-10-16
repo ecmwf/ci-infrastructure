@@ -47,7 +47,7 @@ the ``check-ci-approval`` pre-commit hook fails until they are in.
 How a fork pull request runs
 ----------------------------
 
-1. A maintainer reads the change, submits a review of it (approve or comment), and sets ``approved-for-ci``.
+1. A maintainer reads the change, submits a review of it (a comment is enough), and sets ``approved-for-ci``.
    The label starts ``CI (fork)``; there is nothing to re-run.
    It only counts when set by someone with write access or more
    (the triage role can set labels too, but cannot approve),

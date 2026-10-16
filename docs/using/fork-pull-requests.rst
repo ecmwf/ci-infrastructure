@@ -13,7 +13,8 @@ a maintainer approves a commit, and then it runs the repository's own ``CI``.
 Approving a commit
 ------------------
 
-1. Read the change, and submit a review of it on GitHub, *Approve* or *Comment*.
+1. Read the change, and submit a review of it on GitHub with *Comment*;
+   there is no need to approve the pull request before its CI has run.
 2. Set the label ``approved-for-ci``. It starts ``CI (fork)``; there is nothing to re-run.
 
 Both need write access to the repository.

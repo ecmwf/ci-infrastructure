@@ -10,7 +10,7 @@ description: >
 
   Approved: a non-PR event, a head branch in the base repository, or a fork
   carrying `label` set by someone with write access, whose head commit has a
-  review (approve or comment) by someone with write access. The label is
+  review (a comment is enough) by someone with write access. The label is
   single-use: deleted when honoured; `synchronize`/`reopened` of a fork PR
   fails and deletes it too.
 
@@ -147,7 +147,7 @@ runs:
               admin|maintain|write) return 0 ;;
             esac
           done
-          refuse "the head commit ${head:0:12} of #$pr_number has no review by someone with write access; review it (approve or comment, 'Changes since your last review' shows what is new), then re-apply '$label'."
+          refuse "the head commit ${head:0:12} of #$pr_number has no review by someone with write access; review it with a comment ('Changes since your last review' shows what is new), then re-apply '$label'."
         }
 
         event="${GITHUB_EVENT_PATH:-}"
