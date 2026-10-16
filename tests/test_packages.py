@@ -500,12 +500,10 @@ def test_a_dep_carries_the_dirs_its_package_puts_on_path() -> None:
     assert [d.to_json()["add-to-path"] for d in deps] == [["bin"]]
 
 
-def test_a_fork_run_trusts_this_run_to_build_its_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fork's run carries the base branch's commit, so no probe sees it in flight; a pin must not fail or rebuild."""
+def _resolve_fork_sibling(published_in_run: frozenset[str]) -> tuple[list[Any], dict[Any, Any]]:
+    """cxxmath-rust on its sibling cxxmath for a fork: no artifact yet, no run seen in flight, own repo pinned."""
     from ci_infrastructure.resolve_deps import resolve_packages
 
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: pytest.fail("probed"))
     m = parse_manifest(_BINDINGS)
     sha = Sha("f" * 40)
     plans: dict[Any, Any] = {}
@@ -526,6 +524,25 @@ def test_a_fork_run_trusts_this_run_to_build_its_sibling(monkeypatch: pytest.Mon
         lane=EXECUTION_RUNNER,
         dispatch_plans=plans,
         pins={Repo("org/cxxmath"): Ref(sha)},
+        published_in_run=frozenset(PackageName(p) for p in published_in_run),
     )
-    assert [(d.name, d.source, d.sha) for d in to_fetch] == [("cxxmath", "artifact", sha)]
+    return to_fetch, plans
+
+
+def test_a_sibling_another_kind_of_this_run_publishes_is_awaited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fork's run carries the base branch's commit, so no probe sees it in flight; the pin must not fail it."""
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: pytest.fail("probed"))
+    to_fetch, plans = _resolve_fork_sibling(frozenset({"cxxmath"}))
+    assert [(d.name, d.source, d.sha) for d in to_fetch] == [("cxxmath", "artifact", "f" * 40)]
     assert plans == {}
+
+
+def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NotInFlight:
+        in_flight = False
+
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: _NotInFlight())
+    with pytest.raises(ResolveError, match="the commit under test"):
+        _resolve_fork_sibling(frozenset())
