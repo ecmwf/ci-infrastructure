@@ -9,13 +9,13 @@ description: >
   hardware or near its credentials before a maintainer has read the diff.
 
   Approved: a non-PR event, a head branch in the base repository, or a fork
-  carrying `label`. The label is single-use: deleted when honoured;
-  `synchronize`/`reopened` of a fork PR fails and deletes it too.
+  carrying `label` set by someone with write access. The label is single-use:
+  deleted when honoured; `synchronize`/`reopened` of a fork PR fails and deletes it too.
 
   Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
   job reports Success. The caller MUST listen for `synchronize`. Labelling
   needs only triage, so "who may label" is "who may approve". Needs bash, jq,
-  gh and `pull-requests: write`.
+  gh and `pull-requests: write`; triage can set labels, so who set it is checked.
 
 inputs:
   label:
@@ -93,6 +93,39 @@ runs:
           echo "$1"
         }
 
+        # Who set the label: the event's sender when this event set it, else the last `labeled` event.
+        labeler() {
+          if [ "$action" = labeled ] && [ "$(jq -r '.label.name // empty' "$event")" = "$label" ]; then
+            jq -r '.sender.login // empty' "$event"
+            return
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/events" \
+            --jq "map(select(.event == \"labeled\" and .label.name == \"$label\")) | last | .actor.login // empty"
+        }
+
+        # Labelling needs only triage; approving means handing out this repository's secrets.
+        require_write_access() {
+          local who permission
+          if ! who="$(labeler)" || [ -z "$who" ]; then
+            echo "::error title=CI approval::could not tell who set '$label' on #$pr_number; re-apply the label." >&2
+            exit 1
+          fi
+          if ! permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .permission 2>/dev/null)"; then
+            echo "::error title=CI approval::could not look up the permission of @$who on $GITHUB_REPOSITORY, so '$label' does not count; check this job's token." >&2
+            exit 1
+          fi
+          case "$permission" in
+            admin|maintain|write) ;;
+            *)
+              if [ "$consume" = "true" ]; then
+                spend_label "Removed '$label' from #$pr_number: @$who cannot approve."
+              fi
+              echo "::error title=CI approval::'$label' was set by @$who, who has '${permission:-no}' access to $GITHUB_REPOSITORY; only write, maintain or admin can approve CI for a fork." >&2
+              exit 1
+              ;;
+          esac
+        }
+
         event="${GITHUB_EVENT_PATH:-}"
         if [ -z "$event" ] || [ ! -f "$event" ]; then
           echo "::error title=CI approval::no event payload at \$GITHUB_EVENT_PATH." >&2
@@ -137,6 +170,7 @@ runs:
         fi
 
         if [ "$has_label" = "yes" ]; then
+          require_write_access
           if [ "$consume" = "true" ]; then
             spend_label "Spent the approval label on #$pr_number: it covers this run only."
           fi

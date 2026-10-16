@@ -31,7 +31,6 @@ Private and internal repos are skipped. Exemptions live in
 
 from __future__ import annotations
 
-import functools
 import sys
 import tomllib
 from collections.abc import Iterator
@@ -95,16 +94,6 @@ def _triggers(doc: dict[Any, Any]) -> set[str]:
 
 
 def _load(path: Path) -> dict[Any, Any] | None:
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return _parse(path, stat.st_mtime_ns, stat.st_size)
-
-
-@functools.lru_cache(maxsize=256)
-def _parse(path: Path, mtime_ns: int, size: int) -> dict[Any, Any] | None:
-    """Keyed by mtime and size too, so an edited file is read again."""
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
@@ -290,9 +279,8 @@ def _check(workflow: Path) -> list[str]:
     if reason is None:
         return problems
 
-    delegated = _delegated_jobs(workflow, jobs)
-    pairs |= {(workflow.name, name) for name in delegated}
-    if not gates and set(jobs) <= delegated:
+    pairs |= {(workflow.name, name) for name in _delegated_jobs(workflow, jobs)}
+    if not gates and all((workflow.name, name) in pairs for name in jobs):
         return problems
 
     if not gates:

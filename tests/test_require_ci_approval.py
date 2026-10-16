@@ -20,9 +20,12 @@ BASE: Final = "ecmwf/eckit"
 FORK: Final = "outsider/eckit"
 
 
-def _payload(*, action: str, head_repo: str | None, labels: list[str]) -> dict[str, Any]:
+def _payload(*, action: str, head_repo: str | None, labels: list[str], sender: str = "maintainer") -> dict[str, Any]:
+    """A `labeled` event sets the first of `labels`."""
     return {
         "action": action,
+        "sender": {"login": sender},
+        **({"label": {"name": labels[0]}} if action == "labeled" and labels else {}),
         "pull_request": {
             "number": 42,
             "head": {"repo": None if head_repo is None else {"full_name": head_repo}},
@@ -54,12 +57,22 @@ def _run(
     *,
     gh_fails: bool = False,
     inputs: dict[str, str] | None = None,
+    permission: str = "write",
+    last_labeler: str = "maintainer",
 ) -> Result:
     """`payload=None` is a non-pull-request event (workflow_run, schedule)."""
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload if payload is not None else {"action": "completed"}))
     gh_log = tmp_path / "gh-calls.log"
-    bindir = stub_gh(tmp_path, f'printf "%s\\n" "$*" >> {gh_log}\nexit {1 if gh_fails else 0}')
+    bindir = stub_gh(
+        tmp_path,
+        f'printf "%s\\n" "$*" >> {gh_log}\n'
+        'case "$*" in\n'
+        f'  *"/permission"*) [ -n "{permission}" ] || exit 1; echo "{permission}" ;;\n'
+        f'  *"/events"*) echo "{last_labeler}" ;;\n'
+        f"  *) exit {1 if gh_fails else 0} ;;\n"
+        "esac",
+    )
     outputs = tmp_path / "outputs.txt"
     env = {
         **os.environ,
@@ -175,3 +188,45 @@ def test_a_non_boolean_input_stops_the_workflow(tmp_path: Path, value: str) -> N
     assert r.code == 1
     assert "must be 'true' or 'false'" in r.err
     assert _deletes(r) == []
+
+
+@pytest.mark.parametrize("permission", ["triage", "read", "none"])
+def test_a_label_from_someone_without_write_access_does_not_approve(tmp_path: Path, permission: str) -> None:
+    r = _run(
+        tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="helper"), permission=permission
+    )
+    assert r.code == 1
+    assert (
+        f"'{LABEL}' was set by @helper, who has '{permission}' access to {BASE}; "
+        "only write, maintain or admin can approve CI for a fork."
+    ) in r.err
+    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
+    assert r.reason is None
+
+
+def test_the_labeler_is_the_sender_of_the_labeled_event(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="lead"))
+    assert r.code == 0
+    assert f"api repos/{BASE}/collaborators/lead/permission --jq .permission" in r.gh_calls
+    assert not any("/events" in c for c in r.gh_calls)
+
+
+def test_otherwise_the_labeler_comes_from_the_label_history(tmp_path: Path) -> None:
+    """E.g. another label was set after the approval: that event's sender did not approve."""
+    payload = _payload(action="labeled", head_repo=FORK, labels=["run-downstream-ci:1", LABEL], sender="other")
+    r = _run(tmp_path, payload, last_labeler="lead")
+    assert r.code == 0
+    assert f"api repos/{BASE}/collaborators/lead/permission --jq .permission" in r.gh_calls
+
+
+def test_a_failed_permission_lookup_says_so(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), permission="")
+    assert r.code == 1
+    assert "could not look up the permission of @maintainer" in r.err
+    assert _deletes(r) == []
+
+
+def test_a_same_repo_branch_needs_no_permission_lookup(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(action="labeled", head_repo=BASE, labels=[LABEL], sender="anyone"))
+    assert r.code == 0
+    assert r.gh_calls == []

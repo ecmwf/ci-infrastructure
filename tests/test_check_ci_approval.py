@@ -434,3 +434,8 @@ def test_a_cycle_of_calls_terminates(tmp_path: Path) -> None:
     a = write_wf(tmp_path, "a.yml", "on: pull_request_target\njobs:\n  b:\n    uses: ./.github/workflows/b.yml\n")
     write_wf(tmp_path, "b.yml", "on: workflow_call\njobs:\n  a:\n    uses: ./.github/workflows/a.yml\n")
     assert any("no job uses" in p for p in check(a))
+
+
+def test_a_workflow_whose_jobs_are_all_exempt_needs_no_gate(tmp_path: Path) -> None:
+    write_allowlist(tmp_path, "exempt:\n  - workflow: wf.yml\n    jobs: [build]\n")
+    assert check(_single_job(tmp_path, "pull_request_target", "ubuntu-latest")) == []

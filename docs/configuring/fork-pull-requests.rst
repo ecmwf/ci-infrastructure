@@ -49,6 +49,8 @@ How a fork pull request runs
 
 1. A maintainer reads the change and sets ``approved-for-ci``.
    The label starts ``CI (fork)``; there is nothing to re-run.
+   It only counts when set by someone with write access or more:
+   the triage role can set labels too, but cannot approve.
 2. :action:`require-ci-approval` in ``ci.yml`` spends the label, so it approves exactly one commit.
    A push to the pull request removes a leftover label and runs nothing.
 3. The jobs check out the approved head commit with :action:`checkout-under-test`,
