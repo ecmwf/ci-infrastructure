@@ -5,15 +5,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
 from ci_infrastructure import default_branch_status as dbs
 from ci_infrastructure._errors import CIError
-
-ROOT = Path(__file__).resolve().parents[1]
+from ci_infrastructure._github_api import _alias
 
 
 def _run(sha: str, conclusion: str | None = "success", pusher: str = "dev") -> dbs.Run:
@@ -76,18 +74,15 @@ def test_a_red_upstream_blocks_every_transitive_consumer() -> None:
     assert blockers == {"o/ecbuild": (), "o/eckit": (), "o/fckit": ("o/eckit",), "o/atlas": ("o/eckit",)}
     assert dbs.status(states["o/atlas"], blockers["o/atlas"]) == dbs.Status("⛔", "blocked by eckit", False)
     assert dbs.status(states["o/eckit"], blockers["o/eckit"]) == dbs.Status("❌", "CI failed", False)
-    assert dbs.verdicts(states, list(states))["ecbuild"] == {"ok": True, "message": "✅ ecbuild: CI green"}
 
 
-def test_a_repo_without_manifest_is_skipped_and_passes() -> None:
-    states = _graph(set())
-    repos = [*states, "o/mir"]
-    assert dbs.verdicts(states, repos)["mir"] == {
-        "ok": True,
-        "message": "⚪ mir: no .ci/manifest.toml on the default branch yet, skipped",
-    }
-    assert dbs.job_graph(states, repos)["o/mir"] == ()
-    assert dbs.job_graph(states, repos)["o/atlas"] == ("o/eckit", "o/fckit")
+def test_failures_name_every_red_or_blocked_repo_upstream_first() -> None:
+    assert dbs.failures(_graph({"o/eckit"})) == [
+        "eckit: CI failed",
+        "fckit: blocked by eckit",
+        "atlas: blocked by eckit",
+    ]
+    assert dbs.failures(_graph(set())) == []
 
 
 def test_own_failure_names_the_failing_upstream_too() -> None:
@@ -102,8 +97,7 @@ def test_a_cycle_is_an_error() -> None:
         dbs.ordered({"o/a": ("o/b",), "o/b": ("o/a",)})
 
 
-def test_upstream_keeps_only_the_dashboard_repos() -> None:
-    text = """
+_ATLAS: Final = """
 [package]
 name = "atlas"
 repo = "o/atlas"
@@ -115,14 +109,68 @@ package = "eckit"
 ref = "develop"
 compiler-inputs = []
 
-[[deps]]
-repo = "o/elsewhere"
-package = "x"
-ref = "main"
+[packages.atlas-rust]
 compiler-inputs = []
+
+[[packages.atlas-rust.deps]]
+repo = "o/fckit"
+package = "fckit"
+ref = "develop"
+compiler-inputs = []
+
+[[trigger-downstream]]
+repo = "o/mir"
+ref = "develop"
 """
-    assert dbs.upstream_of(text, "o/atlas", ("o/eckit", "o/atlas")) == ("o/eckit",)
-    assert dbs.upstream_of("not = [toml", "o/atlas", ("o/eckit",)) == ()
+
+
+def test_edges_are_the_deps_of_every_package_and_the_downstream_triggers() -> None:
+    assert dbs.edges_of(_ATLAS, "o/atlas") == dbs.Edges(upstream=("o/eckit", "o/fckit"), downstream=("o/mir",))
+    assert dbs.edges_of("not = [toml", "o/atlas") == dbs.Edges((), ())
+
+
+def _repo_node(manifest: str | None) -> dict[str, Any]:
+    return {
+        "manifest": {"text": manifest} if manifest is not None else None,
+        "defaultBranchRef": {"name": "develop", "target": {"history": {"nodes": []}}},
+    }
+
+
+def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ecbuild names eckit downstream; eckit needs stack-deps; atlas is found from eckit; mir has no manifest yet."""
+
+    def pkg(name: str, body: str = "") -> str:
+        return f'[package]\nname = "{name}"\nrepo = "o/{name}"\ncompiler-inputs = []\n{body}'
+
+    def trigger(repo: str) -> str:
+        return f'[[trigger-downstream]]\nrepo = "{repo}"\nref = "develop"\n'
+
+    def dep(repo: str) -> str:
+        return f'[[deps]]\nrepo = "{repo}"\npackage = "x"\nref = "develop"\ncompiler-inputs = []\n'
+
+    manifests = {
+        "o/ecbuild": pkg("ecbuild", trigger("o/eckit")),
+        "o/eckit": pkg("eckit", dep("o/ecbuild") + dep("o/stack") + trigger("o/atlas") + trigger("elsewhere/x")),
+        "o/stack": pkg("stack"),
+        "o/atlas": pkg("atlas", dep("o/eckit") + trigger("o/mir")),
+        "o/mir": None,
+    }
+    asked: list[str] = []
+
+    def graphql(query: str, token: str | None) -> dict[str, Any]:
+        repo = next(r for r in manifests if f'name: "{r.split("/")[1]}"' in query)
+        asked.append(repo)
+        return {"data": {f"r_{_alias(repo)}": _repo_node(manifests[repo])}}
+
+    monkeypatch.setattr(dbs, "gh_api_graphql", graphql)
+    monkeypatch.setattr(dbs, "_runs", lambda repo, branch, token: ())
+
+    states = dbs.fetch(("o/ecbuild",), None)
+
+    assert sorted(states) == ["o/atlas", "o/ecbuild", "o/eckit", "o/stack"]
+    assert sorted(asked) == ["o/atlas", "o/ecbuild", "o/eckit", "o/mir", "o/stack"]
+    assert states["o/eckit"].upstream == ("o/ecbuild", "o/stack")
+    assert states["o/atlas"].upstream == ("o/eckit",)
 
 
 def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
@@ -145,10 +193,3 @@ def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
 
 def test_bots_link_to_their_app() -> None:
     assert dbs._user("regen[bot]") == "[@regen[bot]](https://github.com/apps/regen)"
-
-
-def test_committed_workflow_is_generated_for_the_dashboard_repos() -> None:
-    committed = (ROOT / dbs.WORKFLOW_PATH).read_text()
-    upstream = dbs._upstream_from_workflow(committed)
-    assert set(upstream) == set(dbs.REPOS)
-    assert dbs.render_workflow(upstream) == committed
