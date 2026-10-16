@@ -193,3 +193,17 @@ def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
 
 def test_bots_link_to_their_app() -> None:
     assert dbs._user("regen[bot]") == "[@regen[bot]](https://github.com/apps/regen)"
+
+
+def test_pusher_is_the_first_attempts_actor_not_the_rerunner(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = {
+        "head_sha": "abc",
+        "html_url": "https://ci/abc",
+        "status": "completed",
+        "conclusion": "success",
+        "event": "push",
+        "actor": {"login": "pusher"},
+        "triggering_actor": {"login": "rerunner"},
+    }
+    monkeypatch.setattr(dbs, "gh_api_rest", lambda path, token: {"workflow_runs": [run]})
+    assert [r.pusher for r in dbs._runs("ecmwf/x", "develop", None)] == ["pusher"]
