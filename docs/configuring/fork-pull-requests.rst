@@ -16,7 +16,7 @@ so ``ci.yml`` cannot build anything for it,
 and :action:`require-ci-approval` keeps it off the self-hosted runners in any case.
 
 A public repository can opt in.
-Then a maintainer's ``approved-for-ci`` label says *this commit is trusted*,
+Then a maintainer who re-runs a fork's failed run says *this commit is trusted*,
 and the approved commit runs the repository's own ``ci.yml``, with its secrets and runners,
 just like a pull request from a branch of the repository.
 
@@ -47,15 +47,12 @@ the ``check-ci-approval`` pre-commit hook fails until they are in.
 How a fork pull request runs
 ----------------------------
 
-1. A maintainer reads the change, submits a review of it (a comment is enough), and sets ``approved-for-ci``.
-   The label starts ``CI (fork)``; there is nothing to re-run.
-   It only counts when set by someone with write access or more
-   (the triage role can set labels too, but cannot approve),
-   and when the pull request's head commit is the one such a person reviewed:
-   a label names no commit, a review does.
-   After a new push, review the new commits (GitHub's *Changes since your last review*) before labelling again.
-2. :action:`require-ci-approval` in ``ci.yml`` spends the label, so it approves exactly one commit.
-   A push to the pull request removes a leftover label and runs nothing.
+1. Every push to the pull request starts ``CI (fork)``,
+   and :action:`require-ci-approval` in ``ci.yml`` fails it: the fork's push started it.
+2. A maintainer reads the commit that run is for, and re-runs it (*Re-run all jobs*).
+   The re-run is started by someone with write access, so the gate passes.
+   A re-run keeps its event, so it approves exactly that commit;
+   a new push starts a new run, for its new commit, which needs its own review and re-run.
 3. The jobs check out the approved head commit with :action:`checkout-under-test`,
    taken from the event, so a push in the meantime does not reach jobs still waiting to start;
    they publish their artifacts under that commit.

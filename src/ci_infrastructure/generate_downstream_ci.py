@@ -68,7 +68,6 @@ FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
 )
-APPROVAL_LABEL: Final = "approved-for-ci"
 
 
 def _normalise_header(header: str) -> str:
@@ -1908,15 +1907,12 @@ def render_fork_workflow(m: Manifest) -> str | None:
         # The run itself carries the base branch's commit; resolve-dispatch-context reads these back.
         "run-name": FORK_CI_RUN_NAME,
         # pull_request_target: the workflow files are the base branch's, never the fork's.
-        "on": {"pull_request_target": {"types": ["labeled", "synchronize", "reopened"]}},
+        "on": {"pull_request_target": {"types": ["opened", "synchronize", "reopened"]}},
         "permissions": {"contents": "read", "pull-requests": "write"},
         "jobs": {
             "ci": {
-                # synchronize/reopened still run, so the gate in ci.yml spends a stale approval.
-                "if": (
-                    "github.event.pull_request.head.repo.full_name != github.repository && "
-                    f"(github.event.action != 'labeled' || github.event.label.name == '{APPROVAL_LABEL}')"
-                ),
+                # Fails at ci.yml's gate until a maintainer re-runs it, approving its commit.
+                "if": "github.event.pull_request.head.repo.full_name != github.repository",
                 "uses": "./.github/workflows/ci.yml",
                 "secrets": "inherit",
             }

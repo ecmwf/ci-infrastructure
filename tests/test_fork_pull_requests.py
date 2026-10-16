@@ -104,7 +104,7 @@ def test_without_the_opt_in_there_is_no_fork_workflow(tmp_path: Path) -> None:
     assert render_fork_workflow(a) is None
 
 
-def test_the_fork_workflow_calls_ci_yml_on_an_approval_or_a_push(tmp_path: Path) -> None:
+def test_the_fork_workflow_calls_ci_yml_on_every_push(tmp_path: Path) -> None:
     _repos(tmp_path, opt_in=True)
     [a, _] = parse_all(tmp_path)
     rendered = render_fork_workflow(a)
@@ -116,13 +116,13 @@ def test_the_fork_workflow_calls_ci_yml_on_an_approval_or_a_push(tmp_path: Path)
     assert doc["run-name"].endswith(
         "#${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
     )
-    assert doc[True] == {"pull_request_target": {"types": ["labeled", "synchronize", "reopened"]}}
+    # No label: the run fails at the gate until a maintainer re-runs it.
+    assert doc[True] == {"pull_request_target": {"types": ["opened", "synchronize", "reopened"]}}
     assert doc["permissions"] == {"contents": "read", "pull-requests": "write"}
     (job,) = doc["jobs"].values()
     assert job["uses"] == "./.github/workflows/ci.yml"
     assert job["secrets"] == "inherit"
-    assert "github.event.pull_request.head.repo.full_name != github.repository" in job["if"]
-    assert "github.event.label.name == 'approved-for-ci'" in job["if"]
+    assert job["if"] == "github.event.pull_request.head.repo.full_name != github.repository"
 
 
 def test_the_generator_writes_the_fork_workflow_and_removes_a_stale_one(

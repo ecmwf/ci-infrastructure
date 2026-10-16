@@ -13,27 +13,20 @@ a maintainer approves a commit, and then it runs the repository's own ``CI``.
 Approving a commit
 ------------------
 
-1. Read the change, and submit a review of it on GitHub with *Comment*;
-   there is no need to approve the pull request before its CI has run.
-2. Set the label ``approved-for-ci``. It starts ``CI (fork)``; there is nothing to re-run.
+Every push to the pull request starts ``CI (fork)``, which fails at its ``ci-approval`` job.
 
-Both need write access to the repository.
-The label approves exactly the head commit you reviewed, and only once:
-it is removed when the run starts.
+1. Read the commit that run is for: its page names it.
+2. Re-run it, *Re-run all jobs*. Re-running needs write access to the repository.
 
-After a new push
-----------------
-
-A push to the pull request removes a leftover label and runs nothing.
-Review the new commits (GitHub's *Changes since your last review* shows them), then set ``approved-for-ci`` again.
-If the head commit has no review of yours, the run fails and says so.
+The re-run approves exactly that commit. A new push starts a new run for the new commit:
+review the new commits (GitHub's *Changes since your last review* shows them), then re-run that run.
 
 Downstream CI
 -------------
 
 The ``run-downstream-ci:*`` labels work as described in :doc:`downstream-ci`,
 but only for a commit with an approved ``CI (fork)`` run:
-a label set before the approval takes effect once that run has completed.
+a label set before the approval takes effect once the approved run has completed.
 The repository's ``Downstream`` workflows can also be started by hand with **Run workflow**,
 giving the pull request's number and the level.
 
