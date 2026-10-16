@@ -93,7 +93,10 @@ see :doc:`fork-pull-requests`.
 
 To merge, a pull request needs exactly one ``run-downstream-ci:*`` label
 or the explicit opt-out ``downstream-ci-not-needed``;
-:action:`require-label-decision` enforces this.
+:action:`require-label-decision` enforces this with the status ``downstream-ci-label``, which should be a required check.
+The generator writes it as ``pr-label-downstream-ci.yml`` into every repository with consumers.
+It runs on ``pull_request_target``, which is safe since it only reads the labels from the event:
+the pull request cannot change its own gate, and a fork's pull request gets the status too.
 
 The labels only decide which jobs of the dependency graph are **skipped**.
 It is also possible to restrict the full downstream dependency graph from this repository, i.e. what ``run-downstream-ci:all`` runs.

@@ -2253,3 +2253,43 @@ def test_orchestrator_starts_on_a_downstream_label_without_ci(tmp_path: Path) ->
         "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') && "
         "needs['label-gate'].outputs.run == 'true' }}"
     )
+
+
+def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Payload only: pull_request_target, so a pull request cannot post its own decision, and a fork's gets posted."""
+    write_repo(tmp_path, "a", _GATE_UPSTREAM)
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    for repo in ("a", "b"):
+        monkeypatch.chdir(tmp_path / repo)
+        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+    gate = tmp_path / "a" / ".github" / "workflows" / "pr-label-downstream-ci.yml"
+    doc = yaml.safe_load(gate.read_text())
+    assert doc[True] == {
+        "pull_request_target": {"types": ["opened", "reopened", "synchronize", "labeled", "unlabeled"]}
+    }
+    assert doc["permissions"] == {"statuses": "write"}
+    (step,) = doc["jobs"]["gate"]["steps"]
+    assert step["uses"] == "ecmwf/ci-infrastructure/actions/require-label-decision@main"
+    assert step["with"]["context"] == "downstream-ci-label"
+    assert check_ci_approval.check(gate) == []
+    assert not (tmp_path / "b" / ".github" / "workflows" / "pr-label-downstream-ci.yml").exists()
+
+
+def test_a_repo_without_consumers_loses_its_label_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_repo(
+        tmp_path,
+        "b",
+        """
+        [matrix.build]
+        defaults.job-script = "./.ci/build.sh"
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    gate = tmp_path / "b" / ".github" / "workflows" / "pr-label-downstream-ci.yml"
+    gate.parent.mkdir(parents=True)
+    gate.write_text("name: stale\n")
+    monkeypatch.chdir(tmp_path / "b")
+    _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+    assert not gate.exists()

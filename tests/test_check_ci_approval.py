@@ -439,3 +439,31 @@ def test_a_cycle_of_calls_terminates(tmp_path: Path) -> None:
 def test_a_workflow_whose_jobs_are_all_exempt_needs_no_gate(tmp_path: Path) -> None:
     write_allowlist(tmp_path, "exempt:\n  - workflow: wf.yml\n    jobs: [build]\n")
     assert check(_single_job(tmp_path, "pull_request_target", "ubuntu-latest")) == []
+
+
+LABEL_GATE = """
+on:
+  pull_request_target:
+    types: [opened, labeled]
+jobs:
+  gate:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-label-decision@main
+        with:
+          context: downstream-ci-label
+"""
+
+
+def test_a_payload_only_job_needs_no_gate(tmp_path: Path) -> None:
+    assert check(write_wf(tmp_path, "gate.yml", LABEL_GATE)) == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["      - uses: actions/checkout@v6\n", "      - run: make\n"],
+    ids=["checkout", "run"],
+)
+def test_a_payload_only_job_with_anything_else_needs_the_gate(tmp_path: Path, extra: str) -> None:
+    problems = check(write_wf(tmp_path, "gate.yml", LABEL_GATE + extra))
+    assert any("no job uses" in p for p in problems)
