@@ -641,11 +641,12 @@ def resolve_leg(
     own_ref: Ref = Ref(""),
     own_compiler_inputs: Sequence[str] | None = None,
     local: Mapping[PackageName, ResolvedDep] | None = None,
+    published_in_run: frozenset[PackageName] = frozenset(),
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry.
 
     `own_ref` is the commit's ref, for deps on packages of the own repo (siblings);
-    `local` are siblings built earlier in the same job.
+    `local` are siblings built earlier in the same job, `published_in_run` those another job of this run uploads.
     """
     local = local or {}
     pins = pins or {}
@@ -796,6 +797,9 @@ def resolve_leg(
 
         if cached:
             source: Literal["artifact", "triggered rebuild"] = "artifact"
+        elif spec.sibling and ref == own_ref and spec.package in published_in_run:
+            # Another job of this run uploads it; a fork's run carries the base branch's commit, so no probe finds it.
+            source = "artifact"  # fetch_deps polls for the upload
         else:
             run_key = (spec.repo, sha)
             if run_key not in run_state_cache:
@@ -902,6 +906,7 @@ def resolve_packages(
     lane: Execution,
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     pins: Mapping[Repo, Ref] | None = None,
+    published_in_run: frozenset[PackageName] = frozenset(),
 ) -> tuple[list[ResolvedDep], dict[PackageName, ResolvedOwn]]:
     """One leg of a kind publishing `prefixes` in build order: the deps to fetch, and each package's artifact."""
     built: dict[PackageName, ResolvedDep] = {}
@@ -930,6 +935,7 @@ def resolve_packages(
             own_ref=own_ref,
             own_compiler_inputs=info.compiler_inputs,
             local=built,
+            published_in_run=published_in_run,
         )
         for d in deps:
             if d.source != "local":
@@ -1133,6 +1139,13 @@ def _run(
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan] = {}
 
     matrix_names = [m.strip() for m in matrix.split(",") if m.strip()]
+    # Only the kinds this run resolves upload during it; a sibling no one of them publishes is not on its way.
+    published_in_run = frozenset(
+        p
+        for mname in matrix_names
+        if local_manifest.matrix.get(mname)
+        for p in local_manifest.packages_by_kind.get(mname, ())
+    )
 
     for mname in matrix_names:
         include = local_manifest.matrix.get(mname, [])
@@ -1163,6 +1176,7 @@ def _run(
                 lane=lane,
                 dispatch_plans=dispatch_plans,
                 pins=pins,
+                published_in_run=published_in_run,
             )
             own = per_package[prefixes[0]]
             cmake_paths = [str(d.install_path) for d in deps_resolved]
