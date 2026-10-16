@@ -11,6 +11,7 @@
   - trigger-downstream{-hpc}.yml (repos with consumers only): on a completed
     CI run, fan out one job per transitive consumer and post a `downstream/<lane>` status.
   - ci-fork.yml (with `fork-pull-requests` only): runs ci.yml for an approved fork pull request.
+  - pr-label-downstream-ci.yml (repos with consumers only): the required run-downstream-ci decision.
 
 Sibling manifests are fetched over the GitHub GraphQL API (GH_TOKEN, or gh's own auth).
 --check compares parsed documents, so hand-added comments never count as drift.
@@ -62,6 +63,7 @@ GENERATED_HEADER: Final = (
 )
 
 FORK_CI_WORKFLOW: Final = "ci-fork.yml"
+LABEL_GATE_WORKFLOW: Final = "pr-label-downstream-ci.yml"
 FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
@@ -1893,6 +1895,8 @@ def _render_one_repo(
                 render_orchestrator_workflow(m, by_pkg, by_repo, closures, lane=lane),
             ),
         ]
+    has_downstream = any(c is not None for name, c in rendered if name.startswith("trigger-downstream"))
+    rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m) if has_downstream else None))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()
@@ -1926,6 +1930,32 @@ def render_fork_workflow(m: Manifest) -> str | None:
                 ),
                 "uses": "./.github/workflows/ci.yml",
                 "secrets": "inherit",
+            }
+        },
+    }
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+
+
+def render_label_gate_workflow(m: Manifest) -> str:
+    """The `downstream-ci-label` status, pending until a pull request decides on its downstream CI."""
+    doc: dict[str, Any] = {
+        "name": "[PR] Downstream-CI label gate",
+        # Payload only, so pull_request_target is safe; its base-branch workflow and write token
+        # mean a pull request cannot post its own decision, and a fork's gets posted at all.
+        "on": {"pull_request_target": {"types": ["opened", "reopened", "synchronize", "labeled", "unlabeled"]}},
+        "permissions": {"statuses": "write"},
+        "jobs": {
+            "gate": {
+                "runs-on": SLIM_RUNNER,
+                "steps": [
+                    {
+                        "uses": "ecmwf/ci-infrastructure/actions/require-label-decision@main",
+                        "with": {
+                            "context": "downstream-ci-label",
+                            "description-decided": "Downstream-CI decision recorded",
+                        },
+                    }
+                ],
             }
         },
     }

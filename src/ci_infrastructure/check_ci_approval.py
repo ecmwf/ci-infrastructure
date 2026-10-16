@@ -12,6 +12,7 @@ Checked trigger shapes:
     self-hosted builders that is our hardware.
 
 Any step setting `allow-unsafe-pr-checkout` must also sit in a gated job.
+A job of only payload-only actions (`PAYLOAD_ONLY_ACTIONS`) runs no pull request code and needs no gate.
 
 A workflow called from another (`uses: ./.github/workflows/<it>`) runs under its
 caller's events, so it is checked against its callers' triggers too, transitively:
@@ -49,6 +50,11 @@ GATE_ACTIONS = (
 OPEN_TO_OUTSIDERS = frozenset({"public", ""})
 # Lets actions/checkout fetch a fork's ref into a trusted context.
 UNSAFE_CHECKOUT_INPUT = "allow-unsafe-pr-checkout"
+# Read the event payload and nothing of the pull request's code: a job of only these needs no gate.
+PAYLOAD_ONLY_ACTIONS = (
+    "ecmwf/ci-infrastructure/actions/require-label-decision@",
+    "./actions/require-label-decision",
+)
 
 CI_WORKFLOW = "ci.yml"
 FORK_CI_WORKFLOW = "ci-fork.yml"
@@ -168,6 +174,17 @@ def _unsafe_checkout_jobs(jobs: dict[str, Any]) -> set[str]:
     return found
 
 
+def _payload_only_jobs(jobs: dict[str, Any]) -> set[str]:
+    out = set()
+    for name, job in jobs.items():
+        steps = job.get("steps") or []
+        if steps and all(
+            isinstance(st, dict) and str(st.get("uses", "")).startswith(PAYLOAD_ONLY_ACTIONS) for st in steps
+        ):
+            out.add(name)
+    return out
+
+
 def _needs(job: dict[str, Any]) -> set[str]:
     raw = job.get("needs")
     if isinstance(raw, str):
@@ -279,7 +296,7 @@ def _check(workflow: Path) -> list[str]:
     if reason is None:
         return problems
 
-    pairs |= {(workflow.name, name) for name in _delegated_jobs(workflow, jobs)}
+    pairs |= {(workflow.name, name) for name in _delegated_jobs(workflow, jobs) | _payload_only_jobs(jobs)}
     if not gates and all((workflow.name, name) in pairs for name in jobs):
         return problems
 
