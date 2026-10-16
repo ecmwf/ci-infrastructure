@@ -175,14 +175,12 @@ jobs:
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
         run: ./build-image.sh --push-built "$IMAGE" --require-clean
 
-  # After a green run only: a failed one keeps its bases for re-running the
-  # failed jobs. The scratch project's retention rule removes whatever is left.
+  # After every run, failed or cancelled too: the scratch quota is small. Re-run
+  # all jobs, not only the failed ones, since a failed variant's base is gone.
   # Each run has repositories of its own, so deleting them cannot touch another run's.
   delete-scratch-images:
     needs: [discover, build-base, build-dependents]
-    if: ${{ !cancelled()
-            && needs.build-base.result == 'success'
-            && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
+    if: ${{ always() && needs.discover.result == 'success' }}
     runs-on: ubuntu-slim
     steps:
       - name: Delete this run's bases from the scratch registry
