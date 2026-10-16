@@ -165,7 +165,7 @@ def _runs(repo: str, branch: str, token: str | None) -> tuple[Run, ...]:
             sha=r["head_sha"],
             url=r["html_url"],
             conclusion=None if r["status"] in IN_PROGRESS_STATUSES else r["conclusion"],
-            pusher=(r.get("triggering_actor") or r.get("actor") or {}).get("login", ""),
+            pusher=(r.get("actor") or {}).get("login", ""),
         )
         for r in data.get("workflow_runs", [])
         if r["event"] != "pull_request"
