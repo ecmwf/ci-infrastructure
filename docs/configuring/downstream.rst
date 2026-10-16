@@ -85,8 +85,11 @@ so a pull request fans out only when it asks for it, with exactly one label:
 A label added later starts the downstream CI by itself, without running ``CI`` again,
 as long as ``CI`` already succeeded for the pull request's head commit.
 If ``CI`` is still running, the downstream CI starts once it has finished.
-Other labels start nothing, and neither does a label on a pull request from a fork.
+Other labels start nothing, and neither does a label on a pull request from a fork
+(see :doc:`fork-pull-requests` for how a fork's downstream CI starts).
 The label persists, and will trigger the requested runs upon future pushes.
+The downstream workflow can also be started by hand for a pull request, with a level instead of a label,
+see :doc:`fork-pull-requests`.
 
 To merge, a pull request needs exactly one ``run-downstream-ci:*`` label
 or the explicit opt-out ``downstream-ci-not-needed``;

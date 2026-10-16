@@ -109,6 +109,13 @@ class PackageTable(_Table):
         description="`owner/name` of repos the runner build fetches over git, e.g. a cargo git dependency. "
         "The job gets a token that can only read these; same owner as `repo`.",
     )
+    fork_pull_requests: bool = Field(
+        strict=True,
+        default=False,
+        alias="fork-pull-requests",
+        description="Run CI for pull requests from forks once a maintainer sets `approved-for-ci`; "
+        'needs `visibility = "public"`, see :doc:`/configuring/fork-pull-requests`.',
+    )
 
     @field_validator("repo")
     @classmethod
@@ -126,6 +133,12 @@ class PackageTable(_Table):
         foreign = [r for r in self.git_read if self.repo and r.split("/", 1)[0] != owner]
         if foreign:
             raise ValueError(f"git-read {foreign!r}: one app token covers one owner, '{owner}'")
+        return self
+
+    @model_validator(mode="after")
+    def _fork_pull_requests_public(self) -> PackageTable:
+        if self.fork_pull_requests and self.visibility != VISIBILITY_PUBLIC:
+            raise ValueError("fork-pull-requests needs visibility = 'public'")
         return self
 
     @field_validator("compiler_inputs")

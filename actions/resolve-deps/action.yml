@@ -16,7 +16,8 @@ inputs:
     description: >
       Branch being built; defaults to the pull request's branch, or the pushed
       branch. A `sync-branch/*` or `feature/*` branch is used in each upstream repo where it exists, as in
-      actions/pick-ref.
+      actions/pick-ref. A pull request from a fork always resolves as its base
+      branch, pinned to its head commit: fork branch names select nothing.
     required: false
     default: ${{ github.head_ref || github.ref_name }}
   pin:
@@ -160,10 +161,17 @@ runs:
         MANIFEST: ${{ inputs.manifest }}
         CURRENT_BRANCH: ${{ inputs.current-branch }}
         PIN: ${{ inputs.pin }}
+        FORK_PR: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MATRIX: ${{ inputs.matrix }}
         UPSTREAM_MANIFEST_PATH: ${{ inputs.upstream-manifest-path }}
       run: |
         set -euo pipefail
+        if [ "$FORK_PR" = true ]; then
+          CURRENT_BRANCH="$PR_BASE_REF"
+          PIN="${PIN:-$GITHUB_REPOSITORY@$PR_HEAD_SHA}"
+        fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.resolve_deps \
           --manifest "$MANIFEST" \
           --current-branch "$CURRENT_BRANCH" \

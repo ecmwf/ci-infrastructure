@@ -13,3 +13,4 @@ This overview describes the everyday workflow of a developer in a repository tha
    default-branch
    feature-branches
    downstream-ci
+   fork-pull-requests

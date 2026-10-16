@@ -13,6 +13,14 @@ Checked trigger shapes:
 
 Any step setting `allow-unsafe-pr-checkout` must also sit in a gated job.
 
+A workflow called from another (`uses: ./.github/workflows/<it>`) runs under its
+caller's events, so it is checked against its callers' triggers too, transitively:
+one called from a `pull_request_target` workflow is held to that rule. A job
+calling such a workflow is gated when the called workflow passes that check.
+
+With `fork-pull-requests` in the manifest, ci-fork.yml calls ci.yml under
+`pull_request_target`, and ci.yml must be fit for it; see `_fork_ci_problems`.
+
 The gate (`actions/require-ci-approval`) works through `needs:` only: a job
 skipped by an `if:` reports Success. So each job must list the gate directly;
 a transitive path is not accepted, as one misplaced edge would ungate the rest.
@@ -41,6 +49,15 @@ GATE_ACTIONS = (
 OPEN_TO_OUTSIDERS = frozenset({"public", ""})
 # Lets actions/checkout fetch a fork's ref into a trusted context.
 UNSAFE_CHECKOUT_INPUT = "allow-unsafe-pr-checkout"
+
+CI_WORKFLOW = "ci.yml"
+FORK_CI_WORKFLOW = "ci-fork.yml"
+GATE_JOB = "ci-approval"
+CHECKOUT_UNDER_TEST = "ecmwf/ci-infrastructure/actions/checkout-under-test"
+# Exactly what ci-yml.rst shows: true only for ci-fork.yml's call.
+FORK_CHECKOUT_OPT_IN = "${{ github.event_name == 'pull_request_target' }}"
+SAME_REPO_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
+FORK_DOCS = "see docs/configuring/fork-pull-requests.rst in ecmwf/ci-infrastructure"
 
 # Anything else (ARC, self-hosted arrays, `${{ }}` expressions) counts as ours.
 GITHUB_HOSTED = frozenset(
@@ -76,20 +93,53 @@ def _triggers(doc: dict[Any, Any]) -> set[str]:
     return set()
 
 
+def _load(path: Path) -> dict[Any, Any] | None:
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _jobs_of(doc: dict[Any, Any] | None) -> dict[str, Any]:
+    jobs = (doc or {}).get("jobs")
+    return {str(k): (v if isinstance(v, dict) else {}) for k, v in jobs.items()} if isinstance(jobs, dict) else {}
+
+
+def _inherited_triggers(workflow: Path) -> dict[str, str]:
+    """Trigger -> the calling workflow it comes from, over every local caller, transitively."""
+    siblings = sorted({*workflow.parent.glob("*.yml"), *workflow.parent.glob("*.yaml")})
+    calls = {p: {c for job in _jobs_of(_load(p)).values() if (c := _local_workflow(p, job))} for p in siblings}
+    out: dict[str, str] = {}
+    seen, todo = {workflow}, [workflow]
+    while todo:
+        callee = todo.pop()
+        for caller, callees in calls.items():
+            if callee in callees and caller not in seen:
+                seen.add(caller)
+                todo.append(caller)
+                for trigger in _triggers(_load(caller) or {}):
+                    out.setdefault(trigger, caller.name)
+    return out
+
+
 def _is_github_hosted(runs_on: Any) -> bool:
     return isinstance(runs_on, str) and "${{" not in runs_on and runs_on in GITHUB_HOSTED
 
 
-def _gate_reason(doc: dict[Any, Any], jobs: dict[str, Any]) -> str | None:
-    triggers = _triggers(doc)
+def _gate_reason(doc: dict[Any, Any], jobs: dict[str, Any], inherited: dict[str, str]) -> str | None:
+    def via(trigger: str) -> str:
+        return f" (through {inherited[trigger]})" if trigger in inherited else ""
+
+    triggers = _triggers(doc) | set(inherited)
     if "pull_request_target" in triggers:
-        return "pull_request_target runs with this repository's secrets"
+        return f"pull_request_target{via('pull_request_target')} runs with this repository's secrets"
     if "pull_request" in triggers:
         for name, job in jobs.items():
             if "uses" in job:
                 continue
             if not _is_github_hosted(job.get("runs-on")):
-                return f"pull_request reaches a non-GitHub-hosted runner in job {name!r}"
+                return f"pull_request{via('pull_request')} reaches a non-GitHub-hosted runner in job {name!r}"
     return None
 
 
@@ -112,8 +162,8 @@ def _unsafe_checkout_jobs(jobs: dict[str, Any]) -> set[str]:
         if not isinstance(with_block, dict):
             continue
         value = with_block.get(UNSAFE_CHECKOUT_INPUT)
-        # `true` and `'true'` are the same opt-in.
-        if value is True or (isinstance(value, str) and value.strip().lower() == "true"):
+        # `true` and `'true'` are the same opt-in; an expression may be either.
+        if value is True or (isinstance(value, str) and (value.strip().lower() == "true" or "${{" in value)):
             found.add(name)
     return found
 
@@ -127,17 +177,49 @@ def _needs(job: dict[str, Any]) -> set[str]:
     return set()
 
 
-def _open_to_outsiders(workflow: Path) -> bool:
-    """From [package].visibility in .ci/manifest.toml; no (or broken) manifest counts as public."""
+def _package(workflow: Path) -> dict[str, Any] | None:
+    """[package] of .ci/manifest.toml; None without a (parseable) manifest."""
     manifest = workflow.parent.parent.parent.joinpath(*MANIFEST_PATH)
     if not manifest.is_file():
-        return True
+        return None
     try:
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError:
-        return True
-    visibility = str(data.get("package", {}).get("visibility", "")).lower()
-    return visibility in OPEN_TO_OUTSIDERS
+        return None
+    package = data.get("package", {})
+    return package if isinstance(package, dict) else {}
+
+
+def _open_to_outsiders(workflow: Path) -> bool:
+    """From [package].visibility in .ci/manifest.toml; no (or broken) manifest counts as public."""
+    package = _package(workflow)
+    return package is None or str(package.get("visibility", "")).lower() in OPEN_TO_OUTSIDERS
+
+
+def _takes_fork_pull_requests(workflow: Path) -> bool:
+    return (_package(workflow) or {}).get("fork-pull-requests") is True
+
+
+def _local_workflow(workflow: Path, job: dict[str, Any]) -> Path | None:
+    uses = str(job.get("uses", ""))
+    return (
+        workflow.parent / uses.removeprefix("./.github/workflows/") if uses.startswith("./.github/workflows/") else None
+    )
+
+
+_CHECKING: set[Path] = set()  # breaks a cycle of local calls
+
+
+def _delegated_jobs(workflow: Path, jobs: dict[str, Any]) -> set[str]:
+    """Jobs calling a local workflow that passes the check under this one's triggers, and has a gate."""
+    out = set()
+    for name, job in jobs.items():
+        called = _local_workflow(workflow, job)
+        if called is None or called in _CHECKING or not called.is_file():
+            continue
+        if _gate_job_names(_jobs_of(_load(called))) and not check(called):
+            out.add(name)
+    return out
 
 
 def _load_allowlist(workflow: Path) -> tuple[set[str], set[tuple[str, str]]]:
@@ -161,6 +243,14 @@ def _load_allowlist(workflow: Path) -> tuple[set[str], set[tuple[str, str]]]:
 
 
 def check(workflow: Path) -> list[str]:
+    _CHECKING.add(workflow)
+    try:
+        return _check(workflow)
+    finally:
+        _CHECKING.discard(workflow)
+
+
+def _check(workflow: Path) -> list[str]:
     try:
         doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
@@ -181,10 +271,16 @@ def check(workflow: Path) -> list[str]:
         return []
 
     gates = _gate_job_names(jobs)
-    problems = _unsafe_checkout_problems(doc, jobs, gates, workflow, pairs)
+    inherited = _inherited_triggers(workflow)
+    problems = _unsafe_checkout_problems(doc, jobs, gates, workflow, pairs, inherited)
+    problems += _fork_ci_problems(doc, jobs, workflow)
 
-    reason = _gate_reason(doc, jobs)
+    reason = _gate_reason(doc, jobs, inherited)
     if reason is None:
+        return problems
+
+    pairs |= {(workflow.name, name) for name in _delegated_jobs(workflow, jobs)}
+    if not gates and all((workflow.name, name) in pairs for name in jobs):
         return problems
 
     if not gates:
@@ -211,9 +307,10 @@ def _unsafe_checkout_problems(
     gates: set[str],
     workflow: Path,
     pairs: set[tuple[str, str]],
+    inherited: dict[str, str],
 ) -> list[str]:
     """Jobs checking out fork code must `needs:` the gate; only under PR triggers, elsewhere the gate is inert."""
-    if not (_triggers(doc) & {"pull_request", "pull_request_target"}):
+    if not ((_triggers(doc) | set(inherited)) & {"pull_request", "pull_request_target"}):
         return []
     problems = []
     for name in sorted(_unsafe_checkout_jobs(jobs)):
@@ -227,6 +324,39 @@ def _unsafe_checkout_problems(
             f"{GATE_ACTIONS[0]} via `needs:`. Gate the job, or exempt it in "
             f".github/{ALLOWLIST_NAME}."
         )
+    return problems
+
+
+def _fork_ci_problems(doc: dict[Any, Any], jobs: dict[str, Any], workflow: Path) -> list[str]:
+    """ci-fork.yml only with the opt-in; with it, ci.yml as ci-fork.yml calls it."""
+    if workflow.name == FORK_CI_WORKFLOW and not _takes_fork_pull_requests(workflow):
+        return [f"{workflow}: exists, but .ci/manifest.toml does not set fork-pull-requests = true; {FORK_DOCS}"]
+    if workflow.name != CI_WORKFLOW or not _takes_fork_pull_requests(workflow):
+        return []
+
+    where = f"{workflow}: fork-pull-requests is set, so ci-fork.yml calls this workflow"
+    problems = []
+    if "workflow_call" not in _triggers(doc):
+        problems.append(f"{where}, but `on:` has no `workflow_call`; {FORK_DOCS}")
+    gate = jobs.get(GATE_JOB, {})
+    if GATE_JOB not in _gate_job_names(jobs):
+        problems.append(f"{where}: its approval gate must be the job {GATE_JOB!r}, which downstream CI looks for")
+    elif SAME_REPO_GUARD not in str(gate.get("if", "")):
+        problems.append(
+            f"{where}: job {GATE_JOB!r} must skip a fork's pull_request run with "
+            f"`if: github.event_name != 'pull_request' || {SAME_REPO_GUARD}`; ci-fork.yml runs it instead"
+        )
+    for name, step in _steps(jobs):
+        uses = str(step.get("uses", ""))
+        raw_with = step.get("with")
+        with_block: dict[Any, Any] = raw_with if isinstance(raw_with, dict) else {}
+        if uses.startswith("actions/checkout@") and not with_block.get("repository"):
+            problems.append(
+                f"{where}: job {name!r} checks this repository out with actions/checkout, which under "
+                f"pull_request_target is the base branch, not the pull request; use {CHECKOUT_UNDER_TEST}"
+            )
+        elif uses.startswith(CHECKOUT_UNDER_TEST) and with_block.get(UNSAFE_CHECKOUT_INPUT) != FORK_CHECKOUT_OPT_IN:
+            problems.append(f'{where}: job {name!r} must pass {UNSAFE_CHECKOUT_INPUT}: "{FORK_CHECKOUT_OPT_IN}"')
     return problems
 
 

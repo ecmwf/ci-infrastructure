@@ -4,9 +4,10 @@
 
 name: Check out the commit under test
 description: >
-  actions/checkout of the PR merge commit when the event has one (also under
-  pull_request_target), else the default ref. This repository only; cross-repo
-  matching is actions/pick-ref.
+  actions/checkout of the PR merge commit when the event has one, else the
+  default ref. Under pull_request_target it is the PR's head commit from the
+  event: the commit that was approved, even if the fork pushes meanwhile. This
+  repository only; cross-repo matching is actions/pick-ref.
 
 inputs:
   ref:
@@ -45,7 +46,7 @@ runs:
   steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       with:
-        ref: ${{ inputs.ref || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '') }}
+        ref: ${{ inputs.ref || (github.event_name == 'pull_request_target' && github.event.pull_request.head.sha) || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number)) || '' }}
         token: ${{ inputs.token || github.token }}
         path: ${{ inputs.path }}
         fetch-depth: ${{ inputs.fetch-depth }}

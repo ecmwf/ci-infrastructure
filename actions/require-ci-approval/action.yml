@@ -9,13 +9,14 @@ description: >
   hardware or near its credentials before a maintainer has read the diff.
 
   Approved: a non-PR event, a head branch in the base repository, or a fork
-  carrying `label`. The label is single-use: deleted when honoured;
-  `synchronize`/`reopened` of a fork PR fails and deletes it too.
+  carrying `label` set by someone with write access, whose head commit has a
+  review (a comment is enough) by someone with write access. The label is
+  single-use: deleted when honoured; `synchronize`/`reopened` of a fork PR
+  fails and deletes it too.
 
   Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
-  job reports Success. The caller MUST listen for `synchronize`. Labelling
-  needs only triage, so "who may label" is "who may approve". Needs bash, jq,
-  gh and `pull-requests: write`.
+  job reports Success. The caller MUST listen for `synchronize`. Needs bash,
+  jq, gh and `pull-requests: write`.
 
 inputs:
   label:
@@ -93,6 +94,62 @@ runs:
           echo "$1"
         }
 
+        # Who set the label: the event's sender when this event set it, else the last `labeled` event.
+        labeler() {
+          if [ "$action" = labeled ] && [ "$(jq -r '.label.name // empty' "$event")" = "$label" ]; then
+            jq -r '.sender.login // empty' "$event"
+            return
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/events" \
+            --jq "map(select(.event == \"labeled\" and .label.name == \"$label\")) | last | .actor.login // empty"
+        }
+
+        permission_of() {
+          if ! gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .permission 2>/dev/null; then
+            echo "::error title=CI approval::could not look up the permission of @$1 on $GITHUB_REPOSITORY, so '$label' does not count; check this job's token." >&2
+            return 1
+          fi
+        }
+
+        refuse() {
+          if [ "$consume" = "true" ]; then
+            spend_label "Removed '$label' from #$pr_number."
+          fi
+          echo "::error title=CI approval::$1" >&2
+          exit 1
+        }
+
+        # Labelling needs only triage; approving means handing out this repository's secrets.
+        require_write_access() {
+          local who permission
+          if ! who="$(labeler)" || [ -z "$who" ]; then
+            echo "::error title=CI approval::could not tell who set '$label' on #$pr_number; re-apply the label." >&2
+            exit 1
+          fi
+          permission="$(permission_of "$who")" || exit 1
+          case "$permission" in
+            admin|maintain|write) ;;
+            *) refuse "'$label' was set by @$who, who has '${permission:-no}' access to $GITHUB_REPOSITORY; only write, maintain or admin can approve CI for a fork." ;;
+          esac
+        }
+
+        # A label names no commit; a review does: the head must be the commit someone reviewed.
+        require_review_of_head() {
+          local head reviewers who
+          head="$(jq -r '.pull_request.head.sha // empty' "$event")"
+          if ! reviewers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews" \
+                 --jq ".[] | select(.commit_id == \"$head\" and (.state == \"APPROVED\" or .state == \"COMMENTED\")) | .user.login")"; then
+            echo "::error title=CI approval::could not list the reviews of #$pr_number; check this job's token." >&2
+            exit 1
+          fi
+          for who in $(printf '%s\n' "$reviewers" | sort -u); do
+            case "$(permission_of "$who")" in
+              admin|maintain|write) return 0 ;;
+            esac
+          done
+          refuse "the head commit ${head:0:12} of #$pr_number has no review by someone with write access; review it with a comment ('Changes since your last review' shows what is new), then re-apply '$label'."
+        }
+
         event="${GITHUB_EVENT_PATH:-}"
         if [ -z "$event" ] || [ ! -f "$event" ]; then
           echo "::error title=CI approval::no event payload at \$GITHUB_EVENT_PATH." >&2
@@ -137,6 +194,8 @@ runs:
         fi
 
         if [ "$has_label" = "yes" ]; then
+          require_write_access
+          require_review_of_head
           if [ "$consume" = "true" ]; then
             spend_label "Spent the approval label on #$pr_number: it covers this run only."
           fi

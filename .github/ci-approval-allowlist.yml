@@ -10,4 +10,7 @@
 # An entry here is a claim that the job never executes pull request code.
 # Re-check that claim whenever one of these jobs gains a checkout step.
 
-exempt: []
+exempt:
+  # Reads only the pull request description; its checkout is the base branch.
+  - workflow: check-pr-declaration.yml
+    jobs: [contributor-declaration]

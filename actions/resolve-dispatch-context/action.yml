@@ -5,15 +5,27 @@
 name: Resolve the commit an orchestrator run is about
 description: >
   Resolve the head sha/branch and CI verdict for a downstream orchestrator, from
-  a workflow_run payload or, under pull_request_target, from the latest
-  completed `ci-workflow` run for the PR head. Never fails on the verdict;
-  `ci-conclusion` is empty when no completed run exists.
+  a workflow_run payload or, under a pull request event or a dispatch naming
+  `pull-request`, from the latest completed `ci-workflow` run for the PR head.
+  Never fails on the verdict; `ci-conclusion` is empty when no completed run exists.
+
+  A fork's commit has a verdict only from an approved `fork-ci-workflow` run:
+  one whose run-name names that PR and commit and whose ci-approval job passed.
+  Its `head-branch` is the PR's base branch, so fork branch names select nothing.
 
 inputs:
   ci-workflow:
     description: 'Display name of the upstream CI workflow to look for (its `name:`).'
     required: false
     default: 'CI'
+  fork-ci-workflow:
+    description: "File name of the workflow running CI for approved fork pull requests; '' when the repo takes none."
+    required: false
+    default: ''
+  pull-request:
+    description: 'Pull request number, for a dispatch; ignored for other events.'
+    required: false
+    default: ''
   token:
     description: 'Token with actions:read and pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
     required: false
@@ -35,6 +47,9 @@ outputs:
   ci-summary:
     description: 'Why a non-success conclusion is what it is, as status-description prose.'
     value: ${{ steps.ctx.outputs.ci-summary }}
+  pull-request:
+    description: "The pull request's number when it was looked up (a fork or a dispatch), else ''."
+    value: ${{ steps.ctx.outputs.pull-request }}
 
 runs:
   using: composite
@@ -44,6 +59,8 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         CI_WORKFLOW_INPUT: ${{ inputs.ci-workflow }}
+        FORK_CI_WORKFLOW_INPUT: ${{ inputs.fork-ci-workflow }}
+        PULL_REQUEST_INPUT: ${{ inputs.pull-request }}
       run: |
         set -euo pipefail
 
@@ -51,44 +68,131 @@ runs:
           echo "::error title=Dispatch context::jq is not on PATH; run this job on a runner image that has it." >&2
           exit 1
         fi
+        tmp="${RUNNER_TEMP:-/tmp}"
+
+        # The newest completed fork-CI run for PR $1 at commit $2 whose ci-approval passed.
+        # A pull_request_target run carries the base branch's commit; its run-name the PR's.
+        fork_verdict() {
+          conclusion=""
+          url=""
+          summary="No approved CI run for this commit"
+          why="no approved '${FORK_CI_WORKFLOW_INPUT}' run for #$1 at $2"
+          gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/workflows/${FORK_CI_WORKFLOW_INPUT}/runs" \
+            -f event=pull_request_target -f status=completed -f per_page=100 > "$tmp/dispatch-context-fork-runs.json"
+          while IFS=$'\t' read -r id run_conclusion run_url; do
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" > "$tmp/dispatch-context-jobs.json"
+            if jq -e 'any(.jobs[]; (.name | endswith("ci-approval")) and .conclusion == "success")' \
+                 "$tmp/dispatch-context-jobs.json" >/dev/null; then
+              conclusion="$run_conclusion"
+              url="$run_url"
+              summary=""
+              [ "$conclusion" = success ] || summary="Upstream CI failed"
+              why="approved '${FORK_CI_WORKFLOW_INPUT}' run for #$1 at $2 concluded '${conclusion}'"
+              return
+            fi
+          done < <(jq -r --arg t "#$1 @ $2" \
+            '.workflow_runs[] | select(.display_title | endswith($t)) | [.id, .conclusion, .html_url] | @tsv' \
+            "$tmp/dispatch-context-fork-runs.json")
+        }
+
+        # PR $1 (JSON file): head commit, branch and repo, base branch.
+        read_pull_request() {
+          head_sha=$(jq -r '.head.sha // ""' "$1")
+          head_branch=$(jq -r '.head.ref // ""' "$1")
+          head_repo=$(jq -r '.head.repo.full_name // ""' "$1")
+          base_ref=$(jq -r '.base.ref // ""' "$1")
+        }
 
         summary=""
+        pull_request=""
+        base_ref=""
         if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
           head_sha=$(jq -r '.workflow_run.head_sha // ""' "$GITHUB_EVENT_PATH")
           head_branch=$(jq -r '.workflow_run.head_branch // ""' "$GITHUB_EVENT_PATH")
+          head_repo=$(jq -r '.workflow_run.head_repository.full_name // ""' "$GITHUB_EVENT_PATH")
+          run_path=$(jq -r '.workflow_run.path // ""' "$GITHUB_EVENT_PATH")
           conclusion=$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")
           url=$(jq -r '.workflow_run.html_url // ""' "$GITHUB_EVENT_PATH")
           why="workflow_run: CI concluded '${conclusion}'"
           [ "$conclusion" = success ] || summary="Upstream CI failed"
+          if [ -n "$FORK_CI_WORKFLOW_INPUT" ] && [ "${run_path##*/}" = "$FORK_CI_WORKFLOW_INPUT" ]; then
+            title=$(jq -r '.workflow_run.display_title // ""' "$GITHUB_EVENT_PATH")
+            if ! [[ "$title" =~ \#([0-9]+)\ @\ ([0-9a-f]{40})$ ]]; then
+              echo "::error title=Dispatch context::cannot read the pull request from run-name '${title}'." >&2
+              exit 1
+            fi
+            pull_request="${BASH_REMATCH[1]}"
+            gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pull_request}" > "$tmp/dispatch-context-pr.json"
+            read_pull_request "$tmp/dispatch-context-pr.json"
+            if [ "$(jq -r '.state' "$tmp/dispatch-context-pr.json")" != open ] || [ "$head_sha" != "${BASH_REMATCH[2]}" ]; then
+              conclusion=""
+              summary=""
+              why="workflow_run: #${pull_request} is closed or has moved on from ${BASH_REMATCH[2]}; nothing to do"
+            else
+              fork_verdict "$pull_request" "$head_sha"
+            fi
+          elif [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            conclusion=""
+            summary=""
+            why="workflow_run: CI of a fork's commit outside '${FORK_CI_WORKFLOW_INPUT:-fork CI}'; nothing to do"
+          fi
         else
-          head_sha=$(jq -r '.pull_request.head.sha // ""' "$GITHUB_EVENT_PATH")
-          head_branch=$(jq -r '.pull_request.head.ref // ""' "$GITHUB_EVENT_PATH")
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if ! [[ "${PULL_REQUEST_INPUT:-}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error title=Dispatch context::a dispatch needs the pull request number, got '${PULL_REQUEST_INPUT:-}'." >&2
+              exit 1
+            fi
+            pull_request="$PULL_REQUEST_INPUT"
+            gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pull_request}" > "$tmp/dispatch-context-pr.json"
+            if [ "$(jq -r '.state' "$tmp/dispatch-context-pr.json")" != open ]; then
+              echo "::error title=Dispatch context::pull request #${pull_request} is not open." >&2
+              exit 1
+            fi
+            read_pull_request "$tmp/dispatch-context-pr.json"
+          else
+            jq '.pull_request // {}' "$GITHUB_EVENT_PATH" > "$tmp/dispatch-context-pr.json"
+            read_pull_request "$tmp/dispatch-context-pr.json"
+          fi
           if [ -z "$head_sha" ]; then
             echo "::error title=Dispatch context::${GITHUB_EVENT_NAME} carries no pull request head SHA." >&2
             exit 1
           fi
 
-          # Completed runs only: an in-flight CI has no verdict yet, and treating
-          # it as a failure would post a red status the finishing run never clears.
-          runs="${RUNNER_TEMP:-/tmp}/dispatch-context-runs.json"
-          gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
-            -f "head_sha=${head_sha}" -f status=completed -f per_page=100 > "$runs"
-
-          # Newest first: the first match is the standing verdict, re-runs included.
-          match=$(jq -r --arg w "$CI_WORKFLOW_INPUT" \
-            'first(.workflow_runs[] | select(.name == $w)) // empty' "$runs")
-          if [ -n "$match" ]; then
-            conclusion=$(printf '%s' "$match" | jq -r '.conclusion // ""')
-            url=$(printf '%s' "$match" | jq -r '.html_url // ""')
-            why="${GITHUB_EVENT_NAME}: latest completed '${CI_WORKFLOW_INPUT}' for ${head_sha} concluded '${conclusion}'"
-            [ "$conclusion" = success ] || summary="Upstream CI failed"
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            pull_request=$(jq -r '.number // ""' "$tmp/dispatch-context-pr.json")
+            if [ -n "$FORK_CI_WORKFLOW_INPUT" ]; then
+              fork_verdict "$pull_request" "$head_sha"
+            else
+              conclusion=""
+              url=""
+              summary="Fork pull requests are not enabled"
+              why="${GITHUB_EVENT_NAME}: a fork's pull request, and this repository takes none"
+            fi
           else
-            conclusion=""
-            url=""
-            why="${GITHUB_EVENT_NAME}: no completed '${CI_WORKFLOW_INPUT}' run for ${head_sha}"
-            summary="No successful CI run for this commit"
+            # Completed runs only: an in-flight CI has no verdict yet, and treating
+            # it as a failure would post a red status the finishing run never clears.
+            runs="$tmp/dispatch-context-runs.json"
+            gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+              -f "head_sha=${head_sha}" -f status=completed -f per_page=100 > "$runs"
+
+            # Newest first: the first match is the standing verdict, re-runs included.
+            match=$(jq -r --arg w "$CI_WORKFLOW_INPUT" \
+              'first(.workflow_runs[] | select(.name == $w)) // empty' "$runs")
+            if [ -n "$match" ]; then
+              conclusion=$(printf '%s' "$match" | jq -r '.conclusion // ""')
+              url=$(printf '%s' "$match" | jq -r '.html_url // ""')
+              why="${GITHUB_EVENT_NAME}: latest completed '${CI_WORKFLOW_INPUT}' for ${head_sha} concluded '${conclusion}'"
+              [ "$conclusion" = success ] || summary="Upstream CI failed"
+            else
+              conclusion=""
+              url=""
+              why="${GITHUB_EVENT_NAME}: no completed '${CI_WORKFLOW_INPUT}' run for ${head_sha}"
+              summary="No successful CI run for this commit"
+            fi
           fi
         fi
+
+        if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then head_branch="$base_ref"; fi
 
         {
           echo "head-sha=$head_sha"
@@ -96,5 +200,6 @@ runs:
           echo "ci-conclusion=$conclusion"
           echo "ci-url=$url"
           echo "ci-summary=$summary"
+          echo "pull-request=$pull_request"
         } >> "$GITHUB_OUTPUT"
         echo "Dispatch context: $why"
