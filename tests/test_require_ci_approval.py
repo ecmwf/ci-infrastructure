@@ -18,6 +18,8 @@ from conftest import action_run_body, stub_gh
 LABEL: Final = "approved-for-ci"
 BASE: Final = "ecmwf/eckit"
 FORK: Final = "outsider/eckit"
+HEAD: Final = "a" * 40
+REVIEWED: Final = [{"user": {"login": "maintainer"}, "commit_id": HEAD, "state": "COMMENTED"}]
 
 
 def _payload(*, action: str, head_repo: str | None, labels: list[str], sender: str = "maintainer") -> dict[str, Any]:
@@ -28,7 +30,7 @@ def _payload(*, action: str, head_repo: str | None, labels: list[str], sender: s
         **({"label": {"name": labels[0]}} if action == "labeled" and labels else {}),
         "pull_request": {
             "number": 42,
-            "head": {"repo": None if head_repo is None else {"full_name": head_repo}},
+            "head": {"sha": HEAD, "repo": None if head_repo is None else {"full_name": head_repo}},
             "base": {"repo": {"full_name": BASE}},
             "labels": [{"name": n} for n in labels],
         },
@@ -57,19 +59,34 @@ def _run(
     *,
     gh_fails: bool = False,
     inputs: dict[str, str] | None = None,
-    permission: str = "write",
+    permissions: dict[str, str] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
     last_labeler: str = "maintainer",
 ) -> Result:
-    """`payload=None` is a non-pull-request event (workflow_run, schedule)."""
+    """`payload=None` is a non-pull-request event (workflow_run, schedule).
+
+    The stub `gh` answers from JSON and applies the real `--jq`; a user missing from `permissions` 404s.
+    """
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload if payload is not None else {"action": "completed"}))
+    perms = {"maintainer": "write", "lead": "admin"} if permissions is None else permissions
+    for name, body in {
+        "reviews": REVIEWED if reviews is None else reviews,
+        "events": [{"event": "labeled", "label": {"name": LABEL}, "actor": {"login": last_labeler}}],
+    }.items():
+        (tmp_path / f"{name}.json").write_text(json.dumps(body))
+    for user, permission in perms.items():
+        (tmp_path / f"perm-{user}.json").write_text(json.dumps({"permission": permission}))
     gh_log = tmp_path / "gh-calls.log"
     bindir = stub_gh(
         tmp_path,
         f'printf "%s\\n" "$*" >> {gh_log}\n'
+        'filter=.; prev=""; for a in "$@"; do [ "$prev" = --jq ] && filter="$a"; prev="$a"; done\n'
         'case "$*" in\n'
-        f'  *"/permission"*) [ -n "{permission}" ] || exit 1; echo "{permission}" ;;\n'
-        f'  *"/events"*) echo "{last_labeler}" ;;\n'
+        '  *"/permission"*) user="${2#*/collaborators/}"; user="${user%/permission}"\n'
+        f'    [ -f {tmp_path}/perm-"$user".json ] || exit 1; jq -r "$filter" {tmp_path}/perm-"$user".json ;;\n'
+        f'  *"/reviews"*) jq -r "$filter" {tmp_path}/reviews.json ;;\n'
+        f'  *"/events"*) jq -r "$filter" {tmp_path}/events.json ;;\n'
         f"  *) exit {1 if gh_fails else 0} ;;\n"
         "esac",
     )
@@ -193,7 +210,9 @@ def test_a_non_boolean_input_stops_the_workflow(tmp_path: Path, value: str) -> N
 @pytest.mark.parametrize("permission", ["triage", "read", "none"])
 def test_a_label_from_someone_without_write_access_does_not_approve(tmp_path: Path, permission: str) -> None:
     r = _run(
-        tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="helper"), permission=permission
+        tmp_path,
+        _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="helper"),
+        permissions={"helper": permission, "maintainer": "write"},
     )
     assert r.code == 1
     assert (
@@ -220,7 +239,7 @@ def test_otherwise_the_labeler_comes_from_the_label_history(tmp_path: Path) -> N
 
 
 def test_a_failed_permission_lookup_says_so(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), permission="")
+    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), permissions={})
     assert r.code == 1
     assert "could not look up the permission of @maintainer" in r.err
     assert _deletes(r) == []
@@ -230,3 +249,32 @@ def test_a_same_repo_branch_needs_no_permission_lookup(tmp_path: Path) -> None:
     r = _run(tmp_path, _payload(action="labeled", head_repo=BASE, labels=[LABEL], sender="anyone"))
     assert r.code == 0
     assert r.gh_calls == []
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        {"user": {"login": "maintainer"}, "commit_id": "b" * 40, "state": "APPROVED"},
+        {"user": {"login": "helper"}, "commit_id": HEAD, "state": "APPROVED"},
+        {"user": {"login": "maintainer"}, "commit_id": HEAD, "state": "CHANGES_REQUESTED"},
+    ],
+    ids=["older-commit", "reviewer-without-write", "changes-requested"],
+)
+def test_the_head_commit_needs_a_review_by_someone_with_write_access(tmp_path: Path, review: dict[str, Any]) -> None:
+    """A label names no commit: one pushed between the review and the label is not approved."""
+    r = _run(
+        tmp_path,
+        _payload(action="labeled", head_repo=FORK, labels=[LABEL]),
+        permissions={"maintainer": "write", "helper": "triage"},
+        reviews=[review],
+    )
+    assert r.code == 1
+    assert f"the head commit {HEAD[:12]} of #42 has no review by someone with write access" in r.err
+    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
+
+
+@pytest.mark.parametrize("state", ["APPROVED", "COMMENTED"])
+def test_an_approving_or_commenting_review_of_the_head_counts(tmp_path: Path, state: str) -> None:
+    review = {"user": {"login": "lead"}, "commit_id": HEAD, "state": state}
+    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), reviews=[review])
+    assert (r.code, r.reason) == (0, "approved")

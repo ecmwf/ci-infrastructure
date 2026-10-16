@@ -47,10 +47,13 @@ the ``check-ci-approval`` pre-commit hook fails until they are in.
 How a fork pull request runs
 ----------------------------
 
-1. A maintainer reads the change and sets ``approved-for-ci``.
+1. A maintainer reads the change, submits a review of it (approve or comment), and sets ``approved-for-ci``.
    The label starts ``CI (fork)``; there is nothing to re-run.
-   It only counts when set by someone with write access or more:
-   the triage role can set labels too, but cannot approve.
+   It only counts when set by someone with write access or more
+   (the triage role can set labels too, but cannot approve),
+   and when the pull request's head commit is the one such a person reviewed:
+   a label names no commit, a review does.
+   After a new push, review the new commits (GitHub's *Changes since your last review*) before labelling again.
 2. :action:`require-ci-approval` in ``ci.yml`` spends the label, so it approves exactly one commit.
    A push to the pull request removes a leftover label and runs nothing.
 3. The jobs check out the approved head commit with :action:`checkout-under-test`,
