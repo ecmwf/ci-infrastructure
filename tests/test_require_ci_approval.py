@@ -15,266 +15,100 @@ from typing import Any, Final
 import pytest
 from conftest import action_run_body, stub_gh
 
-LABEL: Final = "approved-for-ci"
 BASE: Final = "ecmwf/eckit"
 FORK: Final = "outsider/eckit"
 HEAD: Final = "a" * 40
-REVIEWED: Final = [{"user": {"login": "maintainer"}, "commit_id": HEAD, "state": "COMMENTED"}]
+PERMISSIONS: Final = {"maintainer": "write", "lead": "admin", "helper": "triage", "outsider": "read"}
 
 
-def _payload(*, action: str, head_repo: str | None, labels: list[str], sender: str = "maintainer") -> dict[str, Any]:
-    """A `labeled` event sets the first of `labels`."""
+def _payload(head_repo: str | None) -> dict[str, Any]:
     return {
-        "action": action,
-        "sender": {"login": sender},
-        **({"label": {"name": labels[0]}} if action == "labeled" and labels else {}),
+        "action": "synchronize",
         "pull_request": {
             "number": 42,
             "head": {"sha": HEAD, "repo": None if head_repo is None else {"full_name": head_repo}},
             "base": {"repo": {"full_name": BASE}},
-            "labels": [{"name": n} for n in labels],
         },
     }
 
 
-class Result:
-    def __init__(self, proc: subprocess.CompletedProcess[str], gh_log: Path, outputs: Path) -> None:
-        self.code = proc.returncode
-        self.out = proc.stdout
-        self.err = proc.stderr
-        self.gh_calls = gh_log.read_text().splitlines() if gh_log.exists() else []
-        self.outputs = outputs.read_text() if outputs.exists() else ""
-
-    @property
-    def reason(self) -> str | None:
-        for line in self.outputs.splitlines():
-            if line.startswith("reason="):
-                return line.removeprefix("reason=")
-        return None
-
-
 def _run(
-    tmp_path: Path,
-    payload: dict[str, Any] | None,
-    *,
-    gh_fails: bool = False,
-    inputs: dict[str, str] | None = None,
-    permissions: dict[str, str] | None = None,
-    reviews: list[dict[str, Any]] | None = None,
-    last_labeler: str = "maintainer",
-) -> Result:
-    """`payload=None` is a non-pull-request event (workflow_run, schedule).
-
-    The stub `gh` answers from JSON and applies the real `--jq`; a user missing from `permissions` 404s.
-    """
+    tmp_path: Path, payload: dict[str, Any] | None, *, actor: str = "outsider", inputs: dict[str, str] | None = None
+) -> tuple[int, str | None, str, list[str]]:
+    """`payload=None` is a non-pull-request event; a user missing from PERMISSIONS 404s."""
+    tmp_path.mkdir(exist_ok=True)
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload if payload is not None else {"action": "completed"}))
-    perms = {"maintainer": "write", "lead": "admin"} if permissions is None else permissions
-    for name, body in {
-        "reviews": REVIEWED if reviews is None else reviews,
-        "events": [{"event": "labeled", "label": {"name": LABEL}, "actor": {"login": last_labeler}}],
-    }.items():
-        (tmp_path / f"{name}.json").write_text(json.dumps(body))
-    for user, permission in perms.items():
-        (tmp_path / f"perm-{user}.json").write_text(json.dumps({"permission": permission}))
-    gh_log = tmp_path / "gh-calls.log"
-    bindir = stub_gh(
-        tmp_path,
-        f'printf "%s\\n" "$*" >> {gh_log}\n'
-        'filter=.; prev=""; for a in "$@"; do [ "$prev" = --jq ] && filter="$a"; prev="$a"; done\n'
-        'case "$*" in\n'
-        '  *"/permission"*) user="${2#*/collaborators/}"; user="${user%/permission}"\n'
-        f'    [ -f {tmp_path}/perm-"$user".json ] || exit 1; jq -r "$filter" {tmp_path}/perm-"$user".json ;;\n'
-        f'  *"/reviews"*) jq -r "$filter" {tmp_path}/reviews.json ;;\n'
-        f'  *"/events"*) jq -r "$filter" {tmp_path}/events.json ;;\n'
-        f"  *) exit {1 if gh_fails else 0} ;;\n"
-        "esac",
+    for user, permission in PERMISSIONS.items():
+        (tmp_path / f"perm-{user}").write_text(permission)
+    log = tmp_path / "gh-calls.log"
+    gh = (
+        f'printf "%s\\n" "$*" >> {log}\n'
+        'user="${2#*/collaborators/}"; user="${user%/permission}"\n'
+        f'[ -f {tmp_path}/perm-"$user" ] || exit 1; cat {tmp_path}/perm-"$user"'
     )
     outputs = tmp_path / "outputs.txt"
     env = {
         **os.environ,
-        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "PATH": f"{stub_gh(tmp_path, gh)}:{os.environ['PATH']}",
         "GITHUB_EVENT_PATH": str(event),
         "GITHUB_OUTPUT": str(outputs),
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
         "GITHUB_REPOSITORY": BASE,
-        "LABEL_INPUT": "",
-        "CONSUME_INPUT": "",
+        "GITHUB_TRIGGERING_ACTOR": actor,
         "TRUST_SAME_REPO_INPUT": "",
         **(inputs or {}),
     }
     proc = subprocess.run(
         ["bash", "-c", action_run_body("require-ci-approval")], env=env, capture_output=True, text=True, check=False
     )
-    return Result(proc, gh_log, outputs)
+    reasons = [ln.removeprefix("reason=") for ln in outputs.read_text().splitlines()] if outputs.exists() else []
+    calls = log.read_text().splitlines() if log.exists() else []
+    return proc.returncode, (reasons[0] if reasons else None), proc.stderr, calls
 
 
-def _deletes(result: Result) -> list[str]:
-    return [c for c in result.gh_calls if c.startswith("api -X DELETE")]
+def test_a_non_pull_request_event_passes(tmp_path: Path) -> None:
+    assert _run(tmp_path, None)[:2] == (0, "not-a-pull-request")
 
 
-def test_a_non_pull_request_event_passes_untouched(tmp_path: Path) -> None:
-    r = _run(tmp_path, None)
-    assert r.code == 0
-    assert r.reason == "not-a-pull-request"
-    assert _deletes(r) == []
+def test_a_branch_in_the_base_repo_passes_without_a_lookup(tmp_path: Path) -> None:
+    code, reason, _, calls = _run(tmp_path, _payload(BASE))
+    assert (code, reason, calls) == (0, "same-repo", [])
 
 
-def test_a_branch_in_the_base_repo_passes_untouched(tmp_path: Path) -> None:
-    """Pushing there already needed write access, so no label is spent."""
-    r = _run(tmp_path, _payload(action="opened", head_repo=BASE, labels=[LABEL]))
-    assert r.code == 0
-    assert r.reason == "same-repo"
-    assert _deletes(r) == []
+def test_trust_same_repo_false_demands_a_maintainers_run_from_everyone(tmp_path: Path) -> None:
+    strict = {"TRUST_SAME_REPO_INPUT": "false"}
+    assert _run(tmp_path / "outsider", _payload(BASE), inputs=strict)[0] == 1
+    assert _run(tmp_path / "maintainer", _payload(BASE), actor="maintainer", inputs=strict)[0] == 0
 
 
-def test_trust_same_repo_false_demands_the_label_from_everyone(tmp_path: Path) -> None:
-    r = _run(
-        tmp_path,
-        _payload(action="opened", head_repo=BASE, labels=[]),
-        inputs={"TRUST_SAME_REPO_INPUT": "false"},
-    )
-    assert r.code == 1
+@pytest.mark.parametrize("head_repo", [FORK, None], ids=["fork", "deleted-fork"])
+def test_the_forks_own_run_fails_and_says_how_to_approve(tmp_path: Path, head_repo: str | None) -> None:
+    code, reason, err, _ = _run(tmp_path, _payload(head_repo))
+    assert (code, reason) == (1, None)
+    assert f"a maintainer must read commit {HEAD[:12]} and re-run this run" in err
+    assert "Re-run all jobs" in (tmp_path / "summary.md").read_text()
 
 
-def test_an_approved_fork_passes_and_the_label_is_deleted(tmp_path: Path) -> None:
-    """One approval buys one run."""
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL, "bug"]))
-    assert r.code == 0
-    assert r.reason == "approved"
-    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
+@pytest.mark.parametrize("actor", ["maintainer", "lead"])
+def test_a_re_run_by_someone_with_write_access_approves(tmp_path: Path, actor: str) -> None:
+    code, reason, _, calls = _run(tmp_path, _payload(FORK), actor=actor)
+    assert (code, reason) == (0, "approved")
+    assert calls == [f"api repos/{BASE}/collaborators/{actor}/permission --jq .permission"]
 
 
-def test_the_label_name_is_url_encoded(tmp_path: Path) -> None:
-    r = _run(
-        tmp_path,
-        _payload(action="labeled", head_repo=FORK, labels=["ready for CI/HPC"]),
-        inputs={"LABEL_INPUT": "ready for CI/HPC"},
-    )
-    assert r.code == 0
-    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/ready%20for%20CI%2FHPC"]
+def test_a_re_run_by_someone_without_write_access_does_not(tmp_path: Path) -> None:
+    assert _run(tmp_path, _payload(FORK), actor="helper")[0] == 1
 
 
-def test_a_failed_delete_fails_the_job(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), gh_fails=True)
-    assert r.code == 1
-    assert "could not remove the approval label" in r.err
-    assert r.reason is None
-
-
-def test_consume_label_false_leaves_the_label_alone(tmp_path: Path) -> None:
-    r = _run(
-        tmp_path,
-        _payload(action="labeled", head_repo=FORK, labels=[LABEL]),
-        inputs={"CONSUME_INPUT": "false"},
-    )
-    assert r.code == 0
-    assert r.reason == "approved"
-    assert _deletes(r) == []
-
-
-@pytest.mark.parametrize(("head_repo", "labels"), [(FORK, ["bug"]), (None, [])], ids=["fork", "deleted-fork"])
-def test_an_unapproved_fork_fails(tmp_path: Path, head_repo: str | None, labels: list[str]) -> None:
-    r = _run(tmp_path, _payload(action="opened", head_repo=head_repo, labels=labels))
-    assert r.code == 1
-    assert r.reason is None
-
-
-@pytest.mark.parametrize("action", ["synchronize", "reopened"])
-def test_a_push_fails_and_sweeps_up_a_leftover_label(tmp_path: Path, action: str) -> None:
-    """A leftover label means the run that should have spent it was cancelled."""
-    r = _run(tmp_path, _payload(action=action, head_repo=FORK, labels=[LABEL]))
-    assert r.code == 1
-    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
-
-
-@pytest.mark.parametrize("action", ["synchronize", "reopened"])
-def test_a_push_fails_from_the_payload_alone(tmp_path: Path, action: str) -> None:
-    r = _run(tmp_path, _payload(action=action, head_repo=FORK, labels=[]), gh_fails=True)
-    assert r.code == 1
-    assert _deletes(r) == []
+def test_a_failed_permission_lookup_says_so(tmp_path: Path) -> None:
+    code, _, err, _ = _run(tmp_path, _payload(FORK), actor="stranger")
+    assert code == 1
+    assert "could not look up the permission of @stranger" in err
 
 
 @pytest.mark.parametrize("value", ["yes", "True ", "1"])
 def test_a_non_boolean_input_stops_the_workflow(tmp_path: Path, value: str) -> None:
-    r = _run(
-        tmp_path,
-        _payload(action="labeled", head_repo=FORK, labels=[LABEL]),
-        inputs={"CONSUME_INPUT": value},
-    )
-    assert r.code == 1
-    assert "must be 'true' or 'false'" in r.err
-    assert _deletes(r) == []
-
-
-@pytest.mark.parametrize("permission", ["triage", "read", "none"])
-def test_a_label_from_someone_without_write_access_does_not_approve(tmp_path: Path, permission: str) -> None:
-    r = _run(
-        tmp_path,
-        _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="helper"),
-        permissions={"helper": permission, "maintainer": "write"},
-    )
-    assert r.code == 1
-    assert (
-        f"'{LABEL}' was set by @helper, who has '{permission}' access to {BASE}; "
-        "only write, maintain or admin can approve CI for a fork."
-    ) in r.err
-    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
-    assert r.reason is None
-
-
-def test_the_labeler_is_the_sender_of_the_labeled_event(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL], sender="lead"))
-    assert r.code == 0
-    assert f"api repos/{BASE}/collaborators/lead/permission --jq .permission" in r.gh_calls
-    assert not any("/events" in c for c in r.gh_calls)
-
-
-def test_otherwise_the_labeler_comes_from_the_label_history(tmp_path: Path) -> None:
-    """E.g. another label was set after the approval: that event's sender did not approve."""
-    payload = _payload(action="labeled", head_repo=FORK, labels=["run-downstream-ci:1", LABEL], sender="other")
-    r = _run(tmp_path, payload, last_labeler="lead")
-    assert r.code == 0
-    assert f"api repos/{BASE}/collaborators/lead/permission --jq .permission" in r.gh_calls
-
-
-def test_a_failed_permission_lookup_says_so(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), permissions={})
-    assert r.code == 1
-    assert "could not look up the permission of @maintainer" in r.err
-    assert _deletes(r) == []
-
-
-def test_a_same_repo_branch_needs_no_permission_lookup(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(action="labeled", head_repo=BASE, labels=[LABEL], sender="anyone"))
-    assert r.code == 0
-    assert r.gh_calls == []
-
-
-@pytest.mark.parametrize(
-    "review",
-    [
-        {"user": {"login": "maintainer"}, "commit_id": "b" * 40, "state": "APPROVED"},
-        {"user": {"login": "helper"}, "commit_id": HEAD, "state": "APPROVED"},
-        {"user": {"login": "maintainer"}, "commit_id": HEAD, "state": "CHANGES_REQUESTED"},
-    ],
-    ids=["older-commit", "reviewer-without-write", "changes-requested"],
-)
-def test_the_head_commit_needs_a_review_by_someone_with_write_access(tmp_path: Path, review: dict[str, Any]) -> None:
-    """A label names no commit: one pushed between the review and the label is not approved."""
-    r = _run(
-        tmp_path,
-        _payload(action="labeled", head_repo=FORK, labels=[LABEL]),
-        permissions={"maintainer": "write", "helper": "triage"},
-        reviews=[review],
-    )
-    assert r.code == 1
-    assert f"the head commit {HEAD[:12]} of #42 has no review by someone with write access" in r.err
-    assert _deletes(r) == [f"api -X DELETE repos/{BASE}/issues/42/labels/{LABEL}"]
-
-
-@pytest.mark.parametrize("state", ["APPROVED", "COMMENTED"])
-def test_an_approving_or_commenting_review_of_the_head_counts(tmp_path: Path, state: str) -> None:
-    review = {"user": {"login": "lead"}, "commit_id": HEAD, "state": state}
-    r = _run(tmp_path, _payload(action="labeled", head_repo=FORK, labels=[LABEL]), reviews=[review])
-    assert (r.code, r.reason) == (0, "approved")
+    code, _, err, _ = _run(tmp_path, _payload(FORK), inputs={"TRUST_SAME_REPO_INPUT": value})
+    assert code == 1
+    assert "must be 'true' or 'false'" in err

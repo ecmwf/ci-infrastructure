@@ -96,6 +96,7 @@ ghactions_groups = [
         [
             "require-ci-approval",
             "require-label-decision",
+            "dispatch-downstream",
             "should-downstream-run",
             "check-pr-declaration",
         ],

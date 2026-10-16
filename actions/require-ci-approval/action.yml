@@ -8,35 +8,23 @@ description: >
   `pull_request_target` workflow cannot run outside code on self-hosted
   hardware or near its credentials before a maintainer has read the diff.
 
-  Approved: a non-PR event, a head branch in the base repository, or a fork
-  carrying `label` set by someone with write access, whose head commit has a
-  review (a comment is enough) by someone with write access. The label is
-  single-use: deleted when honoured; `synchronize`/`reopened` of a fork PR
-  fails and deletes it too.
+  Approved: a non-PR event, a head branch in the base repository, or a run
+  started by someone with write access. For a fork, that is a maintainer
+  re-running the failed run: a re-run keeps its event, so it approves exactly
+  the commit that run is for.
 
   Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
-  job reports Success. The caller MUST listen for `synchronize`. Needs bash,
-  jq, gh and `pull-requests: write`.
+  job reports Success. Needs bash, jq and gh.
 
 inputs:
-  label:
-    description: 'Label that grants approval for one run.'
-    required: false
-    default: 'approved-for-ci'
-  consume-label:
-    description: >
-      'true': delete the label when honoured and fail `synchronize`/`reopened`
-      of a fork PR. 'false' makes one approval cover every future push.
-    required: false
-    default: 'true'
   trust-same-repo:
     description: >
       'true' treats a head branch in the base repository as approved; 'false'
-      demands the label from everyone.
+      demands a maintainer's run from everyone.
     required: false
     default: 'true'
   token:
-    description: 'Token with pull-requests:write, used only to delete the label. Defaults to github.token.'
+    description: 'Token to look up the permission of whoever started the run. Defaults to github.token.'
     required: false
     default: ''
 
@@ -53,101 +41,23 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
-        LABEL_INPUT: ${{ inputs.label }}
-        CONSUME_INPUT: ${{ inputs.consume-label }}
         TRUST_SAME_REPO_INPUT: ${{ inputs.trust-same-repo }}
       run: |
         set -euo pipefail
 
-        label="${LABEL_INPUT:-approved-for-ci}"
-
-        # A typo must fail, not pick the permissive branch.
-        parse_bool() {
-          case "$2" in
-            ''|true|TRUE|True) printf 'true' ;;
-            false|FALSE|False) printf 'false' ;;
-            *)
-              echo "::error title=CI approval::input '$1' must be 'true' or 'false', got '$2'." >&2
-              exit 1
-              ;;
-          esac
-        }
-        consume="$(parse_bool consume-label "${CONSUME_INPUT:-}")"
-        trust_same_repo="$(parse_bool trust-same-repo "${TRUST_SAME_REPO_INPUT:-}")"
+        case "${TRUST_SAME_REPO_INPUT:-}" in
+          ''|true|TRUE|True) trust_same_repo=true ;;
+          false|FALSE|False) trust_same_repo=false ;;
+          *)
+            echo "::error title=CI approval::input 'trust-same-repo' must be 'true' or 'false', got '$TRUST_SAME_REPO_INPUT'." >&2
+            exit 1
+            ;;
+        esac
 
         pass() {
           echo "reason=$1" >> "$GITHUB_OUTPUT"
           echo "CI approval: $1"
           exit 0
-        }
-
-        # Fails loudly: a silently kept label is a live approval for the next push.
-        spend_label() {
-          # @uri, not the raw name: labels may contain spaces and slashes.
-          local encoded
-          encoded="$(printf '%s' "$label" | jq -sRr @uri)"
-          if ! gh api -X DELETE \
-               "repos/$GITHUB_REPOSITORY/issues/$pr_number/labels/$encoded" >/dev/null 2>&1; then
-            echo "::error title=CI approval::could not remove the approval label from #$pr_number. Grant this job 'pull-requests: write', or set consume-label: 'false' if that is really what you want." >&2
-            exit 1
-          fi
-          echo "$1"
-        }
-
-        # Who set the label: the event's sender when this event set it, else the last `labeled` event.
-        labeler() {
-          if [ "$action" = labeled ] && [ "$(jq -r '.label.name // empty' "$event")" = "$label" ]; then
-            jq -r '.sender.login // empty' "$event"
-            return
-          fi
-          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/events" \
-            --jq "map(select(.event == \"labeled\" and .label.name == \"$label\")) | last | .actor.login // empty"
-        }
-
-        permission_of() {
-          if ! gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .permission 2>/dev/null; then
-            echo "::error title=CI approval::could not look up the permission of @$1 on $GITHUB_REPOSITORY, so '$label' does not count; check this job's token." >&2
-            return 1
-          fi
-        }
-
-        refuse() {
-          if [ "$consume" = "true" ]; then
-            spend_label "Removed '$label' from #$pr_number."
-          fi
-          echo "::error title=CI approval::$1" >&2
-          exit 1
-        }
-
-        # Labelling needs only triage; approving means handing out this repository's secrets.
-        require_write_access() {
-          local who permission
-          if ! who="$(labeler)" || [ -z "$who" ]; then
-            echo "::error title=CI approval::could not tell who set '$label' on #$pr_number; re-apply the label." >&2
-            exit 1
-          fi
-          permission="$(permission_of "$who")" || exit 1
-          case "$permission" in
-            admin|maintain|write) ;;
-            *) refuse "'$label' was set by @$who, who has '${permission:-no}' access to $GITHUB_REPOSITORY; only write, maintain or admin can approve CI for a fork." ;;
-          esac
-        }
-
-        # A label names no commit; a review does: the head must be the commit someone reviewed.
-        require_review_of_head() {
-          local head reviewers who
-          head="$(jq -r '.pull_request.head.sha // empty' "$event")"
-          if ! reviewers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews" \
-                 --jq ".[] | select(.commit_id == \"$head\" and (.state == \"APPROVED\" or .state == \"COMMENTED\")) | .user.login")"; then
-            echo "::error title=CI approval::could not list the reviews of #$pr_number; check this job's token." >&2
-            exit 1
-          fi
-          for who in $(printf '%s\n' "$reviewers" | sort -u); do
-            case "$(permission_of "$who")" in
-              admin|maintain|write) return 0 ;;
-            esac
-          done
-          refuse "the head commit ${head:0:12} of #$pr_number has no review by someone with write access; review it with a comment ('Changes since your last review' shows what is new), then re-apply '$label'."
         }
 
         event="${GITHUB_EVENT_PATH:-}"
@@ -169,45 +79,31 @@ runs:
 
         head_repo="$(jq -r '.pull_request.head.repo.full_name // empty' "$event")"
         base_repo="$(jq -r '.pull_request.base.repo.full_name // empty' "$event")"
-        action="$(jq -r '.action // empty' "$event")"
-        has_label="$(jq -r --arg l "$label" \
-          '[.pull_request.labels[]?.name] | index($l) | if . == null then "no" else "yes" end' "$event")"
+        head_sha="$(jq -r '.pull_request.head.sha // empty' "$event")"
 
         # A deleted fork leaves head.repo null: treated as a fork (fail closed).
         if [ -n "$head_repo" ] && [ "$head_repo" = "$base_repo" ] && [ "$trust_same_repo" = "true" ]; then
           pass same-repo
         fi
 
-        # A label still here was never spent; delete it before failing.
-        if [ "$consume" = "true" ] && { [ "$action" = "synchronize" ] || [ "$action" = "reopened" ]; }; then
-          if [ "$has_label" = "yes" ]; then
-            spend_label "Removed a leftover approval label from #$pr_number: the head commit changed before it was spent."
+        # The first run is started by the fork's own push; a re-run, by whoever clicked it.
+        who="${GITHUB_TRIGGERING_ACTOR:-}"
+        if [ -n "$who" ]; then
+          if ! permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$who/permission" --jq .permission 2>/dev/null)"; then
+            echo "::error title=CI approval::could not look up the permission of @$who on $GITHUB_REPOSITORY; check this job's token." >&2
+            exit 1
           fi
-          {
-            echo "### CI approval required"
-            echo
-            echo "The head commit of this pull request changed, so its earlier approval no longer applies."
-            printf "A maintainer must review the new commits and re-apply the '%s' label.\n" "$label"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=CI approval::new commits need a fresh approval; a maintainer must re-apply the approval label after reviewing them." >&2
-          exit 1
-        fi
-
-        if [ "$has_label" = "yes" ]; then
-          require_write_access
-          require_review_of_head
-          if [ "$consume" = "true" ]; then
-            spend_label "Spent the approval label on #$pr_number: it covers this run only."
-          fi
-          pass approved
+          case "$permission" in
+            admin|maintain|write) pass approved ;;
+          esac
         fi
 
         {
           echo "### CI approval required"
           echo
           echo "This pull request comes from a fork, and the jobs behind this gate run its code"
-          echo "with repository secrets. A maintainer must read the diff and apply the"
-          printf "'%s' label before they will run.\n" "$label"
+          echo "with repository secrets. A maintainer must read commit \`${head_sha:0:12}\`, then"
+          echo "re-run this run (*Re-run all jobs*) to approve it. A new push needs a new review and re-run."
         } >> "$GITHUB_STEP_SUMMARY"
-        echo "::error title=CI approval::this fork pull request is not approved to run CI; a maintainer must apply the approval label after reviewing the diff." >&2
+        echo "::error title=CI approval::this fork pull request is not approved to run CI; a maintainer must read commit ${head_sha:0:12} and re-run this run." >&2
         exit 1

@@ -68,7 +68,6 @@ FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
 )
-APPROVAL_LABEL: Final = "approved-for-ci"
 
 
 def _normalise_header(header: str) -> str:
@@ -1247,13 +1246,13 @@ def render_orchestrator_workflow(
     jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
     jobs = _require_approval(_require_context(jobs, fork_pull_requests=m.fork_pull_requests))
 
-    # Labelling a pull request starts its downstream CI without re-running its CI.
+    # No pull_request trigger: its runs, all jobs skipped for any other label, would list on the pull request.
+    # A level label dispatches this instead, from the label gate.
     on: dict[str, Any] = {
         "workflow_run": {
             "workflows": ["CI", FORK_CI_NAME] if m.fork_pull_requests else ["CI"],
             "types": ["completed"],
         },
-        "pull_request": {"types": ["labeled"]},
         # Write access only, and the workflow file is a branch of this repository.
         "workflow_dispatch": {"inputs": _orchestrator_dispatch_inputs()},
     }
@@ -1269,8 +1268,7 @@ def render_orchestrator_workflow(
         "on": on,
         # Concurrency cannot see `needs`, so the commit comes from the event.
         "concurrency": {
-            "group": f"trigger-downstream-{lane}-"
-            + f"${{{{ {run_key} || github.event.pull_request.head.sha || inputs.pull-request }}}}",
+            "group": f"trigger-downstream-{lane}-" + f"${{{{ {run_key} || inputs.pull-request }}}}",
             "cancel-in-progress": True,
         },
         "jobs": jobs,
@@ -1499,21 +1497,11 @@ def _require_context(jobs: dict[str, Any], *, fork_pull_requests: bool = False) 
     return ordered
 
 
-#: On a label event, only a run-downstream-ci label of a branch in this repository: a fork's label event has
-#: no secrets. Its downstream CI starts when its approved fork CI completes, or by dispatch.
-_LABEL_EVENT_FILTER: Final = (
-    "${{ github.event_name != 'pull_request' || "
-    "(startsWith(github.event.label.name, 'run-downstream-ci') && "
-    "github.event.pull_request.head.repo.full_name == github.repository) }}"
-)
-
-
 def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
     with_: dict[str, str] = {"pull-request": "${{ inputs.pull-request }}"}
     if fork_pull_requests:
         with_["fork-ci-workflow"] = FORK_CI_WORKFLOW
     return {
-        "if": _LABEL_EVENT_FILTER,
         "runs-on": SLIM_RUNNER,
         "permissions": {"actions": "read", "pull-requests": "read"},
         "outputs": {
@@ -1895,8 +1883,8 @@ def _render_one_repo(
                 render_orchestrator_workflow(m, by_pkg, by_repo, closures, lane=lane),
             ),
         ]
-    has_downstream = any(c is not None for name, c in rendered if name.startswith("trigger-downstream"))
-    rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m) if has_downstream else None))
+    downstream = [name for name, c in rendered if name.startswith("trigger-downstream") and c is not None]
+    rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, downstream) if downstream else None))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()
@@ -1919,15 +1907,12 @@ def render_fork_workflow(m: Manifest) -> str | None:
         # The run itself carries the base branch's commit; resolve-dispatch-context reads these back.
         "run-name": FORK_CI_RUN_NAME,
         # pull_request_target: the workflow files are the base branch's, never the fork's.
-        "on": {"pull_request_target": {"types": ["labeled", "synchronize", "reopened"]}},
+        "on": {"pull_request_target": {"types": ["opened", "synchronize", "reopened"]}},
         "permissions": {"contents": "read", "pull-requests": "write"},
         "jobs": {
             "ci": {
-                # synchronize/reopened still run, so the gate in ci.yml spends a stale approval.
-                "if": (
-                    "github.event.pull_request.head.repo.full_name != github.repository && "
-                    f"(github.event.action != 'labeled' || github.event.label.name == '{APPROVAL_LABEL}')"
-                ),
+                # Fails at ci.yml's gate until a maintainer re-runs it, approving its commit.
+                "if": "github.event.pull_request.head.repo.full_name != github.repository",
                 "uses": "./.github/workflows/ci.yml",
                 "secrets": "inherit",
             }
@@ -1936,14 +1921,14 @@ def render_fork_workflow(m: Manifest) -> str | None:
     return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
-def render_label_gate_workflow(m: Manifest) -> str:
-    """The `downstream-ci-label` status, pending until a pull request decides on its downstream CI."""
+def render_label_gate_workflow(m: Manifest, downstream_workflows: Sequence[str]) -> str:
+    """The `downstream-ci-label` status, pending until a pull request decides; a level label dispatches the lanes."""
     doc: dict[str, Any] = {
         "name": "[PR] Downstream-CI label gate",
         # Payload only, so pull_request_target is safe; its base-branch workflow and write token
         # mean a pull request cannot post its own decision, and a fork's gets posted at all.
         "on": {"pull_request_target": {"types": ["opened", "reopened", "synchronize", "labeled", "unlabeled"]}},
-        "permissions": {"statuses": "write"},
+        "permissions": {"statuses": "write", "actions": "write"},
         "jobs": {
             "gate": {
                 "runs-on": SLIM_RUNNER,
@@ -1954,7 +1939,12 @@ def render_label_gate_workflow(m: Manifest) -> str:
                             "context": "downstream-ci-label",
                             "description-decided": "Downstream-CI decision recorded",
                         },
-                    }
+                    },
+                    {
+                        # The dispatched run looks up the commit's CI itself, and waits for nothing.
+                        "uses": "ecmwf/ci-infrastructure/actions/dispatch-downstream@main",
+                        "with": {"workflows": " ".join(downstream_workflows)},
+                    },
                 ],
             }
         },

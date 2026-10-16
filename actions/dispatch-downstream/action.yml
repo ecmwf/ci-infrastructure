@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dispatch the downstream CI for a level label
+description: >
+  When the event just set a level label, `<label>:all` or `<label>:<n>`, dispatch
+  each of `workflows` on the default branch with the pull request's number and
+  that level; any other event or label dispatches nothing. Payload only, so safe
+  under pull_request_target. The dispatched run checks the commit's CI itself.
+  Needs `actions: write`.
+
+inputs:
+  workflows:
+    description: 'Space-separated workflow file names to dispatch, e.g. trigger-downstream.yml.'
+    required: true
+  label:
+    description: 'Prefix of the level labels.'
+    required: false
+    default: 'run-downstream-ci'
+  token:
+    description: 'Token with actions:write on this repo. Defaults to github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        WORKFLOWS_INPUT: ${{ inputs.workflows }}
+        LABEL_INPUT: ${{ inputs.label }}
+      run: |
+        set -euo pipefail
+
+        event="${GITHUB_EVENT_PATH:-}"
+        if [ -z "$event" ] || [ ! -f "$event" ]; then
+          echo "::error title=Dispatch downstream::no event payload at \$GITHUB_EVENT_PATH." >&2
+          exit 1
+        fi
+
+        action="$(jq -r '.action // empty' "$event")"
+        name="$(jq -r '.label.name // empty' "$event")"
+        level="${name#"$LABEL_INPUT:"}"
+        if [ "$action" != labeled ] || [ "$level" = "$name" ] || \
+           { [ "$level" != all ] && ! [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
+          echo "Dispatch downstream: '${name:-no label}' is not a level label; nothing to dispatch"
+          exit 0
+        fi
+
+        pr="$(jq -r '.pull_request.number // empty' "$event")"
+        ref="$(jq -r '.repository.default_branch // empty' "$event")"
+        if [ -z "$pr" ] || [ -z "$ref" ]; then
+          echo "::error title=Dispatch downstream::the event carries no pull request number or default branch." >&2
+          exit 1
+        fi
+
+        for workflow in $WORKFLOWS_INPUT; do
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/dispatches" \
+            -f "ref=$ref" -f "inputs[pull-request]=$pr" -f "inputs[level]=$level"
+          echo "Dispatched $workflow on $ref for #$pr at level $level"
+        done

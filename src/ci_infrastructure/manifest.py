@@ -113,7 +113,7 @@ class PackageTable(_Table):
         strict=True,
         default=False,
         alias="fork-pull-requests",
-        description="Run CI for pull requests from forks once a maintainer sets `approved-for-ci`; "
+        description="Run CI for pull requests from forks once a maintainer re-runs their failed run; "
         'needs `visibility = "public"`, see :doc:`/configuring/fork-pull-requests`.',
     )
 
