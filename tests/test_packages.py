@@ -498,3 +498,34 @@ def test_a_dep_carries_the_dirs_its_package_puts_on_path() -> None:
         [replace(_consumer_dep("cxxmath"), repo=Repo("org/cxxmath"))], {(Repo("org/cxxmath"), Ref("master")): m}
     )
     assert [d.to_json()["add-to-path"] for d in deps] == [["bin"]]
+
+
+def test_a_fork_run_trusts_this_run_to_build_its_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fork's run carries the base branch's commit, so no probe sees it in flight; a pin must not fail or rebuild."""
+    from ci_infrastructure.resolve_deps import resolve_packages
+
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: pytest.fail("probed"))
+    m = parse_manifest(_BINDINGS)
+    sha = Sha("f" * 40)
+    plans: dict[Any, Any] = {}
+    to_fetch, _ = resolve_packages(
+        m,
+        list(m.built_by_kind["rust"]),
+        own_sha=sha,
+        own_ref=Ref("develop"),
+        matrix_entry=dict(_LEG),
+        manifest_cache={(Repo("org/cxxmath"), Ref("develop")): m},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={(Repo("org/cxxmath"), Ref("develop")): sha},
+        artifact_cache={},
+        run_state_cache={},
+        token=None,
+        can_dispatch=True,
+        lane=EXECUTION_RUNNER,
+        dispatch_plans=plans,
+        pins={Repo("org/cxxmath"): Ref(sha)},
+    )
+    assert [(d.name, d.source, d.sha) for d in to_fetch] == [("cxxmath", "artifact", sha)]
+    assert plans == {}

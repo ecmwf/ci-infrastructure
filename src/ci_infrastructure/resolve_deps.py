@@ -796,6 +796,9 @@ def resolve_leg(
 
         if cached:
             source: Literal["artifact", "triggered rebuild"] = "artifact"
+        elif spec.sibling and ref == own_ref:
+            # This run builds it: a fork's run carries the base branch's commit, so no probe finds it.
+            source = "artifact"  # fetch_deps polls for the upload
         else:
             run_key = (spec.repo, sha)
             if run_key not in run_state_cache:
