@@ -397,3 +397,40 @@ def test_an_expression_for_allow_unsafe_pr_checkout_needs_the_gate(tmp_path: Pat
     _opt_in(tmp_path, opted=False)
     body = FORK_CI_YML.replace("    needs: ci-approval\n", "")
     assert any("sets allow-unsafe-pr-checkout" in p for p in check(write_wf(tmp_path, "ci.yml", body)))
+
+
+def test_a_workflow_called_under_pull_request_target_is_held_to_it(tmp_path: Path) -> None:
+    """Its jobs run with the caller's secrets, even on GitHub-hosted runners."""
+    ungated = """
+    on: [pull_request, workflow_call]
+    jobs:
+    @GATE@
+      lint:
+        runs-on: ubuntu-latest
+        steps: [{run: make lint}]
+    """
+    callee = write_wf(tmp_path, "ci.yml", ungated)
+    assert check(callee) == []
+    caller = write_wf(tmp_path, "prt.yml", FORK_CALLER)
+    assert check(callee) == [
+        f"{callee}: job 'lint' must list 'ci-approval' in `needs:` "
+        "(pull_request_target (through prt.yml) runs with this repository's secrets)"
+    ]
+    assert any("no job uses" in p for p in check(caller))
+
+
+def test_the_caller_triggers_reach_through_every_call(tmp_path: Path) -> None:
+    write_wf(tmp_path, "prt.yml", FORK_CALLER)
+    write_wf(tmp_path, "ci.yml", "on: workflow_call\njobs:\n  inner:\n    uses: ./.github/workflows/inner.yml\n")
+    inner = write_wf(
+        tmp_path,
+        "inner.yml",
+        "on: workflow_call\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: make}]\n",
+    )
+    assert any("pull_request_target (through prt.yml)" in p for p in check(inner))
+
+
+def test_a_cycle_of_calls_terminates(tmp_path: Path) -> None:
+    a = write_wf(tmp_path, "a.yml", "on: pull_request_target\njobs:\n  b:\n    uses: ./.github/workflows/b.yml\n")
+    write_wf(tmp_path, "b.yml", "on: workflow_call\njobs:\n  a:\n    uses: ./.github/workflows/a.yml\n")
+    assert any("no job uses" in p for p in check(a))
