@@ -168,12 +168,12 @@ def test_downstream_can_be_dispatched_for_a_pull_request(tmp_path: Path) -> None
     assert gate["pull-request"] == "${{ needs.context.outputs.pull-request }}"
 
 
-def test_a_fork_label_event_still_starts_nothing(tmp_path: Path) -> None:
-    """It has no secrets; the approved fork CI's completion or a dispatch starts the fork's downstream CI."""
+def test_downstream_has_no_pull_request_trigger(tmp_path: Path) -> None:
+    """A fork's label event had no secrets anyway; the label gate dispatches, in the base context."""
     _repos(tmp_path, opt_in=True)
-    assert (
-        "github.event.pull_request.head.repo.full_name == github.repository" in _orch(tmp_path)["jobs"]["context"]["if"]
-    )
+    doc = _orch(tmp_path)
+    assert "pull_request" not in doc[True]
+    assert "if" not in doc["jobs"]["context"]
 
 
 _RESOLVE_MANIFEST: Final = textwrap.dedent("""

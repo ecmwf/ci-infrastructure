@@ -31,11 +31,11 @@ If the head commit has no review of yours, the run fails and says so.
 Downstream CI
 -------------
 
-The ``run-downstream-ci:*`` labels work as described in :doc:`downstream-ci`, with one difference:
-a label alone starts nothing for a fork, the downstream CI starts when an approved ``CI (fork)`` completes.
-So set the level label before ``approved-for-ci``,
-or start the repository's ``Downstream`` workflow by hand with **Run workflow**, giving the pull request's number and the level.
-Either way it runs only for a commit with an approved ``CI (fork)`` run.
+The ``run-downstream-ci:*`` labels work as described in :doc:`downstream-ci`,
+but only for a commit with an approved ``CI (fork)`` run:
+a label set before the approval takes effect once that run has completed.
+The repository's ``Downstream`` workflows can also be started by hand with **Run workflow**,
+giving the pull request's number and the level.
 
 A fork's branch name is never matched: its pull request is built against the branches the manifests name,
 usually ``develop``. A change that needs branches in several repositories has to come from branches of those

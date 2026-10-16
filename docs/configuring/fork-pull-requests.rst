@@ -67,11 +67,8 @@ Downstream CI
 -------------
 
 The ``run-downstream-ci:*`` labels work as for any pull request, see :doc:`downstream`,
-with two differences:
+with one difference:
 
-- Setting the label alone starts nothing, since a fork's label event has no secrets.
-  Downstream CI starts when an approved ``CI (fork)`` completes,
-  so set the label before ``approved-for-ci``, or start the downstream workflow by hand (below).
 - It only ever runs for a commit that has an approved ``CI (fork)`` run:
   :action:`resolve-dispatch-context` looks for one whose ``ci-approval`` job passed for exactly that commit.
   A newer, unapproved push therefore has no downstream CI,

@@ -800,10 +800,7 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
         "if: ${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
         in yaml
     )
-    assert (
-        "group: trigger-downstream-runner-"
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}" in yaml
-    )
+    assert "group: trigger-downstream-runner-${{ github.event.workflow_run.head_sha || inputs.pull-request }}" in yaml
     assert "cancel-in-progress: true" in yaml
     assert "dispatch-and-wait" not in yaml
     assert "uses: org/b/.github/workflows/cross-repo-trigger.yml@main" in yaml
@@ -1322,7 +1319,6 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         # PyYAML reads the bare key `on` as True.
         assert doc[True] == {
             "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
-            "pull_request": {"types": ["labeled"]},
             "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
         }
         gate = "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
@@ -1836,13 +1832,12 @@ def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
     assert "permissions" not in job
 
 
-def test_a_completed_ci_run_or_a_label_is_the_entry_point(tmp_path: Path) -> None:
-    """The label's level is read by label-gate; `on:` only adds the labelling itself as a start."""
+def test_a_completed_ci_run_or_a_dispatch_is_the_entry_point(tmp_path: Path) -> None:
+    """No pull_request trigger: its runs would list on the pull request; the label gate dispatches instead."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     assert doc[True] == {
         "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
-        "pull_request": {"types": ["labeled"]},
         "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
     }
 
@@ -1890,7 +1885,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     doc: dict[str, Any] = yaml.safe_load(orch)
     assert (
         doc["concurrency"]["group"] == "trigger-downstream-runner-"
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}"
+        "${{ github.event.workflow_run.head_sha || inputs.pull-request }}"
     )
     assert orch.count("github.event.workflow_run") == 1
 
@@ -2239,16 +2234,11 @@ def test_an_unknown_exclude_is_an_error(tmp_path: Path) -> None:
         _render_orch(tmp_path)
 
 
-def test_orchestrator_starts_on_a_downstream_label_without_ci(tmp_path: Path) -> None:
+def test_the_context_job_runs_for_every_event(tmp_path: Path) -> None:
     _make_chain_ab(tmp_path)
     doc = yaml.safe_load(_orch(tmp_path))
-    context_if = doc["jobs"]["context"]["if"]
-    assert "github.event_name != 'pull_request'" in context_if
-    assert "startsWith(github.event.label.name, 'run-downstream-ci')" in context_if
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in context_if
-    assert doc["concurrency"]["group"].endswith(
-        "${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || inputs.pull-request }}"
-    )
+    assert "if" not in doc["jobs"]["context"]
+    assert doc["concurrency"]["group"].endswith("${{ github.event.workflow_run.head_sha || inputs.pull-request }}")
     assert doc["jobs"]["report-ci-failure"]["if"] == (
         "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') && "
         "needs['label-gate'].outputs.run == 'true' }}"
@@ -2268,10 +2258,13 @@ def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monk
     assert doc[True] == {
         "pull_request_target": {"types": ["opened", "reopened", "synchronize", "labeled", "unlabeled"]}
     }
-    assert doc["permissions"] == {"statuses": "write"}
-    (step,) = doc["jobs"]["gate"]["steps"]
-    assert step["uses"] == "ecmwf/ci-infrastructure/actions/require-label-decision@main"
-    assert step["with"]["context"] == "downstream-ci-label"
+    assert doc["permissions"] == {"statuses": "write", "actions": "write"}
+    decision, dispatch = doc["jobs"]["gate"]["steps"]
+    assert decision["uses"] == "ecmwf/ci-infrastructure/actions/require-label-decision@main"
+    assert decision["with"]["context"] == "downstream-ci-label"
+    # A level label starts the lanes that exist; their runs do not list on the pull request.
+    assert dispatch["uses"] == "ecmwf/ci-infrastructure/actions/dispatch-downstream@main"
+    assert dispatch["with"]["workflows"] == "trigger-downstream.yml"
     assert check_ci_approval.check(gate) == []
     assert not (tmp_path / "b" / ".github" / "workflows" / "pr-label-downstream-ci.yml").exists()
 

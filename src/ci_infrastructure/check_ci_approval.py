@@ -54,6 +54,8 @@ UNSAFE_CHECKOUT_INPUT = "allow-unsafe-pr-checkout"
 PAYLOAD_ONLY_ACTIONS = (
     "ecmwf/ci-infrastructure/actions/require-label-decision@",
     "./actions/require-label-decision",
+    "ecmwf/ci-infrastructure/actions/dispatch-downstream@",
+    "./actions/dispatch-downstream",
 )
 
 CI_WORKFLOW = "ci.yml"

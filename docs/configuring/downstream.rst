@@ -85,8 +85,7 @@ so a pull request fans out only when it asks for it, with exactly one label:
 A label added later starts the downstream CI by itself, without running ``CI`` again,
 as long as ``CI`` already succeeded for the pull request's head commit.
 If ``CI`` is still running, the downstream CI starts once it has finished.
-Other labels start nothing, and neither does a label on a pull request from a fork
-(see :doc:`fork-pull-requests` for how a fork's downstream CI starts).
+Other labels start nothing.
 The label persists, and will trigger the requested runs upon future pushes.
 The downstream workflow can also be started by hand for a pull request, with a level instead of a label,
 see :doc:`fork-pull-requests`.
@@ -97,6 +96,9 @@ or the explicit opt-out ``downstream-ci-not-needed``;
 The generator writes it as ``pr-label-downstream-ci.yml`` into every repository with consumers.
 It runs on ``pull_request_target``, which is safe since it only reads the labels from the event:
 the pull request cannot change its own gate, and a fork's pull request gets the status too.
+It also starts the downstream CI for a level label, with :action:`dispatch-downstream`:
+``trigger-downstream*.yml`` has no ``pull_request`` trigger of its own,
+so that its runs, every job skipped for any other label, do not list on the pull request.
 
 The labels only decide which jobs of the dependency graph are **skipped**.
 It is also possible to restrict the full downstream dependency graph from this repository, i.e. what ``run-downstream-ci:all`` runs.
