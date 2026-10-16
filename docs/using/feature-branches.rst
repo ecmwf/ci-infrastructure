@@ -31,3 +31,7 @@ keeps testing against ``ref`` from :doc:`../configuring/manifest`.
 
 If all synchronised pull requests are ready, they shall be merged in rapid succession from upstream to downstream,
 ``eckit`` before ``eccodes`` in this example.
+
+This does not work for pull requests from forks: a fork's branch name is never matched,
+and its pull request is always built against the ``ref`` of the other repositories, see :doc:`fork-pull-requests`.
+A coordinated change therefore needs its branches in the repositories themselves.
