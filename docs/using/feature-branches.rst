@@ -32,6 +32,24 @@ keeps testing against ``ref`` from :doc:`../configuring/manifest`.
 If all synchronised pull requests are ready, they shall be merged in rapid succession from upstream to downstream,
 ``eckit`` before ``eccodes`` in this example.
 
+That order is listed at the end of each pull request's description.
+Whenever a pull request from such a branch opens, reopens or closes, :action:`sync-branch-prs` rewrites the list in all of them:
+the open and merged pull requests from the branch, upstream first, each once.
+
+.. code:: markdown
+
+   <!-- SYNC-BRANCH_BEGIN -->
+   Synchronised rollout:
+
+   - https://github.com/ecmwf/eckit/pull/386
+   - https://github.com/ecmwf/eccodes/pull/611
+   <!-- SYNC-BRANCH_END -->
+
+The block comes after the Contributor Declaration, where :action:`check-pr-declaration` ignores it;
+do not edit it, as the next run replaces it.
+It needs at least two pull requests, and in a public repository it lists only those of public repositories.
+The generator writes the workflow as ``pr-sync-branch.yml`` into every repository with a manifest.
+
 This does not work for pull requests from forks: a fork's branch name is never matched,
 and its pull request is always built against the ``ref`` of the other repositories, see :doc:`fork-pull-requests`.
 A coordinated change therefore needs its branches in the repositories themselves.

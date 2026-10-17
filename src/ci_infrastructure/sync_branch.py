@@ -14,7 +14,8 @@ import re
 import sys
 from typing import Final
 
-SYNC_BRANCH_RE: Final = re.compile(r"^(?:sync-branch|feature)/")
+SYNC_BRANCH_PREFIXES: Final = ("sync-branch/", "feature/")
+SYNC_BRANCH_RE: Final = re.compile("^(?:" + "|".join(map(re.escape, SYNC_BRANCH_PREFIXES)) + ")")
 
 
 def is_sync_branch(branch: str) -> bool:

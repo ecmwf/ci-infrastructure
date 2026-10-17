@@ -56,6 +56,8 @@ PAYLOAD_ONLY_ACTIONS = (
     "./actions/require-label-decision",
     "ecmwf/ci-infrastructure/actions/dispatch-downstream@",
     "./actions/dispatch-downstream",
+    "ecmwf/ci-infrastructure/actions/sync-branch-prs@",
+    "./actions/sync-branch-prs",
 )
 
 CI_WORKFLOW = "ci.yml"
