@@ -88,6 +88,7 @@ ghactions_groups = [
             "report-check-run",
             "validate-generated-workflows",
             "regenerate-workflows-pr",
+            "sync-branch-prs",
         ],
     ),
     (

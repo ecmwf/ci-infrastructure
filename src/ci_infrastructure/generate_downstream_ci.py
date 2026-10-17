@@ -12,6 +12,7 @@
     CI run, fan out one job per transitive consumer and post a `downstream/<lane>` status.
   - ci-fork.yml (with `fork-pull-requests` only): runs ci.yml for an approved fork pull request.
   - pr-label-downstream-ci.yml (repos with consumers only): the required run-downstream-ci decision.
+  - pr-sync-branch.yml: lists a sync branch's pull requests in each of them.
 
 Sibling manifests are fetched over the GitHub GraphQL API (GH_TOKEN, or gh's own auth).
 --check compares parsed documents, so hand-added comments never count as drift.
@@ -55,6 +56,7 @@ from .manifest import (
     Visibility,
 )
 from .manifest import validate as validate_manifest
+from .sync_branch import SYNC_BRANCH_PREFIXES
 
 GENERATED_HEADER: Final = (
     "# GENERATED FILE - DO NOT EDIT.\n"
@@ -64,6 +66,7 @@ GENERATED_HEADER: Final = (
 
 FORK_CI_WORKFLOW: Final = "ci-fork.yml"
 LABEL_GATE_WORKFLOW: Final = "pr-label-downstream-ci.yml"
+SYNC_BRANCH_WORKFLOW: Final = "pr-sync-branch.yml"
 FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
@@ -1885,6 +1888,7 @@ def _render_one_repo(
         ]
     downstream = [name for name, c in rendered if name.startswith("trigger-downstream") and c is not None]
     rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, downstream) if downstream else None))
+    rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()
@@ -1945,6 +1949,33 @@ def render_label_gate_workflow(m: Manifest, downstream_workflows: Sequence[str])
                         "uses": "ecmwf/ci-infrastructure/actions/dispatch-downstream@main",
                         "with": {"workflows": " ".join(downstream_workflows)},
                     },
+                ],
+            }
+        },
+    }
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+
+
+def render_sync_branch_workflow(m: Manifest) -> str:
+    """On a sync branch's pull request opening, reopening or closing, rewrite the list in all of them."""
+    on_sync_branch = " || ".join(f"startsWith(github.head_ref, '{p}')" for p in SYNC_BRANCH_PREFIXES)
+    doc: dict[str, Any] = {
+        "name": "[PR] Sync-branch pull requests",
+        # Payload only, so pull_request_target is safe. Not `edited`: the job's own edits would re-trigger it.
+        "on": {"pull_request_target": {"types": ["opened", "reopened", "closed"]}},
+        "permissions": {},
+        "jobs": {
+            "list": {
+                "if": f"({on_sync_branch}) && github.event.pull_request.head.repo.full_name == github.repository",
+                "runs-on": SLIM_RUNNER,
+                "steps": [
+                    {
+                        "uses": "ecmwf/ci-infrastructure/actions/sync-branch-prs@main",
+                        "with": {
+                            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+                            "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                        },
+                    }
                 ],
             }
         },

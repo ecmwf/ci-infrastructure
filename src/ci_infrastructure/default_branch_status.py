@@ -16,7 +16,7 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from graphlib import CycleError, TopologicalSorter
@@ -196,8 +196,13 @@ def _manifest(data: Mapping[str, Any]) -> str | None:
     return (data.get("manifest") or {}).get("text")
 
 
-def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
-    """Every repo reachable from `seeds` through manifests on default branches; one without a manifest is skipped."""
+def discover(
+    seeds: Sequence[str], token: str | None, query: Callable[[Sequence[str]], str] = _query
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, Edges]]:
+    """Every repo reachable from `seeds` through manifests on default branches, with its `query` node and edges.
+
+    A repo without a manifest is skipped; `query` must select `manifest` and `defaultBranchRef` like `_query`.
+    """
     owner = seeds[0].split("/", 1)[0]
     nodes: dict[str, Mapping[str, Any]] = {}
     edges: dict[str, Edges] = {}
@@ -205,7 +210,7 @@ def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
     while queue:
         repo = queue.pop(0)
         # one query per repo: all of them in one exceeds what GitHub answers (HTTP 502)
-        result = gh_api_graphql(_query([repo]), token)
+        result = gh_api_graphql(query([repo]), token)
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, dict):
             raise CIError(f"{repo}: the GraphQL query for the default branch failed")
@@ -222,6 +227,12 @@ def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
             if nxt not in seen and nxt.split("/", 1)[0] == owner:
                 seen.add(nxt)
                 queue.append(nxt)
+    return nodes, edges
+
+
+def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
+    """Every repo reachable from `seeds` through manifests on default branches; one without a manifest is skipped."""
+    nodes, edges = discover(seeds, token)
     return {
         repo: repo_state(
             repo,

@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: List a sync branch's pull requests in each of them
+description: >
+  For a pull request from a sync branch (sync-branch/ or feature/), end the
+  description of every open or merged pull request from that branch, across the
+  repos reachable through the manifests, with the list of all of them in
+  dependency order. Payload only, so safe under pull_request_target. The App
+  needs pull-requests:write on those repos.
+
+inputs:
+  client-id:
+    description: 'GitHub App client ID; the token is minted org-wide.'
+    required: true
+  app-private-key:
+    description: 'GitHub App private key (PEM).'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - id: token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        # Org-wide (the graph is dynamic); permissions narrowed instead.
+        owner: ${{ github.repository_owner }}
+        permission-contents: read
+        permission-pull-requests: write
+
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+        BRANCH: ${{ github.event.pull_request.head.ref }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.sync_branch_prs --branch "$BRANCH"

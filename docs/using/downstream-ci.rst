@@ -98,6 +98,7 @@ However, ``eccodes``' own CI now builds against ``eckit``'s branch as well,
 so that ``eckit``'s downstream CI runs exactly the tests that ``eccodes``' own and downstream CI run anyway.
 Running it from both pull requests therefore only doubles the cost.
 It suffices to request the downstream CI on the pull request of the repository furthest downstream on the sync branch, here ``eccodes``.
+The :doc:`list at the end of each description <feature-branches>` ends with it.
 
 .. figure:: downstream-ci-sync.svg
    :alt: eckit and eccodes are on sync-branch/api-change; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.

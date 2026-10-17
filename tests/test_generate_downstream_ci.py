@@ -2269,6 +2269,27 @@ def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monk
     assert not (tmp_path / "b" / ".github" / "workflows" / "pr-label-downstream-ci.yml").exists()
 
 
+def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Payload only, under pull_request_target; never on `edited`, which its own edits would cause."""
+    write_repo(tmp_path, "a", _GATE_UPSTREAM)
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    for repo in ("a", "b"):
+        monkeypatch.chdir(tmp_path / repo)
+        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+    for repo in ("a", "b"):
+        wf = tmp_path / repo / ".github" / "workflows" / "pr-sync-branch.yml"
+        doc = yaml.safe_load(wf.read_text())
+        assert doc[True] == {"pull_request_target": {"types": ["opened", "reopened", "closed"]}}
+        job = doc["jobs"]["list"]
+        assert job["if"] == (
+            "(startsWith(github.head_ref, 'sync-branch/') || startsWith(github.head_ref, 'feature/')) "
+            "&& github.event.pull_request.head.repo.full_name == github.repository"
+        )
+        assert [s["uses"] for s in job["steps"]] == ["ecmwf/ci-infrastructure/actions/sync-branch-prs@main"]
+        assert check_ci_approval.check(wf) == []
+
+
 def test_a_repo_without_consumers_loses_its_label_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_repo(
         tmp_path,
