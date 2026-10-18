@@ -312,12 +312,13 @@ GC_SUBDIRS: Final = ("staging", "install", "hpc-jobs", "locks", "transfer-e2e")
 
 
 def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: bool = False) -> None:
+    # -mmin, not -mtime: -mtime +1 rounds the age down to whole days and so spares 47 hours.
     # -print in both modes: the listing is what gets counted.
     action = "-print" if dryrun else "-print -exec rm -rf {} +"
     for sub in GC_SUBDIRS:
         base = f"{remote_work_dir.rstrip('/')}/{sub}"
         quoted = shlex.quote(base)
-        find = f"find {quoted} -mindepth 1 -maxdepth 1 -mtime +{older_than_days} {action}"
+        find = f"find {quoted} -mindepth 1 -maxdepth 1 -mmin +{older_than_days * 1440} {action}"
         proc = conn.execute(
             ["bash", "-c", f"if test -d {quoted}; then {find}; fi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
@@ -703,7 +704,7 @@ def cancel(
     required=True,
     help="Cluster work dir to sweep. May name cluster variables (e.g. '$SCRATCH/github-ci').",
 )
-@click.option("--older-than-days", "older_than_days", type=int, default=7, help="Age threshold in days (default: 7)")
+@click.option("--older-than-days", "older_than_days", type=int, default=1, help="Age threshold in days (default: 1)")
 @click.option("--dryrun", is_flag=True, default=False, help="List what would be removed; delete nothing")
 def gc(
     site_name: str,

@@ -309,8 +309,7 @@ class _LocalConn:
         return subprocess.Popen(argv, **kwargs)
 
 
-def _aged_tree(root: Path) -> None:
-    old = 10 * 86400
+def _aged_tree(root: Path, old: float = 10 * 86400) -> None:
     for sub in ("staging", "install"):
         for name in ("old-a", "old-b", "fresh"):
             entry = root / sub / name
@@ -331,6 +330,12 @@ def test_gc_counts_what_it_removes(tmp_path: Path, capsys: pytest.CaptureFixture
     assert f"gc: {tmp_path}/hpc-jobs: {verb} 0 entries" in out
     left = sorted(p.name for p in (tmp_path / "staging").iterdir())
     assert left == (["fresh", "old-a", "old-b"] if dryrun else ["fresh"])
+
+
+def test_gc_one_day_removes_what_is_older_than_24_hours(tmp_path: Path) -> None:
+    _aged_tree(tmp_path, old=1.5 * 86400)
+    run_gc(_LocalConn(), remote_work_dir=str(tmp_path), older_than_days=1)
+    assert sorted(p.name for p in (tmp_path / "staging").iterdir()) == ["fresh"]
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
