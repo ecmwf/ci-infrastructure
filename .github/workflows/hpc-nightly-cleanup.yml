@@ -13,7 +13,7 @@ on:
       older-than-days:
         description: Age threshold in days
         required: false
-        default: '7'
+        default: '1'
       dryrun:
         description: List what would be removed without deleting
         required: false
@@ -41,7 +41,7 @@ jobs:
         env:
           REMOTE_WORK_DIR: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
           TROIKA_USER: ${{ secrets.HPC_CI_SSH_USER }}
-          OLDER_THAN_DAYS: ${{ github.event.inputs.older-than-days || '7' }}
+          OLDER_THAN_DAYS: ${{ github.event.inputs.older-than-days || '1' }}
           DRYRUN: ${{ github.event.inputs.dryrun || 'false' }}
         run: |
           set -euo pipefail
