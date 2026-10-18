@@ -19,8 +19,13 @@ on:
         type: string
         required: false
         default: 'ci/regenerate-workflows'
+      mode:
+        description: "'pr' opens a PR, 'pr-auto-merge' lets it merge itself once the required checks pass, 'auto-commit' pushes to the default branch."
+        type: string
+        required: false
+        default: 'pr'
       direct-push:
-        description: 'Push the regenerated workflows to the default branch instead of opening a PR.'
+        description: "Deprecated: true is mode 'auto-commit'."
         type: boolean
         required: false
         default: false
@@ -80,4 +85,5 @@ jobs:
           app-slug: ${{ steps.write.outputs.app-slug }}
           branch: ${{ inputs.branch }}
           labels: ${{ inputs.labels }}
+          mode: ${{ inputs.mode }}
           direct-push: ${{ inputs.direct-push }}

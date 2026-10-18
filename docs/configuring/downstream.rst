@@ -58,8 +58,17 @@ The generated files must follow the manifests, also those of the other repositor
 :action:`validate-generated-workflows` reports when they have drifted.
 A bot runs :action:`regenerate-workflows-pr` on every push to the default branch and nightly,
 and opens a pull request with the regenerated workflows.
-With ``direct-push: true`` in the caller of ``regenerate-workflows.yml``, it pushes them to the default branch instead;
-this needs the bot App on the bypass list of the branch protection, otherwise it falls back to the pull request.
+The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
+
+- ``pr`` (default): the pull request waits for a human.
+- ``auto-commit``: the bot pushes to the default branch instead;
+  this needs the bot App on the bypass list of the branch protection, otherwise it falls back to the pull request.
+- ``pr-auto-merge``: the bot enables `auto-merge <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request>`__ on the pull request,
+  so it is squash-merged once the required checks pass.
+  This needs "Allow auto-merge" in the repository settings and required status checks on the default branch.
+  If the default branch also requires a review, put the bot App on the bypass list of that ruleset in the mode "pull requests only"
+  and keep the required status checks in a separate ruleset that it does not bypass.
+
 So it is sufficient to change the manifest: once that is merged, the bot takes care of the rest.
 
 .. note::
