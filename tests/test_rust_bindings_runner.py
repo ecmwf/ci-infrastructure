@@ -61,21 +61,28 @@ def test_the_rendered_script_is_valid_bash() -> None:
     subprocess.run(["bash", "-n"], input=_render(), text=True, check=True)
 
 
-def test_crates_follow_the_branch_their_repo_was_resolved_to() -> None:
-    deps = [{"repo": "ecmwf/eckit", "ref": "sync-branch/x"}, {"repo": "ecmwf/ecbuild", "ref": "develop"}]
-    out = _render(leg={**LEG, "_resolved": {"deps": deps}})
-    refs = "--ref ecmwf/ecbuild=develop --ref ecmwf/eckit=sync-branch/x)"
-    assert f'"$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches {refs}' in out
-    assert "cargo_patches.py" not in out and "cargo metadata" not in _render()
+def test_the_listed_crates_follow_the_commit_their_repo_was_built_from() -> None:
+    deps = [{"repo": "ecmwf/eckit", "ref": "develop", "sha": "a" * 40}, {"repo": "ecmwf/ecbuild", "sha": "b" * 40}]
+    out = _render(leg={**LEG, "_resolved": {"deps": deps, "crates": {"eckit-sys": "ecmwf/eckit"}}})
+    args = f"--dep ecmwf/ecbuild@{'b' * 40} --dep ecmwf/eckit@{'a' * 40} --crate eckit-sys=ecmwf/eckit"
+    assert f'"$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches {args})"' in out
+    assert f"-m ci_infrastructure.cargo_patches {args} --check\n" in out
+    assert out.index(" --check\n") < out.index("cargo fmt")
+    assert "cargo metadata" not in _render()
     subprocess.run(["bash", "-n"], input=out, text=True, check=True)
 
 
+def test_deps_without_crates_still_check_cargo_toml() -> None:
+    out = _render(leg={**LEG, "_resolved": {"deps": [{"repo": "ecmwf/eckit", "sha": "a" * 40}]}})
+    assert "cargo metadata --no-deps" in out and 'cargo metadata "${cargo_patches[@]}"' not in out
+
+
 def test_a_publish_leg_patches_nothing_and_builds_the_default_features() -> None:
-    deps = [{"repo": "ecmwf/eckit", "ref": "sync-branch/x"}]
-    out = _render(PUBLISH, leg={**LEG, "_resolved": {"deps": deps}})
+    deps = [{"repo": "ecmwf/eckit", "sha": "a" * 40}]
+    out = _render(PUBLISH, leg={**LEG, "_resolved": {"deps": deps, "crates": {"eckit-sys": "ecmwf/eckit"}}})
     assert 'case "${CI_CARGO_PUBLISH:-dry-run}" in' in out
     assert out.endswith('cargo publish "${dry_run[@]}" --workspace \n')
-    assert "cargo_patches" not in out and "cargo test" not in out
+    assert "cargo_patches" not in out and "cargo metadata" not in out and "cargo test" not in out
     assert jobscript.undeclared_template_names(PUBLISH, LEG, template_name="t") == set()
     subprocess.run(["bash", "-n"], input=out, text=True, check=True)
 

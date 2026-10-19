@@ -154,9 +154,25 @@ Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
 A ``-sys`` crate that builds its library from source itself needs only the library's deps,
 which the dependency on the library brings along.
 
-Where :action:`resolve-deps` took an upstream repo from a ``sync-branch/`` or ``feature/`` branch,
-or a pinned commit, the crates ``Cargo.toml`` fetches from that repo over git follow it too,
-through ``cargo --config patch...``, so the Rust code matches the C++ artifact it links against.
+Crates of an upstream repo
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Cargo.toml`` names an upstream's crates by their registry version, e.g. ``eckit-sys = { version = "2.5" }``,
+and the manifest lists them in ``crates`` on the dep that brings the upstream's library:
+
+.. code:: toml
+
+   [[packages.eccodes-rust.deps]]
+   repo = "ecmwf/eckit"
+   package = "eckit"
+   ref = "develop"
+   crates = ["eckit-sys"]
+
+The leg patches each listed crate, through ``cargo --config patch...``, to the commit :action:`resolve-deps` built the dep's artifact from,
+whatever the manifest's ``ref`` resolved to, so the Rust code matches the C++ it links against.
+It fails where ``Cargo.toml`` and the manifest disagree: a listed crate ``Cargo.toml`` does not depend on,
+a crate ``Cargo.toml`` takes over git from a dep's repo without the manifest listing it,
+or a version requirement the crate at that commit does not meet.
 
 Publish the crates
 ~~~~~~~~~~~~~~~~~~

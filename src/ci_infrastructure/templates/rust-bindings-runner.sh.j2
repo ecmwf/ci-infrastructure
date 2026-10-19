@@ -41,14 +41,19 @@ export CARGO_INCREMENTAL=0
 
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
 {% block cargo %}
-# Crates from an upstream repo follow the branch resolve-deps built its C++ from, e.g. a
-# sync-branch/ of the same name, rather than the one Cargo.toml names.
+# The crates the manifest takes from a dep follow the commit resolve-deps built its C++ from.
 cargo_patches=()
-{% if ci_dep_refs %}
-while IFS= read -r patch; do cargo_patches+=(--config "$patch"); done < <(
-  cargo metadata --format-version 1 |
-    "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, ref in ci_dep_refs | dictsort %} --ref {{ (repo ~ "=" ~ ref) | sh }}{% endfor %})
-for patch in "${cargo_patches[@]}"; do echo "cargo: $patch"; done
+{% if ci_dep_shas %}
+# A command substitution, not < <(...): set -e stops on a disagreement with Cargo.toml.
+patches="$(cargo metadata --no-deps --format-version 1 |
+  "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, sha in ci_dep_shas | dictsort %} --dep {{ (repo ~ "@" ~ sha) | sh }}{% endfor %}{% for crate, repo in ci_crates | dictsort %} --crate {{ (crate ~ "=" ~ repo) | sh }}{% endfor %})"
+while IFS= read -r patch; do
+  if [ -n "$patch" ]; then echo "cargo: $patch"; cargo_patches+=(--config "$patch"); fi
+done <<<"$patches"
+{% if ci_crates %}
+cargo metadata "${cargo_patches[@]}" --format-version 1 |
+  "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, sha in ci_dep_shas | dictsort %} --dep {{ (repo ~ "@" ~ sha) | sh }}{% endfor %}{% for crate, repo in ci_crates | dictsort %} --crate {{ (crate ~ "=" ~ repo) | sh }}{% endfor %} --check
+{% endif %}
 {% endif %}
 cargo fmt --all --check
 # The lints are the workspace's own, e.g. its .cargo/config.toml; warnings fail.
