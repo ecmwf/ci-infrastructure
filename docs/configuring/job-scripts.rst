@@ -118,7 +118,7 @@ The kind builds a package that publishes nothing and depends on the library:
 .. code:: toml
 
    [packages.eckit-rust]
-   compiler-inputs = ["cxx-compiler"]
+   compiler-inputs = ["cxx-compiler", "rust-compiler"]
 
    [[packages.eckit-rust.deps]]
    package = "eckit"
@@ -139,7 +139,7 @@ The kind builds a package that publishes nothing and depends on the library:
    rust-compiler = "rust-1.90"
 
 ``rust-compiler`` names the toolchain as ``cxx-compiler`` names g++; the image provides it
-(see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
+(see :doc:`../reference/runners`). Both are ``compiler-inputs``, as both toolchains build what the leg checks.
 The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
 with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
 Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
@@ -171,7 +171,7 @@ The kind's package has no deps, and the kind has one leg, as a second would publ
 .. code:: toml
 
    [packages.eckit-crates]
-   compiler-inputs = ["cxx-compiler"]
+   compiler-inputs = ["cxx-compiler", "rust-compiler"]
 
    [matrix.rust-publish]
    packages = ["eckit-crates"]
