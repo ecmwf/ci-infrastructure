@@ -15,11 +15,16 @@ AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
     ARTIFACT_S3_USE_SSL     default: true
     ARTIFACT_S3_KEY_PREFIX  default: ''   (objects live at the bucket root)
     ARTIFACT_S3_CA_BUNDLE   default: the HARICA root vendored with this package
+
+``gc`` deletes by write date, as for a cache: a missing artifact is rebuilt when needed.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -34,7 +39,9 @@ class _S3Client(Protocol):
     def head_object(self, *, Bucket: str, Key: str) -> Any: ...
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None: ...
     def download_file(self, Bucket: str, Key: str, Filename: str) -> None: ...
-    def list_objects_v2(self, *, Bucket: str, Prefix: str) -> Any: ...
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken: str = ...) -> Any: ...
+    def delete_object(self, *, Bucket: str, Key: str) -> Any: ...
+    def get_bucket_versioning(self, *, Bucket: str) -> Any: ...
 
 
 _DEFAULT_REGION: Final = "RegionOne"
@@ -150,6 +157,67 @@ def list_with_prefix(name_prefix: str, limit: int = 12, client: _S3Client | None
     return names
 
 
+@dataclass(frozen=True)
+class StoredObject:
+    key: str
+    size: int
+    last_modified: datetime
+
+
+def list_objects(client: _S3Client | None = None) -> list[StoredObject]:
+    """Every object under the key prefix, across all listing pages."""
+    s3 = _client(client)
+    page: dict[str, str] = {}
+    out: list[StoredObject] = []
+    while True:
+        resp = s3.list_objects_v2(Bucket=_bucket(), Prefix=_key_prefix(), **page)
+        out += [StoredObject(o["Key"], int(o["Size"]), o["LastModified"]) for o in resp.get("Contents", [])]
+        if not resp.get("IsTruncated"):
+            return out
+        page = {"ContinuationToken": resp["NextContinuationToken"]}
+
+
+def eviction_plan(objects: Sequence[StoredObject], *, target: float, suffix: str = ".tar.gz") -> list[StoredObject]:
+    """The oldest-written ``suffix`` objects to delete until usage is at most ``target`` bytes."""
+    used = sum(o.size for o in objects)
+    plan: list[StoredObject] = []
+    for obj in sorted((o for o in objects if o.key.endswith(suffix)), key=lambda o: o.last_modified):
+        if used <= target:
+            break
+        plan.append(obj)
+        used -= obj.size
+    return plan
+
+
+def _gib(size: float) -> str:
+    return f"{size / 2**30:.1f} GiB"
+
+
+def gc(
+    *, percent: float, quota: int | None, dryrun: bool, suffix: str = ".tar.gz", client: _S3Client | None = None
+) -> list[StoredObject]:
+    """Delete down to ``percent`` of ``quota``, or of current usage without one."""
+    s3 = _client(client)
+    versioning = s3.get_bucket_versioning(Bucket=_bucket()).get("Status", "never enabled")
+    objects = list_objects(s3)
+    used = sum(o.size for o in objects)
+    of = f" of {_gib(quota)} ({used / quota:.0%})" if quota else ""
+    print(f"s3://{_bucket()}/{_key_prefix()}: {len(objects)} objects, {_gib(used)}{of}; versioning {versioning}")
+    if versioning != "never enabled":
+        print("::warning::bucket versioning is on: a delete leaves the old version behind and frees nothing")
+    plan = eviction_plan(objects, target=(quota if quota else used) * percent / 100, suffix=suffix)
+    if not plan:
+        print("Nothing to delete.")
+        return plan
+    verb = "Would delete" if dryrun else "Deleting"
+    print(f"{verb} {len(plan)} oldest-written objects ({_gib(sum(o.size for o in plan))}):")
+    for obj in plan:
+        print(f"- {obj.key} (written {obj.last_modified:%Y-%m-%d}, {_gib(obj.size)})")
+        if not dryrun:
+            s3.delete_object(Bucket=_bucket(), Key=obj.key)
+    return plan
+
+
 @click.group(help="Publish/download/check artifacts in the S3 artifact store.")
 def main() -> None:
     pass
@@ -180,6 +248,17 @@ def _exists(ctx: click.Context, name: str) -> None:
     found = object_exists(name)
     print("true" if found else "false")
     ctx.exit(0 if found else 1)
+
+
+@main.command("gc", help="Delete the oldest-written objects down to a share of the quota, or of current usage.")
+@click.option("--percent", type=float, default=50, show_default=True, help="Usage to delete down to")
+@click.option("--quota-gib", "quota_gib", type=float, default=None, help="The store's quota; omitted, current usage")
+@click.option(
+    "--suffix", default=".tar.gz", show_default=True, help="Delete only keys ending in this; '' for every object"
+)
+@click.option("--dryrun", is_flag=True, default=False, help="List what would be deleted; delete nothing")
+def _gc(percent: float, quota_gib: float | None, suffix: str, dryrun: bool) -> None:
+    gc(percent=percent, quota=int(quota_gib * 2**30) if quota_gib else None, dryrun=dryrun, suffix=suffix)
 
 
 if __name__ == "__main__":

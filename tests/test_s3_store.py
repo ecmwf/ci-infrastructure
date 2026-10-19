@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
@@ -21,9 +23,15 @@ def _configured_store(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ARTIFACT_S3_BUCKET", "test-bucket")
 
 
+NOW = datetime(2026, 10, 19, 12, tzinfo=UTC)
+
+
 class FakeS3:
-    def __init__(self) -> None:
+    def __init__(self, page_size: int = 1000) -> None:
         self.objects: dict[str, bytes] = {}
+        self.written: dict[str, datetime] = {}
+        self.page_size = page_size
+        self.versioning: dict[str, str] = {}
 
     @staticmethod
     def _missing(op: str) -> ClientError:
@@ -35,16 +43,30 @@ class FakeS3:
         return {"ContentLength": len(self.objects[Key])}
 
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:  # noqa: N803
-        self.objects[Key] = Path(Filename).read_bytes()
+        self.put(Key, Path(Filename).read_bytes(), NOW)
+
+    def put(self, key: str, data: bytes, written: datetime) -> None:
+        self.objects[key] = data
+        self.written[key] = written
+
+    def delete_object(self, Bucket: str, Key: str) -> None:  # noqa: N803
+        del self.objects[Key], self.written[Key]
+
+    def get_bucket_versioning(self, Bucket: str) -> dict[str, str]:  # noqa: N803
+        return self.versioning
 
     def download_file(self, Bucket: str, Key: str, Filename: str) -> None:  # noqa: N803
         if Key not in self.objects:
             raise self._missing("GetObject")
         Path(Filename).write_bytes(self.objects[Key])
 
-    def list_objects_v2(self, Bucket: str, Prefix: str) -> dict[str, object]:  # noqa: N803
-        contents = [{"Key": k} for k in sorted(self.objects) if k.startswith(Prefix)]
-        return {"Contents": contents}
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, object]:
+        keys = [k for k in sorted(self.objects) if k.startswith(kwargs["Prefix"])]
+        start = int(kwargs.get("ContinuationToken", 0))
+        page = keys[start : start + self.page_size]
+        contents = [{"Key": k, "Size": len(self.objects[k]), "LastModified": self.written[k]} for k in page]
+        more = start + self.page_size < len(keys)
+        return {"Contents": contents, "IsTruncated": more, "NextContinuationToken": str(start + self.page_size)}
 
 
 @pytest.fixture
@@ -136,3 +158,60 @@ def test_ca_bundle_raises_when_none_available(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(s3_store.Path, "is_file", lambda self: False)  # type: ignore[attr-defined]
     with pytest.raises(FileNotFoundError):
         s3_store._ca_bundle()
+
+
+def test_list_objects_follows_pagination() -> None:
+    fake = FakeS3(page_size=2)
+    for i in range(5):
+        fake.put(f"a{i}.tar.gz", b"x", NOW)
+    assert [o.key for o in s3_store.list_objects(client=fake)] == [f"a{i}.tar.gz" for i in range(5)]
+
+
+def _obj(key: str, size: int, days_ago: float) -> s3_store.StoredObject:
+    return s3_store.StoredObject(key, size, NOW - timedelta(days=days_ago))
+
+
+def test_oldest_written_go_first_until_the_target() -> None:
+    objects = [_obj("new.tar.gz", 31, 2), _obj("oldest.tar.gz", 20, 9), _obj("old.tar.gz", 20, 5)]
+    assert [o.key for o in s3_store.eviction_plan(objects, target=50)] == ["oldest.tar.gz", "old.tar.gz"]
+
+
+def test_nothing_goes_at_or_below_the_target() -> None:
+    assert s3_store.eviction_plan([_obj("a.tar.gz", 30, 30), _obj("b.tar.gz", 20, 20)], target=50) == []
+
+
+def test_only_suffix_objects_go_but_everything_counts() -> None:
+    plan = s3_store.eviction_plan([_obj("notes.txt", 60, 30), _obj("a.tar.gz", 1, 2)], target=50)
+    assert [o.key for o in plan] == ["a.tar.gz"]
+    plan = s3_store.eviction_plan([_obj("notes.txt", 60, 30), _obj("a.tar.gz", 1, 2)], target=50, suffix="")
+    assert [o.key for o in plan] == ["notes.txt"]
+
+
+def _fill(fake: FakeS3) -> None:
+    for i, days in enumerate((9, 7, 5, 3)):
+        fake.put(f"a{i}.tar.gz", b"x" * 10, NOW - timedelta(days=days))
+
+
+def test_gc_without_a_quota_halves_current_usage(fake: FakeS3) -> None:
+    _fill(fake)
+    s3_store.gc(percent=50, quota=None, dryrun=False, client=fake)
+    assert sorted(fake.objects) == ["a2.tar.gz", "a3.tar.gz"]
+
+
+def test_gc_against_a_quota(fake: FakeS3) -> None:
+    _fill(fake)
+    s3_store.gc(percent=50, quota=60, dryrun=False, client=fake)
+    assert sorted(fake.objects) == ["a1.tar.gz", "a2.tar.gz", "a3.tar.gz"]
+
+
+def test_gc_dryrun_deletes_nothing(fake: FakeS3) -> None:
+    _fill(fake)
+    plan = s3_store.gc(percent=50, quota=None, dryrun=True, client=fake)
+    assert [o.key for o in plan] == ["a0.tar.gz", "a1.tar.gz"]
+    assert len(fake.objects) == 4
+
+
+def test_gc_warns_when_versioning_is_on(fake: FakeS3, capsys: pytest.CaptureFixture[str]) -> None:
+    fake.versioning = {"Status": "Enabled"}
+    s3_store.gc(percent=50, quota=None, dryrun=True, client=fake)
+    assert "frees nothing" in capsys.readouterr().out
