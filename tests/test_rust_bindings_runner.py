@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""rust-bindings-runner.sh.j2: Rust bindings checked against their deps' install trees."""
+"""rust-bindings-{runner,publish}.sh.j2: Rust bindings checked against their deps' install trees, and published."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any, Final
 from ci_infrastructure.hpc import jobscript
 
 CARGO: Final = '{% extends "ci-infrastructure/rust-bindings-runner.sh.j2" %}\n'
+PUBLISH: Final = '{% extends "ci-infrastructure/rust-bindings-publish.sh.j2" %}\n'
 FEATURES: Final = "--workspace --no-default-features --features system"
 
 LEG: Final[dict[str, Any]] = {
@@ -37,29 +38,11 @@ def test_cargo_checks_the_workspace_with_the_legs_toolchain() -> None:
     assert "cmake" not in out
 
 
-def test_the_crates_are_packaged_last_and_published_only_on_a_release() -> None:
-    out = _render()
-    # Neither runs unless CI_CARGO_PUBLISH asks: not every crate is ready to publish yet.
-    dry_run = f'  cargo publish --dry-run "${{cargo_patches[@]}}" {FEATURES}\n'
-    assert out.index("cargo doc") < out.index('case "${CI_CARGO_PUBLISH:-}" in') < out.index(dry_run)
-    assert "\ndry-run)\n" in out and "\npublish)\n" in out
-    assert f'cargo publish "${{skip[@]}}" {FEATURES}\n' in out
-    assert "cargo_published" not in out
-
-
-def test_a_release_leaves_out_the_named_crates_the_registry_has() -> None:
-    out = _render(leg={**LEG, "cargo-skip-published": ["foo-compat", "foo bar"]})
-    assert "\"$CI_INFRASTRUCTURE_PYTHON\" -I -m ci_infrastructure.cargo_published foo-compat 'foo bar')" in out
-    assert 'skip+=(--exclude "$crate")' in out
-    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
-
-
-def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs_and_the_package() -> None:
+def test_a_recipe_sets_the_features_the_workspace_and_skips_the_docs() -> None:
     source = CARGO + (
         "{% block cargo_workspace %}bindings{% endblock %}\n"
         "{% block cargo_features %}--features ssl{% endblock %}\n"
         "{% block cargo_doc %}{% endblock %}\n"
-        "{% block cargo_package %}{% endblock %}\n"
     )
     out = _render(source)
     assert 'cd "$CI_SOURCE_DIR/bindings"' in out
@@ -85,3 +68,18 @@ def test_crates_follow_the_branch_their_repo_was_resolved_to() -> None:
     assert f'"$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches {refs}' in out
     assert "cargo_patches.py" not in out and "cargo metadata" not in _render()
     subprocess.run(["bash", "-n"], input=out, text=True, check=True)
+
+
+def test_a_publish_leg_patches_nothing_and_builds_the_default_features() -> None:
+    deps = [{"repo": "ecmwf/eckit", "ref": "sync-branch/x"}]
+    out = _render(PUBLISH, leg={**LEG, "_resolved": {"deps": deps}})
+    assert 'case "${CI_CARGO_PUBLISH:-dry-run}" in' in out
+    assert out.endswith('cargo publish "${dry_run[@]}" --workspace \n')
+    assert "cargo_patches" not in out and "cargo test" not in out
+    assert jobscript.undeclared_template_names(PUBLISH, LEG, template_name="t") == set()
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
+
+
+def test_a_publish_recipe_sets_the_features() -> None:
+    out = _render(PUBLISH + "{% block cargo_features %}--features eckit-geo{% endblock %}\n")
+    assert out.endswith('cargo publish "${dry_run[@]}" --workspace --features eckit-geo\n')

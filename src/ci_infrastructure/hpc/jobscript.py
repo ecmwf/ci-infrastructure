@@ -86,8 +86,6 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
         "options": "",
         "python_version": "",
         "modules": [],
-        # Rust bindings: crates a release leaves out when the registry has their version already.
-        "cargo_skip_published": [],
     }
 )
 

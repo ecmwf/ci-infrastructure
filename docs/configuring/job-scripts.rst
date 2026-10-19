@@ -142,13 +142,8 @@ The kind builds a package that publishes nothing and depends on the library:
 (see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
 The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
 with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
-With ``CI_CARGO_PUBLISH=dry-run`` in the environment a ``cargo publish --dry-run`` follows,
-which proves that every crate packages and builds from its package, as a registry would see it;
-it needs every dependency to carry a ``version``, a git dependency too.
-CI does not set the variable, as not every crate is ready to publish yet:
-set it by hand, locally or in a manual workflow run (see `Publish the crates on a release`_).
 Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
-``cargo_package`` for the publish step, ``cargo_workspace`` for another directory:
+``cargo_workspace`` for another directory:
 
 .. code:: jinja
 
@@ -163,41 +158,50 @@ Where :action:`resolve-deps` took an upstream repo from a ``sync-branch/`` or ``
 or a pinned commit, the crates ``Cargo.toml`` fetches from that repo over git follow it too,
 through ``cargo --config patch...``, so the Rust code matches the C++ artifact it links against.
 
-Publish the crates on a release
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Publish the crates
+~~~~~~~~~~~~~~~~~~
 
-A release runs the same recipe with ``CI_CARGO_PUBLISH=publish`` in the environment,
-and ``cargo publish`` runs after ``fmt``, ``clippy``, ``test`` and ``doc`` passed once more.
-Cargo takes the registry token from ``CARGO_REGISTRY_TOKEN``;
-a registry other than crates.io is named in ``CARGO_REGISTRY_DEFAULT``,
-with its token in ``CARGO_REGISTRIES_<NAME>_TOKEN`` and its index in the workspace's ``.cargo/config.toml``.
-With ``--workspace`` cargo publishes the crates in dependency order and waits for each to appear,
-which ``rust-1.90`` is the first toolchain to do.
-The script refuses to publish when :action:`resolve-deps` patched a crate's git dependency:
-release from a tag whose upstream refs are the manifest's.
-
-A registry never takes a version twice.
-A crate that moves on its own schedule, so that a release finds its version on crates.io already,
-is named in the leg's ``cargo-skip-published``, and the release leaves it out:
+Publishing is a kind of its own, which only a publish workflow resolves, never ``ci.yml``.
+Its recipe extends ``rust-bindings-publish.sh.j2``, which runs ``cargo publish --workspace`` in ``rust/``.
+It patches no dependency and builds the crates' default features, so it checks what a registry user gets:
+the crates' dependencies from the registry, and each packaged ``-sys`` crate building its C++ from the tag of its own version.
+That tag must exist, so a dry run of an unreleased version fails.
+The kind's package has no deps, and the kind has one leg, as a second would publish the crates again:
 
 .. code:: toml
 
-   [matrix.rust.defaults]
-   cargo-skip-published = ["foo-compat"]
+   [packages.eckit-crates]
+   compiler-inputs = ["cxx-compiler"]
 
-Any other crate the registry has at its version fails the release, as a forgotten version bump should.
+   [matrix.rust-publish]
+   packages = ["eckit-crates"]
+   publishes = false
 
-A ``publish.yml``, condensed; the ``rust`` kind has one leg, as a second would publish the crates again.
-A release publishes; a manual run, from the Actions UI or ``gh workflow run publish.yml -f mode=dry-run``,
-does what ``mode`` says:
+   [[matrix.rust-publish.include]]
+   job-script = "./.ci/rust-publish.sh.j2"
+   cxx-compiler = "g++-13"
+   c-compiler = "gcc-13"
+   rust-compiler = "rust-1.90"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-boost-qt6-rust1.90"
+   platform = "ubuntu-24.04"
+
+``CI_CARGO_PUBLISH=publish`` publishes; unset or ``dry-run`` stops short of the upload.
+Cargo takes the registry token from ``CARGO_REGISTRY_TOKEN``;
+a registry other than crates.io is named in ``CARGO_REGISTRY_DEFAULT``,
+with its token in ``CARGO_REGISTRIES_<NAME>_TOKEN`` and its index in the workspace's ``.cargo/config.toml``.
+Cargo publishes the crates in dependency order and leaves out those with ``publish = false``.
+
+A ``publish-crates.yml``, condensed. Pushing a release tag publishes;
+a manual run, from the Actions UI or ``gh workflow run publish-crates.yml -f mode=dry-run``, does what ``mode`` says,
+but publishes only from a tag:
 
 .. code:: yaml
 
-   name: publish
+   name: publish-crates
 
    on:
-     release:
-       types: [published]
+     push:
+       tags: ['[0-9]+.[0-9]+.[0-9]+']
      workflow_dispatch:
        inputs:
          mode:
@@ -208,25 +212,19 @@ does what ``mode`` says:
    permissions:
      contents: read
 
-   env:
-     ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
-     ARTIFACT_S3_BUCKET: ${{ secrets.ARTIFACT_S3_BUCKET }}
-     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
    jobs:
      resolve:
        runs-on: arc-runner-normal
        container:
          image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
        outputs:
-         rust-matrix: ${{ toJSON(fromJSON(steps.r.outputs.json).rust) }}
+         matrix: ${{ toJSON(fromJSON(steps.r.outputs.json)['rust-publish']) }}
        steps:
          - uses: actions/checkout@v6
          - id: r
            uses: ecmwf/ci-infrastructure/actions/resolve-deps@main
            with:
-             matrix: rust
+             matrix: rust-publish
 
      publish:
        needs: resolve
@@ -235,26 +233,21 @@ does what ``mode`` says:
        container:
          image: ${{ matrix.container }}
        strategy:
-         matrix: ${{ fromJSON(needs.resolve.outputs.rust-matrix) }}
+         matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
        env:
-         CI_CARGO_PUBLISH: ${{ github.event_name == 'release' && 'publish' || inputs.mode }}
-         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+         CI_CARGO_PUBLISH: ${{ github.ref_type == 'tag' && (inputs.mode || 'publish') || 'dry-run' }}
+         CARGO_REGISTRY_TOKEN: ${{ github.ref_type == 'tag' && secrets.CARGO_REGISTRY_TOKEN || '' }}
        steps:
          - uses: ecmwf/ci-infrastructure/actions/announce-image@main
          - uses: actions/checkout@v6
-         - id: deps
-           uses: ecmwf/ci-infrastructure/actions/fetch-deps@main
-           with:
-             deps-json: ${{ toJSON(matrix._resolved.deps) }}
          - uses: ecmwf/ci-infrastructure/actions/run-job-script@main
            with:
              job-script: ${{ matrix.job-script }}
              matrix-leg: ${{ toJSON(matrix) }}
-             package: eckit-rust
-             cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}
+             package: eckit-crates
 
-The release's code runs with the registry token, as a pull request's never does: only a release or a manual run starts the workflow.
-Run either by hand the same way, with ``ci-infrastructure-render`` and ``CI_CARGO_PUBLISH=dry-run`` or ``publish`` in the shell.
+The tag's code runs with the registry token, as a pull request's never does.
+Run the leg by hand the same way, with ``ci-infrastructure-render`` and ``CI_CARGO_PUBLISH`` in the shell.
 
 Reproduce a leg locally
 -----------------------
