@@ -46,6 +46,7 @@ from ._errors import CIError
 from ._github_api import (
     _OPTION_TOKEN_RE,
     EXECUTION_RUNNER,
+    CiRun,
     Execution,
     ManifestSchemaError,
     _gh,
@@ -53,6 +54,7 @@ from ._github_api import (
     compute_platform_slug,
     fetch_manifests_layer,
     lane_suffix,
+    latest_ci_run,
     probe_workflow_runs,
     resolve_reuse_matrix,
     select_token,
@@ -240,12 +242,14 @@ class DispatchPlan:
     """A producer whose cross-repo-trigger{,-hpc-atos}.yml must fire before fetch_deps runs.
 
     `lane` is the consumer kind's lane; orchestrators only wire a lane to the same lane.
+    With `rerun_id`, that run of the commit's own CI is re-run instead: it builds exactly `sha`.
     """
 
     repo: Repo
     ref: Ref
     sha: Sha
     lane: Execution
+    rerun_id: int | None = None
 
 
 def _to_dep_specs(t: DepTable, own_repo: str) -> list[DepSpec]:
@@ -493,6 +497,22 @@ def dispatch_producer_workflow(
         f"dispatch-id={dispatch_id}); "
         "waiting for run to appear"
     )
+    _await_run(plan, token)
+
+
+def rerun_producer_ci(*, plan: DispatchPlan, token: str) -> None:
+    """Re-run the commit's own CI run, then wait ≤60s for it to show as in flight."""
+    rc, _, stderr = _gh(["gh", "api", "-X", "POST", f"repos/{plan.repo}/actions/runs/{plan.rerun_id}/rerun"], token)
+    if rc != 0 and not probe_workflow_runs(plan.repo, plan.sha, token).in_flight:
+        raise ResolveError(f"Failed to re-run CI run {plan.rerun_id} of {plan.repo}@{plan.sha[:8]}: {stderr.strip()}")
+    print(
+        f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.sha[:8]} by re-running its CI "
+        f"(run {plan.rerun_id}): its artifact was missing. Downstream build jobs will WAIT for it to finish."
+    )
+    _await_run(plan, token)
+
+
+def _await_run(plan: DispatchPlan, token: str) -> None:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if probe_workflow_runs(plan.repo, plan.sha, token).in_flight:
@@ -576,10 +596,21 @@ def _classify_orphan_pin(
     lane: Execution,
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     pins: Mapping[Repo, Ref] | None = None,
+    ci_run: CiRun | None = None,
 ) -> Literal["triggered rebuild"]:
-    """Artifact missing, no producer CI in flight: raise, or (timing skew) record a DispatchPlan."""
+    """Artifact missing, no producer CI in flight: raise, or record a DispatchPlan.
+
+    A pinned or divergent commit is rebuilt by re-running its own CI, never a fork's.
+    """
+    key = (spec.repo, ref, lane)
     producer_manifest = manifest_cache.get((spec.repo, ref))
-    if pins and spec.repo in pins:
+    rerun_id = ci_run.id if can_dispatch and ci_run is not None and ci_run.head_repo == spec.repo else None
+    pinned = bool(pins and spec.repo in pins)
+    if (pinned or not is_normal_ref(spec, ref, sync_branch, sync_exists_by_repo)) and rerun_id is not None:
+        dispatch_plans.setdefault(key, DispatchPlan(spec.repo, ref, sha, lane, rerun_id=rerun_id))
+        return "triggered rebuild"
+
+    if pinned:
         raise ResolveError(
             f"dep '{spec.package}' is pinned to {spec.repo}@{sha[:8]}, the commit under test, but "
             f"no artifact named '{artifact_name}' exists and no CI is in flight for it: "
@@ -617,7 +648,7 @@ def _classify_orphan_pin(
             )
 
     # Keyed by lane too: a producer needed by both lanes needs two dispatches.
-    dispatch_plans.setdefault((spec.repo, ref, lane), DispatchPlan(repo=spec.repo, ref=ref, sha=sha, lane=lane))
+    dispatch_plans.setdefault(key, DispatchPlan(repo=spec.repo, ref=ref, sha=sha, lane=lane))
     return "triggered rebuild"
 
 
@@ -807,6 +838,12 @@ def resolve_leg(
             if run_state_cache[run_key]:
                 source = "artifact"  # fetch_deps polls for the in-flight upload
             else:
+                ci_run = latest_ci_run(spec.repo, sha, token)
+                if ci_run is not None and ci_run.conclusion == "failure":
+                    raise ResolveError(
+                        f"dep '{spec.package}' from {spec.repo}@{sha[:8]} has no artifact '{artifact_name}', "
+                        f"and that commit's CI was red, so it is not rebuilt: {ci_run.url}"
+                    )
                 source = _classify_orphan_pin(
                     spec=spec,
                     ref=ref,
@@ -819,6 +856,7 @@ def resolve_leg(
                     lane=lane,
                     dispatch_plans=dispatch_plans,
                     pins=pins,
+                    ci_run=ci_run,
                 )
 
         resolved = ResolvedDep(
@@ -1221,7 +1259,14 @@ def _run(
             f"::notice::{len(dispatch_plans)} upstream package(s) need a rebuild before this repo can "
             f"build: {rebuild_repos}. Dispatching their CI now; this run's build jobs will wait for them."
         )
+        rerun: set[int] = set()
         for plan in dispatch_plans.values():
+            if plan.rerun_id is not None:
+                # Both lanes of one commit share its CI run.
+                if plan.rerun_id not in rerun:
+                    rerun.add(plan.rerun_id)
+                    rerun_producer_ci(plan=plan, token=dispatch_token)
+                continue
             # fallback-ref: the producer's pinned ref, not a hardcoded "main".
             dispatch_producer_workflow(
                 plan=plan,

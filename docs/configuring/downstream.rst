@@ -35,6 +35,10 @@ this allows to exclude heavy tests, such as ``valgrind``, from the downstream CI
 
 ``triggers = ["upstream-change"]`` builds the kind when an upstream changes,
 ``"rebuild-request"`` when a consumer finds one of its artifacts missing.
+A missing artifact is rebuilt unless that commit's ``CI`` was red:
+on the declared ref or sync branch through ``rebuild-request``,
+for any other commit, such as one under test, by re-running that commit's ``CI``.
+A fork's commit is never rebuilt.
 The order follows from ``[[deps]]``:
 ``eccodes``' ``build`` waits for the ``build`` kinds of ``ecbuild``, ``stack-dependencies`` and ``eckit``,
 its ``build-hpc`` for their ``build-hpc``.

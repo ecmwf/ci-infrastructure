@@ -189,8 +189,8 @@ def eviction_plan(objects: Sequence[StoredObject], *, target: float, suffix: str
     return plan
 
 
-def _gib(size: float) -> str:
-    return f"{size / 2**30:.1f} GiB"
+def _gb(size: float) -> str:
+    return f"{size / 1e9:.1f} GB"
 
 
 def gc(
@@ -201,8 +201,8 @@ def gc(
     versioning = s3.get_bucket_versioning(Bucket=_bucket()).get("Status", "never enabled")
     objects = list_objects(s3)
     used = sum(o.size for o in objects)
-    of = f" of {_gib(quota)} ({used / quota:.0%})" if quota else ""
-    print(f"s3://{_bucket()}/{_key_prefix()}: {len(objects)} objects, {_gib(used)}{of}; versioning {versioning}")
+    of = f" of {_gb(quota)} ({used / quota:.0%})" if quota else ""
+    print(f"s3://{_bucket()}/{_key_prefix()}: {len(objects)} objects, {_gb(used)}{of}; versioning {versioning}")
     if versioning != "never enabled":
         print("::warning::bucket versioning is on: a delete leaves the old version behind and frees nothing")
     plan = eviction_plan(objects, target=(quota if quota else used) * percent / 100, suffix=suffix)
@@ -210,9 +210,9 @@ def gc(
         print("Nothing to delete.")
         return plan
     verb = "Would delete" if dryrun else "Deleting"
-    print(f"{verb} {len(plan)} oldest-written objects ({_gib(sum(o.size for o in plan))}):")
+    print(f"{verb} {len(plan)} oldest-written objects ({_gb(sum(o.size for o in plan))}):")
     for obj in plan:
-        print(f"- {obj.key} (written {obj.last_modified:%Y-%m-%d}, {_gib(obj.size)})")
+        print(f"- {obj.key} (written {obj.last_modified:%Y-%m-%d}, {_gb(obj.size)})")
         if not dryrun:
             s3.delete_object(Bucket=_bucket(), Key=obj.key)
     return plan
@@ -252,13 +252,13 @@ def _exists(ctx: click.Context, name: str) -> None:
 
 @main.command("gc", help="Delete the oldest-written objects down to a share of the quota, or of current usage.")
 @click.option("--percent", type=float, default=50, show_default=True, help="Usage to delete down to")
-@click.option("--quota-gib", "quota_gib", type=float, default=None, help="The store's quota; omitted, current usage")
+@click.option("--quota-gb", "quota_gb", type=float, default=None, help="The store's quota; omitted, current usage")
 @click.option(
     "--suffix", default=".tar.gz", show_default=True, help="Delete only keys ending in this; '' for every object"
 )
 @click.option("--dryrun", is_flag=True, default=False, help="List what would be deleted; delete nothing")
-def _gc(percent: float, quota_gib: float | None, suffix: str, dryrun: bool) -> None:
-    gc(percent=percent, quota=int(quota_gib * 2**30) if quota_gib else None, dryrun=dryrun, suffix=suffix)
+def _gc(percent: float, quota_gb: float | None, suffix: str, dryrun: bool) -> None:
+    gc(percent=percent, quota=int(quota_gb * 1e9) if quota_gb else None, dryrun=dryrun, suffix=suffix)
 
 
 if __name__ == "__main__":

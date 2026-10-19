@@ -2,16 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: HPC nightly cleanup
+name: Nightly cleanup
 
-# Age-based GC of vars.HPC_CI_REMOTE_WORK_DIR, over troika's ssh connection.
+# Age-based GC of vars.HPC_CI_REMOTE_WORK_DIR, over troika's ssh connection, and
+# the oldest-written S3 objects down to half an assumed quota per bucket.
 on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       older-than-days:
-        description: Age threshold in days
+        description: HPC age threshold in days
         required: false
         default: '1'
       dryrun:
@@ -24,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  cleanup:
+  hpc:
     runs-on: hpc-submit
     container:
       image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
@@ -57,3 +58,37 @@ jobs:
           if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
           if [ "$DRYRUN" = "true" ]; then args+=(--dryrun); fi
           "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc gc "${args[@]}"
+
+  s3:
+    strategy:
+      fail-fast: false
+      matrix:
+        store:
+          - {name: artifacts, quota-gb: 800, suffix: .tar.gz}
+          - {name: sccache, quota-gb: 150, suffix: ''}
+    name: s3 (${{ matrix.store.name }})
+    runs-on: arc-runner-normal
+    container:
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/announce-image@main
+
+      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+      - name: Delete the oldest-written ${{ matrix.store.name }} objects
+        shell: bash
+        env:
+          ARTIFACT_S3_ENDPOINT: ${{ secrets.ARTIFACT_S3_ENDPOINT }}
+          ARTIFACT_S3_REGION: ${{ secrets.ARTIFACT_S3_REGION }}
+          # gc reads its bucket from ARTIFACT_S3_BUCKET, for sccache too.
+          ARTIFACT_S3_BUCKET: ${{ matrix.store.name == 'sccache' && secrets.SCCACHE_BUCKET || secrets.ARTIFACT_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          QUOTA_GB: ${{ matrix.store.quota-gb }}
+          SUFFIX: ${{ matrix.store.suffix }}
+          DRYRUN: ${{ github.event.inputs.dryrun || 'false' }}
+        run: |
+          set -euo pipefail
+          args=(--percent 50 --quota-gb "$QUOTA_GB" --suffix "$SUFFIX")
+          if [ "$DRYRUN" = "true" ]; then args+=(--dryrun); fi
+          "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.s3_store gc "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
