@@ -278,6 +278,29 @@ def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
     return WorkflowRuns("completed", conclusion="success")
 
 
+class CiRun(NamedTuple):
+    id: int
+    conclusion: str | None
+    head_repo: str | None
+    url: str | None
+
+
+def latest_ci_run(repo: str, sha: str, token: str | None) -> CiRun | None:
+    """The newest ci.yml run for `sha`: the repo's own CI, which publishes that commit's artifacts."""
+    data = gh_api_rest(f"repos/{repo}/actions/workflows/ci.yml/runs?head_sha={sha}&per_page=1", token)
+    runs = data.get("workflow_runs") if isinstance(data, dict) else None
+    if not runs or not isinstance(runs[0], dict):
+        return None
+    run = runs[0]
+    head = run.get("head_repository")
+    return CiRun(
+        int(run["id"]),
+        run.get("conclusion"),
+        head.get("full_name") if isinstance(head, dict) else None,
+        run.get("html_url"),
+    )
+
+
 def write_outputs(outputs: Mapping[str, object]) -> None:
     """Append to $GITHUB_OUTPUT (or print); None becomes ""."""
     lines: list[str] = []

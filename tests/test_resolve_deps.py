@@ -16,6 +16,7 @@ from ci_infrastructure import resolve_deps
 from ci_infrastructure._github_api import (
     EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
+    CiRun,
     Execution,
     WorkflowRuns,
     canonical_option_segment,
@@ -408,11 +409,52 @@ def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_packag
     assert by_name["middle"].deps_hash != {str(d.name): d for d in unpinned}["middle"].deps_hash
 
 
-def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+def _missing_artifact(monkeypatch: pytest.MonkeyPatch, ci_run: CiRun | None) -> None:
     monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
+    monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: ci_run)
+
+
+def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    _missing_artifact(monkeypatch, None)
     with pytest.raises(ResolveError, match="the commit under test"):
         _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins={Repo("o/base"): _PINNED})
+
+
+@pytest.mark.usefixtures("offline")
+def test_a_red_commit_is_not_rebuilt(monkeypatch: pytest.MonkeyPatch) -> None:
+    _missing_artifact(monkeypatch, CiRun(7, "failure", "o/base", "https://run/7"))
+    with pytest.raises(ResolveError, match=r"CI was red.*https://run/7"):
+        _resolve(_own("top"), [_dep_spec("base")], dict(_LEG))
+
+
+def _classify_pinned(ci_run: CiRun | None) -> dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan]:
+    plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
+    resolve_deps._classify_orphan_pin(
+        spec=_dep_spec("base"),
+        ref=_PINNED,
+        sha=Sha(_PINNED),
+        artifact_name=ArtifactName("base-x"),
+        manifest_cache={},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        can_dispatch=True,
+        lane=EXECUTION_RUNNER,
+        dispatch_plans=plans,
+        pins={Repo("o/base"): _PINNED},
+        ci_run=ci_run,
+    )
+    return plans
+
+
+def test_a_pinned_commit_is_rebuilt_by_re_running_its_ci() -> None:
+    plans = _classify_pinned(CiRun(7, "success", "o/base", None))
+    assert [p.rerun_id for p in plans.values()] == [7]
+
+
+def test_a_fork_commit_is_not_rebuilt() -> None:
+    with pytest.raises(ResolveError, match="the commit under test"):
+        _classify_pinned(CiRun(7, "success", "someone/base", None))
 
 
 def test_bfs_reads_pinned_manifests_at_the_pin(monkeypatch: pytest.MonkeyPatch) -> None:
