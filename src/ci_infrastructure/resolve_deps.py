@@ -19,6 +19,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
                                           own-build-type, own-python, own-deps-hash
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, needs-python, install-path}
+          _resolved.crates                {crate: repo} of the built packages' deps' `crates`
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
 
@@ -133,6 +134,7 @@ class DepSpec:
     unless: Mapping[str, frozenset[str]] | None = None
     # A package of the declaring repo, built from the declaring package's commit; `ref` is unused.
     sibling: bool = False
+    crates: tuple[str, ...] = ()
 
     def applies_to(self, leg: Mapping[str, Any], lane: Execution) -> bool:
         """Compared as str; a missing field never matches. `execution` is the lane."""
@@ -272,6 +274,7 @@ def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
         when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
         unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
         sibling=t.repo is None,
+        crates=t.crates,
     )
 
 
@@ -983,6 +986,19 @@ def resolve_packages(
     return list(to_fetch.values()), per_package
 
 
+def leg_crates(
+    manifest: Manifest, prefixes: Sequence[PackageName], leg: Mapping[str, Any], lane: Execution
+) -> dict[str, Repo]:
+    """{crate: repo} of the `crates` the built packages' deps that apply to `leg` list."""
+    return {
+        crate: spec.repo
+        for p in prefixes
+        for spec in manifest.packages[p].deps
+        if spec.applies_to(leg, lane)
+        for crate in spec.crates
+    }
+
+
 def build_order(manifest: Manifest, prefixes: Sequence[PackageName]) -> list[PackageName]:
     """`prefixes` with every package after the packages of this repo it depends on."""
     wanted = set(prefixes)
@@ -1237,6 +1253,7 @@ def _run(
                 "direct-artifact-names": " ".join(own.direct_artifact_names),
                 "job-name": job_names.name_suffix(entry, include, package.compiler_inputs),
             }
+            resolved_block["crates"] = leg_crates(local_manifest, prefixes, entry, lane)
             resolved_block["packages"] = {
                 p: {
                     "own-artifact-name": o.artifact_name,

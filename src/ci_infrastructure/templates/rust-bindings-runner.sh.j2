@@ -2,7 +2,9 @@
 {# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
    SPDX-License-Identifier: Apache-2.0
 
-   Check a C++ package's Rust bindings with cargo on a GitHub runner, against the libraries the leg's deps put on `CMAKE_PREFIX_PATH`; publishes no artifact. CI_CARGO_PUBLISH=dry-run packages the crates as a registry would see them, CI_CARGO_PUBLISH=publish, as a release workflow sets it, publishes them.
+   Check a C++ package's Rust bindings with cargo on a GitHub runner, against the libraries the leg's deps put on `CMAKE_PREFIX_PATH`; publishes nothing.
+
+   Also the base of rust-bindings-publish.sh.j2, which replaces the `cargo` block.
 
    The leg names its toolchain in `rust-compiler`, e.g. "rust-1.90", and the
    C/C++ compilers cargo builds and links native code with. #}
@@ -38,52 +40,26 @@ export CARGO_INCREMENTAL=0
 {% endblock %}
 
 cd "$CI_SOURCE_DIR/{% block cargo_workspace %}rust{% endblock %}"
-# Crates from an upstream repo follow the branch resolve-deps built its C++ from, e.g. a
-# sync-branch/ of the same name, rather than the one Cargo.toml names.
-cargo_patches=()
-{% if ci_dep_refs %}
-while IFS= read -r patch; do cargo_patches+=(--config "$patch"); done < <(
-  cargo metadata --format-version 1 |
-    "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, ref in ci_dep_refs | dictsort %} --ref {{ (repo ~ "=" ~ ref) | sh }}{% endfor %})
-for patch in "${cargo_patches[@]}"; do echo "cargo: $patch"; done
-{% endif %}
 {% block cargo %}
+# The crates the manifest takes from a dep follow the commit resolve-deps built its C++ from.
+cargo_patches=()
+{% if ci_dep_shas %}
+# A command substitution, not < <(...): set -e stops on a disagreement with Cargo.toml.
+patches="$(cargo metadata --no-deps --format-version 1 |
+  "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, sha in ci_dep_shas | dictsort %} --dep {{ (repo ~ "@" ~ sha) | sh }}{% endfor %}{% for crate, repo in ci_crates | dictsort %} --crate {{ (crate ~ "=" ~ repo) | sh }}{% endfor %})"
+while IFS= read -r patch; do
+  if [ -n "$patch" ]; then echo "cargo: $patch"; cargo_patches+=(--config "$patch"); fi
+done <<<"$patches"
+{% if ci_crates %}
+cargo metadata "${cargo_patches[@]}" --format-version 1 |
+  "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_patches{% for repo, sha in ci_dep_shas | dictsort %} --dep {{ (repo ~ "@" ~ sha) | sh }}{% endfor %}{% for crate, repo in ci_crates | dictsort %} --crate {{ (crate ~ "=" ~ repo) | sh }}{% endfor %} --check
+{% endif %}
+{% endif %}
 cargo fmt --all --check
 # The lints are the workspace's own, e.g. its .cargo/config.toml; warnings fail.
 cargo clippy "${cargo_patches[@]}" --workspace --all-targets {% block cargo_features %}--no-default-features --features system{% endblock %} -- -D warnings
 cargo test "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
 {% block cargo_doc %}
 RUSTDOCFLAGS="-D warnings" cargo doc "${cargo_patches[@]}" --workspace --no-deps {{ self.cargo_features() }}
-{% endblock %}
-{% block cargo_package %}
-# Nothing runs here unless CI_CARGO_PUBLISH says so: not every crate is ready to publish yet.
-# "dry-run" proves that every crate packages and builds from its package, as a registry would see
-# it. "publish", as a release workflow sets it with cargo's registry token (CARGO_REGISTRY_TOKEN,
-# or CARGO_REGISTRY_DEFAULT with CARGO_REGISTRIES_<NAME>_TOKEN), publishes.
-case "${CI_CARGO_PUBLISH:-}" in
-"") ;;
-dry-run)
-  cargo publish --dry-run "${cargo_patches[@]}" --workspace {{ self.cargo_features() }}
-  ;;
-publish)
-  if [ -n "${cargo_patches[*]}" ]; then
-    echo "::error::not publishing crates verified against a patched dependency; release from a branch that resolves to the default refs"
-    exit 1
-  fi
-  skip=()
-{% if cargo_skip_published %}
-  # A registry never takes a version twice: these crates move on their own schedule.
-  while IFS= read -r crate; do skip+=(--exclude "$crate"); done < <(
-    cargo metadata --no-deps --format-version 1 |
-      "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_published{% for crate in cargo_skip_published %} {{ crate | sh }}{% endfor %})
-  for crate in "${skip[@]}"; do echo "cargo: $crate"; done
-{% endif %}
-  cargo publish "${skip[@]}" --workspace {{ self.cargo_features() }}
-  ;;
-*)
-  echo "::error::CI_CARGO_PUBLISH=$CI_CARGO_PUBLISH: expected dry-run, publish or nothing"
-  exit 1
-  ;;
-esac
 {% endblock %}
 {% endblock %}

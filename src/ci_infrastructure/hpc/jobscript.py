@@ -60,7 +60,7 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "ci_dep_refs")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "ci_dep_shas", "ci_crates")
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -86,7 +86,7 @@ JOB_TEMPLATE_DEFAULTS: Final[Mapping[str, Any]] = MappingProxyType(
         "options": "",
         "python_version": "",
         "modules": [],
-        # Rust bindings: crates a release leaves out when the registry has their version already.
+        # Rust bindings: crates a publish leaves out when the registry has their version already.
         "cargo_skip_published": [],
     }
 )
@@ -164,8 +164,10 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     context["execution"] = execution
     # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
     context["ci_packages"] = list((leg.get("_resolved") or {}).get("packages") or {})
-    # The ref resolve-deps took each dep's repo from, e.g. a sync-branch/ of the same name.
-    context["ci_dep_refs"] = {d["repo"]: d["ref"] for d in (leg.get("_resolved") or {}).get("deps") or []}
+    resolved = leg.get("_resolved") or {}
+    # The commit resolve-deps built each dep's repo from, and the crates the manifest takes from it.
+    context["ci_dep_shas"] = {d["repo"]: d["sha"] for d in resolved.get("deps") or []}
+    context["ci_crates"] = dict(resolved.get("crates") or {})
     return context
 
 
