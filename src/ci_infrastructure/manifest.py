@@ -213,6 +213,11 @@ class DepTable(_Table):
         description="The negation of `when`, in the same form: the dep does not apply to legs where every field "
         "has one of the listed values.",
     )
+    crates: tuple[str, ...] = Field(
+        default=(),
+        description="Rust crates of the upstream repo that the package's Cargo.toml depends on. Rust-bindings "
+        "legs patch them to the commit the upstream's artifact was built from, and fail where Cargo.toml disagrees.",
+    )
 
     @field_validator("repo")
     @classmethod

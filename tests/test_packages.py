@@ -546,3 +546,21 @@ def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkey
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: _NotInFlight())
     with pytest.raises(ResolveError, match="the commit under test"):
         _resolve_fork_sibling(frozenset())
+
+
+def test_a_bindings_leg_carries_the_crates_of_the_deps_that_apply() -> None:
+    from ci_infrastructure.resolve_deps import leg_crates
+
+    text = _BINDINGS.replace(
+        'deps = [{ package = "cxxmath" }]',
+        'deps = [{ package = "cxxmath", crates = ["cxxmath-sys"] },'
+        ' { repo = "org/other", package = "other", ref = "main", crates = ["other-sys"],'
+        ' when = { platform = "rocky-9" } }]',
+    )
+    m = parse_manifest(text)
+    leg = m.matrix["rust"][0]
+    assert leg_crates(m, list(m.built_by_kind["rust"]), leg, EXECUTION_RUNNER) == {"cxxmath-sys": "org/cxxmath"}
+    assert leg_crates(m, list(m.built_by_kind["rust"]), {**leg, "platform": "rocky-9"}, EXECUTION_RUNNER) == {
+        "cxxmath-sys": "org/cxxmath",
+        "other-sys": "org/other",
+    }

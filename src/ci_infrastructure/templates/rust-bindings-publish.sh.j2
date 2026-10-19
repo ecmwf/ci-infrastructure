@@ -1,0 +1,27 @@
+{% extends "ci-infrastructure/rust-bindings-runner.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   Publish a C++ package's Rust crates, as a release workflow runs it: CI_CARGO_PUBLISH=publish
+   publishes with cargo's registry token, unset or dry-run stops short of the upload.
+
+   Unlike CI it patches no dependency and builds the default features, as a registry user gets
+   them: a packaged `-sys` crate builds its C++ from the tag of its own version, which must exist. #}
+{% block cargo %}
+{# The default features; a recipe names others here. #}
+{% block cargo_features %}{% endblock %}
+case "${CI_CARGO_PUBLISH:-dry-run}" in
+dry-run) dry_run=(--dry-run) ;;
+publish) dry_run=() ;;
+*) echo "::error::CI_CARGO_PUBLISH=$CI_CARGO_PUBLISH: expected dry-run or publish"; exit 1 ;;
+esac
+skip=()
+{% if cargo_skip_published %}
+# A registry never takes a version twice: these crates move on their own schedule.
+while IFS= read -r crate; do skip+=(--exclude "$crate"); done < <(
+  cargo metadata --no-deps --format-version 1 |
+    "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_published{% for crate in cargo_skip_published %} {{ crate | sh }}{% endfor %})
+for crate in "${skip[@]}"; do echo "cargo: $crate"; done
+{% endif %}
+cargo publish "${dry_run[@]}" "${skip[@]}" --workspace {{ self.cargo_features() }}
+{% endblock %}

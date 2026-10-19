@@ -118,7 +118,7 @@ The kind builds a package that publishes nothing and depends on the library:
 .. code:: toml
 
    [packages.eckit-rust]
-   compiler-inputs = ["cxx-compiler"]
+   compiler-inputs = ["cxx-compiler", "rust-compiler"]
 
    [[packages.eckit-rust.deps]]
    package = "eckit"
@@ -139,7 +139,7 @@ The kind builds a package that publishes nothing and depends on the library:
    rust-compiler = "rust-1.90"
 
 ``rust-compiler`` names the toolchain as ``cxx-compiler`` names g++; the image provides it
-(see :doc:`../reference/runners`). It stays out of ``compiler-inputs``: nothing ``cargo`` builds is published.
+(see :doc:`../reference/runners`). Both are ``compiler-inputs``, as both toolchains build what the leg checks.
 The recipe extends ``rust-bindings-runner.sh.j2``, which runs ``cargo fmt``, ``clippy``, ``test`` and ``doc`` in ``rust/``
 with the ``-sys`` crates in ``system`` mode, linking the library on ``CMAKE_PREFIX_PATH``.
 Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
@@ -154,9 +154,127 @@ Override ``cargo_features`` for other features, ``cargo_doc`` to skip the docs,
 A ``-sys`` crate that builds its library from source itself needs only the library's deps,
 which the dependency on the library brings along.
 
-Where :action:`resolve-deps` took an upstream repo from a ``sync-branch/`` or ``feature/`` branch,
-or a pinned commit, the crates ``Cargo.toml`` fetches from that repo over git follow it too,
-through ``cargo --config patch...``, so the Rust code matches the C++ artifact it links against.
+Crates of an upstream repo
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Cargo.toml`` names an upstream's crates by their registry version, e.g. ``eckit-sys = { version = "2.5" }``,
+and the manifest lists them in ``crates`` on the dep that brings the upstream's library:
+
+.. code:: toml
+
+   [[packages.eccodes-rust.deps]]
+   repo = "ecmwf/eckit"
+   package = "eckit"
+   ref = "develop"
+   crates = ["eckit-sys"]
+
+The leg patches each listed crate, through ``cargo --config patch...``, to the commit :action:`resolve-deps` built the dep's artifact from,
+whatever the manifest's ``ref`` resolved to, so the Rust code matches the C++ it links against.
+It fails where ``Cargo.toml`` and the manifest disagree: a listed crate ``Cargo.toml`` does not depend on,
+a crate ``Cargo.toml`` takes over git from a dep's repo without the manifest listing it,
+or a version requirement the crate at that commit does not meet.
+
+Publish the crates
+~~~~~~~~~~~~~~~~~~
+
+Publishing is a kind of its own, which only a publish workflow resolves, never ``ci.yml``.
+Its recipe extends ``rust-bindings-publish.sh.j2``, which runs ``cargo publish --workspace`` in ``rust/``.
+It patches no dependency and builds the crates' default features, so it checks what a registry user gets:
+the crates' dependencies from the registry, and each packaged ``-sys`` crate building its C++ from the tag of its own version.
+That tag must exist, so a dry run of an unreleased version fails.
+The kind's package has no deps, and the kind has one leg, as a second would publish the crates again:
+
+.. code:: toml
+
+   [packages.eckit-crates]
+   compiler-inputs = ["cxx-compiler", "rust-compiler"]
+
+   [matrix.rust-publish]
+   packages = ["eckit-crates"]
+   publishes = false
+
+   [[matrix.rust-publish.include]]
+   job-script = "./.ci/rust-publish.sh.j2"
+   cxx-compiler = "g++-13"
+   c-compiler = "gcc-13"
+   rust-compiler = "rust-1.90"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-gcc13-gfortran13-boost-qt6-rust1.90"
+   platform = "ubuntu-24.04"
+
+``CI_CARGO_PUBLISH=publish`` publishes; unset or ``dry-run`` stops short of the upload.
+Cargo takes the registry token from ``CARGO_REGISTRY_TOKEN``;
+a registry other than crates.io is named in ``CARGO_REGISTRY_DEFAULT``,
+with its token in ``CARGO_REGISTRIES_<NAME>_TOKEN`` and its index in the workspace's ``.cargo/config.toml``.
+Cargo publishes the crates in dependency order and leaves out those with ``publish = false``.
+
+A registry never takes a version twice.
+A crate that moves on its own schedule, so that a release finds its version on crates.io already,
+is named in the leg's ``cargo-skip-published``, and the publish leaves it out:
+
+.. code:: toml
+
+   [[matrix.rust-publish.include]]
+   cargo-skip-published = ["foo-compat"]
+
+Any other crate the registry has at its version fails the publish, as a forgotten version bump should.
+
+A ``publish-crates.yml``, condensed. Pushing a release tag publishes;
+a manual run, from the Actions UI or ``gh workflow run publish-crates.yml -f mode=dry-run``, does what ``mode`` says,
+but publishes only from a tag:
+
+.. code:: yaml
+
+   name: publish-crates
+
+   on:
+     push:
+       tags: ['[0-9]+.[0-9]+.[0-9]+']
+     workflow_dispatch:
+       inputs:
+         mode:
+           type: choice
+           options: [dry-run, publish]
+           default: dry-run
+
+   permissions:
+     contents: read
+
+   jobs:
+     resolve:
+       runs-on: arc-runner-normal
+       container:
+         image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+       outputs:
+         matrix: ${{ toJSON(fromJSON(steps.r.outputs.json)['rust-publish']) }}
+       steps:
+         - uses: actions/checkout@v6
+         - id: r
+           uses: ecmwf/ci-infrastructure/actions/resolve-deps@main
+           with:
+             matrix: rust-publish
+
+     publish:
+       needs: resolve
+       name: publish (${{ matrix._resolved['job-name'] }})
+       runs-on: ${{ matrix['runs-on'] }}
+       container:
+         image: ${{ matrix.container }}
+       strategy:
+         matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+       env:
+         CI_CARGO_PUBLISH: ${{ github.ref_type == 'tag' && (inputs.mode || 'publish') || 'dry-run' }}
+         CARGO_REGISTRY_TOKEN: ${{ github.ref_type == 'tag' && secrets.CARGO_REGISTRY_TOKEN || '' }}
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/announce-image@main
+         - uses: actions/checkout@v6
+         - uses: ecmwf/ci-infrastructure/actions/run-job-script@main
+           with:
+             job-script: ${{ matrix.job-script }}
+             matrix-leg: ${{ toJSON(matrix) }}
+             package: eckit-crates
+
+The tag's code runs with the registry token, as a pull request's never does.
+Run the leg by hand the same way, with ``ci-infrastructure-render`` and ``CI_CARGO_PUBLISH`` in the shell.
 
 Reproduce a leg locally
 -----------------------
