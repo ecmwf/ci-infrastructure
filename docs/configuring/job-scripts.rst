@@ -207,6 +207,17 @@ a registry other than crates.io is named in ``CARGO_REGISTRY_DEFAULT``,
 with its token in ``CARGO_REGISTRIES_<NAME>_TOKEN`` and its index in the workspace's ``.cargo/config.toml``.
 Cargo publishes the crates in dependency order and leaves out those with ``publish = false``.
 
+A registry never takes a version twice.
+A crate that moves on its own schedule, so that a release finds its version on crates.io already,
+is named in the leg's ``cargo-skip-published``, and the publish leaves it out:
+
+.. code:: toml
+
+   [[matrix.rust-publish.include]]
+   cargo-skip-published = ["foo-compat"]
+
+Any other crate the registry has at its version fails the publish, as a forgotten version bump should.
+
 A ``publish-crates.yml``, condensed. Pushing a release tag publishes;
 a manual run, from the Actions UI or ``gh workflow run publish-crates.yml -f mode=dry-run``, does what ``mode`` says,
 but publishes only from a tag:

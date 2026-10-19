@@ -81,7 +81,7 @@ def test_a_publish_leg_patches_nothing_and_builds_the_default_features() -> None
     deps = [{"repo": "ecmwf/eckit", "sha": "a" * 40}]
     out = _render(PUBLISH, leg={**LEG, "_resolved": {"deps": deps, "crates": {"eckit-sys": "ecmwf/eckit"}}})
     assert 'case "${CI_CARGO_PUBLISH:-dry-run}" in' in out
-    assert out.endswith('cargo publish "${dry_run[@]}" --workspace \n')
+    assert out.endswith('cargo publish "${dry_run[@]}" "${skip[@]}" --workspace \n')
     assert "cargo_patches" not in out and "cargo metadata" not in out and "cargo test" not in out
     assert jobscript.undeclared_template_names(PUBLISH, LEG, template_name="t") == set()
     subprocess.run(["bash", "-n"], input=out, text=True, check=True)
@@ -89,4 +89,11 @@ def test_a_publish_leg_patches_nothing_and_builds_the_default_features() -> None
 
 def test_a_publish_recipe_sets_the_features() -> None:
     out = _render(PUBLISH + "{% block cargo_features %}--features eckit-geo{% endblock %}\n")
-    assert out.endswith('cargo publish "${dry_run[@]}" --workspace --features eckit-geo\n')
+    assert out.endswith('cargo publish "${dry_run[@]}" "${skip[@]}" --workspace --features eckit-geo\n')
+
+
+def test_a_publish_leaves_out_the_named_crates_the_registry_has() -> None:
+    out = _render(PUBLISH, leg={**LEG, "cargo-skip-published": ["foo-compat", "foo bar"]})
+    assert "\"$CI_INFRASTRUCTURE_PYTHON\" -I -m ci_infrastructure.cargo_published foo-compat 'foo bar')" in out
+    assert 'skip+=(--exclude "$crate")' in out
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)

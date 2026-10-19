@@ -15,5 +15,13 @@ dry-run) dry_run=(--dry-run) ;;
 publish) dry_run=() ;;
 *) echo "::error::CI_CARGO_PUBLISH=$CI_CARGO_PUBLISH: expected dry-run or publish"; exit 1 ;;
 esac
-cargo publish "${dry_run[@]}" --workspace {{ self.cargo_features() }}
+skip=()
+{% if cargo_skip_published %}
+# A registry never takes a version twice: these crates move on their own schedule.
+while IFS= read -r crate; do skip+=(--exclude "$crate"); done < <(
+  cargo metadata --no-deps --format-version 1 |
+    "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.cargo_published{% for crate in cargo_skip_published %} {{ crate | sh }}{% endfor %})
+for crate in "${skip[@]}"; do echo "cargo: $crate"; done
+{% endif %}
+cargo publish "${dry_run[@]}" "${skip[@]}" --workspace {{ self.cargo_features() }}
 {% endblock %}
