@@ -810,7 +810,8 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
     cond = _render_kind_filter(cross, all_triggers)
     outputs: dict[str, str] = {"ref": "${{ steps.pick.outputs.ref }}"}
     for kind in runnable:
-        outputs[f"matrix-{kind}"] = f"${{{{ steps.r.outputs.matrix-{kind} }}}}"
+        # resolve-deps declares matrix-<kind> outputs only for a fixed set of kinds.
+        outputs[f"matrix-{kind}"] = f"${{{{ toJSON(fromJSON(steps.r.outputs.json)['{kind}']) }}}}"
     return {
         "if": cond,
         "runs-on": BASE_IMAGE_RUNNER,
