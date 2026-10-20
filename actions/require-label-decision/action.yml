@@ -113,9 +113,11 @@ runs:
 
         if [ "${LEVELS_INPUT:-true}" = false ]; then
           want="'$LABEL_INPUT'"
+          choices="$want"
           valid() { [ "${found[0]}" = "$LABEL_INPUT" ]; }
         else
           want="'$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'"
+          choices="'$LABEL_INPUT:all', '$LABEL_INPUT:<n>'"
           valid() { [ "$level" != "${found[0]}" ] && { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; }
         fi
 
@@ -139,7 +141,7 @@ runs:
         case "$decision" in
           undecided)
             state=pending
-            description="${DESC_PENDING_INPUT:-Add $want or '$OPT_OUT_INPUT' to merge}"
+            description="${DESC_PENDING_INPUT:-Add $choices or '$OPT_OUT_INPUT' to merge}"
             ;;
           conflict)
             state=failure

@@ -36,7 +36,7 @@ inputs:
     required: false
     default: ''
   labels:
-    description: 'Comma-separated labels for a newly opened PR; each must exist in the repo.'
+    description: 'Comma-separated labels for a newly opened PR; one the repo lacks is left out.'
     required: false
     default: ''
   mode:
@@ -156,7 +156,20 @@ runs:
             gh pr edit "$open_pr" --body "$body"
             status=pr-updated
           else
-            open_pr=$(gh pr create --head "$BRANCH" --base "$BASE" --title "$title" --body "$body" ${LABELS:+--label "$LABELS"})
+            # gh pr create fails on a label the repo lacks; this runs org-wide, so leave such a label out.
+            existing=$(gh label list --limit 1000 --json name --jq '.[].name')
+            labels=()
+            IFS=',' read -ra wanted <<< "$LABELS"
+            for label in "${wanted[@]}"; do
+              label="${label#"${label%%[![:space:]]*}"}"; label="${label%"${label##*[![:space:]]}"}"
+              [ -n "$label" ] || continue
+              if grep -qxF -- "$label" <<< "$existing"; then
+                labels+=(--label "$label")
+              else
+                echo "::warning title=Regenerate workflows::$GITHUB_REPOSITORY has no label '$label'; opening the PR without it."
+              fi
+            done
+            open_pr=$(gh pr create --head "$BRANCH" --base "$BASE" --title "$title" --body "$body" "${labels[@]}")
             status=pr-opened
           fi
           echo "::notice title=Regenerate workflows::$open_pr"

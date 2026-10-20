@@ -92,6 +92,7 @@ def test_no_label_stays_pending(tmp_path: Path) -> None:
     assert r.decision == "undecided"
     assert r.posted("state") == "pending"
     assert r.posted("context") == CONTEXT
+    assert r.posted("description") == f"Add '{LABEL}:all', '{LABEL}:<n>' or '{OPT_OUT}' to merge"
 
 
 @pytest.mark.parametrize("labels", [[f"{LABEL}:all"], [f"{LABEL}:2"]])
