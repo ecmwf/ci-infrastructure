@@ -6,7 +6,7 @@ name: Require a label decision before merge
 description: >
   Post a commit status that stays pending until the PR carries exactly one
   level label, `<label>:all` or `<label>:<n>` (run), or `opt-out-label` (skip);
-  a level label wins over the opt-out. Any other use of `<label>` fails the
+  with `levels: false` the bare `<label>` runs instead. Run wins over the opt-out. Any other use of `<label>` fails the
   status. Make `context` a required check. Payload-only, so safe under
   pull_request_target.
 
@@ -15,6 +15,10 @@ inputs:
     description: 'Prefix of the level labels.'
     required: false
     default: 'run-downstream-ci'
+  levels:
+    description: "'false': the bare label decides to run, and takes no level."
+    required: false
+    default: 'true'
   opt-out-label:
     description: 'Label meaning "deliberately skip it".'
     required: false
@@ -58,6 +62,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         LABEL_INPUT: ${{ inputs.label }}
+        LEVELS_INPUT: ${{ inputs.levels }}
         OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
         CONTEXT_INPUT: ${{ inputs.context }}
         DESC_PENDING_INPUT: ${{ inputs.description-pending }}
@@ -106,10 +111,17 @@ runs:
         level=""
         if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
 
+        if [ "${LEVELS_INPUT:-true}" = false ]; then
+          want="'$LABEL_INPUT'"
+          valid() { [ "${found[0]}" = "$LABEL_INPUT" ]; }
+        else
+          want="'$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'"
+          valid() { [ "$level" != "${found[0]}" ] && { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; }
+        fi
+
         if [ "${#found[@]}" -eq 0 ]; then
           if has_label "$OPT_OUT_INPUT"; then decision=skip; else decision=undecided; fi
-        elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
-             { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
+        elif [ "${#found[@]}" -eq 1 ] && valid; then
           decision=run
           has_label "$OPT_OUT_INPUT" && echo "::warning title=Label gate::both '${found[0]}' and '$OPT_OUT_INPUT' are set; treating this as '${found[0]}'."
         else
@@ -127,11 +139,11 @@ runs:
         case "$decision" in
           undecided)
             state=pending
-            description="${DESC_PENDING_INPUT:-Add '$LABEL_INPUT:all', '$LABEL_INPUT:<n>' or '$OPT_OUT_INPUT' to merge}"
+            description="${DESC_PENDING_INPUT:-Add $want or '$OPT_OUT_INPUT' to merge}"
             ;;
           conflict)
             state=failure
-            description="Set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'"
+            description="Set exactly one of $want"
             ;;
           exempt)
             state=success

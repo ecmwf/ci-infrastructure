@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: "[PR] Dependent-images label gate"
+
+# The `dependent-images-label` status, pending until a pull request carries one of the two labels.
+# A fork's pull request gets a read-only token here and cannot post it.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./actions/require-label-decision
+        with:
+          label: test-dependent-images
+          levels: 'false'
+          opt-out-label: test-dependent-images-not-needed
+          context: dependent-images-label
+          description-decided: Dependent-images decision recorded

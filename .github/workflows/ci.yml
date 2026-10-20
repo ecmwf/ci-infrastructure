@@ -48,8 +48,8 @@ jobs:
       - name: pytest
         run: pytest
 
-  # A pull request carries exactly one of the labels, which says whether images.yml also builds
-  # the images on the bases it rebuilds. Read live: after labelling, re-run the failed jobs.
+  # On a pull request, the label test-dependent-images also builds the images on the bases it rebuilds;
+  # pr-label-images.yml keeps the decision pending. Read live, so a re-run after labelling picks it up.
   image-label:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-slim
@@ -65,13 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
-          yes=$(grep -cx test-dependent-images <<< "$labels" || true)
-          no=$(grep -cx test-dependent-images-not-needed <<< "$labels" || true)
-          if [ "$yes$no" != 10 ] && [ "$yes$no" != 01 ]; then
-            echo "::error title=Image label::Set exactly one of test-dependent-images and test-dependent-images-not-needed, then re-run the failed jobs."
-            exit 1
-          fi
-          echo "dependents=$([ "$yes" = 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "dependents=$(grep -qx test-dependent-images <<< "$labels" && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   # Gated on the tests, so a red commit never touches the registry.
   images:
