@@ -225,7 +225,7 @@ and submits a new one otherwise.
 Cancelling the GitHub job cancels the SLURM job.
 
 A new submission clears the artifact's staging directory.
-``hpc-nightly-cleanup.yml`` removes older trees under ``HPC_CI_REMOTE_WORK_DIR``;
+``nightly-cleanup.yml`` removes older trees under ``HPC_CI_REMOTE_WORK_DIR``;
 dispatched with ``dryrun: true`` it only lists them.
 The same workflow deletes the oldest-written S3 objects
 once a bucket holds more than half of its assumed quota (artifacts 800 GB, sccache 150 GB).

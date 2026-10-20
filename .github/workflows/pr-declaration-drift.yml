@@ -8,7 +8,7 @@ name: Contributor Declaration drift
 # repo's merge rule at once; this job watches for the resulting drift.
 on:
   schedule:
-    # Weekly, off-the-hour to dodge the cron pileup, like hpc-nightly-cleanup.yml.
+    # Weekly, off-the-hour to dodge the cron pileup, like nightly-cleanup.yml.
     - cron: '17 6 * * 1'
   workflow_dispatch:
 
