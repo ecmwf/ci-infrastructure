@@ -1295,6 +1295,30 @@ def test_lane_split_consumer_files(tmp_path: Path) -> None:
     assert "group: cross-repo-trigger-hpc-atos-b-${{ github.ref }}" in hpc
 
 
+def test_resolve_outputs_read_custom_kinds_from_json(tmp_path: Path) -> None:
+    _make_chain_ab(tmp_path)
+    manifest = tmp_path / "b" / ".ci" / "manifest.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + textwrap.dedent(
+            """
+            [matrix.fortran]
+            triggers = ["upstream-change", "rebuild-request"]
+            defaults.job-script = "./.ci/build.sh"
+            needs = ["a/build"]
+            [[matrix.fortran.include]]
+            runs-on = "ubuntu-latest"
+            """
+        )
+    )
+    doc = yaml.safe_load(_consumer(tmp_path, "b"))
+
+    assert doc["jobs"]["resolve"]["outputs"]["matrix-fortran"] == (
+        "${{ toJSON(fromJSON(steps.r.outputs.json)['fortran']) }}"
+    )
+    assert doc["jobs"]["b__fortran"]["strategy"]["matrix"] == "${{ fromJSON(needs.resolve.outputs.matrix-fortran) }}"
+
+
 _DISPATCH_INPUTS: Final = {
     "pull-request": {
         "description": "Number of the pull request whose commit to run downstream CI for",
