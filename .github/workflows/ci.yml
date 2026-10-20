@@ -48,10 +48,38 @@ jobs:
       - name: pytest
         run: pytest
 
+  # A pull request carries exactly one of the labels, which says whether images.yml also builds
+  # the images on the bases it rebuilds. Read live: after labelling, re-run the failed jobs.
+  image-label:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: read
+    outputs:
+      dependents: ${{ steps.label.outputs.dependents }}
+    steps:
+      - id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+          yes=$(grep -cx test-dependent-images <<< "$labels" || true)
+          no=$(grep -cx test-dependent-images-not-needed <<< "$labels" || true)
+          if [ "$yes$no" != 10 ] && [ "$yes$no" != 01 ]; then
+            echo "::error title=Image label::Set exactly one of test-dependent-images and test-dependent-images-not-needed, then re-run the failed jobs."
+            exit 1
+          fi
+          echo "dependents=$([ "$yes" = 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   # Gated on the tests, so a red commit never touches the registry.
   images:
-    needs: mypy_and_tests
+    needs: [mypy_and_tests, image-label]
+    if: ${{ !cancelled() && needs.mypy_and_tests.result == 'success' && needs.image-label.result != 'failure' }}
     uses: ./.github/workflows/images.yml
+    with:
+      dependents: ${{ needs.image-label.outputs.dependents == 'true' }}
     # Only the secrets images.yml uses: it runs PR-authored Dockerfiles.
     secrets:
       PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
