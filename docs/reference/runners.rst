@@ -44,9 +44,9 @@ To access the HPC you need to run on the HPC runner group and also need an HPC i
 If you suspect a problem with the runners, trigger
 `smoke-test-runners.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/smoke-test-runners.yml>`__.
 It checks each group's S3 object-store and sccache access.
-When the artifact store is full (``QuotaExceeded``), trigger
-`s3-cleanup.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/s3-cleanup.yml>`__.
-It deletes the oldest-written artifacts; consumers rebuild what they still need.
+`hpc-nightly-cleanup.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/hpc-nightly-cleanup.yml>`__
+deletes the oldest-written artifacts and sccache objects every night; consumers rebuild what they still need.
+When the artifact store is full (``QuotaExceeded``) before then, trigger it by hand.
 
 `GitHub-hosted runners <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>`__
 can incur a cost.

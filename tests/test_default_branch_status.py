@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import pytest
@@ -12,6 +12,8 @@ import pytest
 from ci_infrastructure import default_branch_status as dbs
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import _alias
+
+NOW: Final = datetime(2026, 10, 14, 6, 17, tzinfo=UTC)
 
 
 def _run(sha: str, conclusion: str | None = "success", pusher: str = "dev") -> dbs.Run:
@@ -30,6 +32,7 @@ def _node(oid: str, parent: str | None) -> dict[str, Any]:
         "url": f"https://commit/{oid}",
         "messageHeadline": f"commit {oid} | piped",
         "message": f"commit {oid} | piped\n\nbody",
+        "committedDate": "2026-10-14T06:00:00Z",
         "parents": {"nodes": [{"oid": parent}] if parent else []},
         "author": {"name": "Some Dev", "user": {"login": "dev"}},
     }
@@ -175,20 +178,44 @@ def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch:
 
 def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
     commits = (
-        dbs.Commit("b" * 40, "https://c/b", "hotfix | merge", "alice", None, _run("b" * 40, "failure", "bob")),
-        dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7"), None),
+        dbs.Commit("b" * 40, "https://c/b", "hotfix | merge", "alice", None, _run("b" * 40, "failure", "bob"), NOW),
+        dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7"), None, NOW),
     )
     states = {
         "o/eckit": _state("o/eckit", _run("b" * 40, "failure", "bob"), commits=commits),
         "o/atlas": _state("o/atlas", _run("z", "success"), upstream=("o/eckit",)),
     }
-    out = dbs.render_summary(states, datetime(2026, 10, 14, 6, 17, tzinfo=UTC))
+    out = dbs.render_summary(states, NOW)
     assert "2026-10-14 06:17 UTC" in out
     assert "| ⛔ | [atlas](https://github.com/o/atlas) | `develop` |" in out
     assert "❗ direct push by [@bob](https://github.com/bob) | hotfix \\| merge |" in out
     assert "| · | [`aaaaaaaa`](https://c/a) | [@carol](https://github.com/carol) | [#7](https://pr/7) |" in out
     assert "<details open><summary>❌ <b>eckit</b>" in out
     assert "<details open><summary>⛔ <b>atlas</b>" in out
+
+
+def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
+    older = dbs.Commit("d" * 40, "https://c/d", "fix", "erin", None, None, NOW - timedelta(days=2))
+    newer = dbs.Commit("b" * 40, "https://c/b", "hotfix", "alice", None, _run("b" * 40, "failure", "bob"), NOW)
+    old = dbs.Commit("c" * 40, "https://c/c", "old push", "dave", None, None, NOW - timedelta(days=15))
+    merged = dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7"), None, NOW)
+    states = {
+        "o/eckit": _state("o/eckit", commits=(newer, merged, old)),
+        "o/atlas": _state("o/atlas", commits=(older,)),
+    }
+    out = dbs.render_summary(states, NOW)
+    section = out[out.index("## ❗ Direct pushes since 2026-09-30") : out.index("<details")]
+    ci = f"[❌](https://ci/{'b' * 40})"
+    assert (
+        f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | {ci} | [@bob](https://github.com/bob) | hotfix |"
+        in section
+    )
+    assert (
+        "| 2026-10-12 06:17 | atlas [`dddddddd`](https://c/d) | · | [@erin](https://github.com/erin) | fix |" in section
+    )
+    assert section.index("bbbbbbbb") < section.index("dddddddd")
+    assert "cccccccc" not in section and "aaaaaaaa" not in section
+    assert "None." in dbs.render_summary({"o/eckit": _state("o/eckit", commits=(merged,))}, NOW)
 
 
 def test_bots_link_to_their_app() -> None:
