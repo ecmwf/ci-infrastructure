@@ -218,6 +218,16 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
     assert "None." in dbs.render_summary({"o/eckit": _state("o/eckit", commits=(merged,))}, NOW)
 
 
+def test_the_excluded_peoples_direct_pushes_stay_out_of_the_table() -> None:
+    bot = dbs.Commit("b" * 40, "https://c/b", "regen", "x", None, _run("b" * 40, "success", "regen[bot]"), NOW)
+    human = dbs.Commit("d" * 40, "https://c/d", "fix", "erin", None, None, NOW)
+    out = dbs.render_summary({"o/eckit": _state("o/eckit", commits=(bot, human))}, NOW, {"regen[bot]"})
+    section = out[out.index("## ❗ Direct pushes") : out.index("<details")]
+    assert "Leaving out [@regen[bot]](https://github.com/apps/regen)." in section
+    assert "dddddddd" in section and "bbbbbbbb" not in section
+    assert "bbbbbbbb" in out[out.index("<details") :]
+
+
 def test_bots_link_to_their_app() -> None:
     assert dbs._user("regen[bot]") == "[@regen[bot]](https://github.com/apps/regen)"
 

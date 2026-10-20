@@ -38,4 +38,7 @@ jobs:
       - shell: bash
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: '"$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.default_branch_status'
+        # The regenerate bot's pushes are the auto-commit mode at work, not someone skipping review.
+        run: |
+          "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.default_branch_status \
+            --exclude 'ecmwf-ci-workflow-regenerator[bot]'

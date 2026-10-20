@@ -16,7 +16,7 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from graphlib import CycleError, TopologicalSorter
@@ -300,7 +300,12 @@ def _user(login: str) -> str:
     return f"[@{login}](https://github.com/{login})"
 
 
-def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
+def _pusher(c: Commit) -> str:
+    return c.run.pusher if c.run and c.run.pusher else c.author
+
+
+def render_summary(states: Mapping[str, RepoState], now: datetime, exclude: Collection[str] = ()) -> str:
+    """The dashboard; the direct pushes of the people in `exclude` stay out of its table of direct pushes."""
     blockers = red_upstream(states)
     order = ordered({r: s.upstream for r, s in states.items()})
     lines = [
@@ -329,18 +334,24 @@ def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
     ]
     since = now - _DIRECT_PUSH_WINDOW
     pushes = sorted(
-        ((s, c) for s in states.values() for c in s.commits if c.pr is None and c.date >= since),
+        (
+            (s, c)
+            for s in states.values()
+            for c in s.commits
+            if c.pr is None and c.date >= since and _pusher(c) not in exclude
+        ),
         key=lambda sc: sc[1].date,
         reverse=True,
     )
     lines += ["", f"## ❗ Direct pushes since {since:%Y-%m-%d}", ""]
+    if exclude:
+        lines += ["Leaving out " + ", ".join(_user(login) for login in sorted(exclude)) + ".", ""]
     if pushes:
         lines += ["| Date | Commit | CI | Person | Title |", "|---|---|---|---|---|"]
         for s, c in pushes:
             ci = f"[{_run_icon(c.run)}]({c.run.url})" if c.run else _run_icon(None)
-            person = c.run.pusher if c.run and c.run.pusher else c.author
             commit = f"{s.name} [`{c.sha[:8]}`]({c.url})"
-            lines.append(f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {ci} | {_user(person)} | {_cell(c.headline)} |")
+            lines.append(f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {ci} | {_user(_pusher(c))} | {_cell(c.headline)} |")
     else:
         lines.append("None.")
     for repo in order:
@@ -377,14 +388,15 @@ def failures(states: Mapping[str, RepoState]) -> list[str]:
 
 
 @click.command()
-def main() -> None:
+@click.option("--exclude", multiple=True, metavar="LOGIN", help="Leave this person's direct pushes out of their table.")
+def main(exclude: tuple[str, ...]) -> None:
     """Write the dashboard of the rolled-out repos' default branches to $GITHUB_STEP_SUMMARY.
 
     Fails when a default branch is red or blocked by a red upstream.
     """
     try:
         states = fetch(SEEDS, select_token())
-        summary = render_summary(states, datetime.now(UTC))
+        summary = render_summary(states, datetime.now(UTC), frozenset(exclude))
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
