@@ -64,6 +64,7 @@ A bot runs :action:`regenerate-workflows-pr` on every push to the default branch
 and opens a pull request with the regenerated workflows.
 It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.yaml`` to the commit that generated them,
 so the pull request is checked by the hooks that match its files.
+It labels a new pull request ``downstream-ci-not-needed`` (the input ``labels``), since it changes only generated workflows.
 The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 
 - ``pr`` (default): the pull request waits for a human.

@@ -10,10 +10,10 @@ on:
   workflow_call:
     inputs:
       labels:
-        description: 'Comma-separated labels for a newly opened PR.'
+        description: 'Comma-separated labels for a newly opened PR; one the repo lacks is left out.'
         type: string
         required: false
-        default: ''
+        default: 'downstream-ci-not-needed'
       branch:
         description: 'Branch the regenerated files are pushed to.'
         type: string
