@@ -21,7 +21,7 @@ on:
         default: 'false'
 
 concurrency:
-  group: hpc-nightly-cleanup
+  group: nightly-cleanup
   cancel-in-progress: false
 
 jobs:

@@ -48,10 +48,32 @@ jobs:
       - name: pytest
         run: pytest
 
+  # On a pull request, the label test-dependent-images also builds the images on the bases it rebuilds;
+  # pr-label-images.yml keeps the decision pending. Read live, so a re-run after labelling picks it up.
+  image-label:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: read
+    outputs:
+      dependents: ${{ steps.label.outputs.dependents }}
+    steps:
+      - id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+          echo "dependents=$(grep -qx test-dependent-images <<< "$labels" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   # Gated on the tests, so a red commit never touches the registry.
   images:
-    needs: mypy_and_tests
+    needs: [mypy_and_tests, image-label]
+    if: ${{ !cancelled() && needs.mypy_and_tests.result == 'success' && needs.image-label.result != 'failure' }}
     uses: ./.github/workflows/images.yml
+    with:
+      dependents: ${{ needs.image-label.outputs.dependents == 'true' }}
     # Only the secrets images.yml uses: it runs PR-authored Dockerfiles.
     secrets:
       PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}

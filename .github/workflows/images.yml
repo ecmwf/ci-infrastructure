@@ -27,6 +27,11 @@ on:
         required: false
       CI_PERMISSIONS_APP_PRIVATE_KEY:
         required: false
+    inputs:
+      dependents:
+        description: 'On a pull request, also build the images whose base it rebuilds.'
+        type: boolean
+        default: false
   # Nightly, for the rolling platform only -- in effect, not by configuration.
   # A scheduled run discovers every image exactly as a push does; the pinned
   # platforms' tags are already in the registry and are skipped, while
@@ -57,12 +62,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Push for pushes to main; never for pull_request validation. Matched by prefix:
-  # under pull_request_target github.ref is the base branch, i.e. main.
-  PUSH: ${{ !startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main' }}
+  # Push for pushes to main; never for pull_request validation.
+  PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
-  # 'false' validates only the bases on pull requests: faster, misses broken variants.
-  VALIDATE_DEPENDENTS_ON_PR: 'true'
 
 jobs:
   discover:
@@ -81,7 +83,7 @@ jobs:
           persist-credentials: false
       - id: d
         env:
-          MODE: ${{ (!startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main') && 'publish' || (env.VALIDATE_DEPENDENTS_ON_PR == 'true' && 'validate' || 'validate-bases') }}
+          MODE: ${{ (!startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main') && 'publish' || (inputs.dependents && 'validate' || 'validate-bases') }}
           REBUILD: ${{ inputs.rebuild }}
         run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD"
 

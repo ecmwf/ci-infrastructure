@@ -16,9 +16,9 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -34,6 +34,7 @@ SEEDS: Final = ("ecmwf/ecbuild",)
 CI_WORKFLOW: Final = "ci.yml"
 _HISTORY: Final = 100  # commits fetched to walk the first-parent chain
 _TIMELINE: Final = 15  # first-parent commits shown per repo
+_DIRECT_PUSH_WINDOW: Final = timedelta(days=14)
 
 _RED: Final = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 # A cancelled or skipped run says nothing about the commit; the verdict looks further back.
@@ -58,6 +59,7 @@ class Commit:
     author: str
     pr: tuple[int, str] | None  # (number, url) of the merged PR that brought it in
     run: Run | None
+    date: datetime
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,7 @@ def _query(repos: Sequence[str]) -> str:
             '  manifest: object(expression: "HEAD:.ci/manifest.toml") { ... on Blob { text } }\n'
             "  defaultBranchRef { name target { ... on Commit {\n"
             f"    history(first: {_HISTORY}) {{ nodes {{\n"
-            "      oid url messageHeadline message\n"
+            "      oid url messageHeadline message committedDate\n"
             "      parents(first: 1) { nodes { oid } }\n"
             "      author { name user { login } }\n"
             "    } }\n"
@@ -128,12 +130,12 @@ def edges_of(manifest_text: str, repo: str) -> Edges:
     return Edges(tuple(upstream), tuple(dict.fromkeys(t.repo for t in m.trigger_downstream)))
 
 
-def first_parent(nodes: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def first_parent(nodes: Sequence[Mapping[str, Any]], limit: int | None = _TIMELINE) -> list[Mapping[str, Any]]:
     """The first-parent chain from the head; the commits a merged PR brought along are skipped."""
     by_oid = {n["oid"]: n for n in nodes}
     chain: list[Mapping[str, Any]] = []
     node = nodes[0] if nodes else None
-    while node is not None and len(chain) < _TIMELINE:
+    while node is not None and (limit is None or len(chain) < limit):
         chain.append(node)
         parents = node["parents"]["nodes"]
         node = by_oid.get(parents[0]["oid"]) if parents else None
@@ -186,8 +188,9 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
             author=(n["author"]["user"] or {}).get("login") or n["author"]["name"] or "",
             pr=_merged_pr(n["message"].split("\n", 1)[0].strip(), repo),
             run=run_of.get(n["oid"]),
+            date=datetime.fromisoformat(n["committedDate"]),
         )
-        for n in first_parent(ref["target"]["history"]["nodes"])
+        for n in first_parent(ref["target"]["history"]["nodes"], limit=None)
     )
     return RepoState(repo, branch, upstream, commits, runs)
 
@@ -297,7 +300,12 @@ def _user(login: str) -> str:
     return f"[@{login}](https://github.com/{login})"
 
 
-def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
+def _pusher(c: Commit) -> str:
+    return c.run.pusher if c.run and c.run.pusher else c.author
+
+
+def render_summary(states: Mapping[str, RepoState], now: datetime, exclude: Collection[str] = ()) -> str:
+    """The dashboard; the direct pushes of the people in `exclude` stay out of its table of direct pushes."""
     blockers = red_upstream(states)
     order = ordered({r: s.upstream for r, s in states.items()})
     lines = [
@@ -324,6 +332,28 @@ def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
         " · · no run of its own, part of a later push · ❗ pushed without a pull request",
     ]
+    since = now - _DIRECT_PUSH_WINDOW
+    pushes = sorted(
+        (
+            (s, c)
+            for s in states.values()
+            for c in s.commits
+            if c.pr is None and c.date >= since and _pusher(c) not in exclude
+        ),
+        key=lambda sc: sc[1].date,
+        reverse=True,
+    )
+    lines += ["", f"## ❗ Direct pushes since {since:%Y-%m-%d}", ""]
+    if exclude:
+        lines += ["Leaving out " + ", ".join(_user(login) for login in sorted(exclude)) + ".", ""]
+    if pushes:
+        lines += ["| Date | Commit | CI | Person | Title |", "|---|---|---|---|---|"]
+        for s, c in pushes:
+            ci = f"[{_run_icon(c.run)}]({c.run.url})" if c.run else _run_icon(None)
+            commit = f"{s.name} [`{c.sha[:8]}`]({c.url})"
+            lines.append(f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {ci} | {_user(_pusher(c))} | {_cell(c.headline)} |")
+    else:
+        lines.append("None.")
     for repo in order:
         s = states[repo]
         st = status(s, blockers[repo])
@@ -334,7 +364,7 @@ def render_summary(states: Mapping[str, RepoState], now: datetime) -> str:
             "| CI | Commit | Author | Via | Message |",
             "|---|---|---|---|---|",
         ]
-        for c in s.commits:
+        for c in s.commits[:_TIMELINE]:
             if c.pr:
                 via = f"[#{c.pr[0]}]({c.pr[1]})"
             else:
@@ -358,14 +388,15 @@ def failures(states: Mapping[str, RepoState]) -> list[str]:
 
 
 @click.command()
-def main() -> None:
+@click.option("--exclude", multiple=True, metavar="LOGIN", help="Leave this person's direct pushes out of their table.")
+def main(exclude: tuple[str, ...]) -> None:
     """Write the dashboard of the rolled-out repos' default branches to $GITHUB_STEP_SUMMARY.
 
     Fails when a default branch is red or blocked by a red upstream.
     """
     try:
         states = fetch(SEEDS, select_token())
-        summary = render_summary(states, datetime.now(UTC))
+        summary = render_summary(states, datetime.now(UTC), frozenset(exclude))
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")

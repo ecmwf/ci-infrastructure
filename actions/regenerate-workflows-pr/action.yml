@@ -72,6 +72,17 @@ runs:
         set -euo pipefail
         "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.generate_downstream_ci --manifest-path "$MANIFEST_PATH_INPUT"
 
+    # Committed only with drifted workflows, so a push to ci-infrastructure alone opens no PR.
+    - name: Pin the ci-infrastructure hooks to the generator's commit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.read-token }}
+        GENERATOR_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        sha=$(gh api "repos/ecmwf/ci-infrastructure/commits/${GENERATOR_REF:-main}" --jq .sha)
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.pin_hook_rev "$sha"
+
     - id: pr
       name: Open, update or close the PR
       shell: bash
@@ -110,6 +121,7 @@ runs:
         bot="${APP_SLUG}[bot]"
         bot_id=$(gh api "users/$bot" --jq .id)
         git add -A -- .github/workflows
+        [ -f .pre-commit-config.yaml ] && git add -- .pre-commit-config.yaml
         git -c user.name="$bot" -c user.email="${bot_id}+${bot}@users.noreply.github.com" commit -q -m "$title"
 
         # Not forced: a concurrent push to base is rejected and the PR takes over.
@@ -126,9 +138,11 @@ runs:
           echo "::warning title=Regenerate workflows::Could not push to $BASE; opening a PR instead."
         fi
 
-        # Rewriting an identical tree would retrigger CI on the PR every night.
-        remote_tree=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.commit.tree.sha 2>/dev/null || true)
-        if [ -n "$open_pr" ] && [ "$remote_tree" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+        # Rewriting identical workflows would retrigger CI on the PR every night, as would a hook rev
+        # that moves with every push to ci-infrastructure.
+        remote_tree=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github?ref=$BRANCH" \
+          --jq '.[] | select(.name == "workflows") | .sha' 2>/dev/null || true)
+        if [ -n "$open_pr" ] && [ "$remote_tree" = "$(git rev-parse 'HEAD:.github/workflows')" ]; then
           echo "::notice title=Regenerate workflows::$open_pr already has these changes."
           status=pr-unchanged
         else

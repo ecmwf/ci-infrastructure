@@ -116,6 +116,16 @@ def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str])
     assert "exactly one" in r.posted("description")
 
 
+def test_without_levels_the_bare_label_runs(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(labels=[LABEL]), LEVELS_INPUT="false")
+    assert (r.decision, r.posted("state")) == ("run", "success")
+    r = _run(tmp_path, _payload(), LEVELS_INPUT="false")
+    assert r.posted("state") == "pending"
+    assert r.posted("description") == f"Add '{LABEL}' or '{OPT_OUT}' to merge"
+    r = _run(tmp_path, _payload(labels=[f"{LABEL}:all"]), LEVELS_INPUT="false")
+    assert (r.decision, r.posted("description")) == ("conflict", f"Set exactly one of '{LABEL}'")
+
+
 def test_an_exempt_author_needs_no_decision(tmp_path: Path) -> None:
     r = _run(tmp_path, _payload(author="DeployDuck"), EXEMPT_AUTHORS_INPUT="DeployDuck")
     assert r.decision == "exempt"

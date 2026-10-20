@@ -44,9 +44,9 @@ To access the HPC you need to run on the HPC runner group and also need an HPC i
 If you suspect a problem with the runners, trigger
 `smoke-test-runners.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/smoke-test-runners.yml>`__.
 It checks each group's S3 object-store and sccache access.
-When the artifact store is full (``QuotaExceeded``), trigger
-`s3-cleanup.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/s3-cleanup.yml>`__.
-It deletes the oldest-written artifacts; consumers rebuild what they still need.
+`nightly-cleanup.yml <https://github.com/ecmwf/ci-infrastructure/actions/workflows/nightly-cleanup.yml>`__
+deletes the oldest-written artifacts and sccache objects every night; consumers rebuild what they still need.
+When the artifact store is full (``QuotaExceeded``) before then, trigger it by hand.
 
 `GitHub-hosted runners <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>`__
 can incur a cost.
@@ -91,6 +91,9 @@ which runs the checks that are not specific to the official images:
    environment contract holds for my-runner
 
 To add/modify a public image, open a PR in ``ci-infrastructure``.
+Its CI builds the ``base`` images it changes; the images built on them only with the label ``test-dependent-images``.
+The status ``dependent-images-label`` stays pending until the PR carries that label or ``test-dependent-images-not-needed``.
+CI reads the label when it runs, so re-run it after adding ``test-dependent-images``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.
 The ``base`` image of each platform shows what an image is expected to supply.
 The rules for images are in
