@@ -91,7 +91,7 @@ which runs the checks that are not specific to the official images:
    environment contract holds for my-runner
 
 To add/modify a public image, open a PR in ``ci-infrastructure``.
-Its CI builds the ``base`` images it changes; the images built on them only with the label ``test-dependent-images``.
+Its CI builds the images it changes; the images built on a ``base`` it changes only with the label ``test-dependent-images``.
 The status ``dependent-images-label`` stays pending until the PR carries that label or ``test-dependent-images-not-needed``.
 CI reads the label when it runs, so re-run it after adding ``test-dependent-images``.
 Add it under `public-images/ <https://github.com/ecmwf/ci-infrastructure/tree/main/public-images>`__.

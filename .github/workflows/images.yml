@@ -85,7 +85,9 @@ jobs:
         env:
           MODE: ${{ (!startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main') && 'publish' || (inputs.dependents && 'validate' || 'validate-bases') }}
           REBUILD: ${{ inputs.rebuild }}
-        run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD"
+          # A pull request tests only the dependents it changes; main publishes the rest.
+          SINCE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: ./build-image.sh --discover --mode "$MODE" --rebuild "$REBUILD" ${SINCE:+--since "$SINCE"}
 
   build-base:
     needs: discover
