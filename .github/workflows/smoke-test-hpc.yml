@@ -7,8 +7,6 @@ name: Smoke test HPC
 on:
   push:
     branches: [main]
-  pull_request_target:
-    types: [opened, reopened, synchronize, labeled]
   workflow_dispatch:
     inputs:
       full-matrix:
@@ -17,14 +15,6 @@ on:
         default: false
 
 jobs:
-  # Remote, not ./actions/...: a local path needs a checkout, and this job has none.
-  ci-approval:
-    runs-on: ubuntu-slim
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
-
   # `arc`: an ARC pod in the internal-tools image, which carries the cluster ssh
   # identity. `hpc`: a self-hosted runner with that identity on the host and no
   # container, proving the actions don't depend on the image.
@@ -32,7 +22,6 @@ jobs:
   # JSON, since a YAML alias cannot be conditional. The reduced matrix drops the
   # `hpc` include too: an unmatched include would ADD a row with no site.
   lanes:
-    needs: ci-approval
     runs-on: ubuntu-slim
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
@@ -57,7 +46,7 @@ jobs:
           echo "::notice::HPC smoke matrix: $matrix"
 
   ssh:
-    needs: [ci-approval, lanes]
+    needs: lanes
     name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
     strategy: &hpc-lanes
       fail-fast: false
@@ -85,15 +74,13 @@ jobs:
             'echo "connected to HPC"'
 
   hpc-roundtrip:
-    needs: [ci-approval, lanes]
+    needs: lanes
     name: transfer round-trip (${{ matrix.lane }}, ${{ matrix.site }})
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:
@@ -152,7 +139,7 @@ jobs:
           remote-dir: ${{ steps.push.outputs.remote-dir }}
 
   hpc-submit:
-    needs: [ci-approval, lanes]
+    needs: lanes
     name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
     # Submit, wait for the marker, run the recipe, read the sentinel back. The
     # artifact name is unique per run+attempt, so a re-run never reattaches.
@@ -161,8 +148,6 @@ jobs:
     container: *hpc-container
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
       - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
         with:

@@ -57,9 +57,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Push for pushes to main; never for pull_request validation. Matched by prefix:
-  # under pull_request_target github.ref is the base branch, i.e. main.
-  PUSH: ${{ !startsWith(github.event_name, 'pull_request') && github.ref == 'refs/heads/main' }}
+  # Push for pushes to main; never for pull_request validation.
+  PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
   # 'false' validates only the bases on pull requests: faster, misses broken variants.
   VALIDATE_DEPENDENTS_ON_PR: 'true'
