@@ -9,7 +9,7 @@
 Run it as ./build-image.sh. Stdlib only, and outside src/ (a tag path of every image).
 
 Usage:
-  ./build-image.sh --discover [--mode validate|validate-bases|publish] [--rebuild "all|<names>"]
+  ./build-image.sh --discover [--mode validate|validate-bases|publish] [--rebuild "all|<names>"] [--since <ref>]
   ./build-image.sh <platform>/<variant> [--push] [--force] [--require-clean]
   ./build-image.sh --test <platform>/<variant>
   ./build-image.sh --push-built <platform>/<variant> [--force] [--require-clean]
@@ -21,9 +21,12 @@ A build lands in the local docker daemon; --push-built pushes exactly what
 BASE_IMAGE=<ref> builds a dependent on a base loaded into the local daemon
 instead of the published :latest, and makes --test prove that it did.
 
-An image is rebuilt exactly when its tag is not in the registry. The tag is the
-short SHA of the last commit touching its build inputs, plus a UTC date
-(<sha>-<YYYYMMDD>) for rolling platforms (public-images/rolling-*/).
+An image is rebuilt exactly when its tag is not in the registry. With --since, mode
+validate-bases also leaves out a dependent whose directory has not changed since
+<ref>'s merge base: one that is missing only because main has not published it yet.
+
+The tag is the short SHA of the last commit touching its build inputs, plus a
+UTC date (<sha>-<YYYYMMDD>) for rolling platforms (public-images/rolling-*/).
 
 Conventions (see public-images/README.md):
   - image ref  = <REGISTRY>/<PROJECT>/<platform>-<variant>:<tag>
@@ -232,9 +235,15 @@ def require_buildx() -> None:
 # --- discover -----------------------------------------------------------------
 
 
-def discover(mode: Mode, rebuild: str) -> dict[str, object]:
+def discover(mode: Mode, rebuild: str, since: str = "") -> dict[str, object]:
     """The GitHub matrices for the images whose tag is not in the registry."""
     require_buildx()
+
+    point = ""
+    if since and mode == "validate-bases":
+        point = _git("merge-base", since, "HEAD")
+        if not point:
+            die(f"no merge base of {since} and HEAD (shallow checkout? run with fetch-depth: 0)")
 
     images = enumerate_images()
     if not images:
@@ -267,6 +276,10 @@ def discover(mode: Mode, rebuild: str) -> dict[str, object]:
             )
         if mode == "validate-bases" and base in missing:
             note(f"skipping {name}: its base {base} is being rebuilt in this run (mode validate-bases)")
+            continue
+        unchanged = not _git("diff", "--name-only", point, "HEAD", "--", f"{IMAGES_DIR}/{name}") if point else False
+        if unchanged and not ("all" in forced_names or name in forced_names):
+            note(f"skipping {name}: unchanged since {since}, main publishes it (mode validate-bases)")
             continue
         dependents.append(name)
 
@@ -508,6 +521,7 @@ def main(argv: list[str]) -> None:
     name = ""
     mode = "publish"
     rebuild = ""
+    since = ""
     push = force = require_clean = False
 
     args = iter(argv)
@@ -525,6 +539,8 @@ def main(argv: list[str]) -> None:
                 mode = next(args, "")
             case "--rebuild":
                 rebuild = next(args, "")
+            case "--since":
+                since = next(args, "")
             case "--push":
                 push = True
             case "--force":
@@ -546,7 +562,7 @@ def main(argv: list[str]) -> None:
             die(f"--mode must be validate, validate-bases or publish, got '{mode}'")
         if name:
             die("--discover takes no image argument")
-        discover(cast(Mode, mode), rebuild)
+        discover(cast(Mode, mode), rebuild, since)
     elif not name:
         die(
             {

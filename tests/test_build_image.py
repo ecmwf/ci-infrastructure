@@ -247,3 +247,33 @@ def test_discover_refuses_a_variant_on_a_variant(tree: Path, monkeypatch: pytest
 
     with pytest.raises(bi.BuildImageError, match="chains deeper"):
         bi.discover("validate", "")
+
+
+def _commit(root: Path, message: str) -> None:
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message], check=True
+    )
+
+
+@pytest.mark.parametrize("forced", ["", "a/gfortran"])
+def test_validate_bases_since_builds_only_the_dependents_the_branch_changed(
+    tree: Path, monkeypatch: pytest.MonkeyPatch, forced: str
+) -> None:
+    subprocess.run(["git", "-C", str(tree), "init", "-q", "-b", "main"], check=True)
+    _image(tree, "a/base", "FROM ubuntu:24.04\n")
+    _image(tree, "a/gfortran", f"FROM {PREFIX}/a-base:latest\n")
+    _image(tree, "a/clang", f"FROM {PREFIX}/a-base:latest\n")
+    _commit(tree, "images")
+    subprocess.run(["git", "-C", str(tree), "checkout", "-qb", "pr"], check=True)
+    (tree / "public-images" / "a" / "clang" / "Dockerfile").write_text(f"FROM {PREFIX}/a-base:latest\nRUN true\n")
+    _commit(tree, "clang")
+    monkeypatch.setattr(bi, "require_buildx", lambda: None)
+    monkeypatch.setattr(bi, "image_exists", lambda ref: "a-base:" in ref)  # main has not published the variants
+
+    def dependents(since: str) -> list[str]:
+        out = bi.discover("validate-bases", forced, since)
+        return [e["name"] for e in out["dependent-matrix"]["include"]]
+
+    assert dependents("") == ["a/clang", "a/gfortran"]
+    assert dependents("main") == (["a/clang", "a/gfortran"] if forced else ["a/clang"])
