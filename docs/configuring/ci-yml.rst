@@ -91,12 +91,16 @@ It is the last job of ``ci.yml`` and collects all others with :action:`ci-result
            with:
              needs: ${{ toJSON(needs) }}
 
-Without ``if: always()``, a failed job would skip ``ci-result``, and a skipped check counts as passed.
-It also fails when no job succeeded: in a repository with ``ci-fork.yml``, a fork's own ``pull_request`` run skips everything,
-so a maintainer merges such a pull request after checking ``ci-fork``'s result, bypassing the rule.
-The ``check-ci-result`` pre-commit hook fails a ``ci.yml`` whose ``ci-result`` job lacks any of this,
-or whose ``needs:`` does not list exactly the other jobs; it prints the line to paste.
-A job that itself needs ``ci-result`` runs after it and is left out.
+Every needed job must succeed; skipped counts as failed.
+A failure therefore propagates: the jobs after it are skipped, and ``ci-result`` fails.
+So ``needs:`` may list just the end jobs, the ones no other job needs.
+Only a job with ``if: always()``, ``!cancelled()`` or ``failure()`` runs despite a failure before it;
+list what it needs as well if that should count.
+Without ``if: always()`` on ``ci-result`` itself, a failed job would skip it, and a skipped check counts as passed.
+A fork's own ``pull_request`` run in a repository with ``ci-fork.yml`` skips everything, so ``ci-result`` fails there;
+a maintainer merges such a pull request after checking ``ci-fork``'s result, bypassing the rule.
+The ``check-ci-result`` pre-commit hook checks that ``ci-result`` exists, runs ``if: always()``,
+needs at least one job, and passes ``toJSON(needs)`` to :action:`ci-result`.
 
 .. code:: yaml
 

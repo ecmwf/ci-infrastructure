@@ -28,24 +28,17 @@ def _needs(**results: str) -> str:
     return json.dumps({job: {"result": r, "outputs": {}} for job, r in results.items()})
 
 
-def test_success_and_skipped_pass(tmp_path: Path) -> None:
-    code, out, summary = _run(tmp_path, _needs(build="success", publish="skipped"))
+def test_all_success_passes(tmp_path: Path) -> None:
+    code, out, summary = _run(tmp_path, _needs(build="success", test="success"))
     assert code == 0, out
-    assert "| build | success |" in summary
-    assert "| publish | skipped |" in summary
+    assert "| test | success |" in summary
 
 
-@pytest.mark.parametrize("bad", ["failure", "cancelled"])
-def test_failed_job_fails(tmp_path: Path, bad: str) -> None:
+@pytest.mark.parametrize("bad", ["failure", "cancelled", "skipped"])
+def test_any_other_result_fails(tmp_path: Path, bad: str) -> None:
     code, out, _ = _run(tmp_path, _needs(build="success", test=bad))
     assert code == 1
     assert f"::error title=CI result::test ({bad})" in out
-
-
-def test_all_skipped_fails(tmp_path: Path) -> None:
-    code, out, _ = _run(tmp_path, _needs(**{"ci-approval": "skipped", "build": "skipped"}))
-    assert code == 1
-    assert "no job ran" in out
 
 
 @pytest.mark.parametrize("needs", ["", "{}", "[]", "not json"])

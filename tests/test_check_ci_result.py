@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""check_ci_result: the ci-result job's if, action and exact needs."""
+"""check_ci_result: the ci-result job's if, action and needs."""
 
 from __future__ import annotations
 
@@ -66,8 +66,7 @@ def test_missing_job(tmp_path: Path) -> None:
         ({"cond": "success()"}, "if: always()"),
         ({"uses": "actions/checkout@v6"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
         ({"needs_input": "'{}'"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
-        ({"needs": "pre-commit"}, "is missing: build\n  needs: [build, pre-commit]"),
-        ({"needs": "[pre-commit, build, docs]"}, "lists unknown: docs"),
+        ({"needs": "[]"}, "needs no job"),
     ],
 )
 def test_problems(tmp_path: Path, kwargs: dict[str, str], needle: str) -> None:
@@ -75,18 +74,8 @@ def test_problems(tmp_path: Path, kwargs: dict[str, str], needle: str) -> None:
     assert needle in problem
 
 
-def test_jobs_after_ci_result_are_left_out(tmp_path: Path) -> None:
-    after = """
-  publish:
-    needs: ci-result
-    runs-on: ubuntu-slim
-    steps: [{run: make publish}]
-  announce:
-    needs: [publish]
-    runs-on: ubuntu-slim
-    steps: [{run: echo done}]
-"""
-    assert check(write_ci(tmp_path, JOBS + _result() + after)) == []
+def test_end_jobs_only_pass(tmp_path: Path) -> None:
+    assert check(write_ci(tmp_path, JOBS + _result(needs="build"))) == []
 
 
 def test_main_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

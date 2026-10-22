@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fail a ci.yml whose `ci-result` job does not collect every other job.
+"""Fail a ci.yml without a well-formed `ci-result` job.
 
-The default-branch ruleset requires the single check `ci-result`, so it must
-see each job's result: `if: always()`, every job in `needs:`, and
-actions/ci-result fed with `toJSON(needs)`. A job that itself needs `ci-result`
-runs after it and is left out.
+The default-branch ruleset requires the single check `ci-result`: it runs
+`if: always()` and feeds actions/ci-result with `toJSON(needs)`. Which jobs it
+needs is up to the repo; a failure propagates as a skip, which counts as failed.
 """
 
 from __future__ import annotations
@@ -31,16 +30,6 @@ def _needs(job: dict[str, Any]) -> set[str]:
     return {raw} if isinstance(raw, str) else {str(n) for n in raw} if isinstance(raw, list) else set()
 
 
-def _after(jobs: dict[str, dict[str, Any]], root: str) -> set[str]:
-    """Jobs that need `root`, transitively."""
-    found: set[str] = set()
-    frontier = {root}
-    while frontier:
-        frontier = {name for name, job in jobs.items() if _needs(job) & frontier} - found
-        found |= frontier
-    return found
-
-
 def _uses_action(job: dict[str, Any]) -> bool:
     for step in job.get("steps") or []:
         if not isinstance(step, dict) or not str(step.get("uses", "")).startswith(ACTIONS):
@@ -60,7 +49,7 @@ def check(workflow: Path) -> list[str]:
     jobs = {str(k): v if isinstance(v, dict) else {} for k, v in raw_jobs.items()} if isinstance(raw_jobs, dict) else {}
 
     if JOB not in jobs:
-        return [f"{workflow}: no job {JOB!r}, the required check that collects every other job; {DOCS}"]
+        return [f"{workflow}: no job {JOB!r}, the required check that collects the other jobs; {DOCS}"]
     job = jobs[JOB]
     problems = []
     if str(job.get("if", "")).strip() != "always()":
@@ -70,13 +59,8 @@ def check(workflow: Path) -> list[str]:
     if not _uses_action(job):
         problems.append(f"{workflow}: job {JOB!r} must use {ACTIONS[0]}main with `needs: {NEEDS_INPUT}`")
 
-    expected = set(jobs) - {JOB} - _after(jobs, JOB)
-    listed = _needs(job)
-    missing, unknown = sorted(expected - listed), sorted(listed - expected)
-    parts = [f"is missing: {', '.join(missing)}"] if missing else []
-    parts += [f"lists unknown: {', '.join(unknown)}"] if unknown else []
-    if parts:
-        problems.append(f"{workflow}: {JOB}.needs {'; '.join(parts)}\n  needs: [{', '.join(sorted(expected))}]")
+    if not _needs(job):
+        problems.append(f"{workflow}: job {JOB!r} needs no job, so it checks nothing")
     return problems
 
 
