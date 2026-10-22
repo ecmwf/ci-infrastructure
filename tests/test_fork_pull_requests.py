@@ -118,7 +118,8 @@ def test_the_fork_workflow_calls_ci_yml_on_every_push(tmp_path: Path) -> None:
     )
     # No label: the run fails at the gate until a maintainer re-runs it.
     assert doc[True] == {"pull_request_target": {"types": ["opened", "synchronize", "reopened"]}}
-    assert doc["permissions"] == {"contents": "read", "pull-requests": "write"}
+    # statuses: ci.yml's ci-result job posts the required check onto the fork's commit.
+    assert doc["permissions"] == {"contents": "read", "pull-requests": "write", "statuses": "write"}
     (job,) = doc["jobs"].values()
     assert job["uses"] == "./.github/workflows/ci.yml"
     assert job["secrets"] == "inherit"

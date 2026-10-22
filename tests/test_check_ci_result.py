@@ -28,12 +28,17 @@ def _result(
     cond: str = "always()",
     uses: str = "ecmwf/ci-infrastructure/actions/ci-result@main",
     needs_input: str = "${{ toJSON(needs) }}",
+    name: str = "collect results",
+    statuses: str = "write",
 ) -> str:
     return f"""
   ci-result:
+    name: {name}
     if: {cond}
     needs: {needs}
     runs-on: ubuntu-slim
+    permissions:
+      statuses: {statuses}
     steps:
       - uses: {uses}
         with:
@@ -67,11 +72,20 @@ def test_missing_job(tmp_path: Path) -> None:
         ({"uses": "actions/checkout@v6"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
         ({"needs_input": "'{}'"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
         ({"needs": "[]"}, "needs no job"),
+        ({"name": "ci-result"}, "needs a `name:` other than 'ci-result'"),
+        ({"statuses": "read"}, "statuses: write"),
     ],
 )
 def test_problems(tmp_path: Path, kwargs: dict[str, str], needle: str) -> None:
     [problem] = check(write_ci(tmp_path, JOBS + _result(**kwargs)))
     assert needle in problem
+
+
+def test_workflow_level_statuses_pass(tmp_path: Path) -> None:
+    job = _result().replace("    permissions:\n      statuses: write\n", "")
+    p = tmp_path / "ci.yml"
+    p.write_text("on: pull_request\npermissions:\n  statuses: write\njobs:" + JOBS + job, encoding="utf-8")
+    assert check(p) == []
 
 
 def test_end_jobs_only_pass(tmp_path: Path) -> None:

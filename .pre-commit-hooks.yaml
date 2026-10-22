@@ -16,7 +16,7 @@
   name: require the ci-result job in ci.yml
   description: >
     Fails a ci.yml without the job ci-result, the one required check, running
-    `if: always()` with actions/ci-result fed toJSON(needs).
+    `if: always()` with statuses: write, its own name, and actions/ci-result fed toJSON(needs).
   entry: ci-infrastructure-check-ci-result
   language: python
   files: ^\.github/workflows/ci\.ya?ml$

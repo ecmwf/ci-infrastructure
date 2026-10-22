@@ -4,9 +4,12 @@
 
 """Fail a ci.yml without a well-formed `ci-result` job.
 
-The default-branch ruleset requires the single check `ci-result`: it runs
-`if: always()` and feeds actions/ci-result with `toJSON(needs)`. Which jobs it
-needs is up to the repo; a failure propagates as a skip, which counts as failed.
+The default-branch ruleset requires the single check `ci-result`, a commit status
+that actions/ci-result posts: the job runs `if: always()` with `statuses: write`
+and feeds the action `toJSON(needs)`. Its own check run is named otherwise, so a
+fork's skipped pull_request run never stands in for the status ci-fork.yml posts.
+Which jobs it needs is up to the repo; a failure propagates as a skip, which
+counts as failed.
 """
 
 from __future__ import annotations
@@ -59,6 +62,11 @@ def check(workflow: Path) -> list[str]:
     if not _uses_action(job):
         problems.append(f"{workflow}: job {JOB!r} must use {ACTIONS[0]}main with `needs: {NEEDS_INPUT}`")
 
+    if str(job.get("name", JOB)).strip() == JOB:
+        problems.append(f"{workflow}: job {JOB!r} needs a `name:` other than {JOB!r}; the action posts {JOB!r} itself")
+    permissions = job.get("permissions", doc.get("permissions"))
+    if not (isinstance(permissions, dict) and permissions.get("statuses") == "write"):
+        problems.append(f"{workflow}: job {JOB!r} needs `permissions: statuses: write` to post {JOB!r}")
     if not _needs(job):
         problems.append(f"{workflow}: job {JOB!r} needs no job, so it checks nothing")
     return problems

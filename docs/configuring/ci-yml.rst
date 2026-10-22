@@ -75,7 +75,7 @@ The required check
 
 The default branch requires a single check, ``ci-result``,
 so that renaming a job or a matrix leg never touches the branch rules.
-It is the last job of ``ci.yml`` and collects all others with :action:`ci-result`:
+It is a commit status that :action:`ci-result` posts from the last job of ``ci.yml``:
 
 .. code:: yaml
 
@@ -83,9 +83,12 @@ It is the last job of ``ci.yml`` and collects all others with :action:`ci-result
      # ... pre-commit, test, ...
 
      ci-result:
+       name: collect results
        if: always()
-       needs: [pre-commit, test]
+       needs: [test]
        runs-on: ubuntu-slim
+       permissions:
+         statuses: write
        steps:
          - uses: ecmwf/ci-infrastructure/actions/ci-result@main
            with:
@@ -96,11 +99,16 @@ A failure therefore propagates: the jobs after it are skipped, and ``ci-result``
 So ``needs:`` may list just the end jobs, the ones no other job needs.
 Only a job with ``if: always()``, ``!cancelled()`` or ``failure()`` runs despite a failure before it;
 list what it needs as well if that should count.
-Without ``if: always()`` on ``ci-result`` itself, a failed job would skip it, and a skipped check counts as passed.
-A fork's own ``pull_request`` run in a repository with ``ci-fork.yml`` skips everything, so ``ci-result`` fails there;
-a maintainer merges such a pull request after checking ``ci-fork``'s result, bypassing the rule.
-The ``check-ci-result`` pre-commit hook checks that ``ci-result`` exists, runs ``if: always()``,
-needs at least one job, and passes ``toJSON(needs)`` to :action:`ci-result`.
+Without ``if: always()`` on the job itself, a failed job would skip it, and nothing would be posted.
+
+The job's own check run is named otherwise, here ``collect results``, so that only the status counts.
+A fork's own ``pull_request`` run posts nothing.
+In a repository with ``ci-fork.yml``, its call of ``ci.yml`` posts ``ci-result`` onto the fork's commit;
+elsewhere the check stays expected until a maintainer merges, bypassing the rule.
+
+The ``check-ci-result`` pre-commit hook checks that the job exists, runs ``if: always()``
+with ``statuses: write`` and a ``name:`` of its own, needs at least one job,
+and passes ``toJSON(needs)`` to the action.
 
 .. code:: yaml
 
