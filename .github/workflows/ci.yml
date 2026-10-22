@@ -82,3 +82,12 @@ jobs:
       SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
       CI_PERMISSIONS_APP_CLIENT_ID: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
       CI_PERMISSIONS_APP_PRIVATE_KEY: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
+
+  # The one required check of this workflow, so the ruleset never lists matrix legs.
+  ci-result:
+    if: always()
+    needs: [pre-commit, mypy_and_tests, image-label, images]
+    runs-on: ubuntu-slim
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
