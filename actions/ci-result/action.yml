@@ -24,7 +24,8 @@ runs:
       run: |
         set -euo pipefail
 
-        if ! jq -e 'type == "object" and length > 0' <<< "$NEEDS" >/dev/null 2>&1; then
+        # jq 1.6 (Debian 11) exits 0 on empty input even with -e.
+        if [ -z "${NEEDS//[[:space:]]/}" ] || ! jq -e 'type == "object" and length > 0' <<< "$NEEDS" >/dev/null 2>&1; then
           echo "::error title=CI result::input 'needs' is not a non-empty needs context; pass toJSON(needs) and list the jobs in needs:." >&2
           exit 1
         fi
