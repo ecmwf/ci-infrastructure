@@ -4,8 +4,8 @@
 
 name: Collect the CI result
 description: >
-  Fail unless every job in `needs` succeeded or was skipped, and list their
-  results in the job summary. Run it in the last job of ci.yml, with
+  Fail unless every job in `needs` succeeded or was skipped, and at least one
+  succeeded; list their results in the job summary. Run it in the last job of ci.yml, with
   `if: always()` and every other job in its `needs:`, and make that job the
   one required check. The check-ci-result pre-commit hook enforces this shape.
 
@@ -38,6 +38,11 @@ runs:
         failed="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"' <<< "$NEEDS")"
         if [ -n "$failed" ]; then
           while IFS= read -r job; do echo "::error title=CI result::$job"; done <<< "$failed"
+          exit 1
+        fi
+        # A fork's pull_request run skips everything when ci-fork.yml runs CI instead.
+        if ! jq -e 'any(.[]; .result == "success")' <<< "$NEEDS" >/dev/null; then
+          echo "::error title=CI result::no job ran; nothing was tested"
           exit 1
         fi
         echo "All $(jq length <<< "$NEEDS") jobs succeeded or were skipped."
