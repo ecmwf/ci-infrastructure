@@ -402,6 +402,7 @@ def main(exclude: tuple[str, ...]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         Path(summary_path).write_text(summary, encoding="utf-8")
+        click.echo(f"Rolled-out repos: {' '.join(sorted(states))}")
     else:
         click.echo(summary)
     failed = failures(states)
