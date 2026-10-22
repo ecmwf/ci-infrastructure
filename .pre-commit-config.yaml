@@ -32,7 +32,7 @@ repos:
         additional_dependencies: ["PyYAML>=6"]
         files: ^\.github/workflows/.*\.ya?ml$
       - id: check-ci-result
-        name: require a ci-result job that collects every job of ci.yml
+        name: require the ci-result job in ci.yml
         entry: python src/ci_infrastructure/check_ci_result.py
         language: python
         additional_dependencies: ["PyYAML>=6"]

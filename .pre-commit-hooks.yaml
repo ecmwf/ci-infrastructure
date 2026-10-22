@@ -13,10 +13,10 @@
   files: ^\.github/workflows/.*\.ya?ml$
 
 - id: check-ci-result
-  name: require a ci-result job that collects every job of ci.yml
+  name: require the ci-result job in ci.yml
   description: >
     Fails a ci.yml without the job ci-result, the one required check, running
-    `if: always()` with actions/ci-result and every other job in `needs:`.
+    `if: always()` with actions/ci-result fed toJSON(needs).
   entry: ci-infrastructure-check-ci-result
   language: python
   files: ^\.github/workflows/ci\.ya?ml$
