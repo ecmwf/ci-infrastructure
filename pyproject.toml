@@ -10,7 +10,7 @@ description = "Shared CI orchestration scripts and actions"
 requires-python = ">=3.11.2"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-# Minimal: the check-ci-approval pre-commit hook installs only this.
+# Minimal: the pre-commit hooks install only this.
 # The actions install `[runtime]`.
 dependencies = [
     "click>=8.1",
@@ -25,6 +25,7 @@ ci-infrastructure-check = "ci_infrastructure.check_artifact:main"
 ci-infrastructure-print-dep-table = "ci_infrastructure.print_dep_table:main"
 ci-infrastructure-s3 = "ci_infrastructure.s3_store:main"
 ci-infrastructure-check-ci-approval = "ci_infrastructure.check_ci_approval:main"
+ci-infrastructure-check-ci-result = "ci_infrastructure.check_ci_result:main"
 ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 ci-infrastructure-render = "ci_infrastructure.render_job:main"
 ci-infrastructure-default-branch-status = "ci_infrastructure.default_branch_status:main"

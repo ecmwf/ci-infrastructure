@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Collect the CI result
+description: >
+  Fail unless every job in `needs` succeeded or was skipped, and list their
+  results in the job summary. Run it in the last job of ci.yml, with
+  `if: always()` and every other job in its `needs:`, and make that job the
+  one required check. The check-ci-result pre-commit hook enforces this shape.
+
+inputs:
+  needs:
+    description: 'The calling job''s needs context, as JSON (toJSON(needs)).'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+      run: |
+        set -euo pipefail
+
+        if ! jq -e 'type == "object" and length > 0' <<< "$NEEDS" >/dev/null 2>&1; then
+          echo "::error title=CI result::input 'needs' is not a non-empty needs context; pass toJSON(needs) and list the jobs in needs:." >&2
+          exit 1
+        fi
+
+        {
+          echo "| Job | Result |"
+          echo "|-----|--------|"
+          jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$NEEDS"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # A skip follows a failure upstream (reported there) or a deliberate `if:`.
+        failed="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"' <<< "$NEEDS")"
+        if [ -n "$failed" ]; then
+          while IFS= read -r job; do echo "::error title=CI result::$job"; done <<< "$failed"
+          exit 1
+        fi
+        echo "All $(jq length <<< "$NEEDS") jobs succeeded or were skipped."

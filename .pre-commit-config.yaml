@@ -31,6 +31,12 @@ repos:
         language: python
         additional_dependencies: ["PyYAML>=6"]
         files: ^\.github/workflows/.*\.ya?ml$
+      - id: check-ci-result
+        name: require a ci-result job that collects every job of ci.yml
+        entry: python src/ci_infrastructure/check_ci_result.py
+        language: python
+        additional_dependencies: ["PyYAML>=6"]
+        files: ^\.github/workflows/ci\.ya?ml$
 
   # shellcheck-py (a pip wheel): the pre-commit runner has no docker.
   - repo: https://github.com/shellcheck-py/shellcheck-py

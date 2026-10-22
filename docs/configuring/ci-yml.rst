@@ -70,6 +70,40 @@ Downstream CI starts once a workflow named exactly ``CI`` has completed successf
 so a repository that wants to use the downstream CI has to use that name.
 A repository that does not take part is free to name its workflows as it likes.
 
+The required check
+------------------
+
+The default branch requires a single check, ``ci-result``,
+so that renaming a job or a matrix leg never touches the branch rules.
+It is the last job of ``ci.yml`` and collects all others with :action:`ci-result`:
+
+.. code:: yaml
+
+   jobs:
+     # ... pre-commit, test, ...
+
+     ci-result:
+       if: always()
+       needs: [pre-commit, test]
+       runs-on: ubuntu-slim
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/ci-result@main
+           with:
+             needs: ${{ toJSON(needs) }}
+
+Without ``if: always()``, a failed job would skip ``ci-result``, and a skipped check counts as passed.
+The ``check-ci-result`` pre-commit hook fails a ``ci.yml`` whose ``ci-result`` job lacks any of this,
+or whose ``needs:`` does not list exactly the other jobs; it prints the line to paste.
+A job that itself needs ``ci-result`` runs after it and is left out.
+
+.. code:: yaml
+
+   # .pre-commit-config.yaml
+   - repo: https://github.com/ecmwf/ci-infrastructure
+     rev: <commit>
+     hooks:
+       - id: check-ci-result
+
 What comes next
 ---------------
 

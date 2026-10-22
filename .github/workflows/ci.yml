@@ -89,5 +89,9 @@ jobs:
     needs: [pre-commit, mypy_and_tests, image-label, images]
     runs-on: ubuntu-slim
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: ./actions/ci-result
+        with:
+          needs: ${{ toJSON(needs) }}

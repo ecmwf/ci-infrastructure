@@ -93,8 +93,9 @@ ghactions_groups = [
     ),
     (
         "PR gates",
-        "Decide whether a pull request may run CI or downstream CI.",
+        "Decide whether a pull request may run CI or downstream CI, and whether it may merge.",
         [
+            "ci-result",
             "require-ci-approval",
             "require-label-decision",
             "dispatch-downstream",
