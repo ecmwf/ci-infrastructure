@@ -6,8 +6,8 @@ name: Collect the CI result
 description: >
   Post the commit status `ci-result`, the one required check: success only if
   every job in `needs` succeeded (skipped counts as failed), and fail the job
-  likewise. Run it in the last job of ci.yml with `if: always()`, a `name:`
-  other than ci-result, and `statuses: write`. A failure propagates as a skip,
+  likewise. Run it in the last job of ci.yml with `if: always()`,
+  `name: collect results`, and `statuses: write`. A failure propagates as a skip,
   so its needs may be just the end jobs. A fork's own pull_request run posts
   nothing: its CI runs through ci-fork.yml, which posts onto the fork's commit.
   The check-ci-result pre-commit hook enforces this shape.

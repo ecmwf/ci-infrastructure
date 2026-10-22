@@ -101,13 +101,13 @@ Only a job with ``if: always()``, ``!cancelled()`` or ``failure()`` runs despite
 list what it needs as well if that should count.
 Without ``if: always()`` on the job itself, a failed job would skip it, and nothing would be posted.
 
-The job's own check run is named otherwise, here ``collect results``, so that only the status counts.
+The job's own check run is named ``collect results``, never ``ci-result``, so that only the status counts.
 A fork's own ``pull_request`` run posts nothing.
 In a repository with ``ci-fork.yml``, its call of ``ci.yml`` posts ``ci-result`` onto the fork's commit;
 elsewhere the check stays expected until a maintainer merges, bypassing the rule.
 
 The ``check-ci-result`` pre-commit hook checks that the job exists, runs ``if: always()``
-with ``statuses: write`` and a ``name:`` of its own, needs at least one job,
+with ``statuses: write`` and ``name: collect results``, needs at least one job,
 and passes ``toJSON(needs)`` to the action.
 
 .. code:: yaml

@@ -6,7 +6,7 @@
 
 The default-branch ruleset requires the single check `ci-result`, a commit status
 that actions/ci-result posts: the job runs `if: always()` with `statuses: write`
-and feeds the action `toJSON(needs)`. Its own check run is named otherwise, so a
+and feeds the action `toJSON(needs)`. Its own check run is `collect results`, so a
 fork's skipped pull_request run never stands in for the status ci-fork.yml posts.
 Which jobs it needs is up to the repo; a failure propagates as a skip, which
 counts as failed.
@@ -21,6 +21,8 @@ from typing import Any
 import yaml
 
 JOB = "ci-result"
+# The job's own check run must not pass for the status, nor vary per repo.
+JOB_NAME = "collect results"
 # Remote (consumers) and local (ci-infrastructure itself) spellings.
 ACTIONS = ("ecmwf/ci-infrastructure/actions/ci-result@", "./actions/ci-result")
 NEEDS_INPUT = "${{ toJSON(needs) }}"
@@ -62,8 +64,8 @@ def check(workflow: Path) -> list[str]:
     if not _uses_action(job):
         problems.append(f"{workflow}: job {JOB!r} must use {ACTIONS[0]}main with `needs: {NEEDS_INPUT}`")
 
-    if str(job.get("name", JOB)).strip() == JOB:
-        problems.append(f"{workflow}: job {JOB!r} needs a `name:` other than {JOB!r}; the action posts {JOB!r} itself")
+    if job.get("name") != JOB_NAME:
+        problems.append(f"{workflow}: job {JOB!r} needs `name: {JOB_NAME}`; the action posts {JOB!r} itself")
     permissions = job.get("permissions", doc.get("permissions"))
     if not (isinstance(permissions, dict) and permissions.get("statuses") == "write"):
         problems.append(f"{workflow}: job {JOB!r} needs `permissions: statuses: write` to post {JOB!r}")

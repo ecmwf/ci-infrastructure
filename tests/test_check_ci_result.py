@@ -72,7 +72,8 @@ def test_missing_job(tmp_path: Path) -> None:
         ({"uses": "actions/checkout@v6"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
         ({"needs_input": "'{}'"}, "must use ecmwf/ci-infrastructure/actions/ci-result@main"),
         ({"needs": "[]"}, "needs no job"),
-        ({"name": "ci-result"}, "needs a `name:` other than 'ci-result'"),
+        ({"name": "ci-result"}, "needs `name: collect results`"),
+        ({"name": "CI result"}, "needs `name: collect results`"),
         ({"statuses": "read"}, "statuses: write"),
     ],
 )
