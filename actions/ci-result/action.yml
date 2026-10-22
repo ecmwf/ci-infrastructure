@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Collect the CI result
+description: >
+  Post the commit status `ci-result`, the one required check: success only if
+  every job in `needs` succeeded (skipped counts as failed), and fail the job
+  likewise. Run it in the last job of ci.yml with `if: always()`,
+  `name: collect results`, and `statuses: write`. A failure propagates as a skip,
+  so its needs may be just the end jobs. A fork's own pull_request run posts
+  nothing: its CI runs through ci-fork.yml, which posts onto the fork's commit.
+  The check-ci-result pre-commit hook enforces this shape.
+
+inputs:
+  needs:
+    description: 'The calling job''s needs context, as JSON (toJSON(needs)).'
+    required: true
+  context:
+    description: 'Commit status context to post (the required check).'
+    required: false
+    default: 'ci-result'
+  token:
+    description: 'Token with statuses:write. Defaults to github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+        CONTEXT_INPUT: ${{ inputs.context }}
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        event="${GITHUB_EVENT_PATH:-/dev/null}"
+        sha="$(jq -r '.pull_request.head.sha // empty' "$event" 2>/dev/null || true)"
+        head_repo="$(jq -r '.pull_request.head.repo.full_name // empty' "$event" 2>/dev/null || true)"
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "$head_repo" ] && [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+          echo "A fork's own pull_request run: ci-fork.yml posts $CONTEXT_INPUT, not this run."
+          exit 0
+        fi
+        sha="${sha:-$GITHUB_SHA}"
+
+        post() {
+          local desc="$2"
+          gh api -X POST "/repos/${GITHUB_REPOSITORY}/statuses/${sha}" \
+            -f state="$1" -f context="$CONTEXT_INPUT" -f target_url="$RUN_URL" -f description="${desc:0:140}" >/dev/null
+        }
+
+        # jq 1.6 (Debian 11) exits 0 on empty input even with -e.
+        if [ -z "${NEEDS//[[:space:]]/}" ] || ! jq -e 'type == "object" and length > 0' <<< "$NEEDS" >/dev/null 2>&1; then
+          echo "::error title=CI result::input 'needs' is not a non-empty needs context; pass toJSON(needs) and list the jobs in needs:." >&2
+          post failure "ci-result is misconfigured"
+          exit 1
+        fi
+
+        {
+          echo "| Job | Result |"
+          echo "|-----|--------|"
+          jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<< "$NEEDS"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        failed="$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key) (\(.value.result))"' <<< "$NEEDS")"
+        if [ -n "$failed" ]; then
+          while IFS= read -r job; do echo "::error title=CI result::$job"; done <<< "$failed"
+          post failure "Not green: $(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")' <<< "$NEEDS")"
+          exit 1
+        fi
+        post success "All $(jq length <<< "$NEEDS") jobs succeeded"
+        echo "All $(jq length <<< "$NEEDS") jobs succeeded."

@@ -1913,7 +1913,8 @@ def render_fork_workflow(m: Manifest) -> str | None:
         "run-name": FORK_CI_RUN_NAME,
         # pull_request_target: the workflow files are the base branch's, never the fork's.
         "on": {"pull_request_target": {"types": ["opened", "synchronize", "reopened"]}},
-        "permissions": {"contents": "read", "pull-requests": "write"},
+        # statuses: ci.yml's ci-result job posts the required `ci-result` onto the fork's commit.
+        "permissions": {"contents": "read", "pull-requests": "write", "statuses": "write"},
         "jobs": {
             "ci": {
                 # Fails at ci.yml's gate until a maintainer re-runs it, approving its commit.

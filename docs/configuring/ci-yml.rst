@@ -70,6 +70,54 @@ Downstream CI starts once a workflow named exactly ``CI`` has completed successf
 so a repository that wants to use the downstream CI has to use that name.
 A repository that does not take part is free to name its workflows as it likes.
 
+The required check
+------------------
+
+The default branch requires a single check, ``ci-result``,
+so that renaming a job or a matrix leg never touches the branch rules.
+It is a commit status that :action:`ci-result` posts from the last job of ``ci.yml``:
+
+.. code:: yaml
+
+   jobs:
+     # ... pre-commit, test, ...
+
+     ci-result:
+       name: collect results
+       if: always()
+       needs: [test]
+       runs-on: ubuntu-slim
+       permissions:
+         statuses: write
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/ci-result@main
+           with:
+             needs: ${{ toJSON(needs) }}
+
+Every needed job must succeed; skipped counts as failed.
+A failure therefore propagates: the jobs after it are skipped, and ``ci-result`` fails.
+So ``needs:`` may list just the end jobs, the ones no other job needs.
+Only a job with ``if: always()``, ``!cancelled()`` or ``failure()`` runs despite a failure before it;
+list what it needs as well if that should count.
+Without ``if: always()`` on the job itself, a failed job would skip it, and nothing would be posted.
+
+The job's own check run is named ``collect results``, never ``ci-result``, so that only the status counts.
+A fork's own ``pull_request`` run posts nothing.
+In a repository with ``ci-fork.yml``, its call of ``ci.yml`` posts ``ci-result`` onto the fork's commit;
+elsewhere the check stays expected until a maintainer merges, bypassing the rule.
+
+The ``check-ci-result`` pre-commit hook checks that the job exists, runs ``if: always()``
+with ``statuses: write`` and ``name: collect results``, needs at least one job,
+and passes ``toJSON(needs)`` to the action.
+
+.. code:: yaml
+
+   # .pre-commit-config.yaml
+   - repo: https://github.com/ecmwf/ci-infrastructure
+     rev: <commit>
+     hooks:
+       - id: check-ci-result
+
 What comes next
 ---------------
 
