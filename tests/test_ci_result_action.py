@@ -49,8 +49,10 @@ def _run(tmp_path: Path, needs: str, event: str = "push", payload: dict[str, Any
         "GITHUB_REPOSITORY": REPO,
         "GITHUB_SHA": "pushsha",
     }
-    script = action_run_body("ci-result").replace("${{ inputs.needs }}", needs)
-    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+    # A file, as the runner does: one argument holds at most 128 KiB.
+    script = tmp_path / "step.sh"
+    script.write_text(action_run_body("ci-result").replace("${{ inputs.needs }}", needs))
+    proc = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
     return Result(proc, gh_log, summary)
 
 
