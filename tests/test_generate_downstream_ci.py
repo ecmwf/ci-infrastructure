@@ -777,6 +777,24 @@ def test_workflow_mints_app_token_per_job(tmp_path: Path) -> None:
     assert "needs.resolve.outputs.app-token" not in yaml
 
 
+def test_build_leg_token_is_scoped_and_not_left_for_the_job_script(tmp_path: Path) -> None:
+    _make_chain_abc(tmp_path)
+    doc = yaml.safe_load(_consumer(tmp_path, "c"))
+    for jid, job in doc["jobs"].items():
+        steps = job.get("steps", [])
+        for step in steps:
+            if step.get("uses", "").startswith("actions/checkout@"):
+                assert step["with"]["persist-credentials"] is False, jid
+        if jid == "resolve":
+            continue
+        [mint] = [s for s in steps if s.get("id") == "mint"]
+        assert {k: v for k, v in mint["with"].items() if k.startswith("permission-")} == {
+            "permission-contents": "read",
+            "permission-actions": "read",
+            "permission-checks": "write",
+        }, jid
+
+
 def test_workflow_uses_pick_ref(tmp_path: Path) -> None:
     _make_chain_abc(tmp_path)
     yaml = _consumer(tmp_path, "c")
