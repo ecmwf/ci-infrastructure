@@ -60,7 +60,7 @@ RUN sh /tmp/distrust-emudhra.sh && rm /tmp/distrust-emudhra.sh
 # uv, pinned to the same version in every base. ci-infrastructure gets its own
 # uv-managed CPython and venv under /opt/ci-infrastructure, kept apart from every
 # Python a build may use: recipes create theirs in UV_PYTHON_INSTALL_DIR.
-COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_PREFERENCE=only-managed \
     UV_LINK_MODE=copy
