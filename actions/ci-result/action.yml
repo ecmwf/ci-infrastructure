@@ -30,12 +30,18 @@ runs:
   steps:
     - shell: bash
       env:
-        NEEDS: ${{ inputs.needs }}
         CONTEXT_INPUT: ${{ inputs.context }}
         GH_TOKEN: ${{ inputs.token || github.token }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         set -euo pipefail
+
+        # Not an env var: with the jobs' outputs, needs can pass the 128 KiB a single one may hold.
+        # Safe in a quoted heredoc, as no line of toJSON output can equal the delimiter.
+        IFS= read -r -d '' NEEDS <<'CI_RESULT_NEEDS_EOF' || true
+        ${{ inputs.needs }}
+        CI_RESULT_NEEDS_EOF
+        NEEDS="$(jq -c 'map_values({result})' <<< "$NEEDS" 2>/dev/null || true)"
 
         event="${GITHUB_EVENT_PATH:-/dev/null}"
         sha="$(jq -r '.pull_request.head.sha // empty' "$event" 2>/dev/null || true)"

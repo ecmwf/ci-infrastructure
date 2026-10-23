@@ -236,7 +236,10 @@ _FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "a
 
 
 class WorkflowRuns(NamedTuple):
-    """detail/url: first in-progress run (state 'running'); conclusion: only for 'completed'."""
+    """detail: first in-progress run; url: that run, or for 'completed' the run that should have published.
+
+    conclusion: only for 'completed'.
+    """
 
     state: Literal["running", "completed", "none"]
     detail: str | None = None
@@ -273,9 +276,22 @@ def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
                 status if isinstance(status, str) else None,
                 html_url if isinstance(html_url, str) else None,
             )
-    if any(run.get("conclusion") in _FAILURE_CONCLUSIONS for run in runs):
-        return WorkflowRuns("completed", conclusion="failure")
-    return WorkflowRuns("completed", conclusion="success")
+    failed = [run for run in runs if run.get("conclusion") in _FAILURE_CONCLUSIONS]
+    # Newest first: the rebuild this workflow run dispatched, else the newest failure.
+    culprit = next((run for run in runs if _dispatched_by_this_run(run)), (failed or runs)[0])
+    html_url = culprit.get("html_url")
+    return WorkflowRuns(
+        "completed",
+        url=html_url if isinstance(html_url, str) else None,
+        conclusion="failure" if failed else "success",
+    )
+
+
+def _dispatched_by_this_run(run: Mapping[str, Any]) -> bool:
+    """resolve_deps stamps `resolve-<GITHUB_RUN_ID>-…` into the dispatched run's name."""
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    title = run.get("display_title")
+    return bool(run_id) and isinstance(title, str) and f"[resolve-{run_id}-" in title
 
 
 class CiRun(NamedTuple):

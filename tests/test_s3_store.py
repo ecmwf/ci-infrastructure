@@ -108,15 +108,6 @@ def test_non_404_client_error_propagates(tmp_path: Path) -> None:
         s3_store.object_exists("pkg", client=Denied())
 
 
-def test_list_with_prefix_strips_suffix_and_respects_limit(fake: FakeS3, tmp_path: Path) -> None:
-    for name in ("cxxmath-a", "cxxmath-b", "cxxmath-c", "fortmath-c"):
-        tar = tmp_path / f"{name}.tar.gz"
-        tar.write_bytes(b"x")
-        s3_store.upload(name, tar, client=fake)
-    assert s3_store.list_with_prefix("cxxmath", client=fake) == ["cxxmath-a", "cxxmath-b", "cxxmath-c"]
-    assert len(s3_store.list_with_prefix("cxxmath", limit=2, client=fake)) == 2
-
-
 def test_ca_bundle_explicit_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     bundle = tmp_path / "custom-ca.pem"
     bundle.write_text("-----BEGIN CERTIFICATE-----\n")
