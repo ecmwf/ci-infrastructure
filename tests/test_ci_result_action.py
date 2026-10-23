@@ -41,7 +41,6 @@ def _run(tmp_path: Path, needs: str, event: str = "push", payload: dict[str, Any
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
-        "NEEDS": needs,
         "CONTEXT_INPUT": "ci-result",
         "RUN_URL": "https://example.invalid/run",
         "GITHUB_STEP_SUMMARY": str(summary),
@@ -50,13 +49,15 @@ def _run(tmp_path: Path, needs: str, event: str = "push", payload: dict[str, Any
         "GITHUB_REPOSITORY": REPO,
         "GITHUB_SHA": "pushsha",
     }
-    script = action_run_body("ci-result")
-    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+    # A file, as the runner does: one argument holds at most 128 KiB.
+    script = tmp_path / "step.sh"
+    script.write_text(action_run_body("ci-result").replace("${{ inputs.needs }}", needs))
+    proc = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
     return Result(proc, gh_log, summary)
 
 
 def _needs(**results: str) -> str:
-    return json.dumps({job: {"result": r, "outputs": {}} for job, r in results.items()})
+    return json.dumps({job: {"result": r, "outputs": {}} for job, r in results.items()}, indent=2)
 
 
 def _pr(head_repo: str) -> dict[str, Any]:
@@ -79,6 +80,14 @@ def test_any_other_result_posts_failure(tmp_path: Path, bad: str) -> None:
     assert f"::error title=CI result::test ({bad})" in r.out
     assert r.posted("state") == "failure"
     assert r.posted("description") == "Not green: test"
+
+
+def test_needs_beyond_the_env_var_limit(tmp_path: Path) -> None:
+    """Outputs can pass the 128 KiB one env var may hold, and may hold shell syntax."""
+    needs = {"setup": {"result": "success", "outputs": {"m": "x" * 300_000, "q": "'\"$(false)` CI_RESULT_NEEDS_EOF"}}}
+    r = _run(tmp_path, json.dumps(needs, indent=2))
+    assert r.code == 0, r.out
+    assert r.posted("description") == "All 1 jobs succeeded"
 
 
 @pytest.mark.parametrize("event", ["pull_request", "pull_request_target"])

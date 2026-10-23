@@ -142,21 +142,6 @@ def download(name: str, dest_tar: str | Path, client: _S3Client | None = None) -
     return True
 
 
-def list_with_prefix(name_prefix: str, limit: int = 12, client: _S3Client | None = None) -> list[str]:
-    """Up to ``limit`` artifact names starting with ``name_prefix-``."""
-    s3 = _client(client)
-    key_prefix = _key_prefix()
-    resp = s3.list_objects_v2(Bucket=_bucket(), Prefix=f"{key_prefix}{name_prefix}-")
-    names: list[str] = []
-    for obj in resp.get("Contents", []):
-        key = obj.get("Key", "")
-        if key.startswith(key_prefix) and key.endswith(".tar.gz"):
-            names.append(key[len(key_prefix) : -len(".tar.gz")])
-            if len(names) >= limit:
-                break
-    return names
-
-
 @dataclass(frozen=True)
 class StoredObject:
     key: str

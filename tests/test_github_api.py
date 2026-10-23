@@ -92,6 +92,22 @@ def test_non_dict_entries_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_workflow_runs("o/r", "a" * 40, None).conclusion == "success"
 
 
+def test_completed_links_the_newest_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    runs = [{**OK, "html_url": "https://gh/run/3"}, {**FAILED, "html_url": "https://gh/run/2"}, {**FAILED}]
+    _payload(monkeypatch, {"workflow_runs": runs})
+    assert probe_workflow_runs("o/r", "a" * 40, None).url == "https://gh/run/2"
+    _payload(monkeypatch, {"workflow_runs": runs[:1]})
+    assert probe_workflow_runs("o/r", "a" * 40, None).url == "https://gh/run/3"
+
+
+def test_completed_links_this_runs_own_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    other = {**FAILED, "html_url": "https://gh/run/9", "display_title": "Cross-repo trigger (o/c@b) [resolve-7-1-ab]"}
+    ours = {**FAILED, "html_url": "https://gh/run/8", "display_title": "Cross-repo trigger (o/c@b) [resolve-42-1-cd]"}
+    _payload(monkeypatch, {"workflow_runs": [other, ours]})
+    assert probe_workflow_runs("o/r", "a" * 40, None).url == "https://gh/run/8"
+
+
 #: The artifact name is the cache key, so its format is pinned literally.
 SHA: Final = "a" * 40
 

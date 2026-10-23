@@ -25,7 +25,7 @@ import click
 
 from . import s3_store
 from ._errors import CIError
-from ._github_api import IN_PROGRESS_STATUSES, probe_workflow_runs, select_token, write_outputs
+from ._github_api import IN_PROGRESS_STATUSES, WorkflowRuns, probe_workflow_runs, select_token, write_outputs
 
 _DEFAULT_POLL_INTERVAL: Final = 60
 _DEFAULT_WAIT_TIMEOUT: Final = 1800
@@ -67,41 +67,30 @@ class Dep(TypedDict):
     needs_python: bool
 
 
-def _diagnose_missing_artifact(name: str, repo: str, sha: str, status: Literal["completed", "none"]) -> None:
-    prefix = name.split("-", 1)[0] if "-" in name else name
-    available = s3_store.list_with_prefix(prefix)
-    lines: list[str] = []
-    if status == "completed":
-        lines.append(
-            f"Upstream CI for {repo}@{sha[:8]} has completed but no artifact named '{name}' exists in the store."
+def _diagnose_missing_artifact(name: str, repo: str, sha: str, run: WorkflowRuns) -> None:
+    if run.state == "completed":
+        where = f" Run: {run.url}" if run.url else ""
+        print(
+            f"::error::Upstream CI for {repo}@{sha[:8]} completed ({run.conclusion}) "
+            f"without publishing '{name}'.{where}",
+            file=sys.stderr,
         )
-        lines.append(
-            "Re-trigger the upstream CI to rebuild it, then re-run this workflow. "
-            "Alternatively, the consumer's manifest matrix may ask for a (compiler, build-type, "
-            "python-version, platform) combination the upstream repo never built."
-        )
-    else:
-        lines.append(f"No workflow runs were found for {repo}@{sha[:8]} — nothing has built '{name}' yet.")
-        lines.append(
-            "Check that the upstream repo has CI configured for this ref, that it actually ran, "
-            "and that the consumer is not pointing at a stale or unreachable SHA."
-        )
-
-    if available:
-        lines.append(f"Artifacts in the store matching prefix '{prefix}-':")
-        for n in available:
-            lines.append(f"  - {n}")
-        lines.append(
-            "Compare the (compiler, build-type, python-version, platform) bits in those names against "
-            "the consumer manifest's [[matrix.<job>.include]] rows; mismatches are usually a "
-            "leftover entry referencing an unsupported toolchain."
+        print(
+            "::warning::Re-run that upstream run, then re-run this workflow. If it succeeded, the consumer's "
+            "manifest matrix may ask for a (compiler, build-type, python-version, platform) combination "
+            "the upstream repo never built.",
+            file=sys.stderr,
         )
     else:
-        lines.append(f"No artifacts with prefix '{prefix}-' currently exist in the store.")
-
-    # ::warning:: renders one line only.
-    for line in lines:
-        print(f"::warning::{line}", file=sys.stderr)
+        print(
+            f"::warning::No workflow runs were found for {repo}@{sha[:8]} — nothing has built '{name}' yet.",
+            file=sys.stderr,
+        )
+        print(
+            "::warning::Check that the upstream repo has CI configured for this ref, that it actually ran, "
+            "and that the consumer is not pointing at a stale or unreachable SHA.",
+            file=sys.stderr,
+        )
 
 
 def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool:
@@ -150,7 +139,7 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
             time.sleep(poll_interval)
             continue
 
-        _diagnose_missing_artifact(name, repo, sha, state)
+        _diagnose_missing_artifact(name, repo, sha, run)
         return False
 
 
