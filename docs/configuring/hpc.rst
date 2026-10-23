@@ -65,6 +65,39 @@ since it differs from the runners' images.
 the module ``gcc/old`` provides the compilers without a version suffix,
 so the ``*-compiler-binary`` fields name the binaries the build script calls.
 
+Compiler names
+~~~~~~~~~~~~~~
+
+``cxx-compiler`` and ``fortran-compiler`` are part of the artifact name,
+so a consumer finds its upstream's artifact only if its own leg uses exactly the same name on the same ``platform``.
+All repositories therefore name a toolchain the same way:
+after the version of the module the leg loads, including its patch version, e.g. ``nvc++-26.1`` for ``nvidia/26.1``.
+``g++-8`` from ``gcc/old`` is the one name without a module version.
+
+The Intel toolchains on Atos are the same three legs in every repository that has any:
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``cxx-compiler``
+     - ``fortran-compiler``
+     - modules
+     - binaries
+   * - ``icpx-2025.3.1``
+     - ``ifx-2025.3.1``
+     - ``prgenv/intel-llvm``, ``intel/2025.3.1``
+     - ``icx``, ``icpx``, ``ifx``
+   * - ``icpx-2023.2.0``
+     - ``ifx-2023.2.0``
+     - ``prgenv/intel``, ``intel/2023.2.0``
+     - ``icx``, ``icpx``, ``ifx``
+   * - ``icpc-2023.2.0``
+     - ``ifort-2023.2.0``
+     - ``prgenv/intel``, ``intel/2023.2.0``
+     - ``icc``, ``icpc``, ``ifort``
+
+A leg adds what its repository needs on top, e.g. ``ninja`` or an MPI module for ``options = "mpi"``.
+
 The build script
 ----------------
 
