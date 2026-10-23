@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Check eMudhra
+
+# Pulls every published :latest image and fails unless curl rejects the
+# compromised eMudhra chains (public-images/check-emudhra-rejected.sh).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-slim
+    outputs:
+      matrix: ${{ steps.l.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - id: l
+        run: |
+          set -euo pipefail
+          images=$(find public-images -mindepth 3 -maxdepth 3 -name Dockerfile | cut -d/ -f2,3 | sort | sed 's|/|-|' | jq -Rnc '[inputs]')
+          echo "matrix=$images" >> "$GITHUB_OUTPUT"
+
+  probe:
+    needs: list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.matrix) }}
+    name: probe ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      # docker run rather than `container:`: the image under test runs nothing but the probe.
+      - name: Probe ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          REF: eccr.ecmwf.int/public-ci-images/${{ matrix.image }}:latest
+        run: |
+          set -euo pipefail
+          rc=0
+          docker run --rm --pull always -v "$PWD/public-images:/probe:ro" --entrypoint sh "$REF" \
+            /probe/check-emudhra-rejected.sh | tee probe.log || rc=$?
+          {
+            echo "### $IMAGE"
+            echo '```'
+            cat probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
