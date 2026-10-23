@@ -54,7 +54,13 @@ from typing import Final, Literal, NoReturn, cast
 REGISTRY: Final = os.environ.get("REGISTRY") or "eccr.ecmwf.int"
 PROJECT: Final = os.environ.get("PROJECT") or "public-ci-images"
 IMAGES_DIR: Final = os.environ.get("IMAGES_DIR") or "public-images"
-EXTRA_TAG_PATHS: Final = ("src", "pyproject.toml", "LICENSE", f"{IMAGES_DIR}/announce-image.sh")
+EXTRA_TAG_PATHS: Final = (
+    "src",
+    "pyproject.toml",
+    "LICENSE",
+    f"{IMAGES_DIR}/announce-image.sh",
+    f"{IMAGES_DIR}/distrust-emudhra.sh",
+)
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 REPO_PREFIX: Final = f"{REGISTRY}/{PROJECT}"

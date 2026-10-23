@@ -75,6 +75,9 @@ RUN mkdir -p /etc/apt/keyrings \
  && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
+COPY public-images/distrust-emudhra.sh /tmp/
+RUN sh /tmp/distrust-emudhra.sh && rm /tmp/distrust-emudhra.sh
+
 # uv, pinned to the same version in every base. ci-infrastructure gets its own
 # uv-managed CPython and venv under /opt/ci-infrastructure, kept apart from every
 # Python a build may use: recipes create theirs in UV_PYTHON_INSTALL_DIR.
