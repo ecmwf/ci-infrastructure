@@ -770,17 +770,20 @@ def _render_kind_filter(refs: Sequence[JobRef], triggers: Iterable[str]) -> str:
     return " || ".join(clauses) if clauses else "false"
 
 
-def _mint_step() -> Step:
+# A build leg runs PR-built code: checkout, fetch-deps' run lookup and the check-run report need no more.
+_BUILD_LEG_PERMISSIONS: Final = {"contents": "read", "actions": "read", "checks": "write"}
+
+
+def _mint_step(permissions: Mapping[str, str] | None = None) -> Step:
     """App token, minted per job: masked values do not survive job outputs."""
-    return {
-        "id": "mint",
-        "uses": "actions/create-github-app-token@v3",
-        "with": {
-            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-            "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
-            "owner": "${{ github.repository_owner }}",
-        },
+    with_block = {
+        "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+        "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+        "owner": "${{ github.repository_owner }}",
     }
+    for scope, level in (permissions or {}).items():
+        with_block[f"permission-{scope}"] = level
+    return {"id": "mint", "uses": "actions/create-github-app-token@v3", "with": with_block}
 
 
 def _git_read_mint_step(m: Manifest) -> Step:
@@ -837,6 +840,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                     "repository": m.repo,
                     "ref": "${{ steps.pick.outputs.ref }}",
                     "token": "${{ steps.mint.outputs.token }}",
+                    "persist-credentials": False,
                 },
             },
             {
@@ -1011,7 +1015,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
 
     steps: list[Step] = [
-        _mint_step(),
+        _mint_step(_BUILD_LEG_PERMISSIONS),
         _check_run_step(job_name, "start"),
         # Before checkout, so an early failure still names the image.
         _announce_image_step(),
@@ -1021,6 +1025,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                 "repository": m.repo,
                 "ref": "${{ needs.resolve.outputs.ref }}",
                 "token": "${{ steps.mint.outputs.token }}",
+                "persist-credentials": False,
                 **({"submodules": m.submodules} if m.submodules else {}),
             },
         },
@@ -1564,6 +1569,7 @@ def _validate_job() -> dict[str, Any]:
                 "with": {
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
+                    "persist-credentials": False,
                 },
             },
             {

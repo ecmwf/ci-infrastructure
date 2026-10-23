@@ -60,7 +60,7 @@ def test_hpc_job_renders(hpc_yaml: str, line: str) -> None:
     assert line in hpc_yaml
 
 
-@pytest.mark.parametrize("absent", ["actions/setup-python", "actions/publish-artifact@main", "credentials:"])
+@pytest.mark.parametrize("absent", ["actions/setup-python", "actions/publish-artifact@main", " credentials:"])
 def test_hpc_job_omits(hpc_yaml: str, absent: str) -> None:
     assert absent not in hpc_yaml
 
