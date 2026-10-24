@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libqt6svg6-dev \
     libqt6core5compat6-dev \
     libqt6charts6-dev \
+    libgl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Re-declared in every image: an inherited copy would announce the base.

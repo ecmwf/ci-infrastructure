@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     qt6-svg-dev \
     qt6-5compat-dev \
     qt6-charts-dev \
+    libcrypt-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Re-declared in every image: an inherited copy would announce the base.
