@@ -8,6 +8,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     gcc \
     gcc-fortran \
     boost \
+    boost-libs \
     qt6-base \
     qt6-svg \
     qt6-5compat \
