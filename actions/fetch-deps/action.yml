@@ -20,8 +20,8 @@ inputs:
     default: ''
   stage-only:
     description: >-
-      "true" only stages the deps for shipment (HPC legs): needs-python wheels are not installed,
-      and nothing goes on LD_LIBRARY_PATH or PATH, as the deps are built for another machine.
+      "true" only stages the deps for shipment (HPC legs): nothing goes on LD_LIBRARY_PATH
+      or PATH, as the deps are built for another machine.
     required: false
     default: 'false'
   install-python-deps:
@@ -48,19 +48,9 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         DEPS_JSON: ${{ inputs.deps-json }}
-        STAGE_ONLY: ${{ inputs.stage-only == 'true' || inputs.install-python-deps == 'false' }}
       run: |
-        # needs-python wheels go into the setup-python interpreter
-        # ($pythonLocation), never $CI_INFRASTRUCTURE_PYTHON; with
-        # stage-only they are only staged (HPC installs them).
         echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
-        args=(--deps-json "$DEPS_JSON")
-        if [ "$STAGE_ONLY" = "true" ]; then
-          args+=(--no-python-install)
-        elif [ -n "${pythonLocation:-}" ]; then
-          args+=(--consumer-python "${pythonLocation}/bin/python")
-        fi
-        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.fetch_deps "${args[@]}"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.fetch_deps --deps-json "$DEPS_JSON"
 
     - name: Compose CMAKE_PREFIX_PATH, LD_LIBRARY_PATH and PATH from deps-json
       id: compose-cmake

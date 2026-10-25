@@ -138,8 +138,6 @@ def _consumer_dep(package: str, compiler_inputs: list[str] | None = None) -> Dep
         compiler_inputs=compiler_inputs,
         build_type_input="build-type",
         platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
     )
 
 

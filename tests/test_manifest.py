@@ -53,7 +53,7 @@ def test_unknown_keys_are_rejected(data: dict[str, Any], match: str) -> None:
 def test_json_schema_uses_toml_keys() -> None:
     props = ManifestFile.model_json_schema(by_alias=True)["$defs"]["DepTable"]["properties"]
     assert "compiler-inputs" in props
-    assert "needs-python" in props
+    assert "options-input" in props
 
 
 def test_prefix_defaults_to_name() -> None:

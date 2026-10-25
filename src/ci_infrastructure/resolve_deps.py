@@ -18,7 +18,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
                                           own-ref, own-platform, own-compiler,
                                           own-build-type, own-python, own-deps-hash
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
-                                                   source, needs-python, install-path}
+                                                   source, install-path}
           _resolved.crates                {crate: repo} of the built packages' deps' `crates`
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
@@ -123,8 +123,6 @@ class DepSpec:
     compiler_inputs: Sequence[str] | None
     build_type_input: str
     platform_input: str
-    needs_python: bool
-    python_version_input: str
     # Options do not propagate: `option` is a fixed literal, `options_input` names a
     # leg field to read it from; both empty consumes the plain build.
     option: str = ""
@@ -197,7 +195,6 @@ class ResolvedDep:
     # "triggered rebuild": timing skew; _run dispatches the producer before exiting.
     # "local": built earlier in the same job; never fetched.
     source: Literal["artifact", "triggered rebuild", "local"]
-    needs_python: bool
     install_path: Path
     # The fields artifact_name is built from; the name alone is ambiguous to parse.
     platform: str
@@ -217,7 +214,6 @@ class ResolvedDep:
             "artifact-name": self.artifact_name,
             "cached": self.cached,
             "source": self.source,
-            "needs-python": self.needs_python,
             "install-path": str(self.install_path),
             "platform": self.platform,
             "compiler": self.compiler or "",
@@ -267,8 +263,6 @@ def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
         compiler_inputs=None if t.compiler_inputs is None else list(t.compiler_inputs),
         build_type_input=t.build_type_input,
         platform_input=t.platform_input,
-        needs_python=t.needs_python,
-        python_version_input=t.python_version_input,
         option=t.options,
         options_input=t.options_input,
         when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
@@ -402,7 +396,6 @@ def _fields_read_by(specs: Sequence[DepSpec], compiler_inputs: Sequence[str]) ->
     for s in specs:
         fields |= set(s.when or {}) | set(s.unless or {}) | set(s.compiler_inputs or ())
         fields |= {s.build_type_input, s.platform_input}
-        fields |= {s.python_version_input} if s.needs_python else set()
         fields |= {s.options_input} if s.options_input else set()
     return fields - {"execution"}
 
@@ -721,7 +714,6 @@ def resolve_leg(
         build_type = str(parent_ctx.get(spec.build_type_input, "Release"))
         platform = str(parent_ctx.get(spec.platform_input, ""))
         platform_slug = compute_platform_slug(platform)
-        python_version: str | None = str(parent_ctx.get(spec.python_version_input, "")) if spec.needs_python else None
 
         if spec.option:
             dep_option = spec.option
@@ -737,7 +729,6 @@ def resolve_leg(
             "compiler": compiler,
             "build-type": build_type,
             "platform": platform_slug,
-            "python-version": python_version,
             "option": dep_option,
         }
         if spec.package in requests:
@@ -760,8 +751,6 @@ def resolve_leg(
                     ("options-input", spec.options_input is not None),
                     ("build-type-input", spec.build_type_input != "build-type"),
                     ("platform-input", spec.platform_input != "platform"),
-                    ("needs-python", spec.needs_python),
-                    ("python-version-input", spec.python_version_input != "python-version"),
                 )
                 if is_set
             ]
@@ -781,13 +770,11 @@ def resolve_leg(
         # The leg the upstream's own CI built this variant on: sub-deps resolve and filter
         # by `when` against it, so deps-hash8 reproduces the published name.
         sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
-        requested = Variant(lane, platform_slug, compiler, build_type, python_version, dep_option)
+        requested = Variant(lane, platform_slug, compiler, build_type, None, dep_option)
         variants = producer_variants(producer, spec.package) if producer is not None else None
         if variants is None:
             # No matrix to tell (no manifest upstream): the requested variant over this leg stands in.
             dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
-            if python_version is not None:
-                dep_ctx["python-version"] = python_version
         else:
             assert producer is not None
             own_leg = producer_leg(producer, spec.package, requested, sub_specs)
@@ -820,7 +807,7 @@ def resolve_leg(
             platform_slug=platform_slug,
             compiler=compiler,
             build_type=build_type,
-            python_version=python_version,
+            python_version=None,
             option=dep_option,
             template_version=template_version_for_lane(lane),
         )
@@ -870,12 +857,11 @@ def resolve_leg(
             artifact_name=artifact_name,
             cached=cached,
             source=source,
-            needs_python=spec.needs_python,
             install_path=_install_base() / spec.package,
             platform=platform_slug,
             compiler=compiler,
             build_type=build_type,
-            python_version=python_version,
+            python_version=None,
             deps_hash=deps_hash8,
             add_to_path=tuple(info.add_to_path) if info is not None else (),
         )
@@ -900,7 +886,6 @@ def resolve_leg(
     )
     own_build_type = str(matrix_entry.get("build-type", "Release"))
     own_platform = compute_platform_slug(str(matrix_entry.get("platform", "")))
-    # The leg's python-version decides, not needs-python (which only drives pip installs of deps).
     own_python_raw = str(matrix_entry.get("python-version", "")).strip()
     own_python: str | None = own_python_raw or None
     own_option = _as_option(matrix_entry.get("options"), context=f"[package] '{own.name}'")
@@ -1027,7 +1012,6 @@ def _as_local(prefix: PackageName, repo: Repo, ref: Ref, sha: Sha, own: Resolved
         artifact_name=own.artifact_name,
         cached=False,
         source="local",
-        needs_python=False,
         install_path=_install_base() / prefix,
         platform=own.platform,
         compiler=own.compiler,

@@ -70,7 +70,6 @@ def _dep(**overrides: Any) -> ResolvedDep:
         artifact_name=ArtifactName("pkg-..."),
         cached=True,
         source="artifact",
-        needs_python=False,
         install_path=Path("/tmp/install/pkg"),
         platform="ubuntu-24.04",
         compiler="clang++-18",
@@ -171,8 +170,6 @@ def _dep_spec(package: str, **overrides: Any) -> DepSpec:
         compiler_inputs=["cxx-compiler"],
         build_type_input="build-type",
         platform_input="platform",
-        needs_python=False,
-        python_version_input="python-version",
     )
     return replace(base, **overrides)
 
@@ -574,22 +571,13 @@ def _in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
 
 
-@pytest.mark.parametrize("needs_python", [False, True])
-def test_a_name_no_producer_leg_publishes_fails_without_waiting_for_its_ci(
-    monkeypatch: pytest.MonkeyPatch, needs_python: bool
-) -> None:
-    """The producer's legs carry python-version, so only a needs-python request can ever be published."""
+def test_a_name_no_producer_leg_publishes_fails_without_waiting_for_its_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The producer's legs carry python-version, which a dep never requests."""
     _in_flight(monkeypatch)
     cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
     leg = {**_LEG, "python-version": "3.11"}
-    dep = _dep_spec("up", needs_python=needs_python)
-
-    if needs_python:
-        [resolved], _ = _resolve(_own("top"), [dep], leg, manifest_cache=cache)
-        assert resolved.source == "artifact"  # fetch-deps waits for the in-flight run
-    else:
-        with pytest.raises(ResolveError, match=r"(?s)no leg of the producer.*ubuntu-24.04-clang\+\+-18-py3.11-Release"):
-            _resolve(_own("top"), [dep], leg, manifest_cache=cache)
+    with pytest.raises(ResolveError, match=r"requested as ubuntu-24.04-clang\+\+-18-Release .*no leg of the producer"):
+        _resolve(_own("top"), [_dep_spec("up")], leg, manifest_cache=cache)
 
 
 _META_MANIFEST: Final = """
@@ -615,7 +603,6 @@ compiler-inputs = []
         ({"option": "x"}, "options"),
         ({"options_input": "options"}, "options-input"),
         ({"build_type_input": "dep-build-type"}, "build-type-input"),
-        ({"needs_python": True}, "needs-python"),
     ],
 )
 def test_a_meta_dep_rejects_what_it_could_not_pass_on(override: dict[str, Any], named: str) -> None:

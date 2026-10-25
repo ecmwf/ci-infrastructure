@@ -64,7 +64,6 @@ class Dep(TypedDict):
     cached: bool
     source: str
     install_path: Path
-    needs_python: bool
 
 
 def _diagnose_missing_artifact(name: str, repo: str, sha: str, run: WorkflowRuns) -> None:
@@ -154,36 +153,6 @@ def download_from_store(artifact_name: str, install_path: Path) -> Path | None:
     return tar_dst
 
 
-def pip_install_wheel(install_path: Path, consumer_python: Path) -> bool:
-    if not install_path.is_dir():
-        return False
-    whls = [f.name for f in install_path.iterdir() if f.name.endswith(".whl")]
-    if not whls:
-        print(f"::warning::needs-python dep at {install_path} contained no .whl file", file=sys.stderr)
-        return False
-    if len(whls) > 1:
-        print(
-            f"::warning::needs-python dep at {install_path} contained multiple .whl files; "
-            f"installing only the first: {whls[0]}",
-            file=sys.stderr,
-        )
-    wheel_path = install_path / whls[0]
-    # --break-system-packages: PEP 668 marker on distro Pythons; the runner is disposable.
-    rc = subprocess.run(
-        [
-            str(consumer_python),
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            "--force-reinstall",
-            "--break-system-packages",
-            str(wheel_path),
-        ]
-    ).returncode
-    return rc == 0
-
-
 def _download_and_report(dep: Dep) -> bool:
     start = time.monotonic()
     tar = download_from_store(dep["artifact_name"], dep["install_path"])
@@ -196,10 +165,7 @@ def _download_and_report(dep: Dep) -> bool:
     return True
 
 
-def fetch_one(
-    dep: Dep, token: str | None, consumer_python: Path | None
-) -> Literal["artifact", "artifact-after-wait", "fail"]:
-    """`consumer_python` None means stage wheels only."""
+def fetch_one(dep: Dep, token: str | None) -> Literal["artifact", "artifact-after-wait", "fail"]:
     source: Literal["artifact", "artifact-after-wait"] | None = None
     if dep["cached"]:
         if _download_and_report(dep):
@@ -218,41 +184,12 @@ def fetch_one(
         if poll_for_artifact(dep["repo"], dep["sha"], dep["artifact_name"], token) and _download_and_report(dep):
             source = "artifact-after-wait"
 
-    if source is None:
-        return "fail"
-
-    if dep["needs_python"] and consumer_python is not None:
-        if not pip_install_wheel(dep["install_path"], consumer_python):
-            print(
-                f"::error::pip install failed for python-aware dep {dep['name']} "
-                f"(install path: {dep['install_path']}, consumer-python: {consumer_python})",
-                file=sys.stderr,
-            )
-            return "fail"
-    return source
+    return source or "fail"
 
 
 @click.command(help="Fetch each resolved dep into its install path.")
 @click.option("--deps-json", "deps_json", required=True, help="JSON array of resolved deps")
-@click.option(
-    "--consumer-python",
-    "consumer_python_arg",
-    default=None,
-    help=(
-        "The consumer's Python interpreter (the one running pytest), never this tool's venv. "
-        "Required when any dep has needs-python=true."
-    ),
-)
-@click.option(
-    "--python-install/--no-python-install",
-    "python_install",
-    default=True,
-    help=(
-        "Pip-install needs-python wheels into --consumer-python. --no-python-install only "
-        "stages them, e.g. for an HPC job script to install on the compute node."
-    ),
-)
-def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) -> None:
+def main(deps_json: str) -> None:
     # Flushed first, to tell an import hang from a fetch hang.
     print("fetch_deps: starting", flush=True)
 
@@ -271,31 +208,6 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
             f"fetch_deps requires the following CLI tool(s) but none were found on PATH: "
             f"{', '.join(missing_tools)}. Install them in this runner/image and retry."
         )
-
-    needs_python_deps = [e["name"] for e in raw if isinstance(e, dict) and e.get("needs-python")]
-    consumer_python: Path | None = None
-    if needs_python_deps and not python_install:
-        print(
-            f"fetch_deps: staging needs-python wheels ({', '.join(needs_python_deps)}) without "
-            "installing them — --no-python-install was passed. Whoever consumes them (on an HPC "
-            "leg, the job script on the compute node) installs them from their install paths."
-        )
-    elif needs_python_deps:
-        if not consumer_python_arg:
-            raise CIError(
-                "fetch_deps was asked to install needs-python wheels "
-                f"({', '.join(needs_python_deps)}) but no --consumer-python was provided. "
-                "Run actions/setup-python before fetch-deps so $pythonLocation is set, "
-                "or pass --consumer-python explicitly. On a leg that installs the wheels "
-                "elsewhere (e.g. an HPC job script on the compute node), pass "
-                "stage-only: 'true' to fetch-deps instead."
-            )
-        consumer_python = Path(consumer_python_arg)
-        if not consumer_python.is_file():
-            raise CIError(
-                f"--consumer-python={consumer_python} does not point to an existing file. "
-                "Check that actions/setup-python ran in this job and that $pythonLocation resolved correctly."
-            )
 
     token = select_token()
     failures: list[str] = []
@@ -320,9 +232,8 @@ def main(deps_json: str, consumer_python_arg: str | None, python_install: bool) 
             "cached": bool(entry.get("cached", False)),
             "source": entry["source"],
             "install_path": Path(os.path.expandvars(entry["install-path"])),
-            "needs_python": bool(entry.get("needs-python", False)),
         }
-        result = fetch_one(dep, token, consumer_python)
+        result = fetch_one(dep, token)
         if result == "fail":
             failures.append(dep["artifact_name"])
             print(
