@@ -2,38 +2,36 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-PR merge rules for the default branch
-=====================================
+PR merge rules for the protected branches
+==========================================
 
 .. note::
 
    These rules are pending discussion.
 
-These rules are the default setting; the maintainers of a repository can adjust them.
-They protect only the default branch (``main``/``master``/``develop``) and PRs into it.
-Other branches are unrestricted.
+These rules are the default setting; the admins (gatekeepers) of a repository can adjust them.
+They protect only ``main``, ``develop``, ``master`` and the default branch, if it is named otherwise,
+and PRs into them. Other branches are unrestricted.
 ``scripts/apply-pr-rules.sh`` applies them to a repository.
 
-Live on: ci-infrastructure, stack-dependencies
-
-Everyone, on the default branch
+Everyone, on a protected branch
 -------------------------------
 
 - Changes only via PR; no direct push
-- No force-push, no deletion of the default branch
-- Branch must be up to date with the default branch (merge or rebase)
+- No force-push, no deletion of the protected branch
+- Branch must be up to date with the protected branch (merge or rebase)
 - Required checks green: ``ci-result`` (+ ``downstream-ci-label`` where :doc:`downstream-ci` exists)
 - Merged branches are deleted automatically
 - Auto-merge available
 
-By role, on the default branch
+By role, on a protected branch
 ------------------------------
 
 .. list-table::
    :header-rows: 1
 
    * -
-     - admins
+     - admins (gatekeepers)
      - maintainers
      - write (developers)
      - read
@@ -57,7 +55,7 @@ By role, on the default branch
      - X
      -
      -
-   * - push to / force-push / delete default branch
+   * - push to / force-push / delete protected branch
      -
      -
      -

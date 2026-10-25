@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Apply the PR rules to develop, main and master: no deletion or force-push,
+# Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
 # one approval, and the required CI checks.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
@@ -13,7 +13,7 @@
 # --bot-app-id: a GitHub App whose own PRs need no review (e.g. the workflow
 # regenerator, so it can auto-merge). CI still has to pass.
 # --delete-existing: also delete the repo's other rulesets and the classic
-# protection on develop, main and master. Organization rulesets are never touched.
+# protection on those branches. Organization rulesets are never touched.
 set -euo pipefail
 
 dry=false
@@ -71,7 +71,7 @@ pull_request() {
 }
 ruleset() {
   jq -n --arg name "$1" --argjson rules "$2" --argjson bypass "$3" '{name: $name, target: "branch",
-    enforcement: "active", conditions: {ref_name: {include: ["refs/heads/develop", "refs/heads/main", "refs/heads/master"], exclude: []}},
+    enforcement: "active", conditions: {ref_name: {include: ["~DEFAULT_BRANCH", "refs/heads/develop", "refs/heads/main", "refs/heads/master"], exclude: []}},
     rules: $rules, bypass_actors: $bypass}'
 }
 
@@ -122,7 +122,8 @@ for repo in "$@"; do
       call api -X DELETE "repos/$repo/rulesets/$id" < /dev/null
       echo "  deleted $name"
     done <<< "$others"
-    for branch in develop main master; do
+    default_branch=$(gh api "repos/$repo" --jq .default_branch)
+    for branch in $(printf '%s\n' develop main master "$default_branch" | sort -u); do
       if protection=$(gh api "repos/$repo/branches/$branch/protection" 2>/dev/null); then
         show_diff "classic protection on $branch" "$(jq 'walk(if type == "object" then del(.url, .contexts_url, .users_url, .teams_url, .apps_url) else . end)' <<< "$protection")" '{}'
         call api -X DELETE "repos/$repo/branches/$branch/protection" < /dev/null
