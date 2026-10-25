@@ -11,6 +11,7 @@ This overview describes the everyday workflow of a developer in a repository tha
    :maxdepth: 1
 
    default-branch
+   pr-merge-rules
    feature-branches
    downstream-ci
    fork-pull-requests
