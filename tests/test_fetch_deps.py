@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""fetch_deps: a needs-python wheel is installed into the consumer's interpreter, never sys.executable."""
+"""fetch-deps puts only the deps that run here on LD_LIBRARY_PATH and PATH."""
 
 from __future__ import annotations
 
@@ -11,34 +11,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Final
 
 import pytest
 import yaml
-from click.testing import CliRunner
 from conftest import REPO_ROOT
-
-from ci_infrastructure import fetch_deps
-
-_DEP: Final = {
-    "name": "cxxmath-python",
-    "repo": "org/downstream-ci-repo-cxx-py",
-    "ref": "main",
-    "sha": "deadbeef",
-    "artifact-name": "cxxmath-python-hpc-atos-gnu-Release-deadbeef",
-    "cached": True,
-    "source": "store",
-    "install-path": "/tmp/install/cxxmath-python",
-    "needs-python": True,
-}
-
-
-def test_needs_python_without_consumer_python_fails_loud() -> None:
-    result = CliRunner().invoke(fetch_deps.main, ["--deps-json", json.dumps([_DEP])])
-    assert result.exit_code != 0
-    assert "cxxmath-python" in result.output
-    assert "--consumer-python" in result.output
-    assert "stage-only" in result.output
 
 
 @pytest.mark.parametrize(("stage_only", "exported"), [("false", True), ("true", False)])

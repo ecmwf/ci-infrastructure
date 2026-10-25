@@ -249,8 +249,8 @@ def test_artifact_prefix_is_an_accepted_kind_key(tmp_path: Path) -> None:
     assert set(m.matrices) == {"build", "build-secondary"}
 
 
-def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> None:
-    """fetch_deps' pip install must run on the leg's interpreter."""
+def test_setup_python_never_emitted(tmp_path: Path) -> None:
+    """The leg's recipe picks its Python, as in the repo's own CI."""
     yaml = render_single(
         tmp_path,
         """
@@ -263,32 +263,6 @@ def test_setup_python_emitted_when_leg_has_python_version(tmp_path: Path) -> Non
         [[matrix.test.include]]
         runs-on = "ubuntu-latest"
         python-version = "3.10"
-        """,
-    )
-    assert "uses: actions/setup-python@v6" in yaml
-    assert "python-version: ${{ matrix.python-version }}" in yaml
-    assert yaml.index("Decode matrix-leg") < yaml.index("Set up Python") < yaml.index("Fetch resolved deps")
-
-
-def test_setup_python_omitted_when_no_leg_has_python_version(tmp_path: Path) -> None:
-    """An empty `python-version:` input would fail actions/setup-python."""
-    yaml = render_single(
-        tmp_path,
-        """
-        [package]
-        name = "a"
-        prefix = "a"
-        repo = "org/a"
-        compiler-inputs = ["cxx-compiler"]
-
-        [matrix.build]
-        triggers = ["rebuild-request"]
-        defaults.job-script = "./.ci/build.sh"
-        needs = []
-
-        [[matrix.build.include]]
-        runs-on = "ubuntu-latest"
-        cxx-compiler = "clang++-18"
         """,
     )
     assert "actions/setup-python" not in yaml
