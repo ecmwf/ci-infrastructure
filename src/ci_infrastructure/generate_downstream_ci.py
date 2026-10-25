@@ -899,17 +899,6 @@ def _decode_step() -> Step:
     }
 
 
-def _setup_python_step(mk: MatrixKind) -> Step | None:
-    """setup-python before Fetch, whose needs-python wheel install needs the leg's interpreter."""
-    if not any("python-version" in leg for leg in mk.legs):
-        return None
-    return {
-        "name": "Set up Python ${{ matrix.python-version }}",
-        "uses": "actions/setup-python@v6",
-        "with": {"python-version": "${{ matrix.python-version }}"},
-    }
-
-
 def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
     """Render the leg's recipe and run it on the runner."""
     return {
@@ -1032,10 +1021,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
         _decode_step(),
     ]
     is_hpc = mk.execution == EXECUTION_HPC_ATOS
-    if not is_hpc:
-        setup_py = _setup_python_step(mk)
-        if setup_py is not None:
-            steps.append(setup_py)
     fetch_with = {
         "deps-json": "${{ steps.m.outputs.deps-json }}",
         "token": "${{ steps.mint.outputs.token }}",

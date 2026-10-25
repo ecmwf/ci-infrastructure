@@ -183,17 +183,6 @@ class DepTable(_Table):
     platform_input: str = Field(
         default="platform", alias="platform-input", description="Leg field selecting the upstream's platform."
     )
-    python_version_input: str = Field(
-        default="python-version",
-        alias="python-version-input",
-        description="Leg field selecting the upstream's Python version; read only with `needs-python`.",
-    )
-    needs_python: bool = Field(
-        strict=True,
-        default=False,
-        alias="needs-python",
-        description="The artifact carries a wheel; fetch-deps installs it into the consumer's Python.",
-    )
     options: str = Field(
         default="",
         description="Build option of the upstream artifact to consume, one name per CMake preset. "

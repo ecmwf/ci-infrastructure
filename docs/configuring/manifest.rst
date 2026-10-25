@@ -112,8 +112,8 @@ Each kind lists what it publishes in ``packages``.
 With ``meta = true``, ``[package]`` has no artifact of its own: a dependency on it stands for its ``[[deps]]``,
 so a consumer can take the whole set or only the packages it links.
 Its members resolve as if the consumer had declared them,
-so a dependency on it takes no ``options``, ``options-input``, ``build-type-input``, ``platform-input``,
-``needs-python`` or ``python-version-input``; a consumer that needs them declares the members instead:
+so a dependency on it takes no ``options``, ``options-input``, ``build-type-input`` or ``platform-input``;
+a consumer that needs them declares the members instead:
 
 .. code:: toml
 
