@@ -74,9 +74,12 @@ def _diagnose_missing_artifact(name: str, repo: str, sha: str, run: WorkflowRuns
             f"without publishing '{name}'.{where}",
             file=sys.stderr,
         )
+        use = "Re-run that upstream run, then use" if run.conclusion == "failure" else "Use"
         print(
-            "::warning::Re-run that upstream run, then re-run this workflow. If it succeeded, the consumer's "
-            "manifest matrix may ask for a (compiler, build-type, python-version, platform) combination "
+            f"::warning::{use} 'Re-run all jobs' on this workflow, not 'Re-run failed jobs': "
+            "which builds to wait for was decided when this run started, and re-running only "
+            "the failed jobs waits for the same ones again. If it still fails, the consumer's manifest "
+            "matrix may ask for a (compiler, build-type, python-version, platform) combination "
             "the upstream repo never built.",
             file=sys.stderr,
         )
