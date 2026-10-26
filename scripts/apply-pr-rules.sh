@@ -55,10 +55,10 @@ current_ruleset() {
 
 # RepositoryRole ids: 2 = maintain, 5 = admin.
 roles() { jq -n --arg m "$1" '[2, 5] | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m})'; }
-# The roles, plus the bot App on its own pull requests only.
+# The roles, plus the bot App. Exempt, not pull_request: auto-merge never takes a bypass, it waits for the review.
 approval_bypass() {
   if [ -n "$bot_app_id" ]; then
-    jq --argjson id "$bot_app_id" '. + [{actor_type: "Integration", actor_id: $id, bypass_mode: "pull_request"}]' <<< "$(roles exempt)"
+    jq --argjson id "$bot_app_id" '. + [{actor_type: "Integration", actor_id: $id, bypass_mode: "exempt"}]' <<< "$(roles exempt)"
   else
     roles exempt
   fi

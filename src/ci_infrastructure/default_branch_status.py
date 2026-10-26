@@ -18,7 +18,7 @@ import sys
 import tomllib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -304,8 +304,15 @@ def _pusher(c: Commit) -> str:
     return c.run.pusher if c.run and c.run.pusher else c.author
 
 
-def render_summary(states: Mapping[str, RepoState], now: datetime, exclude: Collection[str] = ()) -> str:
-    """The dashboard; the direct pushes of the people in `exclude` stay out of its table of direct pushes."""
+def render_summary(
+    states: Mapping[str, RepoState],
+    now: datetime,
+    exclude: Collection[str] = (),
+    since: date | None = None,
+    until: date | None = None,
+) -> str:
+    """The dashboard; its table of direct pushes covers `since` to `until`, both whole days (default: the
+    last 14 days), and leaves out the people in `exclude`."""
     blockers = red_upstream(states)
     order = ordered({r: s.upstream for r, s in states.items()})
     lines = [
@@ -332,18 +339,19 @@ def render_summary(states: Mapping[str, RepoState], now: datetime, exclude: Coll
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
         " · · no run of its own, part of a later push · ❗ pushed without a pull request",
     ]
-    since = now - _DIRECT_PUSH_WINDOW
+    start = datetime.combine(since, time(), UTC) if since else now - _DIRECT_PUSH_WINDOW
+    end = datetime.combine(until + timedelta(days=1), time(), UTC) if until else datetime.max.replace(tzinfo=UTC)
     pushes = sorted(
         (
             (s, c)
             for s in states.values()
             for c in s.commits
-            if c.pr is None and c.date >= since and _pusher(c) not in exclude
+            if c.pr is None and start <= c.date < end and _pusher(c) not in exclude
         ),
         key=lambda sc: sc[1].date,
         reverse=True,
     )
-    lines += ["", f"## ❗ Direct pushes since {since:%Y-%m-%d}", ""]
+    lines += ["", f"## ❗ Direct pushes from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
     if exclude:
         lines += ["Leaving out " + ", ".join(_user(login) for login in sorted(exclude)) + ".", ""]
     if pushes:
@@ -389,14 +397,28 @@ def failures(states: Mapping[str, RepoState]) -> list[str]:
 
 @click.command()
 @click.option("--exclude", multiple=True, metavar="LOGIN", help="Leave this person's direct pushes out of their table.")
-def main(exclude: tuple[str, ...]) -> None:
+@click.option(
+    "--since",
+    type=click.DateTime(["%Y-%m-%d"]),
+    help="First day of the direct pushes, UTC. Default: 14 days ago. Only each repo's last 100 commits are read.",
+)
+@click.option("--until", type=click.DateTime(["%Y-%m-%d"]), help="Last day of the direct pushes, UTC. Default: today.")
+def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | None) -> None:
     """Write the dashboard of the rolled-out repos' default branches to $GITHUB_STEP_SUMMARY.
 
     Fails when a default branch is red or blocked by a red upstream.
     """
+    if since and until and since > until:
+        raise click.BadParameter("must not be after --until", param_hint="--since")
     try:
         states = fetch(SEEDS, select_token())
-        summary = render_summary(states, datetime.now(UTC), frozenset(exclude))
+        summary = render_summary(
+            states,
+            datetime.now(UTC),
+            frozenset(exclude),
+            since.date() if since else None,
+            until.date() if until else None,
+        )
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
