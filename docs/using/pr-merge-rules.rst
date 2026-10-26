@@ -72,6 +72,7 @@ Notes
 -----
 
 - Who can approve: Settings > Collaborators and teams (Write or higher)
+- Code owners: if a ``CODEOWNERS`` file covers a changed file, the approval must come from one of its owners; without one, any approval counts
 - ``ci-result`` is a status from the ``collect results`` job in ``ci.yml``; skipped counts as failed
 - Fork PRs: ``ci-result`` comes from ``ci-fork.yml`` (see :doc:`fork-pull-requests`), else a maintainer bypasses
 

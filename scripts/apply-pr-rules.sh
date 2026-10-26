@@ -5,7 +5,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
-# one approval, and the required CI checks; creates the downstream-CI labels where missing.
+# one approval (from a code owner where CODEOWNERS covers a changed file), and the required CI checks;
+# creates the downstream-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
 #   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
@@ -64,9 +65,9 @@ approval_bypass() {
   fi
 }
 pull_request() {
-  jq -n --argjson n "$1" '{type: "pull_request", parameters: {
+  jq -n --argjson n "$1" --argjson owners "$2" '{type: "pull_request", parameters: {
     required_approving_review_count: $n, dismiss_stale_reviews_on_push: false,
-    require_code_owner_review: false, require_last_push_approval: false,
+    require_code_owner_review: $owners, require_last_push_approval: false,
     required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
 ruleset() {
@@ -116,8 +117,8 @@ for repo in "$@"; do
     required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
 
   bodies=(
-    "$(ruleset default-branch-integrity "$(jq -n --argjson p "$(pull_request 0)" '[{type: "deletion"}, {type: "non_fast_forward"}, $p]')" '[]')"
-    "$(ruleset default-branch-approval "[$(pull_request 1)]" "$(approval_bypass)")"
+    "$(ruleset default-branch-integrity "$(jq -n --argjson p "$(pull_request 0 false)" '[{type: "deletion"}, {type: "non_fast_forward"}, $p]')" '[]')"
+    "$(ruleset default-branch-approval "[$(pull_request 1 true)]" "$(approval_bypass)")"
     "$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")"
   )
 
