@@ -20,7 +20,7 @@ Everyone, on a protected branch
 - Changes only via PR; no direct push
 - No force-push, no deletion of the protected branch
 - Branch must be up to date with the protected branch (merge or rebase)
-- Required checks green: ``ci-result`` (+ ``downstream/runner`` and ``downstream/hpc-atos`` for the lanes of :doc:`downstream-ci` that exist)
+- Required checks green: ``ci-result``, ``downstream/runner`` and ``downstream/hpc-atos`` (see :doc:`downstream-ci`; a lane without consumers is green at once)
 - Merged branches are deleted automatically
 - Auto-merge available
 

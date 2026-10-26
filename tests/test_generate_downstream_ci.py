@@ -2278,12 +2278,11 @@ def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monk
     decision, dispatch = doc["jobs"]["gate"]["steps"]
     # The lanes' own statuses are the required checks, which their orchestrators settle.
     assert decision["uses"] == "ecmwf/ci-infrastructure/actions/post-downstream-decision@main"
-    assert decision["with"]["contexts"] == "downstream/runner"
+    assert decision["with"] == {"contexts": "downstream/runner", "no-consumers": "downstream/hpc-atos"}
     # A level label starts the lanes that exist; their runs do not list on the pull request.
     assert dispatch["uses"] == "ecmwf/ci-infrastructure/actions/dispatch-downstream@main"
     assert dispatch["with"]["workflows"] == "trigger-downstream.yml"
     assert check_ci_approval.check(gate) == []
-    assert not (tmp_path / "b" / ".github" / "workflows" / "pr-label-downstream-ci.yml").exists()
 
 
 def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2307,7 +2306,8 @@ def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytes
         assert check_ci_approval.check(wf) == []
 
 
-def test_a_repo_without_consumers_loses_its_label_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_repo_without_consumers_passes_every_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The required `downstream/<lane>` checks need no label there, and no re-applied rules once consumers come."""
     write_repo(
         tmp_path,
         "b",
@@ -2323,4 +2323,8 @@ def test_a_repo_without_consumers_loses_its_label_gate(tmp_path: Path, monkeypat
     gate.write_text("name: stale\n")
     monkeypatch.chdir(tmp_path / "b")
     _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
-    assert not gate.exists()
+    doc = yaml.safe_load(gate.read_text())
+    assert doc["permissions"] == {"statuses": "write"}
+    (decision,) = doc["jobs"]["gate"]["steps"]
+    assert decision["with"] == {"no-consumers": "downstream/runner downstream/hpc-atos"}
+    assert check_ci_approval.check(gate) == []

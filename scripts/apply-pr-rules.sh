@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
-# one approval, and the required CI checks.
+# one approval, and the required CI checks; creates the downstream-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
 #   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
@@ -75,23 +75,42 @@ ruleset() {
     rules: $rules, bypass_actors: $bypass}'
 }
 
+labels=$(cat <<'EOF'
+downstream-ci-not-needed	C5DEF5	Deliberately skip the downstream fan-out
+run-downstream-ci:1	CAB5CA	Run downstream CI up to level 1 (direct consumers)
+run-downstream-ci:2	CE8CA0	Run downstream CI up to level 2
+run-downstream-ci:3	D36375	Run downstream CI up to level 3
+run-downstream-ci:all	D73A4A	Run the whole downstream fan-out for this PR
+EOF
+)
+
+failed=false
 for repo in "$@"; do
   echo "$repo"
+  # The label gate posts each lane's downstream/<lane> status (at once for a lane without consumers),
+  # which the lane's orchestrator settles; without it nothing posts them.
+  if ! gh api "repos/$repo/contents/.github/workflows/pr-label-downstream-ci.yml" --silent 2>/dev/null; then
+    echo "  error: no pr-label-downstream-ci.yml; merge the regenerate bot's PR first" >&2
+    failed=true
+    continue
+  fi
 
   settings='{"allow_auto_merge": true, "delete_branch_on_merge": true, "allow_update_branch": true}'
   show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
   call api -X PATCH "repos/$repo" --input - <<< "$settings"
 
-  # Each downstream lane's status, which the label gate posts and the lane's orchestrator settles.
-  checks='["ci-result"]'
-  for lane in runner:trigger-downstream.yml hpc-atos:trigger-downstream-hpc-atos.yml; do
-    if gh api "repos/$repo/contents/.github/workflows/${lane#*:}" --silent 2>/dev/null; then
-      checks=$(jq -c --arg c "downstream/${lane%%:*}" '. + [$c]' <<< "$checks")
-    fi
-  done
+  checks='["ci-result", "downstream/runner", "downstream/hpc-atos"]'
   echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
 
-  # 15368 = GitHub Actions, which posts both checks.
+  have=$(gh label list -R "$repo" -L 1000 --json name --jq '.[].name')
+  while IFS=$'\t' read -r name color description; do
+    if ! grep -qxF "$name" <<< "$have"; then
+      call label create "$name" -R "$repo" --color "$color" --description "$description" < /dev/null
+      echo "  created label $name"
+    fi
+  done <<< "$labels"
+
+  # 15368 = GitHub Actions, which posts all of them.
   status_checks=$(jq -n --argjson c "$checks" '{type: "required_status_checks", parameters: {
     strict_required_status_checks_policy: true, do_not_enforce_on_create: true,
     required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
@@ -137,3 +156,5 @@ for repo in "$@"; do
     echo "  note: other rulesets left untouched: $(cut -d' ' -f2- <<< "$others" | paste -sd, - | sed 's/,/, /g')"
   fi
 done
+$failed && exit 1
+exit 0

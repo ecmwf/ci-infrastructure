@@ -108,11 +108,13 @@ see :doc:`fork-pull-requests`.
 
 To merge, a pull request needs exactly one ``run-downstream-ci:*`` label
 or the explicit opt-out ``downstream-ci-not-needed``;
-the lanes' statuses ``downstream/runner`` and ``downstream/hpc-atos`` should be the required checks.
+the lanes' statuses ``downstream/runner`` and ``downstream/hpc-atos`` are the required checks.
 Until a pull request decides, nothing posts them, so they block as *Expected*.
 :action:`post-downstream-decision` sets them to success for the opt-out,
 and to pending as soon as a level label is set, until the downstream CI reports its result on them.
-The generator writes it as ``pr-label-downstream-ci.yml`` into every repository with consumers.
+A lane without consumers is set to success on every event, whatever the labels.
+The generator writes it as ``pr-label-downstream-ci.yml`` into every repository,
+so the required checks are the same everywhere and need no update when consumers come or go.
 It runs on ``pull_request_target``, which is safe since it only reads the labels from the event:
 the pull request cannot change its own gate, and a fork's pull request gets the statuses too.
 It also starts the downstream CI for a level label, with :action:`dispatch-downstream`:

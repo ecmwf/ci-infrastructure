@@ -45,6 +45,8 @@ then it is possible to explicitly opt out of running via the label ``downstream-
 This decision is always taken explicitly and is never forgotten:
 the results ``downstream/runner`` and ``downstream/hpc-atos`` are required to merge,
 and only the opt-out label or a successful downstream CI sets them to success.
+A lane without consumers needs no label: its result is a success right away,
+so a repository without consumers needs no label at all.
 
 The downstream CI starts once the ``CI`` of the pull request has completed successfully.
 Adding the label later is not a problem: if ``CI`` already succeeded, the label starts the downstream CI directly,
