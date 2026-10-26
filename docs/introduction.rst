@@ -74,6 +74,6 @@ A red check carries information only if red means broken.
 A check that is red for any other reason teaches people to ignore red,
 and the next real failure is ignored with it.
 In this context, a missing decision is reported as *pending* rather than failed:
-:action:`require-label-decision` waits for a label instead of failing the pull request.
+the downstream-CI statuses wait for a label instead of failing the pull request.
 In the same spirit, known transient states only warn,
 for example an image that is stale in the minutes after a merge.
