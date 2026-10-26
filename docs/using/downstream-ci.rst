@@ -42,15 +42,16 @@ The downstream CI runs only for a pull request, and only if the pull request ask
 If you are sure that a PR cannot break a consumer,
 e.g. a change to the documentation, to the CI, or to the tests only,
 then it is possible to explicitly opt out of running via the label ``downstream-ci-not-needed``.
-The action :action:`require-label-decision` ensures that this decision is always taken explicitly and is never forgotten,
-by enforcing that a pull request has exactly one of the run or the opt-out label to be merged.
+This decision is always taken explicitly and is never forgotten:
+the results ``downstream/runner`` and ``downstream/hpc-atos`` are required to merge,
+and only the opt-out label or a successful downstream CI sets them to success.
 
 The downstream CI starts once the ``CI`` of the pull request has completed successfully.
 Adding the label later is not a problem: if ``CI`` already succeeded, the label starts the downstream CI directly,
 without running ``CI`` again.
 We also note that the label stays on the pull request, so that every further push runs the downstream CI again;
 it is therefore cheapest to add the label once the pull request is ready for review.
-The results are reported as the statuses ``downstream/runner`` and ``downstream/hpc-atos`` on the pull request.
+The results are reported on these statuses; between setting the label and the result they are pending.
 
 It has to be emphasized that the downstream CI does **not run** on the default branch,
 that is, a push to ``develop``, e.g. a merge, does not fan out to the consumers.

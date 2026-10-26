@@ -11,7 +11,8 @@
   - trigger-downstream{-hpc}.yml (repos with consumers only): on a completed
     CI run, fan out one job per transitive consumer and post a `downstream/<lane>` status.
   - ci-fork.yml (with `fork-pull-requests` only): runs ci.yml for an approved fork pull request.
-  - pr-label-downstream-ci.yml (repos with consumers only): the required run-downstream-ci decision.
+  - pr-label-downstream-ci.yml (repos with consumers only): the run-downstream-ci decision on the
+    lanes' required `downstream/<lane>` statuses.
   - pr-sync-branch.yml: lists a sync branch's pull requests in each of them.
 
 Sibling manifests are fetched over the GitHub GraphQL API (GH_TOKEN, or gh's own auth).
@@ -1869,17 +1870,17 @@ def _render_one_repo(
     wf_dir = m.repo_root / ".github" / "workflows"
 
     rendered: list[tuple[str, str | None]] = [(FORK_CI_WORKFLOW, render_fork_workflow(m))]
+    lanes: dict[Execution, str] = {}
     for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
         suffix = lane_suffix(lane)
+        orchestrator = render_orchestrator_workflow(m, by_pkg, by_repo, closures, lane=lane)
         rendered += [
             (f"cross-repo-trigger{suffix}.yml", render_workflow(m, by_pkg, lane=lane)),
-            (
-                f"trigger-downstream{suffix}.yml",
-                render_orchestrator_workflow(m, by_pkg, by_repo, closures, lane=lane),
-            ),
+            (f"trigger-downstream{suffix}.yml", orchestrator),
         ]
-    downstream = [name for name, c in rendered if name.startswith("trigger-downstream") and c is not None]
-    rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, downstream) if downstream else None))
+        if orchestrator is not None:
+            lanes[lane] = f"trigger-downstream{suffix}.yml"
+    rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, lanes) if lanes else None))
     rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
     for basename, content in rendered:
         path = wf_dir / basename
@@ -1918,8 +1919,8 @@ def render_fork_workflow(m: Manifest) -> str | None:
     return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
-def render_label_gate_workflow(m: Manifest, downstream_workflows: Sequence[str]) -> str:
-    """The `downstream-ci-label` status, pending until a pull request decides; a level label dispatches the lanes."""
+def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> str:
+    """The label decision on the lanes' required `downstream/<lane>` statuses; a level label dispatches the lanes."""
     doc: dict[str, Any] = {
         "name": "[PR] Downstream-CI label gate",
         # Payload only, so pull_request_target is safe; its base-branch workflow and write token
@@ -1931,16 +1932,13 @@ def render_label_gate_workflow(m: Manifest, downstream_workflows: Sequence[str])
                 "runs-on": SLIM_RUNNER,
                 "steps": [
                     {
-                        "uses": "ecmwf/ci-infrastructure/actions/require-label-decision@main",
-                        "with": {
-                            "context": "downstream-ci-label",
-                            "description-decided": "Downstream-CI decision recorded",
-                        },
+                        "uses": "ecmwf/ci-infrastructure/actions/post-downstream-decision@main",
+                        "with": {"contexts": " ".join(_status_context(lane) for lane in lanes)},
                     },
                     {
                         # The dispatched run looks up the commit's CI itself, and waits for nothing.
                         "uses": "ecmwf/ci-infrastructure/actions/dispatch-downstream@main",
-                        "with": {"workflows": " ".join(downstream_workflows)},
+                        "with": {"workflows": " ".join(lanes.values())},
                     },
                 ],
             }

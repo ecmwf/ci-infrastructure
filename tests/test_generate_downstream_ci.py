@@ -2276,8 +2276,9 @@ def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monk
     }
     assert doc["permissions"] == {"statuses": "write", "actions": "write"}
     decision, dispatch = doc["jobs"]["gate"]["steps"]
-    assert decision["uses"] == "ecmwf/ci-infrastructure/actions/require-label-decision@main"
-    assert decision["with"]["context"] == "downstream-ci-label"
+    # The lanes' own statuses are the required checks, which their orchestrators settle.
+    assert decision["uses"] == "ecmwf/ci-infrastructure/actions/post-downstream-decision@main"
+    assert decision["with"]["contexts"] == "downstream/runner"
     # A level label starts the lanes that exist; their runs do not list on the pull request.
     assert dispatch["uses"] == "ecmwf/ci-infrastructure/actions/dispatch-downstream@main"
     assert dispatch["with"]["workflows"] == "trigger-downstream.yml"

@@ -82,10 +82,13 @@ for repo in "$@"; do
   show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
   call api -X PATCH "repos/$repo" --input - <<< "$settings"
 
+  # Each downstream lane's status, which the label gate posts and the lane's orchestrator settles.
   checks='["ci-result"]'
-  if gh api "repos/$repo/contents/.github/workflows/pr-label-downstream-ci.yml" --silent 2>/dev/null; then
-    checks='["ci-result", "downstream-ci-label"]'
-  fi
+  for lane in runner:trigger-downstream.yml hpc-atos:trigger-downstream-hpc-atos.yml; do
+    if gh api "repos/$repo/contents/.github/workflows/${lane#*:}" --silent 2>/dev/null; then
+      checks=$(jq -c --arg c "downstream/${lane%%:*}" '. + [$c]' <<< "$checks")
+    fi
+  done
   echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
 
   # 15368 = GitHub Actions, which posts both checks.

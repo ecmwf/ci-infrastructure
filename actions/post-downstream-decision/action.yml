@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Post the downstream-CI decision on the lane statuses
+description: >
+  Post a pull request's downstream-CI label decision onto the lanes' required
+  `downstream/<lane>` statuses, which the orchestrators later set to the result.
+  `opt-out-label` alone is success; setting a level label, `<label>:all` or
+  `<label>:<n>`, is pending until the dispatched lanes report; more than one level
+  label is failure. Otherwise nothing is posted: an undecided pull request's
+  statuses stay "Expected", and a finished result is never reset. Payload-only,
+  so safe under pull_request_target.
+
+inputs:
+  contexts:
+    description: 'Space-separated statuses to post, e.g. `downstream/runner downstream/hpc-atos`.'
+    required: true
+  label:
+    description: 'Prefix of the level labels.'
+    required: false
+    default: 'run-downstream-ci'
+  opt-out-label:
+    description: 'Label meaning "deliberately skip it".'
+    required: false
+    default: 'downstream-ci-not-needed'
+  token:
+    description: 'Token with statuses:write. Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  decision:
+    description: "'run', 'skip', 'undecided' or 'conflict'."
+    value: ${{ steps.gate.outputs.decision }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        CONTEXTS_INPUT: ${{ inputs.contexts }}
+        LABEL_INPUT: ${{ inputs.label }}
+        OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        for var in CONTEXTS_INPUT LABEL_INPUT OPT_OUT_INPUT; do
+          if [ -z "${!var:-}" ]; then
+            echo "::error title=Downstream decision::input '${var%_INPUT}' is required and was empty." >&2
+            exit 1
+          fi
+        done
+
+        event="${GITHUB_EVENT_PATH:-}"
+        if [ -z "$event" ] || [ ! -f "$event" ]; then
+          echo "::error title=Downstream decision::no event payload at \$GITHUB_EVENT_PATH." >&2
+          exit 1
+        fi
+        sha="$(jq -r '.pull_request.head.sha // empty' "$event")"
+        if [ -z "$sha" ]; then
+          echo "::error title=Downstream decision::no .pull_request in the event payload; this action only runs on pull_request/pull_request_target." >&2
+          exit 1
+        fi
+
+        found=()
+        while IFS= read -r name; do
+          if [ "$name" = "$LABEL_INPUT" ] || [ "${name#"$LABEL_INPUT:"}" != "$name" ]; then
+            found+=("$name")
+          fi
+        done < <(jq -r '.pull_request.labels[].name' "$event")
+        level=""
+        if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
+
+        if [ "${#found[@]}" -eq 0 ]; then
+          if jq -e --arg l "$OPT_OUT_INPUT" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; then
+            decision=skip
+          else
+            decision=undecided
+          fi
+        elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&
+             { [ "$level" = all ] || [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
+          decision=run
+        else
+          decision=conflict
+        fi
+        echo "decision=$decision" >> "$GITHUB_OUTPUT"
+
+        # Only setting the level label posts pending: on a new commit the statuses are absent anyway,
+        # and on any other event the lanes' result for this commit stands.
+        case "$decision" in
+          skip) state=success; description="Downstream CI not needed" ;;
+          conflict) state=failure; description="Set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'" ;;
+          run)
+            if [ "$(jq -r '.action // empty' "$event")" = labeled ] &&
+               [ "$(jq -r '.label.name // empty' "$event")" = "${found[0]}" ]; then
+              state=pending; description="Downstream CI requested; waiting for it"
+            else
+              state=""
+            fi
+            ;;
+          *) state="" ;;
+        esac
+        if [ -z "$state" ]; then
+          echo "Downstream decision: $decision; statuses left as they are"
+          exit 0
+        fi
+
+        for context in $CONTEXTS_INPUT; do
+          echo "Downstream decision: $decision -> $context is $state"
+          gh api -X POST \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${sha}" \
+            -f state="$state" \
+            -f context="$context" \
+            -f target_url="$RUN_URL" \
+            -f description="$description"
+        done
