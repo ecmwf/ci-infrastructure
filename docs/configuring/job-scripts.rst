@@ -35,6 +35,11 @@ So far the following templates exist:
      - every lane: extends one of the two above, chosen by the leg's ``execution``
    * - `ci-infrastructure/python.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/python.j2>`__
      - imported, not extended: ``get_python_via_uv`` (see `A Python for the build`_)
+   * - `ci-infrastructure/python-runner.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/python-runner.sh.j2>`__,
+       `python-atos.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/python-atos.sh.j2>`__,
+       `python-all-lanes.sh.j2 <https://github.com/ecmwf/ci-infrastructure/blob/main/src/ci_infrastructure/templates/python-all-lanes.sh.j2>`__
+     - a pure Python project: build a wheel, install it with the deps' wheels, run pytest
+       (see `A pure Python project`_)
 
 :doc:`../reference/templates` lists every template with its blocks; each name links to its source.
 
@@ -107,6 +112,109 @@ CMake's FindPython then finds the venv first.
    {% endblock %}
 
 On the HPC, load a ``python3`` module in the leg's ``modules`` and create the venv in the recipe yourself.
+
+A pure Python project
+---------------------
+
+A package that compiles nothing extends ``python-runner.sh.j2``, ``python-atos.sh.j2``
+or, for both lanes, ``python-all-lanes.sh.j2``.
+The recipe builds a wheel of ``$CI_SOURCE_DIR`` with ``uv build`` into ``$CI_INSTALL_PREFIX/wheels``,
+installs it into a fresh venv together with the wheels of the leg's deps, runs ``python -m pytest`` in ``$CI_SOURCE_DIR``,
+and on HPC archives the install tree.
+The wheel is what the leg publishes, and what a downstream Python package installs:
+the deps' wheels are taken from ``<prefix>/wheels`` of each prefix on ``CMAKE_PREFIX_PATH``,
+in one resolve with the package, so a dep's wheel wins over the same package from the index.
+The tests run against the installed wheel, i.e. what users get.
+
+A dep is requested without a Python version, so a pure Python wheel is published by a kind whose leg has no ``python-version``,
+here ``wheel``, and the kinds that test it on several Pythons set ``publishes = false``.
+
+.. code:: toml
+
+   [package]
+   name = "mypkg"
+   repo = "ecmwf/mypkg"
+   compiler-inputs = []
+
+   [[deps]]
+   repo = "ecmwf/myupstream"
+   package = "myupstream"
+   ref = "main"
+   compiler-inputs = []
+
+   [matrix.wheel]
+   triggers = ["upstream-change", "rebuild-request"]
+
+   [[matrix.wheel.include]]
+   job-script = "./.ci/test.sh.j2"
+   runs-on = "arc-runner-normal"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
+   platform = "ubuntu-24.04"
+   tests = false
+
+   [matrix.test]
+   triggers = ["upstream-change", "rebuild-request"]
+   publishes = false
+
+   [matrix.test.defaults]
+   job-script = "./.ci/test.sh.j2"
+   runs-on = "arc-runner-normal"
+   container = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
+   platform = "ubuntu-24.04"
+   extras = "tests"
+
+   [[matrix.test.include]]
+   python-version = "3.11"
+
+   [[matrix.test.include]]
+   python-version = "3.13"
+
+   [matrix.test-hpc]
+   execution = "hpc-atos"
+   publishes = false
+
+   [[matrix.test-hpc.include]]
+   job-script = "./.ci/test.sh.j2"
+   runs-on = "hpc-submit"
+   container = "eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools"
+   site = "hpc-batch"
+   platform = "hpc-atos"
+   modules = ["load uv"]
+   python-version = "3.12"
+   extras = "tests,gpu"
+   pytest-args = "-m gpu"
+   qos = "ng"
+   gpus-per-task = 1
+
+.. code:: jinja
+
+   {% extends "ci-infrastructure/python-all-lanes.sh.j2" %}
+
+A leg may set these fields:
+
+.. list-table::
+   :header-rows: 1
+
+   * - field
+     - default
+   * - ``python-version``
+     - ``""``: the venv takes the Python uv finds, e.g. a ``python3`` module on HPC;
+       otherwise a uv-managed CPython of that version (see `A Python for the build`_)
+   * - ``extras``
+     - ``""``; e.g. ``"all,tests"`` installs ``<wheel>[all,tests]``
+   * - ``pytest-args``
+     - ``""``; inserted unquoted, e.g. ``"-n auto -m 'not slow'"``
+   * - ``tests``
+     - ``true``; ``false`` skips installing and running pytest
+   * - ``qos``, ``nodes``, ``ntasks``, ``cpus-per-task``, ``gpus-per-task``, ``mem``, ``ssdtmp``, ``time``
+     - HPC only: as for ``cmake-atos.sh.j2`` (see :doc:`../reference/hpc`),
+       except ``ntasks`` ``1``, ``mem`` ``16GB`` and no ``ssdtmp``, as nothing is compiled
+
+The recipe overrides blocks as usual:
+``set_environment`` runs before the venv, e.g. ``CI_SOURCE_DIR="$CI_SOURCE_DIR/python"`` for a package in a subdirectory;
+``test_requirements`` (default ``pytest``) names what else to install for the tests, e.g. ``pytest pytest-xdist``;
+``test`` replaces the pytest call.
+On HPC, uv must be on ``PATH``, e.g. through ``load uv`` in ``modules``.
 
 Rust bindings
 -------------
