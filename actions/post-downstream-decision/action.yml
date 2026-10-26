@@ -9,13 +9,19 @@ description: >
   `opt-out-label` alone is success; setting a level label, `<label>:all` or
   `<label>:<n>`, is pending until the dispatched lanes report; more than one level
   label is failure. Otherwise nothing is posted: an undecided pull request's
-  statuses stay "Expected", and a finished result is never reset. Payload-only,
-  so safe under pull_request_target.
+  statuses stay "Expected", and a finished result is never reset. A lane without
+  consumers (`no-consumers`) is success on every event. Payload-only, so safe
+  under pull_request_target.
 
 inputs:
   contexts:
-    description: 'Space-separated statuses to post, e.g. `downstream/runner downstream/hpc-atos`.'
-    required: true
+    description: 'Space-separated statuses the decision goes to, e.g. `downstream/runner downstream/hpc-atos`.'
+    required: false
+    default: ''
+  no-consumers:
+    description: 'Space-separated statuses of lanes without consumers, posted as success whatever the labels.'
+    required: false
+    default: ''
   label:
     description: 'Prefix of the level labels.'
     required: false
@@ -42,13 +48,18 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         CONTEXTS_INPUT: ${{ inputs.contexts }}
+        NO_CONSUMERS_INPUT: ${{ inputs.no-consumers }}
         LABEL_INPUT: ${{ inputs.label }}
         OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         set -euo pipefail
 
-        for var in CONTEXTS_INPUT LABEL_INPUT OPT_OUT_INPUT; do
+        if [ -z "${CONTEXTS_INPUT:-}${NO_CONSUMERS_INPUT:-}" ]; then
+          echo "::error title=Downstream decision::inputs 'contexts' and 'no-consumers' are both empty." >&2
+          exit 1
+        fi
+        for var in LABEL_INPUT OPT_OUT_INPUT; do
           if [ -z "${!var:-}" ]; then
             echo "::error title=Downstream decision::input '${var%_INPUT}' is required and was empty." >&2
             exit 1
@@ -104,17 +115,19 @@ runs:
             ;;
           *) state="" ;;
         esac
+
+        post() {
+          echo "Downstream decision: $decision -> $1 is $2"
+          gh api -X POST \
+            "/repos/${GITHUB_REPOSITORY}/statuses/${sha}" \
+            -f state="$2" \
+            -f context="$1" \
+            -f target_url="$RUN_URL" \
+            -f description="$3"
+        }
+        for context in ${NO_CONSUMERS_INPUT:-}; do post "$context" success "No downstream consumers"; done
         if [ -z "$state" ]; then
           echo "Downstream decision: $decision; statuses left as they are"
           exit 0
         fi
-
-        for context in $CONTEXTS_INPUT; do
-          echo "Downstream decision: $decision -> $context is $state"
-          gh api -X POST \
-            "/repos/${GITHUB_REPOSITORY}/statuses/${sha}" \
-            -f state="$state" \
-            -f context="$context" \
-            -f target_url="$RUN_URL" \
-            -f description="$description"
-        done
+        for context in ${CONTEXTS_INPUT:-}; do post "$context" "$state" "$description"; done

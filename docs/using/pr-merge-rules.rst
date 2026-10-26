@@ -20,7 +20,7 @@ Everyone, on a protected branch
 - Changes only via PR; no direct push
 - No force-push, no deletion of the protected branch
 - Branch must be up to date with the protected branch (merge or rebase)
-- Required checks green: ``ci-result`` (+ ``downstream/runner`` and ``downstream/hpc-atos`` for the lanes of :doc:`downstream-ci` that exist)
+- Required checks green: ``ci-result``, ``downstream/runner`` and ``downstream/hpc-atos`` (see :doc:`downstream-ci`; a lane without consumers is green at once)
 - Merged branches are deleted automatically
 - Auto-merge available
 
@@ -72,6 +72,7 @@ Notes
 -----
 
 - Who can approve: Settings > Collaborators and teams (Write or higher)
+- Code owners: if a ``CODEOWNERS`` file covers a changed file, the approval must come from one of its owners; without one, any approval counts
 - ``ci-result`` is a status from the ``collect results`` job in ``ci.yml``; skipped counts as failed
 - Fork PRs: ``ci-result`` comes from ``ci-fork.yml`` (see :doc:`fork-pull-requests`), else a maintainer bypasses
 

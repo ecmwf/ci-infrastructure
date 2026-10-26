@@ -51,7 +51,7 @@ class Result:
         return [next(a.removeprefix(prefix) for a in call if a.startswith(prefix)) for call in self.gh_calls]
 
 
-def _run(tmp_path: Path, payload: dict[str, Any]) -> Result:
+def _run(tmp_path: Path, payload: dict[str, Any], *, contexts: str = " ".join(CONTEXTS), idle: str = "") -> Result:
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload))
     gh_log = tmp_path / "gh-calls.log"
@@ -64,7 +64,8 @@ def _run(tmp_path: Path, payload: dict[str, Any]) -> Result:
         "GITHUB_OUTPUT": str(outputs),
         "GITHUB_REPOSITORY": "ecmwf/eckit",
         "RUN_URL": "https://example.invalid/run",
-        "CONTEXTS_INPUT": " ".join(CONTEXTS),
+        "CONTEXTS_INPUT": contexts,
+        "NO_CONSUMERS_INPUT": idle,
         "LABEL_INPUT": LABEL,
         "OPT_OUT_INPUT": OPT_OUT,
     }
@@ -124,6 +125,27 @@ def test_an_invalid_level_fails_every_lane(tmp_path: Path, labels: list[str]) ->
     assert r.code == 0
     assert r.decision == "conflict"
     assert r.posted("state") == ["failure", "failure"]
+
+
+@pytest.mark.parametrize("action", ["opened", "synchronize", "unlabeled"])
+def test_a_lane_without_consumers_passes_whatever_the_labels(tmp_path: Path, action: str) -> None:
+    r = _run(tmp_path, _payload(action), contexts="downstream/runner", idle="downstream/hpc-atos")
+    assert r.decision == "undecided"
+    assert r.posted("context") == ["downstream/hpc-atos"]
+    assert r.posted("state") == ["success"]
+
+
+def test_a_leaf_needs_no_label(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload("synchronize"), contexts="", idle=" ".join(CONTEXTS))
+    assert r.code == 0
+    assert r.posted("context") == list(CONTEXTS)
+    assert r.posted("state") == ["success", "success"]
+
+
+def test_without_any_context_fails(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload(), contexts="")
+    assert r.code == 1
+    assert "both empty" in r.err
 
 
 def test_no_pull_request_fails(tmp_path: Path) -> None:
