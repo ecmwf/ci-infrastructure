@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final
 
 import pytest
@@ -204,7 +204,7 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
         "o/atlas": _state("o/atlas", commits=(older,)),
     }
     out = dbs.render_summary(states, NOW)
-    section = out[out.index("## ❗ Direct pushes since 2026-09-30") : out.index("<details")]
+    section = out[out.index("## ❗ Direct pushes from 2026-09-30 to 2026-10-14") : out.index("<details")]
     ci = f"[❌](https://ci/{'b' * 40})"
     assert (
         f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | {ci} | [@bob](https://github.com/bob) | hotfix |"
@@ -216,6 +216,25 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
     assert section.index("bbbbbbbb") < section.index("dddddddd")
     assert "cccccccc" not in section and "aaaaaaaa" not in section
     assert "None." in dbs.render_summary({"o/eckit": _state("o/eckit", commits=(merged,))}, NOW)
+
+
+def test_direct_pushes_between_two_days_include_both_days() -> None:
+    def push(sha: str, when: datetime) -> dbs.Commit:
+        return dbs.Commit(sha * 40, f"https://c/{sha}", "fix", "erin", None, None, when)
+
+    day = datetime(2026, 9, 1, tzinfo=UTC)
+    commits = (
+        push("e", day + timedelta(days=3)),  # the day after `until`
+        push("d", day + timedelta(days=2, hours=23, minutes=59)),
+        push("b", day),
+        push("a", day - timedelta(minutes=1)),
+    )
+    out = dbs.render_summary(
+        {"o/eckit": _state("o/eckit", commits=commits)}, NOW, since=date(2026, 9, 1), until=date(2026, 9, 3)
+    )
+    section = out[out.index("## ❗ Direct pushes from 2026-09-01 to 2026-09-03") : out.index("<details")]
+    assert "dddddddd" in section and "bbbbbbbb" in section
+    assert "eeeeeeee" not in section and "aaaaaaaa" not in section
 
 
 def test_the_excluded_peoples_direct_pushes_stay_out_of_the_table() -> None:
