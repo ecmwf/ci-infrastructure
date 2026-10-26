@@ -12,8 +12,8 @@
 #
 # --bot-app-id: a GitHub App whose own PRs need no review (e.g. the workflow
 # regenerator, so it can auto-merge). CI still has to pass.
-# --delete-existing: also delete the repo's other rulesets and the classic
-# protection on those branches. Organization rulesets are never touched.
+# --delete-existing: also delete the repo's other branch rulesets and the classic
+# protection on those branches. Tag and organization rulesets are never touched.
 set -euo pipefail
 
 dry=false
@@ -99,7 +99,7 @@ for repo in "$@"; do
     "$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")"
   )
 
-  existing=$(gh api "repos/$repo/rulesets?includes_parents=false" --jq '[.[] | select(.source_type == "Repository") | {(.name): .id}] | add // {}')
+  existing=$(gh api "repos/$repo/rulesets?includes_parents=false" --jq '[.[] | select(.source_type == "Repository" and .target == "branch") | {(.name): .id}] | add // {}')
   for body in "${bodies[@]}"; do
     name=$(jq -r .name <<< "$body")
     id=$(jq -r --arg n "$name" '.[$n] // empty' <<< "$existing")
