@@ -14,6 +14,7 @@ from typing import Any, Final
 
 import pytest
 
+from ci_infrastructure._github_api import Execution
 from ci_infrastructure.hpc import jobscript
 from ci_infrastructure.render_job import wrap
 
@@ -24,7 +25,7 @@ ALL_LANES: Final = '{% extends "ci-infrastructure/python-all-lanes.sh.j2" %}\n'
 LEG: Final[dict[str, Any]] = {"platform": "ubuntu-24.04", "python-version": "3.12"}
 
 
-def _render(source: str = RUNNER, leg: dict[str, Any] | None = None, execution: str = "runner") -> str:
+def _render(source: str = RUNNER, leg: dict[str, Any] | None = None, execution: Execution = "runner") -> str:
     return jobscript.render_job_template(
         template_source=source, template_name="python.sh.j2", leg={**LEG, **(leg or {})}, execution=execution
     )
@@ -92,8 +93,8 @@ def test_a_minimal_leg_declares_every_name() -> None:
 
 
 def test_the_rendered_scripts_are_valid_bash() -> None:
-    for source, execution in ((RUNNER, "runner"), (ATOS, "hpc-atos")):
-        subprocess.run(["bash", "-n"], input=_render(source, execution=execution), text=True, check=True)
+    for out in (_render(RUNNER), _render(ATOS, execution="hpc-atos")):
+        subprocess.run(["bash", "-n"], input=out, text=True, check=True)
 
 
 def _project(root: Path, name: str, version: str, deps: list[str]) -> Path:
