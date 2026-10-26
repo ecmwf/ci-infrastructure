@@ -1,0 +1,41 @@
+{% extends "ci-infrastructure/python-runner.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   The Python runner template plus what a SLURM job on Atos needs: the #SBATCH header, the modules and the install archive.
+
+   uv must be on PATH, e.g. through `load uv` in the leg's `modules`. Without
+   `python-version` the venv takes the Python uv finds, e.g. a `python3` module.
+
+   A leg field read through `| default(...)` may be omitted from the manifest. #}
+{% block header %}
+{% block sbatch %}
+#SBATCH --qos={{ qos | default("nf") }}
+#SBATCH --nodes={{ nodes | default(1) }}
+#SBATCH --ntasks={{ ntasks | default(1) }}
+{% if cpus_per_task | default("") %}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{% endif %}
+{% if gpus_per_task | default("") %}
+#SBATCH --gpus-per-task={{ gpus_per_task }}
+{% endif %}
+#SBATCH --mem={{ mem | default("16GB") }}
+{% if ssdtmp | default("") %}
+#SBATCH --gres=ssdtmp:{{ ssdtmp }}
+{% endif %}
+#SBATCH --time={{ time | default("01:00:00") }}
+{% endblock %}
+
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+{% endblock %}
+
+{% block publish %}
+
+# The fetcher takes the artifact from CI_INSTALL_ARCHIVE, not from the install
+# tree; .part + mv so it only ever appears complete.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$CI_INSTALL_PREFIX" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
+{% endblock %}
