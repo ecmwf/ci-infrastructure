@@ -13,7 +13,6 @@ Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default bra
 from __future__ import annotations
 
 import os
-import re
 import sys
 import tomllib
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -102,9 +101,10 @@ def _query(repos: Sequence[str]) -> str:
             '  manifest: object(expression: "HEAD:.ci/manifest.toml") { ... on Blob { text } }\n'
             "  defaultBranchRef { name target { ... on Commit {\n"
             f"    history(first: {_HISTORY}) {{ nodes {{\n"
-            "      oid url messageHeadline message committedDate\n"
+            "      oid url messageHeadline committedDate\n"
             "      parents(first: 1) { nodes { oid } }\n"
             "      author { name user { login } }\n"
+            "      associatedPullRequests(first: 10) { nodes { number url merged baseRefName } }\n"
             "    } }\n"
             "  } } }\n"
             "}"
@@ -142,15 +142,11 @@ def first_parent(nodes: Sequence[Mapping[str, Any]], limit: int | None = _TIMELI
     return chain
 
 
-# GitHub's merge and squash commit subjects (messageHeadline truncates them); associatedPullRequests
-# needs pull-requests: read, which CI_PERMISSIONS_APP lacks. A rebase merge counts as a direct push.
-_PR_HEADLINE: Final = re.compile(r"^Merge pull request #(\d+) |\(#(\d+)\)$")
-
-
-def _merged_pr(headline: str, repo: str) -> tuple[int, str] | None:
-    if m := _PR_HEADLINE.search(headline):
-        number = int(m.group(1) or m.group(2))
-        return number, f"https://github.com/{repo}/pull/{number}"
+def _merged_pr(node: Mapping[str, Any], branch: str) -> tuple[int, str] | None:
+    """The merged PR into `branch` that brought the commit in, whichever way it was merged."""
+    for pr in node["associatedPullRequests"]["nodes"]:
+        if pr["merged"] and pr["baseRefName"] == branch:
+            return int(pr["number"]), str(pr["url"])
     return None
 
 
@@ -186,7 +182,7 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
             url=n["url"],
             headline=n["messageHeadline"],
             author=(n["author"]["user"] or {}).get("login") or n["author"]["name"] or "",
-            pr=_merged_pr(n["message"].split("\n", 1)[0].strip(), repo),
+            pr=_merged_pr(n, branch),
             run=run_of.get(n["oid"]),
             date=datetime.fromisoformat(n["committedDate"]),
         )

@@ -41,6 +41,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           permission-contents: read
           permission-actions: read
+          permission-pull-requests: read
 
       - uses: ./actions/ensure-infrastructure-present
 

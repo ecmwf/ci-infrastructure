@@ -26,15 +26,15 @@ def _state(
     return dbs.RepoState(repo=repo, branch="develop", upstream=upstream, commits=commits, runs=runs)
 
 
-def _node(oid: str, parent: str | None) -> dict[str, Any]:
+def _node(oid: str, parent: str | None, prs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "oid": oid,
         "url": f"https://commit/{oid}",
         "messageHeadline": f"commit {oid} | piped",
-        "message": f"commit {oid} | piped\n\nbody",
         "committedDate": "2026-10-14T06:00:00Z",
         "parents": {"nodes": [{"oid": parent}] if parent else []},
         "author": {"name": "Some Dev", "user": {"login": "dev"}},
+        "associatedPullRequests": {"nodes": prs or []},
     }
 
 
@@ -44,17 +44,12 @@ def test_first_parent_skips_the_commits_a_merge_brought_along() -> None:
     assert [n["oid"] for n in dbs.first_parent(nodes)] == ["m", "a"]
 
 
-def test_merge_and_squash_headlines_name_their_pr() -> None:
-    assert dbs._merged_pr("Merge pull request #374 from ecmwf/feature/eckit-geo", "o/r") == (
-        374,
-        "https://github.com/o/r/pull/374",
-    )
-    assert dbs._merged_pr("Gate Rust geo tests behind the geo feature (#379)", "o/r") == (
-        379,
-        "https://github.com/o/r/pull/379",
-    )
-    assert dbs._merged_pr("Merge branch 'release/2.5.0' into develop", "o/r") is None
-    assert dbs._merged_pr("fix #12 in the middle", "o/r") is None
+def test_only_a_merged_pr_into_the_branch_counts() -> None:
+    open_pr = {"number": 1, "url": "u1", "merged": False, "baseRefName": "develop"}
+    other_base = {"number": 2, "url": "u2", "merged": True, "baseRefName": "master"}
+    merged = {"number": 3, "url": "u3", "merged": True, "baseRefName": "develop"}
+    assert dbs._merged_pr(_node("x", None, [open_pr, other_base]), "develop") is None
+    assert dbs._merged_pr(_node("x", None, [open_pr, merged]), "develop") == (3, "u3")
 
 
 def test_verdict_skips_running_and_cancelled_runs() -> None:
