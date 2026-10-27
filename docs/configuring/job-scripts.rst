@@ -128,6 +128,25 @@ The tests run against the installed wheel, i.e. what users get.
 
 A dep is requested without a Python version, so a pure Python wheel is published by a kind whose leg has no ``python-version``,
 here ``wheel``, and the kinds that test it on several Pythons set ``publishes = false``.
+The wheel's ``Requires-Python`` still keeps it out of a venv whose Python the package does not support.
+
+A wheel with compiled extensions is built per Python, e.g. ``cp312``, so its producer publishes one leg per ``python-version``,
+and the consumer requests the one matching its leg with ``python-version-input``, which names the leg field to read it from:
+
+.. code:: toml
+
+   [[deps]]
+   repo = "ecmwf/myextension"
+   package = "myextension"
+   ref = "main"
+   compiler-inputs = ["cxx-compiler"]
+   python-version-input = "python-version"
+
+A consumer leg with ``python-version = "3.12"`` then takes the producer's 3.12 leg;
+without such a leg the resolve fails.
+A pure Python producer can publish from its test legs in the same way:
+a consumer leg then only runs against an upstream that passed its tests on the same Python,
+and a new Python is added upstream first.
 
 .. code:: toml
 
