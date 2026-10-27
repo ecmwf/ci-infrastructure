@@ -572,12 +572,70 @@ def _in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_name_no_producer_leg_publishes_fails_without_waiting_for_its_ci(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The producer's legs carry python-version, which a dep never requests."""
+    """The producer's legs carry python-version, which a dep without python-version-input never requests."""
     _in_flight(monkeypatch)
     cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
     leg = {**_LEG, "python-version": "3.11"}
     with pytest.raises(ResolveError, match=r"requested as ubuntu-24.04-clang\+\+-18-Release .*no leg of the producer"):
         _resolve(_own("top"), [_dep_spec("up")], leg, manifest_cache=cache)
+
+
+_PY_LEGS_PRODUCER: Final = (
+    _PY_LEG_PRODUCER
+    + """
+[[matrix.build.include]]
+cxx-compiler = "clang++-18"
+build-type = "Release"
+platform = "ubuntu-24.04"
+python-version = "3.12"
+"""
+)
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize("python", ["3.11", "3.12"])
+def test_python_version_input_requests_the_producers_leg_of_that_python(python: str) -> None:
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEGS_PRODUCER)}
+    leg = {**_LEG, "python-version": python}
+    deps, own = _resolve(
+        _own("top"), [_dep_spec("up", python_version_input="python-version")], leg, manifest_cache=cache
+    )
+    _, published = _resolve(parse_manifest(_PY_LEGS_PRODUCER).package, [], leg)
+
+    assert deps[0].python_version == python
+    assert deps[0].artifact_name.endswith(f"-py{python}-Release")
+    assert deps[0].artifact_name.replace("c" * 40, "d" * 40) == published.artifact_name
+    assert own.artifact_name.endswith(f"-py{python}-Release")
+
+
+def test_python_version_input_fails_for_a_python_no_producer_leg_publishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _in_flight(monkeypatch)
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEGS_PRODUCER)}
+    leg = {**_LEG, "python-version": "3.13"}
+    with pytest.raises(ResolveError, match=r"requested as ubuntu-24.04-clang\+\+-18-py3.13-Release .*no leg"):
+        _resolve(_own("top"), [_dep_spec("up", python_version_input="python-version")], leg, manifest_cache=cache)
+
+
+@pytest.mark.usefixtures("offline")
+def test_without_python_version_input_a_dep_name_has_no_python() -> None:
+    deps, _ = _resolve(_own("top"), [_dep_spec("up")], {**_LEG, "python-version": "3.12"})
+    assert deps[0].python_version is None and "-py" not in deps[0].artifact_name
+
+
+@pytest.mark.usefixtures("offline")
+def test_declarations_disagreeing_on_the_python_fail() -> None:
+    """One declarer reads the leg's Python, the other takes the plain build."""
+    leg = {**_LEG, "python-version": "3.12", "other-python": "3.11"}
+    one = _dep_spec("up", python_version_input="python-version")
+    with pytest.raises(ResolveError, match="python-version '3.12' vs '3.11'"):
+        _resolve(_own("top"), [one, replace(one, python_version_input="other-python")], leg)
+
+
+def test_parse_deps_python_version_input() -> None:
+    [dep] = _parse_deps({"deps": [{**_DEP_BASE, "python-version-input": "python-version"}]})
+    assert dep.python_version_input == "python-version"
+    [plain] = _parse_deps({"deps": [_DEP_BASE]})
+    assert plain.python_version_input is None
 
 
 _META_MANIFEST: Final = """
@@ -603,6 +661,7 @@ compiler-inputs = []
         ({"option": "x"}, "options"),
         ({"options_input": "options"}, "options-input"),
         ({"build_type_input": "dep-build-type"}, "build-type-input"),
+        ({"python_version_input": "python-version"}, "python-version-input"),
     ],
 )
 def test_a_meta_dep_rejects_what_it_could_not_pass_on(override: dict[str, Any], named: str) -> None:

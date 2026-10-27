@@ -191,6 +191,12 @@ class DepTable(_Table):
     options_input: str | None = Field(
         default=None, alias="options-input", description="Leg field to read the upstream's build option from."
     )
+    python_version_input: str | None = Field(
+        default=None,
+        alias="python-version-input",
+        description="Leg field to read the upstream's `python-version` from, for an upstream built per Python, "
+        "e.g. a wheel with compiled extensions. Without it the upstream's leg without `python-version` is used.",
+    )
     when: dict[str, tuple[str, ...]] | None = Field(
         default=None,
         description="Leg predicate: the dep applies only to legs where every field has one of the accepted "

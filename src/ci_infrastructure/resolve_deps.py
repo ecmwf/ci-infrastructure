@@ -127,6 +127,8 @@ class DepSpec:
     # leg field to read it from; both empty consumes the plain build.
     option: str = ""
     options_input: str | None = None
+    # None consumes the upstream's leg without python-version; else the leg field to read it from.
+    python_version_input: str | None = None
     # `options` does not propagate, so a `when` on it in a repo with consumers can make both sides disagree.
     when: Mapping[str, frozenset[str]] | None = None
     unless: Mapping[str, frozenset[str]] | None = None
@@ -265,6 +267,7 @@ def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
         platform_input=t.platform_input,
         option=t.options,
         options_input=t.options_input,
+        python_version_input=t.python_version_input,
         when=None if t.when is None else {k: frozenset(v) for k, v in t.when.items()},
         unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
         sibling=t.repo is None,
@@ -397,6 +400,7 @@ def _fields_read_by(specs: Sequence[DepSpec], compiler_inputs: Sequence[str]) ->
         fields |= set(s.when or {}) | set(s.unless or {}) | set(s.compiler_inputs or ())
         fields |= {s.build_type_input, s.platform_input}
         fields |= {s.options_input} if s.options_input else set()
+        fields |= {s.python_version_input} if s.python_version_input else set()
     return fields - {"execution"}
 
 
@@ -721,6 +725,9 @@ def resolve_leg(
             dep_option = _as_option(parent_ctx.get(spec.options_input), context=f"dep '{spec.package}'")
         else:
             dep_option = ""
+        dep_python = (
+            str(parent_ctx.get(spec.python_version_input, "")).strip() or None if spec.python_version_input else None
+        )
 
         # The ref, not its SHA: two lookups of one branch may see different commits.
         request = {
@@ -730,6 +737,7 @@ def resolve_leg(
             "build-type": build_type,
             "platform": platform_slug,
             "option": dep_option,
+            "python-version": dep_python or "",
         }
         if spec.package in requests:
             first_by, first = requests[spec.package]
@@ -749,6 +757,7 @@ def resolve_leg(
                 for name, is_set in (
                     ("options", bool(spec.option)),
                     ("options-input", spec.options_input is not None),
+                    ("python-version-input", spec.python_version_input is not None),
                     ("build-type-input", spec.build_type_input != "build-type"),
                     ("platform-input", spec.platform_input != "platform"),
                 )
@@ -770,11 +779,13 @@ def resolve_leg(
         # The leg the upstream's own CI built this variant on: sub-deps resolve and filter
         # by `when` against it, so deps-hash8 reproduces the published name.
         sub_specs = info.deps if info is not None else (producer.deps if producer is not None else [])
-        requested = Variant(lane, platform_slug, compiler, build_type, None, dep_option)
+        requested = Variant(lane, platform_slug, compiler, build_type, dep_python, dep_option)
         variants = producer_variants(producer, spec.package) if producer is not None else None
         if variants is None:
             # No matrix to tell (no manifest upstream): the requested variant over this leg stands in.
             dep_ctx = {**parent_ctx, "build-type": build_type, "platform": platform, "options": dep_option}
+            if dep_python:
+                dep_ctx["python-version"] = dep_python
         else:
             assert producer is not None
             own_leg = producer_leg(producer, spec.package, requested, sub_specs)
@@ -807,7 +818,7 @@ def resolve_leg(
             platform_slug=platform_slug,
             compiler=compiler,
             build_type=build_type,
-            python_version=None,
+            python_version=dep_python,
             option=dep_option,
             template_version=template_version_for_lane(lane),
         )
@@ -861,7 +872,7 @@ def resolve_leg(
             platform=platform_slug,
             compiler=compiler,
             build_type=build_type,
-            python_version=None,
+            python_version=dep_python,
             deps_hash=deps_hash8,
             add_to_path=tuple(info.add_to_path) if info is not None else (),
         )
