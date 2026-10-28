@@ -84,8 +84,7 @@ class PackageTable(_Table):
         "field-name order. `[]` for an uncompiled package.",
     )
     visibility: Visibility = Field(
-        default=VISIBILITY_PRIVATE,
-        description="`public` or `private`; unlabelled repos are private. A public repo triggers a private "
+        description="`public` or `private`. A public repo triggers a private "
         "consumer by dispatch rather than `workflow_call`. Set it only once the security and exposure risks "
         "are understood, see :doc:`/configuring/manifest`.",
     )
@@ -168,7 +167,7 @@ class DepTable(_Table):
     )
     ref: str | None = Field(
         default=None,
-        description="Branch, tag or 40-char SHA; required with `repo`. A `sync-branch/` or `feature/` branch of the "
+        description="Branch, tag or 40-char SHA; required with `repo`. A `sync/` or `feature/` branch of the "
         "same name in the upstream overrides it. A package of this repo is built from the same commit.",
     )
     compiler_inputs: tuple[str, ...] | None = Field(

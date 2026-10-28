@@ -36,6 +36,7 @@ _LEG: Final = {"platform": "ubuntu-24.04", "cxx-compiler": "g++-13", "build-type
 # stack-deps as an umbrella over three libraries; proj needs sqlite3.
 _STACK: Final = """
 [package]
+visibility = "private"
 name = "stack-deps"
 repo = "o/stack"
 compiler-inputs = ["cxx-compiler"]
@@ -104,6 +105,7 @@ def test_schema_rejects(patch: tuple[str, str], match: str) -> None:
 def test_a_meta_package_cannot_be_published() -> None:
     bundle = """
     [package]
+    visibility = "private"
     name = "bundle"
     repo = "o/bundle"
     compiler-inputs = []
@@ -206,6 +208,7 @@ def test_an_artifact_prefix_keeps_the_repo_deps() -> None:
     m = parse_manifest(
         """
 [package]
+visibility = "private"
 name = "a"
 repo = "o/a"
 compiler-inputs = []
@@ -237,6 +240,7 @@ _STACK_GENERATED: Final = (
 
 _ECKIT: Final = """
 [package]
+visibility = "private"
 name = "eckit"
 repo = "org/eckit"
 compiler-inputs = ["cxx-compiler"]
@@ -279,6 +283,7 @@ def test_a_dep_on_the_umbrella_needs_every_member_kind(tmp_path: Path) -> None:
 
 _BATCH: Final = """
 [package]
+visibility = "private"
 name = "stack-deps"
 repo = "org/stack"
 compiler-inputs = ["cxx-compiler"]
@@ -435,6 +440,7 @@ def test_rendering_a_batch_leg_by_hand_passes_the_packages(tmp_path: Path) -> No
 
 _BINDINGS: Final = """
 [package]
+visibility = "private"
 name = "cxxmath"
 repo = "org/cxxmath"
 compiler-inputs = ["cxx-compiler"]

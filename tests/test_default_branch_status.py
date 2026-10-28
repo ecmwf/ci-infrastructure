@@ -97,6 +97,7 @@ def test_a_cycle_is_an_error() -> None:
 
 _ATLAS: Final = """
 [package]
+visibility = "private"
 name = "atlas"
 repo = "o/atlas"
 compiler-inputs = []
@@ -138,7 +139,7 @@ def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch:
     """ecbuild names eckit downstream; eckit needs stack-deps; atlas is found from eckit; mir has no manifest yet."""
 
     def pkg(name: str, body: str = "") -> str:
-        return f'[package]\nname = "{name}"\nrepo = "o/{name}"\ncompiler-inputs = []\n{body}'
+        return f'[package]\nname = "{name}"\nrepo = "o/{name}"\nvisibility = "private"\ncompiler-inputs = []\n{body}'
 
     def trigger(repo: str) -> str:
         return f'[[trigger-downstream]]\nrepo = "{repo}"\nref = "develop"\n'

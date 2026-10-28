@@ -82,9 +82,9 @@ def test_the_declaration_check_ignores_the_block(before: str) -> None:
 
 def test_only_changed_descriptions_are_rewritten() -> None:
     urls = ["https://github.com/o/eckit/pull/3", "https://github.com/o/atlas/pull/1"]
-    done = sbp.with_block("Change.", urls)
+    done = sbp.with_block("Change.", urls, public=True)
     prs = sbp.involved(*_graph({"o/eckit": [_pr("o/eckit", 3, done)], "o/atlas": [_pr("o/atlas", 1, "Other.")]}))
-    assert [(pr.url, body) for pr, body in sbp.updates(prs)] == [(urls[1], sbp.with_block("Other.", urls))]
+    assert [(pr.url, body) for pr, body in sbp.updates(prs)] == [(urls[1], sbp.with_block("Other.", urls, public=True))]
 
 
 def test_a_public_pr_lists_only_public_repos() -> None:
@@ -96,3 +96,5 @@ def test_a_public_pr_lists_only_public_repos() -> None:
     assert "o/ecbuild/pull/5" in new["o/ecbuild"]
     assert "o/ecbuild" not in new["o/eckit"]
     assert "o/eckit/pull/3" in new["o/atlas"]
+    assert sbp.PUBLIC_HEADING in new["o/atlas"]
+    assert sbp.PUBLIC_HEADING not in new["o/ecbuild"]

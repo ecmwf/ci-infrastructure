@@ -4,7 +4,7 @@
 
 name: List a sync branch's pull requests in each of them
 description: >
-  For a pull request from a sync branch (sync-branch/ or feature/), end the
+  For a pull request from a sync branch (sync/ or feature/), end the
   description of every open or merged pull request from that branch, across the
   repos reachable through the manifests, with the list of all of them in
   dependency order. Payload only, so safe under pull_request_target. The App

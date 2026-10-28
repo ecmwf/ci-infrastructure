@@ -299,6 +299,7 @@ def test_hpc_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         tmp_path,
         """
         [package]
+        visibility = "private"
         name = "pkg"
         prefix = "pkg"
         repo = "org/pkg"

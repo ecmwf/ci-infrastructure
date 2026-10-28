@@ -37,14 +37,12 @@ A package that compiles nothing, such as ``ecbuild``, declares ``compiler-inputs
 A package whose tools its consumers' tests run lists the directories of its install tree to put on their ``PATH``,
 e.g. ``add-to-path = ["bin"]`` for ``eccodes``' ``grib_ls``; by default nothing goes on ``PATH``.
 
-There is an additional, optional field ``visibility`` which can be set to ``"private"`` or ``"public"``.
-**Setting this field should only happen once both the security and exposure risks are understood.**
+The required field ``visibility`` is ``"private"`` or ``"public"``.
+**Declare ``"public"`` only once both the security and exposure risks are understood.**
 A private repo does not need to do any checks of CI approval because it cannot be reached by outside fork code,
 so code is always assumed to be approved.
 A public repo shows its logs in the downstream CI of its public upstream repos,
 this can expose internal logs to the public.
-Leaving ``visibility`` undeclared assumes the safer option in both cases, i.e. approval is required for outside code
-and logs shall not be exposed.
 
 A public repository can run CI for approved pull requests from forks with ``fork-pull-requests = true``;
 see :doc:`fork-pull-requests` before setting it.
@@ -69,7 +67,7 @@ The dependencies
 
 Every ``[[deps]]`` entry names an upstream repository and the ``prefix`` of its package.
 ``ref`` is the branch a build normally uses;
-a coordinated change on a ``sync-branch/`` or ``feature/`` branch uses the upstream's branch of the same name instead,
+a coordinated change on a ``sync/`` or ``feature/`` branch uses the upstream's branch of the same name instead,
 see :doc:`../using/feature-branches`.
 
 ``compiler-inputs`` must match the upstream's own ``[package].compiler-inputs``,
@@ -121,6 +119,7 @@ a consumer that needs them declares the members instead:
    [package]
    name = "stack-deps"
    repo = "ecmwf/stack-dependencies"
+   visibility = "private"
    compiler-inputs = ["cxx-compiler"]
    meta = true
 

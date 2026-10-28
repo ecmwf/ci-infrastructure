@@ -85,7 +85,7 @@ def _orch(tmp_path: Path) -> dict[Any, Any]:
 
 
 def _package(**extra: Any) -> dict[str, Any]:
-    return {"package": {"name": "a", "repo": "org/a", "compiler-inputs": [], **extra}}
+    return {"package": {"name": "a", "repo": "org/a", "compiler-inputs": [], "visibility": "private", **extra}}
 
 
 def test_fork_pull_requests_is_off_by_default() -> None:
@@ -179,6 +179,7 @@ def test_downstream_has_no_pull_request_trigger(tmp_path: Path) -> None:
 
 _RESOLVE_MANIFEST: Final = textwrap.dedent("""
     [package]
+    visibility = "private"
     name = "a"
     repo = "org/a"
     compiler-inputs = []
