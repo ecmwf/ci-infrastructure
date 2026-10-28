@@ -19,7 +19,6 @@ from conftest import REPO_ROOT
 
 @pytest.mark.parametrize(("stage_only", "exported"), [("false", True), ("true", False)])
 def test_compose_exports_lib_dirs_only_for_deps_that_run_here(tmp_path: Path, stage_only: str, exported: bool) -> None:
-    """Staged HPC deps stay off LD_LIBRARY_PATH: an icpx-built liblz4 there broke the container's zstd."""
     doc = yaml.safe_load((REPO_ROOT / "actions" / "fetch-deps" / "action.yml").read_text(encoding="utf-8"))
     (step,) = [s for s in doc["runs"]["steps"] if s.get("id") == "compose-cmake"]
     dep = tmp_path / "lz4"

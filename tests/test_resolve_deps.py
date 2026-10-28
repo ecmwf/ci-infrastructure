@@ -318,7 +318,7 @@ def test_unless_on_the_lane_scopes_a_dep_out_of_hpc_legs() -> None:
 
 @pytest.mark.usefixtures("offline")
 def test_when_scopes_dep_out_of_identity_of_nonmatching_legs() -> None:
-    """A scoped-out dep is absent from the prefix path and from deps-hash8, so other legs do not rebuild."""
+    """A scoped-out dep stays out of the prefix path and deps-hash8, so other legs do not rebuild."""
     own = _own("consumer")
     always = _dep_spec("base", compiler_inputs=[])
     scoped = _dep_spec("extra", when={"options": frozenset({"extended"})})
@@ -354,28 +354,34 @@ defaults.ctest-args = 8
         resolve_deps.parse_manifest(manifest)
 
 
-def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
-    """A producer missing its artifact on both lanes needs two dispatches."""
-    plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
-    spec = _dep_spec("up")
-    for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
-        resolve_deps._classify_orphan_pin(
-            spec=spec,
-            ref=Ref("main"),
-            sha=Sha(BRANCH_HEAD),
-            artifact_name=ArtifactName(f"up-{BRANCH_HEAD}-{lane}"),
-            manifest_cache={},
-            sync_branch=None,
-            sync_exists_by_repo={},
-            can_dispatch=True,
-            lane=lane,
-            dispatch_plans=plans,
-        )
+_PINNED: Final = Ref("a" * 40)
+Plans = dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan]
 
+
+def _classify(plans: Plans, ref: Ref, lane: Execution = EXECUTION_RUNNER, **kw: Any) -> Plans:
+    resolve_deps._classify_orphan_pin(
+        spec=_dep_spec("base"),
+        ref=ref,
+        sha=Sha(BRANCH_HEAD),
+        artifact_name=ArtifactName(f"base-{lane}"),
+        manifest_cache={},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        can_dispatch=True,
+        lane=lane,
+        dispatch_plans=plans,
+        **kw,
+    )
+    return plans
+
+
+def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
+    plans: Plans = {}
+    for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS):
+        _classify(plans, Ref("main"), lane)
     assert sorted(p.lane for p in plans.values()) == ["hpc-atos", "runner"]
 
 
-_PINNED: Final = Ref("a" * 40)
 _MIDDLE_MANIFEST: Final = """
 [package]
 visibility = "private"
@@ -427,23 +433,8 @@ def test_a_red_commit_is_not_rebuilt(monkeypatch: pytest.MonkeyPatch) -> None:
         _resolve(_own("top"), [_dep_spec("base")], dict(_LEG))
 
 
-def _classify_pinned(ci_run: CiRun | None) -> dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan]:
-    plans: dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan] = {}
-    resolve_deps._classify_orphan_pin(
-        spec=_dep_spec("base"),
-        ref=_PINNED,
-        sha=Sha(_PINNED),
-        artifact_name=ArtifactName("base-x"),
-        manifest_cache={},
-        sync_branch=None,
-        sync_exists_by_repo={},
-        can_dispatch=True,
-        lane=EXECUTION_RUNNER,
-        dispatch_plans=plans,
-        pins={Repo("o/base"): _PINNED},
-        ci_run=ci_run,
-    )
-    return plans
+def _classify_pinned(ci_run: CiRun | None) -> Plans:
+    return _classify({}, _PINNED, pins={Repo("o/base"): _PINNED}, ci_run=ci_run)
 
 
 def test_a_pinned_commit_is_rebuilt_by_re_running_its_ci() -> None:
@@ -569,18 +560,20 @@ python-version = "3.11"
 """
 
 
-def _in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+def _in_flight(monkeypatch: pytest.MonkeyPatch, stored: bool = False) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: stored)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
 
 
-def test_a_name_no_producer_leg_publishes_fails_without_waiting_for_its_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stored", [False, True], ids=["ci-in-flight", "stale-artifact"])
+def test_a_name_no_producer_leg_publishes_fails(monkeypatch: pytest.MonkeyPatch, stored: bool) -> None:
     """The producer's legs carry python-version, which a dep without python-version-input never requests."""
-    _in_flight(monkeypatch)
+    _in_flight(monkeypatch, stored)
     cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
     leg = {**_LEG, "python-version": "3.11"}
-    with pytest.raises(ResolveError, match=r"requested as ubuntu-24.04-clang\+\+-18-Release .*no leg of the producer"):
+    match = r"requested as ubuntu-24.04-clang\+\+-18-Release .*no leg of the producer's manifest publishes"
+    with pytest.raises(ResolveError, match=match):
         _resolve(_own("top"), [_dep_spec("up")], leg, manifest_cache=cache)
 
 
@@ -741,11 +734,3 @@ def test_legs_naming_one_variant_must_agree_on_what_the_deps_read() -> None:
     cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_FORTRAN_WHEN_MANIFEST + same)}
     deps, _ = _resolve(_own("top"), [_dep_spec("middle")], dict(_LEG), manifest_cache=cache)
     assert "fortranlib" in [d.name for d in deps]
-
-
-@pytest.mark.usefixtures("offline")
-def test_a_name_no_producer_leg_publishes_fails_even_if_an_old_artifact_has_it() -> None:
-    """The store may still hold it from a leg the producer dropped; the producer no longer builds it."""
-    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
-    with pytest.raises(ResolveError, match="no leg of the producer's manifest publishes"):
-        _resolve(_own("top"), [_dep_spec("up")], {**_LEG, "python-version": "3.11"}, manifest_cache=cache)

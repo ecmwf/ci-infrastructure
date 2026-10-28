@@ -191,16 +191,12 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
     return RepoState(repo, branch, upstream, commits, runs)
 
 
-def _manifest(data: Mapping[str, Any]) -> str | None:
-    return (data.get("manifest") or {}).get("text")
-
-
 def discover(
     seeds: Sequence[str], token: str | None, query: Callable[[Sequence[str]], str] = _query
 ) -> tuple[dict[str, Mapping[str, Any]], dict[str, Edges]]:
-    """Every repo reachable from `seeds` through manifests on default branches, with its `query` node and edges.
+    """Every repo with a manifest reachable from `seeds`, with its `query` node and edges.
 
-    A repo without a manifest is skipped; `query` must select `manifest` and `defaultBranchRef` like `_query`.
+    `query` must select `manifest` and `defaultBranchRef` like `_query`.
     """
     owner = seeds[0].split("/", 1)[0]
     nodes: dict[str, Mapping[str, Any]] = {}
@@ -217,7 +213,7 @@ def discover(
         if not node or not node.get("defaultBranchRef"):
             print(f"::warning::{repo}: not readable with this token; skipped", file=sys.stderr)
             continue
-        text = _manifest(node)
+        text = (node.get("manifest") or {}).get("text")
         if text is None:
             print(f"::notice::{repo}: no .ci/manifest.toml on the default branch yet; skipped", file=sys.stderr)
             continue
@@ -230,7 +226,7 @@ def discover(
 
 
 def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
-    """Every repo reachable from `seeds` through manifests on default branches; one without a manifest is skipped."""
+    """The state of every repo `discover` finds."""
     nodes, edges = discover(seeds, token)
     return {
         repo: repo_state(

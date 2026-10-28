@@ -117,10 +117,7 @@ class RemotePaths(NamedTuple):
 
 
 def plan_remote_prefixes(cmake_prefix_path: str, staging_dir: str) -> tuple[str, list[str], str]:
-    """Map runner-local dep prefixes to ``<staging_dir>/deps/<name>``.
-
-    Returns (cluster prefix path, local prefixes, deps dir).
-    """
+    """(cluster prefix path, local prefixes, deps dir), each dep prefix at ``<staging_dir>/deps/<name>``."""
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_deps_dir = f"{staging_dir.rstrip('/')}/deps"
     remote_prefixes = [f"{remote_deps_dir}/{name}" for name in transfer.remote_dep_names(local_prefixes)]
@@ -150,9 +147,8 @@ def find_active_job_by_name(conn: Any, *, job_name: str, user: str | None) -> in
     stdout, _stderr = proc.communicate()
     if proc.returncode != 0:
         return None
-    text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
     jids: list[int] = []
-    for raw in text.splitlines():
+    for raw in transfer.output_text(stdout).splitlines():
         line = raw.strip()
         if not line:
             continue
@@ -209,8 +205,7 @@ def query_job_status(conn: Any, jid: int) -> tuple[str, str, str] | None:
         return None
     if proc.returncode != 0:
         return None
-    text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line.strip() for line in transfer.output_text(stdout).splitlines() if line.strip()]
     parts = lines[0].split("|") if lines else []
     if len(parts) != 3:
         return None
@@ -323,9 +318,9 @@ def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: boo
             ["bash", "-c", f"if test -d {quoted}; then {find}; fi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         stdout, stderr = proc.communicate()
-        listing = stdout.decode(errors="replace").strip() if isinstance(stdout, bytes) else str(stdout).strip()
+        listing = transfer.output_text(stdout).strip()
         if proc.returncode != 0:
-            detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
+            detail = transfer.output_text(stderr).strip()
             raise CIError(f"GC of {base} failed (exit {proc.returncode}): {detail}")
         count = len(listing.splitlines()) if listing else 0
         verb = "would remove" if dryrun else "removed"
@@ -356,7 +351,6 @@ def report_quota(conn: Any, path: str) -> None:
 
 
 def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str, jid: int) -> None:
-
     def handler(signum: int, frame: FrameType | None) -> None:
         print(f"submit-wait: received signal {signum}; cancelling HPC job {jid}...")
         try:
@@ -370,10 +364,7 @@ def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str,
 
 
 def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float], Verdict | None]:
-    """Fails closed: only a sentinel naming ``jid`` counts.
-
-    The window is bounded remotely: killing the local process would leave tail/grep alive.
-    """
+    """Only a sentinel naming ``jid`` counts; the window is bounded remotely, as a local kill leaves tail/grep alive."""
     pattern = jobscript.sentinel_regex(jid)
     quoted_output = shlex.quote(output)
     quoted_pattern = shlex.quote(pattern)
@@ -390,7 +381,7 @@ def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float
             return None
         if proc.returncode != 0:
             return None
-        matched = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
+        matched = transfer.output_text(stdout)
         if jobscript.SENTINEL_SUCCESS in matched:
             return "SUCCESS"
         if jobscript.SENTINEL_FAILURE in matched:
@@ -407,7 +398,7 @@ def _echo_remote_output(conn: Any, output: str) -> None:
     except Exception as exc:  # noqa: BLE001 - never let log retrieval mask the verdict
         print(f"submit-wait: could not read job output {output}: {exc}")
         return
-    text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)
+    text = transfer.output_text(stdout)
     print(f"----- HPC job output ({output}) -----")
     print(text, end="" if text.endswith("\n") else "\n")
     print("----- end HPC job output -----")

@@ -28,13 +28,18 @@ class Connection(Protocol):
     def getfile(self, src: Any, dst: Any, dryrun: bool = ...) -> None: ...
 
 
+def output_text(out: Any) -> str:
+    """A troika process's stdout or stderr as text: bytes, or a str in tests."""
+    return out.decode(errors="replace") if isinstance(out, bytes) else str(out)
+
+
 def _run_remote(conn: Connection, argv: list[str], *, what: str, dryrun: bool = False) -> None:
     proc = conn.execute(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, dryrun=dryrun)
     if dryrun:
         return
     _stdout, stderr = proc.communicate()
     if proc.returncode != 0:
-        detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
+        detail = output_text(stderr).strip()
         raise CIError(f"{what} failed (exit {proc.returncode}): {detail}")
 
 
@@ -55,9 +60,7 @@ _SAFE_DEP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def remote_dep_names(local_prefixes: Sequence[str]) -> list[str]:
-    """Each prefix's directory name on the cluster: its own name, as on the runner, so a
-    library's relative RPATH ($ORIGIN/../../<package>/lib) resolves the same on both.
-    The index when names collide or are unsafe."""
+    """Each prefix's own directory name, so a relative RPATH resolves as on the runner; else indices."""
     names = [PurePosixPath(p.rstrip("/")).name for p in local_prefixes]
     if len(set(names)) == len(names) and all(_SAFE_DEP_NAME.fullmatch(n) for n in names):
         return names
@@ -112,7 +115,7 @@ def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_min
     proc = conn.execute(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     _stdout, stderr = proc.communicate()
     if proc.returncode == _LOCK_UNCREATABLE:
-        detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
+        detail = output_text(stderr).strip()
         raise CIError(
             f"Cannot create the lock {lock_dir}: {detail}. No other run holds it; "
             "check the filesystem (quota, permissions) on the cluster."
@@ -186,7 +189,7 @@ def remote_lock(
 
 
 def _tree_stats(path: str | Path) -> tuple[int, int]:
-    """(files, bytes) under ``path``, for the transfer timings."""
+    """(files, bytes) under ``path``."""
     files = size = 0
     for root, _dirs, names in os.walk(path):
         for name in names:
@@ -229,10 +232,7 @@ def ship_source(
     remote_deps_dir: str | None = None,
     dryrun: bool = False,
 ) -> None:
-    """Reset ``staging_dir``, ship the checkout and dep prefixes (to ``<remote_deps_dir>/<i>``), then the marker.
-
-    The marker comes last so the job never sees a partial copy.
-    """
+    """Reset ``staging_dir``, ship the checkout and dep prefixes, then the marker, so the job sees no partial copy."""
     if dryrun:
         return
     remote_tgz = str(PurePosixPath(staging_dir) / jobscript.SOURCE_TARBALL_NAME)

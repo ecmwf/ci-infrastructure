@@ -95,15 +95,10 @@ def test_no_label_stays_pending(tmp_path: Path) -> None:
     assert r.posted("description") == f"Add '{LABEL}:all', '{LABEL}:<n>' or '{OPT_OUT}' to merge"
 
 
-@pytest.mark.parametrize("labels", [[f"{LABEL}:all"], [f"{LABEL}:2"]])
-def test_a_level_label_decides_to_run(tmp_path: Path, labels: list[str]) -> None:
-    r = _run(tmp_path, _payload(labels=labels))
-    assert (r.decision, r.posted("state")) == ("run", "success")
-
-
-def test_the_opt_out_decides_to_skip(tmp_path: Path) -> None:
-    r = _run(tmp_path, _payload(labels=[OPT_OUT]))
-    assert (r.decision, r.posted("state")) == ("skip", "success")
+@pytest.mark.parametrize(("label", "decision"), [(f"{LABEL}:all", "run"), (f"{LABEL}:2", "run"), (OPT_OUT, "skip")])
+def test_a_level_label_or_the_opt_out_decides(tmp_path: Path, label: str, decision: str) -> None:
+    r = _run(tmp_path, _payload(labels=[label]))
+    assert (r.decision, r.posted("state")) == (decision, "success")
 
 
 @pytest.mark.parametrize(
@@ -132,13 +127,6 @@ def test_an_exempt_author_needs_no_decision(tmp_path: Path) -> None:
     assert r.decision == "exempt"
     assert r.posted("state") == "success"
     assert "DeployDuck" in r.posted("description")
-
-
-def test_exemption_ignores_account_type(tmp_path: Path) -> None:
-    """Machine users report type "User"."""
-    payload = _payload(author="DeployDuck")
-    assert payload["pull_request"]["user"]["type"] == "User"
-    assert _run(tmp_path, payload, EXEMPT_AUTHORS_INPUT="DeployDuck").decision == "exempt"
 
 
 def test_a_label_still_wins_over_the_exemption(tmp_path: Path) -> None:

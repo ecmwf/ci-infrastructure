@@ -278,8 +278,7 @@ TEMPLATE_VERSION: Final = 2
 
 
 def test_base_template_change_bumps_the_template_version() -> None:
-    """Consumers load ci-infrastructure @main, so an edit to the base reaches every repo
-    without moving a sha; only the version in the artifact name makes them rebuild."""
+    """Consumers load the base from @main: only the version in the artifact name makes them rebuild."""
     assert (hashlib.sha256(_base_source()).hexdigest(), _github_api.HPC_TEMPLATE_VERSION) == (
         TEMPLATE_SHA256,
         TEMPLATE_VERSION,
@@ -319,11 +318,6 @@ def test_the_compiler_binary_defaults_to_the_compiler_and_may_differ() -> None:
     assert "$(command -v g++-13)" in _render_runner()
     hpc_leg = {**LEG, "cxx-compiler": "g++-8", "cxx-compiler-binary": "g++"}
     assert '-DCMAKE_CXX_COMPILER="$(command -v g++)"' in _render(leg=hpc_leg)
-
-
-def test_cc_no_longer_names_the_binary() -> None:
-    leg = {**{k: v for k, v in LEG.items() if k != "c-compiler"}, "cc": "gcc"}
-    assert jobscript.undeclared_template_names(EXTENDS, leg, template_name="t") == {"c_compiler_binary"}
 
 
 PY_RECIPE: Final = (

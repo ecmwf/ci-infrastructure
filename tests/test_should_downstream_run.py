@@ -22,26 +22,31 @@ def _pull(head_sha: str, labels: list[str]) -> dict[str, object]:
     return {"state": "open", "head": {"sha": head_sha}, "labels": [{"name": n} for n in labels]}
 
 
-def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str], str]:
-    """`labels=None` is a push: the commit has no open pull request."""
-    pulls = [] if labels is None else [_pull("abc123", labels)]
-    payload = tmp_path / "pulls.json"
-    payload.write_text(json.dumps(pulls))
+def _run_gate(tmp_path: Path, gh_output: object, **inputs: str) -> tuple[int, dict[str, str], str]:
+    payload = tmp_path / "gh.json"
+    payload.write_text(json.dumps(gh_output))
     outputs = tmp_path / "outputs.txt"
+    gh = 'echo "$*" > ' + f"{tmp_path}/call; cat {payload}"
     env = {
         **os.environ,
-        "PATH": f"{stub_gh(tmp_path, f'cat {payload}')}:{os.environ['PATH']}",
+        "PATH": f"{stub_gh(tmp_path, gh)}:{os.environ['PATH']}",
         "GITHUB_OUTPUT": str(outputs),
         "GITHUB_REPOSITORY": "ecmwf/ecbuild",
         "RUNNER_TEMP": str(tmp_path),
         "LABEL_INPUT": LABEL,
         "SHA_INPUT": "abc123",
+        **inputs,
     }
     proc = subprocess.run(
         ["bash", "-c", action_run_body("should-downstream-run")], env=env, capture_output=True, text=True, check=False
     )
     out = dict(line.split("=", 1) for line in outputs.read_text().splitlines()) if outputs.exists() else {}
     return proc.returncode, out, proc.stderr
+
+
+def _gate(tmp_path: Path, labels: list[str] | None) -> tuple[int, dict[str, str], str]:
+    """`labels=None` is a push: the commit has no open pull request."""
+    return _run_gate(tmp_path, [] if labels is None else [_pull("abc123", labels)])
 
 
 @pytest.mark.parametrize(
@@ -69,28 +74,6 @@ def test_anything_but_exactly_one_level_fails(tmp_path: Path, labels: list[str])
 def test_other_labels_are_ignored(tmp_path: Path) -> None:
     code, out, _ = _gate(tmp_path, ["documentation", f"{LABEL}-extra", f"{LABEL}:1"])
     assert (code, out["run"], out["depth"]) == (0, "true", "1")
-
-
-def _run_gate(tmp_path: Path, gh_output: object, **inputs: str) -> tuple[int, dict[str, str], str]:
-    payload = tmp_path / "gh.json"
-    payload.write_text(json.dumps(gh_output))
-    outputs = tmp_path / "outputs.txt"
-    gh = 'echo "$*" > ' + f"{tmp_path}/call; cat {payload}"
-    env = {
-        **os.environ,
-        "PATH": f"{stub_gh(tmp_path, gh)}:{os.environ['PATH']}",
-        "GITHUB_OUTPUT": str(outputs),
-        "GITHUB_REPOSITORY": "ecmwf/ecbuild",
-        "RUNNER_TEMP": str(tmp_path),
-        "LABEL_INPUT": LABEL,
-        "SHA_INPUT": "abc123",
-        **inputs,
-    }
-    proc = subprocess.run(
-        ["bash", "-c", action_run_body("should-downstream-run")], env=env, capture_output=True, text=True, check=False
-    )
-    out = dict(line.split("=", 1) for line in outputs.read_text().splitlines()) if outputs.exists() else {}
-    return proc.returncode, out, proc.stderr
 
 
 @pytest.mark.parametrize("level", ["all", "2"])

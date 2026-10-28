@@ -22,7 +22,7 @@ DELAYS: Final = (10, 30)
 
 
 def run(argv: Sequence[str], delays: Sequence[float] = DELAYS) -> int:
-    """Run `argv`, again after each of `delays` while it fails to resolve the host; its stderr follows it."""
+    """Run `argv`, again after each of `delays` while it fails to resolve the host."""
     for delay in [*delays, None]:
         proc = subprocess.Popen(argv, stderr=subprocess.PIPE)
         assert proc.stderr is not None

@@ -84,13 +84,10 @@ def test_remote_paths_derive_layout_under_the_work_dir() -> None:
     assert paths.staging == "/ec/res4/scratch/me/ci/staging/art-abc-Release"
 
 
-def test_resolve_remote_path_expands_cluster_variables() -> None:
+@pytest.mark.parametrize("spec", ["$SCRATCH/ci", "/ec/res4/scratch/me/ci"], ids=["variable", "literal"])
+def test_resolve_remote_path(spec: str) -> None:
     conn = LocalShell({"SCRATCH": "/ec/res4/scratch/me"})
-    assert resolve_remote_path(conn, "$SCRATCH/downstream-ci") == "/ec/res4/scratch/me/downstream-ci"
-
-
-def test_resolve_remote_path_passes_a_literal_through() -> None:
-    assert resolve_remote_path(LocalShell(), "/ec/res4/scratch/me/ci") == "/ec/res4/scratch/me/ci"
+    assert resolve_remote_path(conn, spec) == "/ec/res4/scratch/me/ci"
 
 
 @pytest.mark.parametrize("spec", ["$NOSCRATCH", "relative/ci"])
@@ -469,16 +466,13 @@ def test_status_reporter_repeats_while_queued_and_reports_running_once(capsys: p
 def test_wait_for_job_ticks_each_interval() -> None:
     ticks: list[int] = []
     verdicts: list[Verdict | None] = [None, None, "SUCCESS"]
-    assert (
-        wait_for_job(
-            sentinel_waiter=lambda _s: verdicts.pop(0),
-            state_getter=lambda: "RUNNING",
-            guard_interval=1,
-            on_tick=lambda: ticks.append(1),
-        )
-        == "SUCCESS"
+    verdict = wait_for_job(
+        sentinel_waiter=lambda _s: verdicts.pop(0),
+        state_getter=lambda: "RUNNING",
+        guard_interval=1,
+        on_tick=lambda: ticks.append(1),
     )
-    assert len(ticks) == 3
+    assert (verdict, len(ticks)) == ("SUCCESS", 3)
 
 
 def test_wait_for_job_ticks_more_often_than_it_checks_the_queue() -> None:

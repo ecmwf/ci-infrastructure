@@ -2,11 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conventions every action under actions/ satisfies.
-
-Bootstrap contract (actions/ensure-infrastructure-present/action.yml): an action that uses the
-ci_infrastructure package nests ensure-infrastructure-present itself; an action that does not, does not.
-"""
+"""Conventions every action under actions/ satisfies."""
 
 from __future__ import annotations
 
@@ -117,10 +113,7 @@ _COMPOSITE_CONTEXTS: Final = frozenset({"inputs", "github", "env", "runner", "st
 
 @pytest.mark.parametrize("path", _action_files(), ids=lambda p: p.parent.name)
 def test_action_descriptions_reference_no_workflow_only_context(path: Path) -> None:
-    """A `${{ }}` in a description is evaluated; a workflow-only context stops the action loading.
-
-    actionlint only checks .github/workflows, so the check lives here.
-    """
+    """A `${{ }}` in a description is evaluated; actionlint only checks .github/workflows."""
     text = path.read_text()
     for block in re.finditer(r"description:.*?(?=\n\s{0,4}[\w-]+:)", text, re.S):
         for expr in re.findall(r"\$\{\{(.*?)\}\}", block.group(0), re.S):

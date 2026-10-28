@@ -18,7 +18,6 @@ import click
 
 from ._errors import CIError
 
-# A ref that is itself a commit SHA; the Ref column blanks it.
 _SHA_RE: Final = re.compile(r"[0-9a-f]{7,40}")
 
 
@@ -34,14 +33,6 @@ class Row(TypedDict, total=False):
     source: str
 
 
-def _commit_url(repo: str, sha: str) -> str:
-    return f"https://github.com/{repo}/commit/{sha}"
-
-
-def _repo_url(repo: str) -> str:
-    return f"https://github.com/{repo}"
-
-
 def _looks_like_sha(ref: str) -> bool:
     return bool(_SHA_RE.fullmatch(ref))
 
@@ -54,9 +45,9 @@ def _row_from_dep(dep: Mapping[str, Any]) -> Row:
 
     short_sha = sha[:8] if sha else ""
     return Row(
-        package=f"[{name}]({_repo_url(repo)})" if repo else name,
+        package=f"[{name}](https://github.com/{repo})" if repo else name,
         ref="" if _looks_like_sha(ref) else ref,
-        sha=f"[`{short_sha}`]({_commit_url(repo, sha)})" if repo and sha else short_sha,
+        sha=f"[`{short_sha}`](https://github.com/{repo}/commit/{sha})" if repo and sha else short_sha,
         deps_hash=str(dep.get("deps-hash", "")),
         platform=str(dep.get("platform", "")),
         compiler=str(dep.get("compiler", "")),
@@ -89,7 +80,6 @@ def _md_table(rows: Sequence[Row], show_source: bool) -> str:
     return "\n".join(lines)
 
 
-#: `_resolved` own-* key -> the dep key `_row_from_dep` reads.
 _OWN_COLUMNS: Final = {
     "own-name": "name",
     "own-ref": "ref",

@@ -16,8 +16,7 @@ repos:
       - id: ruff-check
       - id: ruff-format
 
-  # Lints workflow YAML; custom runner labels in .github/actionlint.yaml.
-  # zizmor: see TODOs.
+  # Custom runner labels: .github/actionlint.yaml. zizmor: see TODOs.
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
