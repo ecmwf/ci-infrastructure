@@ -10,8 +10,7 @@ description = "Shared CI orchestration scripts and actions"
 requires-python = ">=3.11.2"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-# Minimal: the pre-commit hooks install only this.
-# The actions install `[runtime]`.
+# Minimal: the pre-commit hooks install only this; the actions install `[runtime]`.
 dependencies = [
     "click>=8.1",
     "PyYAML>=6",
@@ -36,7 +35,6 @@ ci-infrastructure-sync-branch-prs = "ci_infrastructure.sync_branch_prs:main"
 ci-infrastructure-check-declaration = "ci_infrastructure.check_pr_declaration:main"
 
 [project.optional-dependencies]
-# One extra per heavy dependency; the module that needs it is noted beside it.
 s3 = ["boto3>=1.34"]                                              # s3_store
 schema = ["pydantic>=2"]                                          # manifest
 hpc = ["jinja2>=3.1", "troika @ git+https://github.com/ecmwf/troika.git"]  # hpc/{jobscript,site}
@@ -76,7 +74,6 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 strict = true
 
-# troika ships no type information
 [[tool.mypy.overrides]]
 module = "troika.*"
 ignore_missing_imports = true

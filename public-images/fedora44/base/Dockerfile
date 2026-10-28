@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
 #
 # SPDX-License-Identifier: Apache-2.0
-# Conventions: public-images/README.md
 FROM fedora:44
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
@@ -41,9 +40,6 @@ RUN dnf -y install \
 COPY public-images/distrust-emudhra.sh /tmp/
 RUN sh /tmp/distrust-emudhra.sh && rm /tmp/distrust-emudhra.sh
 
-# uv, pinned to the same version in every base. ci-infrastructure gets its own
-# uv-managed CPython and venv under /opt/ci-infrastructure, kept apart from every
-# Python a build may use: recipes create theirs in UV_PYTHON_INSTALL_DIR.
 COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_PREFERENCE=only-managed \
@@ -67,7 +63,6 @@ WORKDIR /workspace
 COPY public-images/announce-image.sh /opt/ci/announce-image.sh
 ENV BASH_ENV=/opt/ci/announce-image.sh
 
-# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

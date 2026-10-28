@@ -6,18 +6,24 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from conftest import parse_all, write_repo
+import yaml
+from conftest import parse_all, render_single, write_repo
 
 from ci_infrastructure import resolve_deps
-from ci_infrastructure._github_api import EXECUTION_RUNNER, ManifestSchemaError
+from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, ManifestSchemaError
 from ci_infrastructure.generate_downstream_ci import derive_cross_repo_needs, validate_graph
+from ci_infrastructure.hpc import jobscript
+from ci_infrastructure.hpc.orchestrate import batch_packages
 from ci_infrastructure.manifest import validate
+from ci_infrastructure.render_job import _from_manifest
 from ci_infrastructure.resolve_deps import (
     DepSpec,
     Manifest,
@@ -27,8 +33,11 @@ from ci_infrastructure.resolve_deps import (
     Repo,
     ResolveError,
     Sha,
+    build_order,
+    leg_crates,
     parse_manifest,
     resolve_leg,
+    resolve_packages,
 )
 
 _LEG: Final = {"platform": "ubuntu-24.04", "cxx-compiler": "g++-13", "build-type": "Release"}
@@ -68,8 +77,6 @@ reuse-matrix = "libaec"
 
 
 def _schema(body: str) -> Any:
-    import tomllib
-
     return validate(tomllib.loads(textwrap.dedent(body)))
 
 
@@ -161,6 +168,35 @@ def _resolve(deps: list[DepSpec], cache: dict[tuple[Repo, Ref], Manifest]) -> tu
         can_dispatch=False,
         lane=EXECUTION_RUNNER,
         dispatch_plans={},
+    )
+
+
+def _resolve_own(
+    m: Manifest,
+    packages: list[PackageName],
+    ref: Ref,
+    sha: Sha,
+    can_dispatch: bool = False,
+    dispatch_plans: dict[Any, Any] | None = None,
+    **kw: Any,
+) -> tuple[Any, Any]:
+    return resolve_packages(
+        m,
+        packages,
+        own_sha=sha,
+        own_ref=ref,
+        matrix_entry=dict(_LEG),
+        manifest_cache={(m.package.repo, ref): m},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={(m.package.repo, ref): sha},
+        artifact_cache={},
+        run_state_cache={},
+        token=None,
+        lane=EXECUTION_RUNNER,
+        can_dispatch=can_dispatch,
+        dispatch_plans={} if dispatch_plans is None else dispatch_plans,
+        **kw,
     )
 
 
@@ -310,8 +346,6 @@ cxx-compiler = "g++-13"
 
 
 def test_a_batch_kind_builds_siblings_first() -> None:
-    from ci_infrastructure.resolve_deps import build_order
-
     m = parse_manifest(_BATCH)
     assert m.packages_by_kind["build"] == ("libaec", "sqlite3", "proj")
     assert build_order(m, [PackageName(p) for p in ("proj", "libaec", "sqlite3")]) == ["sqlite3", "proj", "libaec"]
@@ -319,27 +353,9 @@ def test_a_batch_kind_builds_siblings_first() -> None:
 
 @pytest.mark.usefixtures("offline")
 def test_a_batch_kind_publishes_what_outside_consumers_resolve() -> None:
-    from ci_infrastructure.resolve_deps import resolve_packages
-
     m = parse_manifest(_BATCH)
-    sha = Sha("c" * 40)
-    to_fetch, built = resolve_packages(
-        m,
-        [PackageName("libaec"), PackageName("sqlite3"), PackageName("proj")],
-        own_sha=sha,
-        own_ref=Ref("master"),
-        matrix_entry=dict(_LEG),
-        manifest_cache={(Repo("org/stack"), Ref("master")): m},
-        sync_branch=None,
-        sync_exists_by_repo={},
-        sha_cache={(Repo("org/stack"), Ref("master")): sha},
-        artifact_cache={},
-        run_state_cache={},
-        token=None,
-        can_dispatch=False,
-        lane=EXECUTION_RUNNER,
-        dispatch_plans={},
-    )
+    packages = [PackageName(p) for p in ("libaec", "sqlite3", "proj")]
+    to_fetch, built = _resolve_own(m, packages, Ref("master"), Sha("c" * 40))
     assert to_fetch == []  # sqlite3 is built in the same job, not fetched
     consumer_view, _ = _resolve(
         [replace(_consumer_dep("proj"), repo=Repo("org/stack"))], {(Repo("org/stack"), Ref("master")): m}
@@ -351,9 +367,6 @@ def test_a_batch_kind_publishes_what_outside_consumers_resolve() -> None:
 
 
 def test_a_batch_kind_publishes_each_package(tmp_path: Path) -> None:
-    import yaml
-    from conftest import render_single
-
     steps = yaml.safe_load(render_single(tmp_path, _BATCH, name="stack"))["jobs"]
     publish = [s for job in steps.values() for s in job.get("steps", []) if s.get("name", "").startswith("Publish")]
     assert [s["name"] for s in publish] == ["Publish libaec", "Publish sqlite3", "Publish proj"]
@@ -364,11 +377,6 @@ def test_a_batch_kind_publishes_each_package(tmp_path: Path) -> None:
 
 
 def test_an_hpc_batch_kind_publishes_each_package_unless_cached(tmp_path: Path) -> None:
-    import yaml
-    from conftest import render_single
-
-    from ci_infrastructure._github_api import EXECUTION_HPC_ATOS
-
     body = _BATCH.replace("[matrix.build]\n", '[matrix.build]\nexecution = "hpc-atos"\n').replace(
         'platform = "ubuntu-24.04"', 'platform = "hpc-atos-gnu"\nruns-on = "hpc"\nsite = "hpc-batch"'
     )
@@ -380,8 +388,6 @@ def test_an_hpc_batch_kind_publishes_each_package_unless_cached(tmp_path: Path) 
 
 
 def test_an_hpc_batch_job_archives_each_package() -> None:
-    from ci_infrastructure.hpc import jobscript
-
     script = jobscript.render_job_script(
         repo_script="#!/bin/bash\nbuild\n",
         output_path="/o",
@@ -407,10 +413,6 @@ def test_an_hpc_batch_job_archives_each_package() -> None:
 
 
 def test_submit_wait_reads_the_batch_from_the_leg() -> None:
-    import json
-
-    from ci_infrastructure.hpc.orchestrate import batch_packages
-
     two = {"_resolved": {"packages": {"sqlite3": {"own-artifact-name": "s"}, "proj": {"own-artifact-name": "p"}}}}
     one = {"_resolved": {"packages": {"eckit": {"own-artifact-name": "e"}}}}
     assert batch_packages(json.dumps(two)) == {"sqlite3": "s", "proj": "p"}
@@ -419,8 +421,6 @@ def test_submit_wait_reads_the_batch_from_the_leg() -> None:
 
 
 def test_the_recipe_sees_the_packages_in_build_order(tmp_path: Path) -> None:
-    from ci_infrastructure.hpc import jobscript
-
     leg = {**_LEG, "_resolved": {"packages": {"sqlite3": {}, "proj": {}}}}
     ctx = jobscript.build_template_context(leg, execution=EXECUTION_RUNNER)
     assert ctx["ci_packages"] == ["sqlite3", "proj"]
@@ -428,8 +428,6 @@ def test_the_recipe_sees_the_packages_in_build_order(tmp_path: Path) -> None:
 
 
 def test_rendering_a_batch_leg_by_hand_passes_the_packages(tmp_path: Path) -> None:
-    from ci_infrastructure.render_job import _from_manifest
-
     manifest = write_repo(tmp_path, "stack", _BATCH.replace("./b.sh", "./.ci/build.sh.j2"))
     (manifest.parent / "build.sh.j2").write_text("{% for p in ci_packages %}echo {{ p }}\n{% endfor %}")
     _, leg, _, _ = _from_manifest(manifest, "build (ubuntu-24.04, g++-13)")
@@ -468,29 +466,10 @@ rust-compiler = "rust-1.90"
 
 @pytest.mark.usefixtures("offline")
 def test_a_kind_that_publishes_nothing_resolves_the_deps_of_its_packages() -> None:
-    from ci_infrastructure.resolve_deps import resolve_packages
-
     m = parse_manifest(_BINDINGS)
     assert m.packages_by_kind["rust"] == ()  # nobody fetches cxxmath-rust
     assert m.built_by_kind["rust"] == ("cxxmath-rust",)
-    sha = Sha("c" * 40)
-    to_fetch, _ = resolve_packages(
-        m,
-        list(m.built_by_kind["rust"]),
-        own_sha=sha,
-        own_ref=Ref("main"),
-        matrix_entry=dict(_LEG),
-        manifest_cache={(Repo("org/cxxmath"), Ref("main")): m},
-        sync_branch=None,
-        sync_exists_by_repo={},
-        sha_cache={(Repo("org/cxxmath"), Ref("main")): sha},
-        artifact_cache={},
-        run_state_cache={},
-        token=None,
-        can_dispatch=False,
-        lane=EXECUTION_RUNNER,
-        dispatch_plans={},
-    )
+    to_fetch, _ = _resolve_own(m, list(m.built_by_kind["rust"]), Ref("main"), Sha("c" * 40))
     assert [d.name for d in to_fetch] == ["cxxmath"]
 
 
@@ -505,27 +484,16 @@ def test_a_dep_carries_the_dirs_its_package_puts_on_path() -> None:
 
 
 def _resolve_fork_sibling(published_in_run: frozenset[str]) -> tuple[list[Any], dict[Any, Any]]:
-    """cxxmath-rust on its sibling cxxmath for a fork: no artifact yet, no run seen in flight, own repo pinned."""
-    from ci_infrastructure.resolve_deps import resolve_packages
-
+    """cxxmath-rust on its sibling cxxmath for a fork, own repo pinned."""
     m = parse_manifest(_BINDINGS)
     sha = Sha("f" * 40)
     plans: dict[Any, Any] = {}
-    to_fetch, _ = resolve_packages(
+    to_fetch, _ = _resolve_own(
         m,
         list(m.built_by_kind["rust"]),
-        own_sha=sha,
-        own_ref=Ref("develop"),
-        matrix_entry=dict(_LEG),
-        manifest_cache={(Repo("org/cxxmath"), Ref("develop")): m},
-        sync_branch=None,
-        sync_exists_by_repo={},
-        sha_cache={(Repo("org/cxxmath"), Ref("develop")): sha},
-        artifact_cache={},
-        run_state_cache={},
-        token=None,
+        Ref("develop"),
+        sha,
         can_dispatch=True,
-        lane=EXECUTION_RUNNER,
         dispatch_plans=plans,
         pins={Repo("org/cxxmath"): Ref(sha)},
         published_in_run=frozenset(PackageName(p) for p in published_in_run),
@@ -553,8 +521,6 @@ def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkey
 
 
 def test_a_bindings_leg_carries_the_crates_of_the_deps_that_apply() -> None:
-    from ci_infrastructure.resolve_deps import leg_crates
-
     text = _BINDINGS.replace(
         'deps = [{ package = "cxxmath" }]',
         'deps = [{ package = "cxxmath", crates = ["cxxmath-sys"] },'

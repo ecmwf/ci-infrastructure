@@ -19,7 +19,6 @@ RUN apt-get update && apt-get install -y \
     libcrypt-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

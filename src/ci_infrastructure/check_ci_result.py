@@ -23,7 +23,6 @@ import yaml
 JOB = "ci-result"
 # The job's own check run must not pass for the status, nor vary per repo.
 JOB_NAME = "collect results"
-# Remote (consumers) and local (ci-infrastructure itself) spellings.
 ACTIONS = ("ecmwf/ci-infrastructure/actions/ci-result@", "./actions/ci-result")
 NEEDS_INPUT = "${{ toJSON(needs) }}"
 _SQUASHED_INPUT = "".join(NEEDS_INPUT.split())

@@ -17,6 +17,7 @@ from troika.config import get_config
 from troika.site import get_site
 
 from .._errors import CIError
+from .transfer import output_text
 
 
 class SlurmSiteLike(Protocol):
@@ -75,10 +76,7 @@ _SAFE_SPEC: Final = re.compile(r"^[A-Za-z0-9_/.${}-]+$")
 
 
 def resolve_remote_path(conn: Any, spec: str) -> str:
-    """Expand a work-dir ``spec`` (e.g. ``$SCRATCH/github-ci``) on the cluster.
-
-    troika quotes argv, so expand here; login shell because ``$SCRATCH`` is set in ``/etc/profile.d``.
-    """
+    """Expand ``spec`` on the cluster; a login shell, as ``$SCRATCH`` is set in ``/etc/profile.d``."""
     if not _SAFE_SPEC.match(spec):
         raise CIError(
             f"Remote work dir {spec!r} contains characters that are not allowed. Use only letters, "
@@ -90,7 +88,7 @@ def resolve_remote_path(conn: Any, spec: str) -> str:
         stderr=subprocess.DEVNULL,
     )
     stdout, _stderr = proc.communicate()
-    resolved = (stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout)).strip()
+    resolved = output_text(stdout).strip()
     if proc.returncode != 0:
         raise CIError(f"Could not expand remote work dir {spec!r} on the cluster (exit {proc.returncode}).")
     if not resolved.startswith("/"):

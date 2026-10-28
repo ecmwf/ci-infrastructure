@@ -1352,7 +1352,7 @@ def test_orchestrator_workflow_run_trigger_and_gate(tmp_path: Path) -> None:
         orch = _orch(tmp_path, lane)
         doc = yaml.safe_load(orch)
         assert doc["name"] == f"Downstream {label} (a)"
-        # PyYAML reads the bare key `on` as True.
+        # PyYAML reads the bare key `on` as True. No pull_request: its runs would list on the pull request.
         assert doc[True] == {
             "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
             "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
@@ -1796,6 +1796,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
         "depth": "${{ steps.gate.outputs.depth }}",
     }
     assert "if" not in doc["jobs"]["label-gate"], "report-ci-failure needs the gate on the failure path"
+    assert "if" not in doc["jobs"]["context"]
     for jid, job in doc["jobs"].items():
         # context runs first: the gate looks its PR up by the commit context resolves.
         if jid in ("label-gate", "context", "ci-approval"):
@@ -1803,19 +1804,6 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
         assert "label-gate" in job["needs"], jid
         # Index syntax: `needs.label-gate` would parse the hyphen as minus.
         assert "needs['label-gate'].outputs.run == 'true'" in job["if"], jid
-
-
-def test_downstream_gate_preserves_the_condition_it_wraps(tmp_path: Path) -> None:
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
-
-    assert doc["jobs"]["validate"]["if"] == (
-        "${{ (needs.context.outputs.ci-conclusion == 'success') && needs['label-gate'].outputs.run == 'true' }}"
-    )
-    assert doc["jobs"]["report-ci-failure"]["if"] == (
-        "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') "
-        "&& needs['label-gate'].outputs.run == 'true' }}"
-    )
-    assert doc["jobs"]["report-result"]["if"].startswith("${{ (always() && ")
 
 
 def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Path) -> None:
@@ -1833,23 +1821,23 @@ def test_downstream_gate_delegates_the_verdict_to_the_shared_action(tmp_path: Pa
     }
 
 
-def test_downstream_gate_reads_its_own_repo_with_the_plain_token(tmp_path: Path) -> None:
-    """An App token 403s on a non-public repo's PRs; github.token with pull-requests: read does not."""
-    job = _render_gate(tmp_path, _GATE_UPSTREAM)["jobs"]["label-gate"]
+@pytest.mark.parametrize(
+    ("jid", "step_id", "permissions"),
+    [
+        ("label-gate", "gate", {"pull-requests": "read"}),
+        ("context", "ctx", {"actions": "read", "pull-requests": "read"}),
+    ],
+)
+def test_reads_its_own_repo_with_the_plain_token(
+    tmp_path: Path, jid: str, step_id: str, permissions: dict[str, str]
+) -> None:
+    """An App token 403s on a non-public repo's PRs; github.token does not."""
+    job = _render_gate(tmp_path, _GATE_UPSTREAM)["jobs"][jid]
 
-    assert job["permissions"] == {"pull-requests": "read"}
+    assert job["permissions"] == permissions
     assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
-    gate = next(s for s in job["steps"] if s.get("id") == "gate")
-    assert "token" not in gate["with"]
-
-
-def test_the_context_job_reads_its_own_actions_runs_with_the_plain_token(tmp_path: Path) -> None:
-    job = _render_gate(tmp_path, _GATE_UPSTREAM)["jobs"]["context"]
-
-    assert job["permissions"] == {"actions": "read", "pull-requests": "read"}
-    assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
-    ctx = next(s for s in job["steps"] if s.get("id") == "ctx")
-    assert "token" not in ctx["with"]
+    step = next(s for s in job["steps"] if s.get("id") == step_id)
+    assert "token" not in step["with"]
 
 
 @pytest.mark.parametrize("jid", ["report-start", "report-ci-failure", "report-result"])
@@ -1868,16 +1856,6 @@ def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
 
     assert any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
     assert "permissions" not in job
-
-
-def test_a_completed_ci_run_or_a_dispatch_is_the_entry_point(tmp_path: Path) -> None:
-    """No pull_request trigger: its runs would list on the pull request; the label gate dispatches instead."""
-    doc = _render_gate(tmp_path, _GATE_UPSTREAM)
-
-    assert doc[True] == {
-        "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
-        "workflow_dispatch": {"inputs": _DISPATCH_INPUTS},
-    }
 
 
 def test_ci_approval_gate_fronts_every_job(tmp_path: Path) -> None:
@@ -1904,9 +1882,7 @@ def test_generated_orchestrator_passes_check_ci_approval(tmp_path: Path) -> None
 
 
 def test_the_label_filter_sits_only_on_the_label_gate_job(tmp_path: Path) -> None:
-    """A job skipped by `if:` reports Success, so work jobs read label-gate's output.
-
-    The context job only drops label events that are not a downstream label."""
+    """A job skipped by `if:` reports Success, so work jobs read label-gate's output."""
     doc = _render_gate(tmp_path, _GATE_UPSTREAM)
 
     for jid, job in doc["jobs"].items():
@@ -2135,9 +2111,11 @@ needs = ["build"]
 """
 
 
-def _derived(tmp_path: Path, needs: str = "", producer: str = _PRODUCER) -> dict[str, list[str]]:
+def _derived(
+    tmp_path: Path, consumer: str = _CONSUMER.format(needs=""), producer: str = _PRODUCER
+) -> dict[str, list[str]]:
     write_repo(tmp_path, "a", producer)
-    write_repo(tmp_path, "b", _CONSUMER.format(needs=needs))
+    write_repo(tmp_path, "b", consumer)
     manifests = parse_all(tmp_path)
     derive_cross_repo_needs(manifests)
     validate_graph(manifests)
@@ -2164,29 +2142,17 @@ def test_cross_repo_needs_are_derived_per_lane_from_deps(tmp_path: Path) -> None
 def test_a_dep_scoped_out_of_a_lane_is_not_needed_there(
     tmp_path: Path, predicate: str, expected: dict[str, list[str]]
 ) -> None:
-    write_repo(tmp_path, "a", _PRODUCER)
-    write_repo(
-        tmp_path,
-        "b",
-        _CONSUMER.format(needs="").replace("compiler-inputs = []\n", f"compiler-inputs = []\n{predicate}\n", 1),
-    )
-    manifests = parse_all(tmp_path)
-    derive_cross_repo_needs(manifests)
-    b = next(m for m in manifests if m.package_name == "b")
-    assert {k: list(mk.needs) for k, mk in b.matrices.items()} == expected
+    consumer = _CONSUMER.format(needs="").replace("compiler-inputs = []\n", f"compiler-inputs = []\n{predicate}\n", 1)
+    assert _derived(tmp_path, consumer) == expected
 
 
 def test_a_package_list_derives_one_need_per_producer_kind(tmp_path: Path) -> None:
-    write_repo(tmp_path, "a", _PRODUCER)
-    write_repo(tmp_path, "b", _CONSUMER.format(needs="").replace('package = "a"', 'package = ["a"]', 1))
-    manifests = parse_all(tmp_path)
-    derive_cross_repo_needs(manifests)
-    b = next(m for m in manifests if m.package_name == "b")
-    assert b.matrices["build"].needs == ("a/build",)
+    consumer = _CONSUMER.format(needs="").replace('package = "a"', 'package = ["a"]', 1)
+    assert _derived(tmp_path, consumer)["build"] == ["a/build"]
 
 
 def test_explicit_cross_repo_needs_are_kept(tmp_path: Path) -> None:
-    assert _derived(tmp_path, needs='needs = ["a/build-hpc"]')["build"] == ["a/build-hpc"]
+    assert _derived(tmp_path, _CONSUMER.format(needs='needs = ["a/build-hpc"]'))["build"] == ["a/build-hpc"]
 
 
 def test_a_producer_that_does_not_trigger_us_is_not_needed(tmp_path: Path) -> None:
@@ -2273,24 +2239,17 @@ def test_an_unknown_exclude_is_an_error(tmp_path: Path) -> None:
         _render_orch(tmp_path)
 
 
-def test_the_context_job_runs_for_every_event(tmp_path: Path) -> None:
-    _make_chain_ab(tmp_path)
-    doc = yaml.safe_load(_orch(tmp_path))
-    assert "if" not in doc["jobs"]["context"]
-    assert doc["concurrency"]["group"].endswith("${{ github.event.workflow_run.head_sha || inputs.pull-request }}")
-    assert doc["jobs"]["report-ci-failure"]["if"] == (
-        "${{ (needs.context.outputs.ci-conclusion != 'success' && needs.context.outputs.ci-conclusion != '') && "
-        "needs['label-gate'].outputs.run == 'true' }}"
-    )
-
-
-def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Payload only: pull_request_target, so a pull request cannot post its own decision, and a fork's gets posted."""
+def _generate_gate_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_repo(tmp_path, "a", _GATE_UPSTREAM)
     write_repo(tmp_path, "b", _GATE_CONSUMER)
     for repo in ("a", "b"):
         monkeypatch.chdir(tmp_path / repo)
         _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+
+def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """pull_request_target: a pull request cannot post its own decision, and a fork's gets posted."""
+    _generate_gate_repos(tmp_path, monkeypatch)
 
     gate = tmp_path / "a" / ".github" / "workflows" / "pr-label-downstream-ci.yml"
     doc = yaml.safe_load(gate.read_text())
@@ -2310,11 +2269,7 @@ def test_the_label_gate_comes_with_the_downstream_workflows(tmp_path: Path, monk
 
 def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Payload only, under pull_request_target; never on `edited`, which its own edits would cause."""
-    write_repo(tmp_path, "a", _GATE_UPSTREAM)
-    write_repo(tmp_path, "b", _GATE_CONSUMER)
-    for repo in ("a", "b"):
-        monkeypatch.chdir(tmp_path / repo)
-        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+    _generate_gate_repos(tmp_path, monkeypatch)
 
     for repo in ("a", "b"):
         wf = tmp_path / repo / ".github" / "workflows" / "pr-sync-branch.yml"

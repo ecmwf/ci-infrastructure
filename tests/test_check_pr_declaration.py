@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contributor Declaration checker.
-
-Whitespace fixtures are built in Python: the pre-commit whitespace hooks would "fix" them on disk.
-"""
+"""Contributor Declaration checker; whitespace fixtures are built in Python, as pre-commit hooks would "fix" them."""
 
 from __future__ import annotations
 
@@ -71,7 +68,6 @@ DECLARATION_LINES: Final = normalize(CANONICAL_DECLARATION)
 
 
 def body(*, prefix: str = "## Description\n\nsomething\n\n", declaration: str | None = None) -> str:
-    """A plausible PR body: some prose, then the declaration."""
     return prefix + (CANONICAL_DECLARATION if declaration is None else declaration)
 
 
@@ -343,13 +339,13 @@ def test_declaration_file_override() -> None:
     assert check_body(body(), expected_lines(custom)).verdict is Verdict.DIVERGED
 
 
-def test_declaration_source_is_sliced_from_the_heading() -> None:
-    """A whole PR template can be passed; only the block is required."""
-    assert expected_lines(ORG_TEMPLATE) == DECLARATION_LINES
-
-
-def test_declaration_source_without_heading_is_used_whole() -> None:
-    assert expected_lines("just this line\n") == ["just this line"]
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [(ORG_TEMPLATE, DECLARATION_LINES), ("just this line\n", ["just this line"])],
+    ids=["sliced-from-heading", "no-heading-used-whole"],
+)
+def test_declaration_source(source: str, expected: list[str]) -> None:
+    assert expected_lines(source) == expected
 
 
 def test_body_from_event_requires_a_pull_request() -> None:
@@ -388,16 +384,13 @@ def test_error_annotation_is_a_single_escaped_line() -> None:
 
 def test_error_annotation_strips_control_characters() -> None:
     tampered = body().replace("they pass.", "they pass.\x1b[32m\x1b[2J")
-    rendered = render_error(check_body(tampered))
-    assert "\x1b" not in rendered
+    assert "\x1b" not in render_error(check_body(tampered))
 
 
 def test_summary_fences_untrusted_lines_that_contain_backticks() -> None:
     """A body cannot break out of the fence and inject markdown or HTML."""
     tampered = body() + '\n```\n<img src="https://example.invalid/beacon.png">\n```\n'
-    result = check_body(tampered)
-    summary = render_summary(result, DECLARATION_LINES)
-    assert "````text" in summary
+    assert "````text" in render_summary(check_body(tampered), DECLARATION_LINES)
 
 
 def test_summary_truncates_a_huge_excerpt() -> None:

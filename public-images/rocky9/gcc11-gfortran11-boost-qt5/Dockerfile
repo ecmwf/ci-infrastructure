@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 FROM eccr.ecmwf.int/public-ci-images/rocky9-base:latest
 
-# EPEL only for qt5-qtcharts-devel (ECFLOW_LOGVIEW).
 RUN dnf -y install epel-release \
  && dnf -y install \
     gcc \
@@ -21,7 +20,6 @@ RUN for t in gcc g++ gfortran cpp; do \
       ln -s /usr/bin/$t /usr/local/bin/$t-11; \
     done
 
-# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

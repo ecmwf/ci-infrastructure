@@ -25,7 +25,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && ln -s /opt/rust/cargo/bin/* /usr/local/bin/ \
  && rustc --version && cargo clippy --version && cargo fmt --version
 
-# Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
 ARG IMAGE_TAG=""
 ARG IMAGE_CREATED=""

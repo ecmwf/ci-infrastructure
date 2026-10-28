@@ -5,9 +5,7 @@
    The Python runner template plus what a SLURM job on Atos needs: the #SBATCH header, the modules and the install archive.
 
    uv must be on PATH, e.g. through `load uv` in the leg's `modules`. Without
-   `python-version` the venv takes the Python uv finds, e.g. a `python3` module.
-
-   A leg field read through `| default(...)` may be omitted from the manifest. #}
+   `python-version` the venv takes the Python uv finds, e.g. a `python3` module. #}
 {% block header %}
 {% block sbatch %}
 #SBATCH --qos={{ qos | default("nf") }}

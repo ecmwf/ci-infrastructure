@@ -74,7 +74,6 @@ jobs:
     uses: ./.github/workflows/images.yml
     with:
       dependents: ${{ needs.image-label.outputs.dependents == 'true' }}
-    # Only the secrets images.yml uses: it runs PR-authored Dockerfiles.
     secrets:
       PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
       PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
