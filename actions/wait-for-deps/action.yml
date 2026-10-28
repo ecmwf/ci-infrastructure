@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Wait for resolved deps
+description: >
+  Block until every dep of a resolved matrix that was not cached at resolve time is in
+  the S3 store (`ARTIFACT_S3_*`, `AWS_*`, `ARTIFACT_WAIT_TIMEOUT` in the job env), so the
+  matrix's legs take a runner only once their deps exist. Never fails: a dep still missing
+  is a warning, and the leg's fetch-deps reports it.
+
+inputs:
+  matrix:
+    description: 'A resolve-deps matrix output, `{"include": [...]}`.'
+    required: true
+  token:
+    description: 'GitHub token (App token preferred for higher rate limits)'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+
+    - name: Wait for resolved deps
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        MATRIX_JSON: ${{ inputs.matrix }}
+      run: |
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.wait_for_deps --matrix-json "$MATRIX_JSON"
