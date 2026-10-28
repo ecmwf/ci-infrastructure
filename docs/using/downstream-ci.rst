@@ -95,7 +95,7 @@ e.g. a change to the public API or ABI, to the behavior, or to the exported CMak
 A coordinated change on a sync branch
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Next, ``eccodes`` adapts to the new API on a branch with the same name, ``sync-branch/api-change`` (see :doc:`feature-branches`).
+Next, ``eccodes`` adapts to the new API on a branch with the same name, ``sync/api-change`` (see :doc:`feature-branches`).
 At first glance, one could expect that the downstream CI of both pull requests is needed.
 However, ``eccodes``' own CI now builds against ``eckit``'s branch as well,
 so that ``eckit``'s downstream CI runs exactly the tests that ``eccodes``' own and downstream CI run anyway.
@@ -104,10 +104,10 @@ It suffices to request the downstream CI on the pull request of the repository f
 The :doc:`list at the end of each description <feature-branches>` ends with it.
 
 .. figure:: downstream-ci-sync.svg
-   :alt: eckit and eccodes are on sync-branch/api-change; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.
+   :alt: eckit and eccodes are on sync/api-change; eckit's downstream CI repeats the tests of eccodes' own and downstream CI.
    :width: 100%
 
-   ``eckit`` and ``eccodes`` are on ``sync-branch/api-change``; ``eckit``'s downstream CI repeats the tests of ``eccodes``' own and downstream CI.
+   ``eckit`` and ``eccodes`` are on ``sync/api-change``; ``eckit``'s downstream CI repeats the tests of ``eccodes``' own and downstream CI.
 
 The default branch
 ~~~~~~~~~~~~~~~~~~

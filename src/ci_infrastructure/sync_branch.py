@@ -5,7 +5,7 @@
 """Which branch names take part in cross-repo branch matching (resolve_deps and actions/pick-ref).
 
 Other names use the manifest ref, so an unrelated same-named branch is never built.
-Stdlib-only: actions/pick-ref runs this with a stock interpreter. Exits 0 for a sync-branch/ or feature/ branch.
+Stdlib-only: actions/pick-ref runs this with a stock interpreter. Exits 0 for a sync/ or feature/ branch.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ import re
 import sys
 from typing import Final
 
-SYNC_BRANCH_PREFIXES: Final = ("sync-branch/", "feature/")
+# sync-branch/ only until the branches opened under that name are merged.
+SYNC_BRANCH_PREFIXES: Final = ("sync/", "sync-branch/", "feature/")
 SYNC_BRANCH_RE: Final = re.compile("^(?:" + "|".join(map(re.escape, SYNC_BRANCH_PREFIXES)) + ")")
 
 

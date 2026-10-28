@@ -57,7 +57,7 @@ How a fork pull request runs
    taken from the event, so a push in the meantime does not reach jobs still waiting to start;
    they publish their artifacts under that commit.
    A fork's branch name is never used: :action:`resolve-deps` builds a fork's pull request as its base branch,
-   pinned to its head commit, so no ``sync-branch/`` or ``feature/`` branch is matched.
+   pinned to its head commit, so no ``sync/`` or ``feature/`` branch is matched.
    A change across several repositories has to come from branches in those repositories.
 
 Downstream CI

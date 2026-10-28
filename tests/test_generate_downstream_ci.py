@@ -171,6 +171,23 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
             name = "a"
             prefix = "a"
             repo = "org/a"
+            compiler-inputs = []
+            [matrix.build]
+            triggers = ["rebuild-request"]
+            defaults.job-script = "./.ci/build.sh"
+            [[matrix.build.include]]
+            runs-on = "ubuntu-latest"
+            """,
+            r"\[package\]\.visibility Field required",
+            id="missing-visibility",
+        ),
+        pytest.param(
+            """
+            [package]
+            visibility = "private"
+            name = "a"
+            prefix = "a"
+            repo = "org/a"
             submodules = "yes"
             compiler-inputs = []
             [matrix.build]
@@ -185,6 +202,7 @@ def _consumer(tmp_path: Path, pkg: str, lane: Execution = EXECUTION_RUNNER) -> s
         pytest.param(
             """
             [package]
+            visibility = "private"
             name = "a"
             prefix = "a"
             repo = "org/a"
@@ -222,6 +240,7 @@ def test_artifact_prefix_is_an_accepted_kind_key(tmp_path: Path) -> None:
         "a",
         """
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a-primary"
         repo = "org/a"
@@ -275,6 +294,7 @@ def test_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         tmp_path,
         """
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a"
         repo = "org/a"
@@ -327,6 +347,7 @@ def test_parse_manifest_text_round_trip() -> None:
     body = textwrap.dedent(
         """
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a"
         repo = "org/a"
@@ -396,6 +417,7 @@ def test_trigger_cycle(tmp_path: Path) -> None:
             name,
             f"""
             [package]
+            visibility = "private"
             name = "{name}"
             prefix = "{name}"
             repo = "org/{name}"
@@ -632,6 +654,7 @@ def test_diamond_closure(tmp_path: Path) -> None:
             name,
             f"""
             [package]
+            visibility = "private"
             name = "{name}"
             prefix = "{name}"
             repo = "org/{name}"
@@ -934,12 +957,6 @@ def test_git_read_mints_a_read_only_token_for_the_runner_script(tmp_path: Path, 
     assert scripts and all(s["with"]["git-token"] == "${{ steps.git-read.outputs.token }}" for s in scripts)
 
 
-def test_visibility_absent_is_private(tmp_path: Path) -> None:
-    _make_chain_abc(tmp_path)
-    for m in parse_all(tmp_path):
-        assert m.visibility == "private"
-
-
 def test_public_upstream_dispatches_private_consumer(tmp_path: Path) -> None:
     """`uses:` would render the private repo's jobs into the public run."""
     _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
@@ -1042,6 +1059,7 @@ def test_resolve_consumer_refs_disagreement_errors(tmp_path: Path) -> None:
             name,
             f"""
             [package]
+            visibility = "private"
             name = "{name}"
             prefix = "{name}"
             repo = "org/{name}"
@@ -1253,6 +1271,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
     if hpc:
         return (
             f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
+            'visibility = "private"\n'
             '[matrix.build-hpc]\nexecution = "hpc-atos"\ntriggers = ["rebuild-request"]\n'
             "needs = []\n"
             '[[matrix.build-hpc.include]]\nruns-on = "hpc"\nsite = "hpc-batch"\n'
@@ -1260,6 +1279,7 @@ def _leaf_manifest(name: str, repo: str, *, hpc: bool = False) -> str:
         )
     return (
         f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\ncompiler-inputs = []\n'
+        'visibility = "private"\n'
         '[matrix.build]\ntriggers = ["rebuild-request"]\ndefaults.job-script = "./.ci/build.sh"\n'
         'needs = []\n[[matrix.build.include]]\nruns-on = "ubuntu-latest"\n'
     )
@@ -1434,6 +1454,7 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
         "a",
         f"""
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a"
         repo = "org/a"
@@ -1457,6 +1478,7 @@ def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
             f"c{i}",
             f"""
             [package]
+            visibility = "private"
             name = "c{i}"
             prefix = "c{i}"
             repo = "org/c{i}"
@@ -1675,7 +1697,7 @@ def test_local_sibling_layer_reads_clones_and_skips_missing(tmp_path: Path) -> N
 def _trigger_manifest(name: str, repo: str, targets: list[str]) -> str:
     blocks = "".join(f'\n[[trigger-downstream]]\nrepo = "{t}"\nref = "main"\n' for t in targets)
     return (
-        f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\n'
+        f'[package]\nname = "{name}"\nprefix = "{name}"\nrepo = "{repo}"\nvisibility = "private"\n'
         "compiler-inputs = []\n\n"
         '[[matrix.build.include]]\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n\n'
         '[matrix.build]\ntriggers = ["rebuild-request"]\n'
@@ -1922,6 +1944,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
 def _pkg(compiler_inputs: str, legs: str, publishes: bool = True) -> str:
     return f"""
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a"
         repo = "org/a"
@@ -2299,7 +2322,8 @@ def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytes
         assert doc[True] == {"pull_request_target": {"types": ["opened", "reopened", "closed"]}}
         job = doc["jobs"]["list"]
         assert job["if"] == (
-            "(startsWith(github.head_ref, 'sync-branch/') || startsWith(github.head_ref, 'feature/')) "
+            "(startsWith(github.head_ref, 'sync/') || startsWith(github.head_ref, 'sync-branch/') "
+            "|| startsWith(github.head_ref, 'feature/')) "
             "&& github.event.pull_request.head.repo.full_name == github.repository"
         )
         assert [s["uses"] for s in job["steps"]] == ["ecmwf/ci-infrastructure/actions/sync-branch-prs@main"]

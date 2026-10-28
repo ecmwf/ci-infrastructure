@@ -338,6 +338,7 @@ def test_when_scopes_dep_out_of_identity_of_nonmatching_legs() -> None:
 def test_ctest_args_must_be_a_string() -> None:
     manifest = """
 [package]
+visibility = "private"
 name = "x"
 prefix = "x"
 repo = "o/x"
@@ -377,6 +378,7 @@ def test_dispatch_plans_are_keyed_by_lane_not_just_repo_and_ref() -> None:
 _PINNED: Final = Ref("a" * 40)
 _MIDDLE_MANIFEST: Final = """
 [package]
+visibility = "private"
 name = "middle"
 prefix = "middle"
 repo = "o/middle"
@@ -508,6 +510,7 @@ def test_differing_compiler_inputs_fail() -> None:
 
 _OPTIONED_MIDDLE_MANIFEST: Final = """
 [package]
+visibility = "private"
 name = "middle"
 prefix = "middle"
 repo = "o/middle"
@@ -552,6 +555,7 @@ def test_a_dep_variant_resolves_its_deps_as_its_own_ci_did(consumer_options: str
 
 _PY_LEG_PRODUCER: Final = """
 [package]
+visibility = "private"
 name = "up"
 prefix = "up"
 repo = "o/up"
@@ -640,6 +644,7 @@ def test_parse_deps_python_version_input() -> None:
 
 _META_MANIFEST: Final = """
 [package]
+visibility = "private"
 name = "umbrella"
 prefix = "umbrella"
 repo = "o/umbrella"
@@ -686,6 +691,7 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
 
 _FORTRAN_WHEN_MANIFEST: Final = """
 [package]
+visibility = "private"
 name = "middle"
 prefix = "middle"
 repo = "o/middle"
