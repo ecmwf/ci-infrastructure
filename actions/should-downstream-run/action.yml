@@ -79,7 +79,9 @@ runs:
         if [ -n "${PULL_REQUEST_INPUT:-}" ]; then
           gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_INPUT}" | jq '[.]' > "$pulls"
         else
-          gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" > "$pulls"
+          # The lookup also returns PRs stacked on this commit; only the PR it heads counts.
+          gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" |
+            jq --arg sha "$SHA_INPUT" '[.[] | select(.head.sha == $sha)]' > "$pulls"
         fi
 
         depth=""
