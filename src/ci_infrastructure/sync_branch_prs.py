@@ -8,7 +8,7 @@
 
 Run from pr-sync-branch.yml when one of them opens, reopens or closes; every listed pull request is
 rewritten, so one event updates them all. Open and merged pull requests count, closed ones drop out;
-with fewer than two the block is removed. A public repo's pull request lists only public repos'.
+with fewer than two the block is removed. A public repo's pull request lists only public repos' and says so.
 The block sits after the Contributor Declaration, where check_pr_declaration ignores it.
 """
 
@@ -31,6 +31,7 @@ from .sync_branch import is_sync_branch
 BEGIN: Final = "<!-- SYNC-BRANCH_BEGIN -->"
 END: Final = "<!-- SYNC-BRANCH_END -->"
 HEADING: Final = "Synchronised rollout:"
+PUBLIC_HEADING: Final = "Synchronised rollout (does not show synced PRs in internal repos):"
 _BLOCK_RE: Final = re.compile(rf"\s*{re.escape(BEGIN)}.*?{re.escape(END)}", re.DOTALL)
 
 
@@ -81,15 +82,16 @@ def involved(nodes: Mapping[str, Mapping[str, Any]], edges: Mapping[str, Edges])
     return list(prs.values())
 
 
-def render_block(urls: Sequence[str]) -> str:
-    return "\n".join([BEGIN, HEADING, "", *(f"- {url}" for url in urls), END])
+def render_block(urls: Sequence[str], public: bool = False) -> str:
+    heading = PUBLIC_HEADING if public else HEADING
+    return "\n".join([BEGIN, heading, "", *(f"- {url}" for url in urls), END])
 
 
-def with_block(body: str, urls: Sequence[str]) -> str:
+def with_block(body: str, urls: Sequence[str], public: bool = False) -> str:
     """`body` ending with the block for `urls`, or without any block for fewer than two."""
     if len(urls) < 2:
         return _BLOCK_RE.sub("", body) if BEGIN in body else body
-    return f"{_BLOCK_RE.sub('', body).rstrip()}\n\n{render_block(urls)}"
+    return f"{_BLOCK_RE.sub('', body).rstrip()}\n\n{render_block(urls, public)}"
 
 
 def updates(prs: Sequence[PullRequest]) -> list[tuple[PullRequest, str]]:
@@ -97,7 +99,7 @@ def updates(prs: Sequence[PullRequest]) -> list[tuple[PullRequest, str]]:
     out = []
     for pr in prs:
         urls = [p.url for p in prs if p.public or not pr.public]
-        body = with_block(pr.body, urls)
+        body = with_block(pr.body, urls, pr.public)
         if body != pr.body:
             out.append((pr, body))
     return out

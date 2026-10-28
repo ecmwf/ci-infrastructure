@@ -21,7 +21,7 @@ from ci_infrastructure.manifest import (
     validate,
 )
 
-_PACKAGE: dict[str, Any] = {"name": "a", "prefix": "a", "repo": "o/a", "compiler-inputs": []}
+_PACKAGE: dict[str, Any] = {"name": "a", "prefix": "a", "repo": "o/a", "compiler-inputs": [], "visibility": "private"}
 _DEP: dict[str, Any] = {"repo": "o/b", "package": "b", "ref": "main", "compiler-inputs": []}
 
 

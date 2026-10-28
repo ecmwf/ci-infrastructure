@@ -52,12 +52,12 @@
   <use href="#node" x="380" y="292"/>
   <circle cx="380" cy="292" r="8" fill="#FF0000"/>
   <rect x="290" y="326" width="180" height="24" rx="3" fill="#156082"/>
-  <text x="380" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync-branch/api-change</text>
+  <text x="380" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync/api-change</text>
 
   <rect x="580" y="232" width="120" height="26" rx="3" fill="#004C76"/>
   <text x="640" y="250" font-size="14" fill="#ffffff" text-anchor="middle">eccodes</text>
   <use href="#node" x="640" y="292"/>
   <circle cx="640" cy="292" r="8" fill="#FF0000"/>
   <rect x="550" y="326" width="180" height="24" rx="3" fill="#156082"/>
-  <text x="640" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync-branch/api-change</text>
+  <text x="640" y="343" font-size="13" fill="#ffffff" text-anchor="middle">sync/api-change</text>
 </svg>

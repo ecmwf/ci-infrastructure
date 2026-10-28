@@ -25,7 +25,7 @@ def _pr(*, head_repo: str = FORK, head_sha: str = SHA, state: str = "open", numb
     return {
         "number": number,
         "state": state,
-        "head": {"sha": head_sha, "ref": "sync-branch/anything", "repo": {"full_name": head_repo}},
+        "head": {"sha": head_sha, "ref": "sync/anything", "repo": {"full_name": head_repo}},
         "base": {"ref": "develop"},
     }
 
@@ -163,7 +163,7 @@ def test_a_dispatch_for_a_pr_of_this_repo_reads_its_ci_run(tmp_path: Path) -> No
     assert code == 0
     assert (out["head-sha"], out["head-branch"], out["ci-conclusion"], out["pull-request"]) == (
         SHA,
-        "sync-branch/anything",
+        "sync/anything",
         "success",
         "3",
     )

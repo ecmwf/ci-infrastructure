@@ -37,6 +37,7 @@ def test_platform_rejected(platform: str, match: str | None) -> None:
 
 _FORTMATH_MANIFEST: Final = """
 [package]
+visibility = "private"
 name = "fortmath"
 prefix = "fortmath"
 repo = "owner/fortran"

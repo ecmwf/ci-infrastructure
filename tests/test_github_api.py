@@ -215,6 +215,7 @@ def test_defaults_must_be_a_table() -> None:
 def test_generator_and_resolver_expand_reuse_matrix_identically(tmp_path: Path) -> None:
     body = textwrap.dedent("""
         [package]
+        visibility = "private"
         name = "a"
         prefix = "a"
         repo = "org/a"

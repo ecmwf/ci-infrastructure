@@ -10,21 +10,22 @@ Tested one by one, both sides fail:
 ``eckit``'s :doc:`downstream CI <downstream-ci>` builds ``eccodes``' ``develop``, which does not use the changed interface yet,
 and ``eccodes``' own CI builds against ``eckit``'s ``develop``, which does not have it yet.
 
-Such changes go on special branches starting with ``sync-branch/`` or ``feature/``.
+Such changes go on special branches starting with ``sync/`` or ``feature/``;
+the former ``sync-branch/`` still works for branches opened under it.
 Whenever a branch with such a prefix exists in two repos, the CI tests these
 branches automatically against each other.
 
 
 .. figure:: feature-branches.svg
    :alt: Two chains ecbuild, eckit, eccodes. Top: only eckit is on a branch, fix-leak; the others are on develop.
-         Bottom: eckit and eccodes are both on sync-branch/api-change and are built together; ecbuild is on develop.
+         Bottom: eckit and eccodes are both on sync/api-change and are built together; ecbuild is on develop.
    :width: 100%
 
 On such a branch, :action:`resolve-deps` resolves every upstream that has a branch of the same name at that branch,
 and all others at their ``ref`` from :doc:`../configuring/manifest`.
 In a :doc:`downstream <../configuring/downstream>` run, :action:`pick-ref` likewise checks out each consumer's branch of that name,
 where it exists.
-In the example, ``eccodes``' ``sync-branch/api-change`` is therefore always built against ``eckit``'s,
+In the example, ``eccodes``' ``sync/api-change`` is therefore always built against ``eckit``'s,
 while ``ecbuild`` stays on ``develop``.
 Any other branch, such as ``fix-leak``, or such a branch that exists in one repository only,
 keeps testing against ``ref`` from :doc:`../configuring/manifest`.
@@ -47,7 +48,8 @@ the open and merged pull requests from the branch, upstream first, each once.
 
 The block comes after the Contributor Declaration, where :action:`check-pr-declaration` ignores it;
 do not edit it, as the next run replaces it.
-It needs at least two pull requests, and in a public repository it lists only those of public repositories.
+It needs at least two pull requests, and in a public repository it lists only those of public repositories,
+under the heading ``Synchronised rollout (does not show synced PRs in internal repos):``.
 The generator writes the workflow as ``pr-sync-branch.yml`` into every repository with a manifest.
 
 This does not work for pull requests from forks: a fork's branch name is never matched,

@@ -17,6 +17,7 @@ from ci_infrastructure.generate_downstream_ci import Manifest, parse_manifest, r
 
 _DEFAULT_PACKAGE: Final = """
     [package]
+    visibility = "private"
     name = "{name}"
     prefix = "{name}"
     repo = "org/{name}"

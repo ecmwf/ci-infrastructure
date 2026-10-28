@@ -45,7 +45,7 @@ def test_a_non_sync_branch_is_never_probed(tmp_path: Path, branch: str) -> None:
     assert _run(tmp_path, branch, exists=True) == (FALLBACK, [])
 
 
-@pytest.mark.parametrize("branch", ["sync-branch/foo", "feature/foo"])
+@pytest.mark.parametrize("branch", ["sync/foo", "sync-branch/foo", "feature/foo"])
 def test_a_sync_branch_is_used_where_it_exists(tmp_path: Path, branch: str) -> None:
     ref, calls = _run(tmp_path, branch, exists=True)
     assert ref == branch
