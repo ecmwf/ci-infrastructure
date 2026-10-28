@@ -131,6 +131,8 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
    |                  +-----------------------------------------------------+
    |                  | `ubuntu26.04-gcc15-gfortran15`_                     |
    |                  +-----------------------------------------------------+
+   |                  | `ubuntu26.04-clang23`_                              |
+   |                  +-----------------------------------------------------+
    |                  | `ubuntu26.04-gcc15-gfortran15-boost-qt6`_           |
    +------------------+-----------------------------------------------------+
    | ``rocky8``       | `rocky8-base`_                                      |
@@ -199,6 +201,7 @@ Each is pulled as ``eccr.ecmwf.int/public-ci-images/<image>:latest``.
 .. _ubuntu24.04-gcc13-gfortran13-boost-qt6-rust1.90: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu24.04/gcc13-gfortran13-boost-qt6-rust1.90/Dockerfile
 .. _ubuntu26.04-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/base/Dockerfile
 .. _ubuntu26.04-gcc15-gfortran15: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15/Dockerfile
+.. _ubuntu26.04-clang23: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/clang23/Dockerfile
 .. _ubuntu26.04-gcc15-gfortran15-boost-qt6: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/ubuntu26.04/gcc15-gfortran15-boost-qt6/Dockerfile
 .. _rocky8-base: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky8/base/Dockerfile
 .. _rocky8-gcc8-gfortran8: https://github.com/ecmwf/ci-infrastructure/blob/main/public-images/rocky8/gcc8-gfortran8/Dockerfile
