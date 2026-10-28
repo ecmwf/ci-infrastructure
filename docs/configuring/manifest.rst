@@ -294,6 +294,34 @@ The environment variables point the actions at the artifact store.
 ``eckit`` additionally mints a GitHub App token for :action:`resolve-deps` and :action:`fetch-deps`,
 which raises the API rate limit and gives access to private repositories.
 
+Waiting for upstream builds
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A dep that is not in the store yet, because its upstream is still building it,
+is waited for by :action:`fetch-deps`, on the leg's own runner.
+When several repositories of a :doc:`sync branch <../using/feature-branches>` run at once,
+those waiting legs can hold the runners the upstream needs to build at all.
+One ``wait-<kind>`` job per kind therefore waits in a small pod with :action:`wait-for-deps`,
+and the legs start only after it:
+
+.. code:: yaml
+
+   wait-build:
+     needs: resolve
+     runs-on: arc-runner-normal
+     container:
+       image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+     steps:
+       - uses: ecmwf/ci-infrastructure/actions/wait-for-deps@main
+         with:
+           matrix: ${{ needs.resolve.outputs.build-matrix }}
+
+   build:
+     needs: [resolve, wait-build]
+
+A job per kind keeps the runner legs from waiting for an upstream's slower HPC legs.
+:action:`fetch-deps` still waits for anything that is missing after all.
+
 Repositories the build fetches over git
 ---------------------------------------
 

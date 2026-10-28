@@ -72,7 +72,7 @@ ghactions_groups = [
     (
         "Dependencies",
         "Resolve the dependency tree. Move install trees through S3.",
-        ["resolve-deps", "fetch-deps", "publish-artifact", "install-prefix"],
+        ["resolve-deps", "wait-for-deps", "fetch-deps", "publish-artifact", "install-prefix"],
     ),
     (
         "HPC",
