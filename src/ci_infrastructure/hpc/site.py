@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
@@ -47,7 +48,17 @@ def load_site(site_name: str, *, config_path: str | Path | None = None, user: st
     resolved = Path(config_path) if config_path is not None else default_config_path()
     config = get_config(str(resolved))
     site: Any = get_site(config, site_name, user)
+    _retry_unresolved(site._connection)
     return cast(SlurmSiteLike, site)
+
+
+def _retry_unresolved(conn: Any) -> None:
+    """Have an ssh connection run ssh and scp through the retrying wrappers, where installed beside this Python."""
+    bin_dir = Path(sys.executable).parent
+    for attr, script in (("ssh", "ci-infrastructure-ssh"), ("scp", "ci-infrastructure-scp")):
+        wrapper = bin_dir / script
+        if getattr(conn, attr, None) == attr and wrapper.is_file():
+            setattr(conn, attr, str(wrapper))
 
 
 def ensure_batch_site(site: SlurmSiteLike, site_name: str) -> None:
