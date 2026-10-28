@@ -27,10 +27,12 @@ from ci_infrastructure.hpc.orchestrate import (
     _remote_sentinel_waiter,
     _require_nested_remote_path,
     _StatusReporter,
+    drop_staging,
     find_active_job_by_name,
     format_job_status,
     plan_remote_prefixes,
     query_job_status,
+    report_quota,
     run_gc,
     submit_or_reattach,
     wait_for_job,
@@ -302,7 +304,7 @@ def test_gc_sweeps_every_tree_a_build_creates() -> None:
 class _LocalConn:
     """Runs the remote command here, as troika's ssh connection would there."""
 
-    def execute(self, argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+    def execute(self, argv: Sequence[str], dryrun: bool = False, **kwargs: Any) -> subprocess.Popen[bytes]:
         return subprocess.Popen(argv, **kwargs)
 
 
@@ -344,6 +346,31 @@ def test_gc_fails_when_find_fails(tmp_path: Path) -> None:
             run_gc(_LocalConn(), remote_work_dir=str(tmp_path), older_than_days=7)
     finally:
         (tmp_path / "staging").chmod(0o755)
+
+
+def test_drop_staging_removes_the_tree_and_releases_the_lock(tmp_path: Path) -> None:
+    paths = RemotePaths.derive(str(tmp_path), "art")
+    (Path(paths.staging) / "deps").mkdir(parents=True)
+    Path(f"{paths.staging}.push.tgz").write_text("x")
+    drop_staging(_LocalConn(), paths, run_id="1-1")
+    assert sorted(p.name for p in tmp_path.rglob("*")) == ["locks", "staging"]
+
+
+def test_drop_staging_only_warns_on_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    class _Fails(_LocalConn):
+        def execute(self, argv: Sequence[str], dryrun: bool = False, **kwargs: Any) -> subprocess.Popen[bytes]:
+            return subprocess.Popen(["false"] if argv[0] == "rm" else argv, **kwargs)
+
+    paths = RemotePaths.derive(str(tmp_path), "art")
+    Path(paths.staging).mkdir(parents=True)
+    drop_staging(_Fails(), paths, run_id="1-1")
+    assert "::warning::submit-wait: could not remove" in capsys.readouterr().out
+    assert Path(paths.staging).is_dir()
+
+
+def test_report_quota_never_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report_quota(_LocalConn(), str(tmp_path))
+    assert capsys.readouterr().out.strip()
 
 
 def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[str]) -> None:
