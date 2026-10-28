@@ -226,8 +226,12 @@ reattaches to a job of the same name that is still in the queue,
 and submits a new one otherwise.
 Cancelling the GitHub job cancels the SLURM job.
 
-A new submission clears the artifact's staging directory.
-``nightly-cleanup.yml`` removes older trees under ``HPC_CI_REMOTE_WORK_DIR``;
+A new submission clears the artifact's staging directory,
+and the run removes it as soon as the job has finished or left the queue,
+since the dependencies it holds are a copy per artifact and nothing reads them afterwards.
+``nightly-cleanup.yml`` removes older trees under ``HPC_CI_REMOTE_WORK_DIR``,
+e.g. those of a run whose runner died,
+and prints the quota of the directory before and after, both in bytes and in files;
 dispatched with ``dryrun: true`` it only lists them.
 The same workflow deletes the oldest-written S3 objects
 once a bucket holds more than half of its assumed quota (artifacts 800 GB, sccache 150 GB).

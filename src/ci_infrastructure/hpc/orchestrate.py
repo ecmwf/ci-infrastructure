@@ -332,6 +332,29 @@ def run_gc(conn: Any, *, remote_work_dir: str, older_than_days: int, dryrun: boo
         print(f"gc: {base}: {verb} {count} entries")
 
 
+def drop_staging(conn: Any, paths: RemotePaths, *, run_id: str) -> None:
+    """Free the staging tree once its job is over; the artifact cache is S3, so nothing reads it again.
+
+    Under the submit lock: a peer submitting a new job must not see the marker, skip shipping, and lose it.
+    """
+    try:
+        with transfer.remote_lock(
+            conn, lock_dir=paths.lock, run_id=run_id, what="cleanup", subject=PurePosixPath(paths.staging).name
+        ):
+            transfer.remove_tree(conn, remote_dir=paths.staging)
+    except CIError as exc:
+        print(f"::warning::submit-wait: could not remove {paths.staging}; the nightly gc will: {exc}")
+
+
+def report_quota(conn: Any, path: str) -> None:
+    """Shows blocks and files: "Disk quota exceeded" is raised for either. Lustre first, then quota(1)."""
+    q = shlex.quote(path)
+    probe = f'lfs quota -h -u "$USER" {q} 2>/dev/null || quota -s 2>/dev/null || echo "no quota tool found"'
+    proc = conn.execute(["bash", "-c", probe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    stdout, _ = proc.communicate()
+    print(stdout.decode(errors="replace").rstrip() if isinstance(stdout, bytes) else str(stdout).rstrip())
+
+
 def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str, jid: int) -> None:
 
     def handler(signum: int, frame: FrameType | None) -> None:
@@ -653,6 +676,10 @@ def submit_wait(
     if verdict in ("VANISHED", "TIMEOUT"):
         _echo_remote_output(site._connection, paths.output)
 
+    # A timed-out wait leaves the job running.
+    if ships_source and verdict != "TIMEOUT":
+        drop_staging(site._connection, paths, run_id=run_id)
+
     if verdict == "SUCCESS":
         if no_publish:
             print(f"submit-wait: job {jid} finished successfully (test-only; nothing to publish).")
@@ -716,7 +743,11 @@ def gc(
 ) -> None:
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     resolved = resolve_remote_path(site._connection, remote_work_dir)
+    print("gc: quota before:")
+    report_quota(site._connection, resolved)
     run_gc(site._connection, remote_work_dir=resolved, older_than_days=older_than_days, dryrun=dryrun)
+    print("gc: quota after:")
+    report_quota(site._connection, resolved)
 
 
 def _require_nested_remote_path(command: str, remote_dir: str, resolved: str) -> None:
