@@ -17,22 +17,28 @@ from ghactions import _write_pages
 from sphinx.application import Sphinx
 
 
-def _page(root: Path, prog: str, target: str) -> str:
+def _page(root: Path, prog: str, target: str, first: bool) -> str:
     module, attr = target.split(":")
     source = root / "src" / Path(*module.split(".")).with_suffix(".py")
     if "import click" in source.read_text(encoding="utf-8"):
         return f".. click:: {module}:{attr}\n   :prog: {prog}\n   :nested: full"
-    return f"{prog}\n{'=' * len(prog)}\n\n.. automodule:: {module}"
+    # Scripts sharing a module, like ssh and scp, index it once.
+    return f"{prog}\n{'=' * len(prog)}\n\n.. automodule:: {module}" + ("" if first else "\n   :no-index:")
 
 
 def _generate(app: Sphinx) -> None:
     root = Path(app.config.ghactions_root)
     scripts = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+    pages, seen = {}, set()
+    for prog, target in scripts.items():
+        module = target.split(":")[0]
+        pages[prog] = _page(root, prog, target, first=module not in seen)
+        seen.add(module)
     _write_pages(
         Path(app.srcdir) / "reference" / "cli",
         "Command-line tools",
         "The actions call these; run them by hand to debug a step locally.",
-        {prog: _page(root, prog, target) for prog, target in scripts.items()},
+        pages,
     )
 
 

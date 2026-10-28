@@ -26,6 +26,8 @@ the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and bui
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
 and ``PATH`` at the directories each declares in ``add-to-path``.
 The cluster therefore needs neither a GitHub token nor access to S3.
+Every ``ssh`` and ``scp`` that fails because the host name does not resolve is tried twice more,
+after 10 and 30 seconds, as the runner pods' DNS drops such lookups now and then.
 
 The staging directory belongs to the artifact, not to the run.
 Two runs that build the same artifact, e.g. a repository's own CI and a downstream run,
