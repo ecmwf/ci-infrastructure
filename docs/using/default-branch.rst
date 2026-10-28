@@ -30,6 +30,8 @@ runs every 6 hours, and on demand, over the default branches of the repositories
 Its summary shows, per repository, whether the last ``ci.yml`` run passed,
 and the recent commits with their CI result, their author and the pull request that brought them in;
 a commit pushed without a pull request is marked ❗ with the name of the person who pushed it.
+A pull request merged by hand (``git merge`` and push) counts as its pull request,
+and so does one merged into another branch that the default branch then fast-forwarded to.
 
 A repository whose own CI is green but whose upstream is red, as the ``[[deps]]`` of its manifest declare,
 is shown as ⛔ *blocked by* that upstream.

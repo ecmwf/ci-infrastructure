@@ -49,7 +49,22 @@ def test_only_a_merged_pr_into_the_branch_counts() -> None:
     other_base = {"number": 2, "url": "u2", "merged": True, "baseRefName": "master"}
     merged = {"number": 3, "url": "u3", "merged": True, "baseRefName": "develop"}
     assert dbs._merged_pr(_node("x", None, [open_pr, other_base]), "develop") is None
-    assert dbs._merged_pr(_node("x", None, [open_pr, merged]), "develop") == (3, "u3")
+    assert dbs._merged_pr(_node("x", None, [open_pr, merged]), "develop") == (3, "u3", "develop")
+
+
+def test_the_merge_commit_of_a_pr_into_another_branch_counts() -> None:
+    # fdb#380: merged into rust-crates, which develop then fast-forwarded to.
+    pr = {"number": 380, "url": "u", "merged": True, "baseRefName": "rust-crates", "mergeCommit": {"oid": "x"}}
+    assert dbs._merged_pr(_node("x", None, [pr]), "develop") == (380, "u", "rust-crates")
+    assert dbs._merged_pr(_node("y", None, [pr]), "develop") is None
+
+
+def test_a_pr_merged_by_hand_counts_through_the_merged_parent() -> None:
+    # ecflow#487: `git merge --no-ff` pushed; GitHub links the PR to the head, not to the merge.
+    node = _node("m", "a")
+    pr = {"number": 487, "url": "u", "merged": True, "baseRefName": "develop", "mergeCommit": {"oid": "h~1"}}
+    node["parents"]["nodes"].append({"oid": "h", "associatedPullRequests": {"nodes": [pr]}})
+    assert dbs._merged_pr(node, "develop") == (487, "u", "develop")
 
 
 def test_verdict_skips_running_and_cancelled_runs() -> None:
@@ -175,7 +190,7 @@ def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch:
 def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
     commits = (
         dbs.Commit("b" * 40, "https://c/b", "hotfix | merge", "alice", None, _run("b" * 40, "failure", "bob"), NOW),
-        dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7"), None, NOW),
+        dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7", "develop"), None, NOW),
     )
     states = {
         "o/eckit": _state("o/eckit", _run("b" * 40, "failure", "bob"), commits=commits),
@@ -194,7 +209,7 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
     older = dbs.Commit("d" * 40, "https://c/d", "fix", "erin", None, None, NOW - timedelta(days=2))
     newer = dbs.Commit("b" * 40, "https://c/b", "hotfix", "alice", None, _run("b" * 40, "failure", "bob"), NOW)
     old = dbs.Commit("c" * 40, "https://c/c", "old push", "dave", None, None, NOW - timedelta(days=15))
-    merged = dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7"), None, NOW)
+    merged = dbs.Commit("a" * 40, "https://c/a", "feature", "carol", (7, "https://pr/7", "develop"), None, NOW)
     states = {
         "o/eckit": _state("o/eckit", commits=(newer, merged, old)),
         "o/atlas": _state("o/atlas", commits=(older,)),
