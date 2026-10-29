@@ -6,7 +6,10 @@
 
 Reads the gate's provenance and legs and the downloaded artifacts (``release-<job_key>/build-meta.json``,
 ``itest-<job_key>/itest-<leg_id>.json``, ``receipt-<job_key>/receipt-<leg_id>.json``); writes
-``release-record.json`` and a step-summary table. Fails when an expected piece is missing:
+``release-record.json`` and a step-summary table. download-artifact without a name puts each
+artifact in its own directory, except when the run has exactly one: that one lands directly in
+the download path, so a file is also looked for there (a build-meta.json only counts when it
+names the leg's job key). Fails when an expected piece is missing:
 the release is partial, and "Re-run failed jobs" completes it.
 """
 
@@ -32,6 +35,22 @@ def _load(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _find(artifacts: Path, artifact: str, name: str) -> dict[str, Any] | None:
+    """``<artifacts>/<artifact>/<name>``, or ``<artifacts>/<name>`` when the run's lone artifact landed flat."""
+    nested = artifacts / artifact
+    if nested.is_dir():
+        return _load(nested / name)
+    return _load(artifacts / name)
+
+
+def _build_meta(artifacts: Path, key: str) -> dict[str, Any] | None:
+    meta = _find(artifacts, f"release-{key}", "build-meta.json")
+    release = meta.get("release") if meta is not None else None
+    if not isinstance(release, dict) or release.get("job_key") != key:
+        return None
+    return meta
+
+
 def build_record(
     *,
     provenance: Mapping[str, Any],
@@ -47,9 +66,9 @@ def build_record(
             ctx = leg.get("_release") or {}
             key, lid, state = ctx.get("job_key"), ctx.get("leg_id"), ctx.get("state")
             built = state != STATE_ALREADY_PUBLISHED
-            meta = _load(artifacts / f"release-{key}" / "build-meta.json") if built else None
-            itest = _load(artifacts / f"itest-{key}" / f"itest-{lid}.json") if built else None
-            receipt = _load(artifacts / f"receipt-{key}" / f"receipt-{lid}.json") if publish else None
+            meta = _build_meta(artifacts, str(key)) if built else None
+            itest = _find(artifacts, f"itest-{key}", f"itest-{lid}.json") if built else None
+            receipt = _find(artifacts, f"receipt-{key}", f"receipt-{lid}.json") if publish else None
             if built and meta is None:
                 missing.append(f"{lid}: no build (build-meta.json)")
             if built and (itest is None or itest.get("result") != "passed"):

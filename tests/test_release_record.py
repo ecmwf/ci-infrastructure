@@ -25,6 +25,9 @@ def _legs(state: str = "build") -> dict[str, Any]:
     return {"release-rpm": {"include": [{"platform": "rocky-9", "_release": ctx}]}}
 
 
+_META = {"release": {"job_key": KEY, "leg_id": LEG}, "sha256": DIGEST}
+
+
 def _write(root: Path, artifact: str, name: str, data: dict[str, Any]) -> None:
     (root / artifact).mkdir(parents=True, exist_ok=True)
     (root / artifact / name).write_text(json.dumps(data))
@@ -33,7 +36,7 @@ def _write(root: Path, artifact: str, name: str, data: dict[str, Any]) -> None:
 def _artifacts(
     root: Path, *, receipt: bool = True, receipt_sha: str = DIGEST, itest_sha: str = SHA, itest_key: str = KEY
 ) -> Path:
-    _write(root, f"release-{KEY}", "build-meta.json", {"sha256": DIGEST})
+    _write(root, f"release-{KEY}", "build-meta.json", _META)
     itest = {"result": "passed", "sha256": DIGEST, "sha": itest_sha, "job_key": itest_key}
     _write(root, f"itest-{KEY}", f"itest-{LEG}.json", itest)
     if receipt:
@@ -93,6 +96,43 @@ def test_partial(tmp_path: Path, kwargs: dict[str, Any], needs: dict[str, Any], 
     for text in expected:
         assert any(text in m for m in missing), missing
     assert "Partial — re-run failed jobs" in record.summary(rec)
+
+
+def test_a_lone_artifact_is_found_where_download_artifact_puts_it(tmp_path: Path) -> None:
+    """Run 40902451849: the build's artifact was the run's only one, so download-artifact (no name,
+    merge-multiple false) extracted it straight into the path, with no release-<job_key>/ directory."""
+    (tmp_path / "pkg-2.5.0~rc1-1.x86_64.rpm").write_bytes(b"rpm")
+    (tmp_path / "SHA256SUMS").write_text(f"{DIGEST}  pkg-2.5.0~rc1-1.x86_64.rpm\n")
+    (tmp_path / "build-meta.json").write_text(json.dumps(_META))
+    rec, missing = record.build_record(
+        provenance=_PROV,
+        legs_by_kind=_legs(),
+        artifacts=tmp_path,
+        publish=True,
+        needs={"build-rpm": {"result": "success"}, "itest-rpm": {"result": "failure"}},
+    )
+    assert rec["legs"][0]["build"] == _META
+    assert not any("no build" in m for m in missing), missing
+    assert any("no passed install test" in m for m in missing), missing
+
+
+def test_a_flat_build_meta_of_another_leg_does_not_count(tmp_path: Path) -> None:
+    (tmp_path / "build-meta.json").write_text(json.dumps({"release": {"job_key": "pkg-other"}, "sha256": DIGEST}))
+    _, missing = record.build_record(provenance=_PROV, legs_by_kind=_legs(), artifacts=tmp_path, publish=False)
+    assert f"{LEG}: no build (build-meta.json)" in missing
+
+
+def test_a_malformed_build_meta_counts_as_no_build(tmp_path: Path) -> None:
+    _write(tmp_path, f"release-{KEY}", "build-meta.json", {"release": "not an object"})
+    _, missing = record.build_record(provenance=_PROV, legs_by_kind=_legs(), artifacts=tmp_path, publish=False)
+    assert f"{LEG}: no build (build-meta.json)" in missing
+
+
+def test_a_nested_artifact_wins_over_a_flat_file(tmp_path: Path) -> None:
+    _artifacts(tmp_path, receipt=False)
+    (tmp_path / "build-meta.json").write_text("not json")
+    rec, missing = record.build_record(provenance=_PROV, legs_by_kind=_legs(), artifacts=tmp_path, publish=False)
+    assert (missing, rec["legs"][0]["build"]) == ([], _META)
 
 
 def test_cli_writes_the_record_and_fails_when_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,7 +24,7 @@ inputs:
     required: false
     default: '{}'
   artifacts:
-    description: 'Directory the release, itest and receipt artifacts were downloaded into (one subdirectory each).'
+    description: 'Directory download-artifact (no name) put the run''s artifacts in: one subdirectory each, or a lone artifact directly.'
     required: true
   out:
     description: 'Where to write release-record.json.'
