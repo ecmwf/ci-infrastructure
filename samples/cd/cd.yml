@@ -1,0 +1,225 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CD v3 (experimental): a release workflow for the rpm channel; see docs/configuring/releases.rst.
+# Copy it to .github/workflows/cd-v3.yml, replace `my-package` with the repo's [package].name, and
+# keep its shape: check-cd-workflow (a pre-commit hook, and the release gate) enforces it.
+#
+# A pull request labelled approved-for-cd rehearses: everything but the publish jobs.
+# A pushed X.Y.Z-rcN tag publishes to test Nexus, from the `cd-v3-test` environment.
+#
+# While the release actions live on ci-infrastructure's feature/cd-v3 they are used at that
+# ref (check-cd-workflow --allow-ref feature/cd-v3); a commit SHA once they are on main.
+
+name: cd-v3
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+-[rR][cC][0-9]+']
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-v3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci-approval:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'approved-for-cd'
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@feature/cd-v3
+
+  gate:
+    needs: [ci-approval]
+    runs-on: arc-runner-normal
+    container:
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.gate.outputs.mode }}
+      publish: ${{ steps.gate.outputs.publish }}
+      sha: ${{ steps.gate.outputs.sha }}
+      tag: ${{ steps.gate.outputs.tag }}
+      json: ${{ steps.gate.outputs.json }}
+      source-deps: ${{ steps.gate.outputs.source-deps }}
+      provenance: ${{ steps.gate.outputs.provenance }}
+    steps:
+      # The tagged commit, or the pull request's merge commit.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: gate
+        uses: ecmwf/ci-infrastructure/actions/release-gate@feature/cd-v3
+        env:
+          CD_KILL_SWITCH: ${{ vars.CD_KILL_SWITCH }}
+          CD_KILL_SWITCH_REASON: ${{ vars.CD_KILL_SWITCH_REASON }}
+        with:
+          kinds: release-rpm
+          nexus-read-urls: '{"rocky-9": "${{ vars.NEXUS_TEST_URL_ROCKY_9 }}"}'
+          ci-wait-seconds: ${{ vars.ARTIFACT_WAIT_TIMEOUT || '7200' }}
+          allow-ref: feature/cd-v3
+
+  build-rpm:
+    needs: [ci-approval, gate]
+    if: fromJSON(needs.gate.outputs.json)['release-rpm'].include[0] != null
+    name: build-rpm (${{ matrix._release.leg_id }})
+    runs-on: ${{ matrix['runs-on'] }}
+    container:
+      image: ${{ matrix.container }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.gate.outputs.json)['release-rpm'] }}
+    # A leg the gate found on Nexus already stays in the matrix with its steps skipped, so the
+    # jobs after it still run and record it.
+    steps:
+      - if: matrix._release.state == 'build'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - id: deps
+        if: matrix._release.state == 'build'
+        uses: ecmwf/ci-infrastructure/actions/release-source-deps@feature/cd-v3
+        with:
+          deps: ${{ needs.gate.outputs.source-deps }}
+      - id: build
+        if: matrix._release.state == 'build'
+        uses: ecmwf/ci-infrastructure/actions/run-job-script@feature/cd-v3
+        with:
+          job-script: ${{ matrix.job-script }}
+          matrix-leg: ${{ toJSON(matrix) }}
+          package: my-package
+          cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}
+      - if: matrix._release.state == 'build'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-${{ matrix._release.job_key }}
+          path: ${{ steps.build.outputs.install-path }}
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  itest-rpm:
+    needs: [ci-approval, gate, build-rpm]
+    name: itest-rpm (${{ matrix._release.leg_id }})
+    runs-on: arc-runner-normal
+    # A clean image of the target distribution.
+    container:
+      image: ${{ matrix['install-test-image'] }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.gate.outputs.json)['release-rpm'] }}
+    steps:
+      - if: matrix._release.state == 'build'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ matrix._release.job_key }}
+          path: package
+      - if: matrix._release.state == 'build'
+        uses: ecmwf/ci-infrastructure/actions/install-test-package@feature/cd-v3
+        with:
+          package-dir: package
+          filename: ${{ matrix._release.filename }}
+          prefix: ${{ matrix._release.prefix }}
+          smoke-command: ${{ matrix['install-test-command'] }}
+          leg-id: ${{ matrix._release.leg_id }}
+          image: ${{ matrix['install-test-image'] }}
+          output-dir: itest
+      - if: matrix._release.state == 'build'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: itest-${{ matrix._release.job_key }}
+          path: itest
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  publish-nexus:
+    needs: [ci-approval, gate, build-rpm, itest-rpm]
+    if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
+    name: publish-nexus (${{ matrix._release.leg_id }})
+    environment: cd-v3-test
+    runs-on: arc-runner-normal
+    container:
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.gate.outputs.json)['release-rpm'] }}
+    steps:
+      - if: matrix._release.state == 'build'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ matrix._release.job_key }}
+          path: package
+      - if: matrix._release.state == 'build'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: itest-${{ matrix._release.job_key }}
+          path: itest
+      - uses: ecmwf/ci-infrastructure/actions/upload-nexus@feature/cd-v3
+        env:
+          NEXUS_AUTH: ${{ secrets.NEXUS_TEST_UPLOAD_AUTH }}
+        with:
+          urls: '{"rocky-9": "${{ vars.NEXUS_TEST_URL_ROCKY_9 }}"}'
+          target: ${{ matrix._release.nexus_target }}
+          filename: ${{ matrix._release.filename }}
+          leg-id: ${{ matrix._release.leg_id }}
+          state: ${{ matrix._release.state }}
+          package-dir: package
+          itest: itest/itest-${{ matrix._release.leg_id }}.json
+          sha: ${{ matrix._release.sha }}
+          job-key: ${{ matrix._release.job_key }}
+          receipt-dir: receipt
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: receipt-${{ matrix._release.job_key }}
+          path: receipt
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  record:
+    needs: [ci-approval, gate, build-rpm, itest-rpm, publish-nexus]
+    if: ${{ always() && needs.gate.result == 'success' }}
+    runs-on: arc-runner-normal
+    container:
+      image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+    permissions: {}
+    steps:
+      # Every artifact of the run, one directory each.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+      - uses: ecmwf/ci-infrastructure/actions/release-record@feature/cd-v3
+        with:
+          provenance: ${{ needs.gate.outputs.provenance }}
+          legs: ${{ needs.gate.outputs.json }}
+          publish: ${{ needs.gate.outputs.publish }}
+          needs: ${{ toJSON(needs) }}
+          artifacts: artifacts
+          out: record/release-record.json
+      - if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-record
+          path: record
+          if-no-files-found: warn
+          retention-days: 90
+          overwrite: true
