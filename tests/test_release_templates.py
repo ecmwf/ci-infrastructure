@@ -469,10 +469,54 @@ def test_leak_check(tmp_path: Path) -> None:
 def test_paths_check(tmp_path: Path) -> None:
     ok = "printf '%s\\n' /opt /opt/ecmwf /opt/ecmwf/bin/x | ci_release_check_paths /opt/ecmwf"
     assert _checks(ok, tmp_path).returncode == 0
-    bad = "printf '%s\\n' /opt/ecmwf/bin/x /usr/bin/x /opt/ecmwfx | ci_release_check_paths /opt/ecmwf"
+    bad = (
+        "printf '%s\\n' /opt/ecmwf/bin/x /usr/bin/x /opt/ecmwfx /usr/lib/.build-id/zz /usr/lib/.build-id/06/evil"
+        " | ci_release_check_paths /opt/ecmwf"
+    )
     result = _checks(bad, tmp_path)
     assert result.returncode == 1
     assert "/usr/bin/x is outside" in result.stderr and "/opt/ecmwfx is outside" in result.stderr
+    assert "/usr/lib/.build-id/zz is outside" in result.stderr
+    assert "/usr/lib/.build-id/06/evil is outside" in result.stderr
+
+
+def test_paths_check_build_id_links(tmp_path: Path) -> None:
+    """rpmbuild's /usr/lib/.build-id entries pass only as installed symlinks into the prefix."""
+    root = tmp_path / "root"
+    (root / "opt/ecmwf/lib").mkdir(parents=True)
+    (root / "opt/ecmwf/lib/libx.so").write_text("x")
+    (root / "etc").mkdir()
+    (root / "etc/shadow").write_text("x")
+    ids = root / "usr/lib/.build-id/0f"
+    ids.mkdir(parents=True)
+    good, regular, outside, dangling = (f"/usr/lib/.build-id/0f/{c * 38}" for c in "abcd")
+    (root / good.lstrip("/")).symlink_to("../../../../opt/ecmwf/lib/libx.so")
+    (root / regular.lstrip("/")).write_text("not a link")
+    (root / outside.lstrip("/")).symlink_to("../../../../etc/shadow")
+    (root / dangling.lstrip("/")).symlink_to("../../../../opt/ecmwf/lib/gone.so")
+
+    def run(*paths: str) -> subprocess.CompletedProcess[str]:
+        listing = " ".join(paths)
+        return _checks(
+            f"export CI_RELEASE_TEST_ROOT={root}; printf '%s\\n' {listing} | ci_release_check_paths /opt/ecmwf",
+            tmp_path,
+        )
+
+    assert run("/usr/lib/.build-id", "/usr/lib/.build-id/0f", good, good + ".1").returncode == 1  # .1 absent
+    assert run("/usr/lib/.build-id", "/usr/lib/.build-id/0f", good).returncode == 0
+    for path in (regular, outside, f"/usr/lib/.build-id/0f/{'e' * 38}"):
+        result = run(path)
+        assert result.returncode == 1
+        assert f"{path} is not an installed symlink into /opt/ecmwf" in result.stderr
+    # A dangling link inside the prefix still resolves (readlink -f) under it: rpm owns the target path.
+    assert run(dangling).returncode == 0
+    # The shard directories must be real directories, not files or links.
+    (root / "usr/lib/.build-id/1a").write_text("payload")
+    (root / "usr/lib/.build-id/2b").symlink_to("/etc")
+    for path in ("/usr/lib/.build-id/1a", "/usr/lib/.build-id/2b", "/usr/lib/.build-id/3c"):
+        result = run(path)
+        assert result.returncode == 1
+        assert f"{path} is not an installed directory" in result.stderr
 
 
 def test_json_helper(tmp_path: Path) -> None:

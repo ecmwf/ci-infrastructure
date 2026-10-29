@@ -86,14 +86,35 @@ ci_release_check_leaks() {
 }
 
 # ci_release_check_paths PREFIX  (paths on stdin, e.g. `rpm -qlp x.rpm`)
-# Every path is under PREFIX, or one of its parent directories.
+# Every path is under PREFIX, or one of its parent directories, or one of rpmbuild's
+# build-id links (/usr/lib/.build-id/xx/<hex>[.N], which v2's rpms ship too). Run it after
+# the package is installed: a build-id entry must be an installed symlink into PREFIX.
 ci_release_check_paths() {
   local prefix="$1" bad=0 path
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     case "$path" in
       "$prefix"|"$prefix"/*) continue ;;
+      /usr/lib/.build-id|/usr/lib/.build-id/[0-9a-f][0-9a-f])
+        # CI_RELEASE_TEST_ROOT: tests only, an empty default reads the real file system.
+        if [ -d "${CI_RELEASE_TEST_ROOT:-}$path" ] && [ ! -L "${CI_RELEASE_TEST_ROOT:-}$path" ]; then
+          continue
+        fi
+        echo "ci-release: $path is not an installed directory" >&2
+        bad=1
+        continue
+        ;;
     esac
+    if printf '%s\n' "$path" | grep -Eqx '/usr/lib/\.build-id/[0-9a-f]{2}/[0-9a-f]{30,62}(\.[0-9]+)?'; then
+      local root="${CI_RELEASE_TEST_ROOT:-}" target
+      target=$(readlink -f -- "$root$path" 2>/dev/null) || target=
+      if [ -L "$root$path" ] && case "$target" in "$root$prefix"/*) true ;; *) false ;; esac; then
+        continue
+      fi
+      echo "ci-release: $path is not an installed symlink into $prefix" >&2
+      bad=1
+      continue
+    fi
     case "$prefix/" in
       "$path"/*) continue ;;
     esac
