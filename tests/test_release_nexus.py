@@ -134,8 +134,50 @@ def test_probe_and_already_published(fake: tuple[str, type[_FakeNexus]]) -> None
     assert server.requests[-1][2] is None  # anonymous
     receipt = nexus.already_published(base_url=base, filename=FILENAME, auth="u:p", sleep=lambda s: None)
     assert (receipt["action"], receipt["sha256"]) == ("already-published", hashlib.sha256(b"rpm-bytes").hexdigest())
-    server.fail_next = [503]
+    server.fail_next = [503, 503, 503]
+    assert nexus.probe(base, FILENAME, sleep=lambda s: None) == "unknown"
+
+
+def test_a_server_error_on_the_probe_is_retried(fake: tuple[str, type[_FakeNexus]]) -> None:
+    base, server = fake
+    server.files["/repository/rpm/" + FILENAME] = b"rpm-bytes"
+    server.fail_next = [502]
+    assert nexus.probe(base, FILENAME, auth="u:secret", sleep=lambda s: None) == "present"
+    assert [r[0] for r in server.requests] == ["HEAD", "HEAD"]
+
+
+def test_the_probe_authenticates_with_the_credential(fake: tuple[str, type[_FakeNexus]]) -> None:
+    base, server = fake
+    server.files["/repository/rpm/" + FILENAME] = b"rpm-bytes"
+    assert nexus.probe(base, FILENAME, auth="u:secret") == "present"
+    assert nexus.probe(base, "other.rpm", auth="u:secret") == "absent"
+    assert [r[2] for r in server.requests] == ["Basic dTpzZWNyZXQ=", "Basic dTpzZWNyZXQ="]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_authenticated_probe_fails(fake: tuple[str, type[_FakeNexus]], status: int) -> None:
+    base, server = fake
+    server.fail_next = [status]
+    with pytest.raises(ReleaseError, match=f"refused the authenticated probe .*HTTP {status}") as exc:
+        nexus.probe(base, FILENAME, auth="u:secret")
+    assert "secret" not in str(exc.value)
+
+
+def test_a_refused_anonymous_probe_is_unknown(
+    fake: tuple[str, type[_FakeNexus]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A private repository (nexus-test's private-rocky-stable) answers an anonymous HEAD 403.
+    base, server = fake
+    server.fail_next = [403]
     assert nexus.probe(base, FILENAME) == "unknown"
+    assert "cannot be probed without $NEXUS_AUTH" in capsys.readouterr().out
+
+
+def test_take_auth_removes_the_credential_from_the_environment() -> None:
+    env = {"NEXUS_AUTH": "u:secret\n", "OTHER": "x"}
+    assert nexus.take_auth(env) == "u:secret"
+    assert env == {"OTHER": "x"}
+    assert nexus.take_auth(env) == ""
 
 
 @pytest.mark.parametrize(

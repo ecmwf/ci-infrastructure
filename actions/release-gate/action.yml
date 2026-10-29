@@ -10,7 +10,9 @@ description: >
   source dep's release-ref a tag or SHA, the workflow passing check-cd-workflow, and which
   release legs are on Nexus already. Run it in a job that checked out github.sha.
   See docs/configuring/releases.rst. Reads CD_KILL_SWITCH and CD_KILL_SWITCH_REASON from the
-  step's env.
+  step's env, and NEXUS_AUTH (user:token, as upload-nexus takes it; never an input): the
+  credential the Nexus probe authenticates with, since a private repository answers an
+  anonymous probe 403. Without it the probe is anonymous, with a warning.
 
 inputs:
   kinds:
@@ -25,7 +27,7 @@ inputs:
     required: false
     default: 'false'
   nexus-read-urls:
-    description: 'JSON object: nexus-target -> repository URL, probed anonymously for what is published.'
+    description: 'JSON object: nexus-target -> repository URL, probed (with NEXUS_AUTH) for what is published.'
     required: false
     default: '{}'
   ci-wait-seconds:
@@ -88,6 +90,10 @@ runs:
         CI_RELEASE_ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
+        if [ -n "${NEXUS_AUTH:-}" ]; then
+          echo "::add-mask::$NEXUS_AUTH"
+          echo "::add-mask::${NEXUS_AUTH#*:}"
+        fi
         args=(--manifest "$GITHUB_WORKSPACE/$MANIFEST" --kinds "$KINDS"
               --nexus-read-urls "$NEXUS_READ_URLS" --ci-wait-seconds "$CI_WAIT_SECONDS")
         if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi

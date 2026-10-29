@@ -17,8 +17,11 @@ Checks, in order; the first that fails refuses the release:
 7. Each source dep's release-ref is a tag or a commit SHA, never a branch; resolved to a SHA.
 8. The workflow file at this commit passes check-cd-workflow.
 9. The release legs, each with its ``_release`` context.
-10. In a publishing mode, each rpm leg already on Nexus (anonymous probe) is marked
-    ``already-published``: its build is skipped, and publish only records it. Never dropped.
+10. In a publishing mode, each rpm leg already on Nexus is marked ``already-published``: its build
+    is skipped, and publish only records it. Never dropped. The probe authenticates with the Nexus
+    credential from ``$NEXUS_AUTH`` (the publish credential: the test repositories are private and
+    answer an anonymous probe 403); a refused authenticated probe fails the gate. Without it the
+    probe is anonymous, warned about, and a private repository's legs are always rebuilt.
 """
 
 from __future__ import annotations
@@ -71,6 +74,8 @@ class GateInputs:
     kill_switch: str = ""
     kill_switch_reason: str = ""
     allow_refs: Sequence[str] = ()
+    #: ``user:token`` for the Nexus probe; never in an output or the provenance.
+    nexus_auth: str = field(default="", repr=False)
 
 
 @dataclass
@@ -224,14 +229,16 @@ def resolve_release_ref(api: Api, repo: str, ref: str) -> str:
     raise ReleaseError(f"release-ref {ref!r} of {repo} does not resolve to a commit")
 
 
-def _probe(read_urls: Mapping[str, str], allow_production: bool) -> Probe:
+def _probe(read_urls: Mapping[str, str], allow_production: bool, auth: str = "") -> Probe:
+    if not auth:
+        print(
+            f"::warning::no Nexus credential (${nexus.AUTH_ENV}): probing anonymously; a private repository "
+            "cannot be probed, so a published leg is rebuilt and upload-nexus refuses its new bytes"
+        )
+
     def probe(target: str, filename: str) -> str:
-        url = read_urls.get(target)
-        if not url:
-            raise ReleaseError(
-                f"no Nexus read URL for nexus-target {target!r} (nexus-read-urls has {sorted(read_urls)})"
-            )
-        return nexus.probe(nexus.check_url(url, allow_production=allow_production), filename)
+        base = nexus.target_url(read_urls, target, allow_production=allow_production)
+        return nexus.probe(base, filename, auth=auth)
 
     return probe
 
@@ -291,7 +298,7 @@ def run_gate(
     expanded = legs.expand(rm, inp.kinds, event, allow_production=inp.allow_production)
     # 10
     if event.mode != MODE_REHEARSAL:
-        probe = probe or _probe(inp.nexus_read_urls, inp.allow_production)
+        probe = probe or _probe(inp.nexus_read_urls, inp.allow_production, inp.nexus_auth)
         for kind_legs in expanded.values():
             for i, leg in enumerate(kind_legs):
                 ctx = leg["_release"]
@@ -339,8 +346,12 @@ def main(
     poll_seconds: int,
     allow_refs: tuple[str, ...],
 ) -> None:
-    """Run the release gate for this workflow run (GITHUB_* env); write its outputs."""
+    """Run the release gate for this workflow run (GITHUB_* env); write its outputs.
+
+    The Nexus credential for the probe comes from $NEXUS_AUTH (user:token), never an option.
+    """
     env = os.environ
+    nexus_auth = nexus.take_auth()
     event_path = env.get("GITHUB_EVENT_PATH")
     payload = json.loads(Path(event_path).read_text()) if event_path else {}
     urls = nexus.parse_urls(nexus_read_urls, what="--nexus-read-urls")
@@ -365,6 +376,7 @@ def main(
         kill_switch=env.get("CD_KILL_SWITCH", ""),
         kill_switch_reason=env.get("CD_KILL_SWITCH_REASON", ""),
         allow_refs=allow_refs,
+        nexus_auth=nexus_auth,
     )
     token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")
     result = run_gate(inp, api=lambda path: gh_api_rest(path, token))

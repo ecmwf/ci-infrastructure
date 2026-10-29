@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -116,13 +116,48 @@ def _with_retries(call: Callable[[], Response], what: str, sleep: Callable[[floa
     return resp
 
 
-def probe(base_url: str, filename: str, *, http: Http = urllib_http) -> Literal["present", "absent", "unknown"]:
-    """Anonymous: is the file there? ``unknown`` when Nexus does not say (unreachable, auth, 5xx)."""
-    resp = http("HEAD", file_url(base_url, filename))
+def take_auth(env: MutableMapping[str, str] | None = None) -> str:
+    """The Nexus credential (``user:token``) from ``$NEXUS_AUTH``, removed from the environment.
+
+    Removed so no subprocess (``gh``, ``git``) inherits it; never echoed, never in an output.
+    """
+    env = os.environ if env is None else env
+    return env.pop(AUTH_ENV, "").strip()
+
+
+def probe(
+    base_url: str,
+    filename: str,
+    *,
+    auth: str | None = None,
+    http: Http = urllib_http,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Literal["present", "absent", "unknown"]:
+    """Is the file there? 200 ``present``, 404 ``absent``.
+
+    With a credential, a refusal (401/403) cannot tell, and fails: building again would make
+    upload-nexus refuse the rebuilt bytes. Anonymously, a private repository always refuses
+    (nexus-test's private-rocky-stable answers 403), so that is ``unknown``: the leg is built.
+    ``unknown`` too when Nexus does not answer (unreachable, 5xx after retries).
+    """
+    resp = _with_retries(
+        lambda: http("HEAD", file_url(base_url, filename), auth=auth or None), f"probe of {filename}", sleep
+    )
     if resp.status == 200:
         return "present"
     if resp.status == 404:
         return "absent"
+    if resp.status in (401, 403):
+        if auth:
+            raise ReleaseError(
+                f"Nexus refused the authenticated probe of {filename} (HTTP {resp.status}): cannot tell whether "
+                f"it is published; check the credential ${AUTH_ENV} and its read permission on the repository"
+            )
+        print(
+            f"::warning::Nexus probe of {filename}: HTTP {resp.status} anonymously; a private repository cannot "
+            f"be probed without ${AUTH_ENV}; building it anyway"
+        )
+        return "unknown"
     print(f"::warning::Nexus probe of {filename}: HTTP {resp.status or 'no response'}; building it anyway")
     return "unknown"
 
