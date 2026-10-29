@@ -1,0 +1,139 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Install-test a release package (CD v3, experimental)
+description: >
+  In a clean image of the target distribution (the leg's install-test-image, as the job's
+  container): verify SHA256SUMS, install the rpm with dnf (EPEL enabled, as v2), run the
+  leg's smoke command, and check the installed tree: every file under the prefix, RUNPATHs
+  $ORIGIN-relative or under the prefix, every ELF loading without LD_LIBRARY_PATH, no
+  build-machine path in CMake, pkg-config or share/ files. Writes itest-<leg-id>.json with the
+  sha256 it tested, and the commit (sha) and job_key of the build-meta.json beside the package;
+  upload-nexus publishes only those bytes, of that commit and job. Bash only, no secrets.
+  See docs/configuring/releases.rst.
+
+inputs:
+  package-dir:
+    description: 'Directory holding the package and SHA256SUMS (the build''s artifact).'
+    required: true
+  filename:
+    description: 'The package file name (_release.filename).'
+    required: true
+  prefix:
+    description: 'The install prefix (_release.prefix).'
+    required: true
+  smoke-command:
+    description: 'The leg''s install-test-command, run with bash after the install.'
+    required: true
+  leg-id:
+    description: 'The leg id (_release.leg_id), naming the receipt.'
+    required: true
+  image:
+    description: 'The install-test image, as written in the manifest, for the receipt.'
+    required: false
+    default: ''
+  output-dir:
+    description: 'Where to write itest-<leg-id>.json.'
+    required: true
+
+outputs:
+  receipt:
+    description: 'Path of itest-<leg-id>.json.'
+    value: ${{ steps.test.outputs.receipt }}
+
+runs:
+  using: composite
+  steps:
+    - id: test
+      shell: bash
+      env:
+        PACKAGE_DIR: ${{ inputs.package-dir }}
+        FILENAME: ${{ inputs.filename }}
+        PREFIX: ${{ inputs.prefix }}
+        SMOKE_COMMAND: ${{ inputs.smoke-command }}
+        LEG_ID: ${{ inputs.leg-id }}
+        IMAGE: ${{ inputs.image }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+      run: |
+        set -euo pipefail
+        # One implementation of the checks, shipped in the package data; see templates/release/_checks.sh.j2.
+        checks=""
+        for root in "${GITHUB_ACTION_PATH:-}/../.." \
+                    "${RUNNER_WORKSPACE:+$(dirname "$RUNNER_WORKSPACE")/_actions/${GITHUB_ACTION_PATH#*/_actions/}/../..}"; do
+          if [ -n "$root" ] && [ -f "$root/src/ci_infrastructure/templates/release/_checks.sh.j2" ]; then
+            checks="$root/src/ci_infrastructure/templates/release/_checks.sh.j2"
+            break
+          fi
+        done
+        if [ -z "$checks" ]; then
+          echo "::error::install-test-package: cannot find the ci-infrastructure checkout of this action" >&2
+          exit 1
+        fi
+        # shellcheck source=/dev/null
+        . "$checks"
+
+        case "$FILENAME" in
+          */*|"") echo "::error::not a plain file name: $FILENAME" >&2; exit 1 ;;
+          *.rpm) ;;
+          *) echo "::error::install-test-package installs rpms only so far: $FILENAME" >&2; exit 1 ;;
+        esac
+        out_dir="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
+        cd "$PACKAGE_DIR"
+        sha256sum -c SHA256SUMS
+        digest="$(sha256sum "$FILENAME" | cut -d' ' -f1)"
+        # The build's identity, from its build-meta.json (json.dumps(indent=2) under "release"):
+        # the receipt carries it, and upload-nexus and release-record check it against _release.
+        meta_field() {
+          local values
+          values="$(sed -n "s/^  \"$1\": \"\($2\)\",\{0,1\}\$/\1/p" build-meta.json 2>/dev/null || true)"
+          if [ -z "$values" ] || [ "$(printf '%s\n' "$values" | wc -l)" -ne 1 ]; then
+            echo "::error::build-meta.json beside $FILENAME has no single valid \"$1\"" >&2
+            return 1
+          fi
+          printf '%s' "$values"
+        }
+        build_sha="$(meta_field sha '[0-9a-f]\{40\}')"
+        build_job_key="$(meta_field job_key '[A-Za-z0-9._-]\{1,\}')"
+        if ! awk -v f="$FILENAME" -v d="$digest" '$1 == d && ($2 == f || $2 == "*" f) { ok = 1 } END { exit !ok }' SHA256SUMS; then
+          echo "::error::$FILENAME is not listed in SHA256SUMS" >&2
+          exit 1
+        fi
+
+        dnf -y install epel-release
+        # binutils: readelf, for the RUNPATH check.
+        dnf -y install binutils "./$FILENAME"
+
+        failed=0
+        echo "--- files of the package are under $PREFIX"
+        rpm -qlp "./$FILENAME" | ci_release_check_paths "$PREFIX" || failed=1
+        echo "--- RUNPATHs"
+        ci_release_check_runpath "$PREFIX" "$PREFIX" || failed=1
+        echo "--- every ELF loads without LD_LIBRARY_PATH"
+        ci_release_check_ldd "$PREFIX" || failed=1
+        echo "--- no build paths in the installed tree"
+        ci_release_check_leaks "$PREFIX" || failed=1
+        echo "--- smoke command: $SMOKE_COMMAND"
+        env -u LD_LIBRARY_PATH bash -c "$SMOKE_COMMAND" || failed=1
+        if [ "$failed" -ne 0 ]; then
+          echo "::error::install test of $FILENAME failed; see above" >&2
+          exit 1
+        fi
+
+        receipt="$out_dir/itest-$LEG_ID.json"
+        # shellcheck source=/dev/null
+        os="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
+        {
+          printf '{\n  "leg_id": %s,\n' "$(ci_release_json "$LEG_ID")"
+          printf '  "filename": %s,\n' "$(ci_release_json "$FILENAME")"
+          printf '  "sha256": %s,\n' "$(ci_release_json "$digest")"
+          printf '  "sha": %s,\n' "$(ci_release_json "$build_sha")"
+          printf '  "job_key": %s,\n' "$(ci_release_json "$build_job_key")"
+          printf '  "result": "passed",\n'
+          printf '  "image": %s,\n' "$(ci_release_json "$IMAGE")"
+          printf '  "os": %s,\n' "$(ci_release_json "$os")"
+          printf '  "smoke_command": %s,\n' "$(ci_release_json "$SMOKE_COMMAND")"
+          printf '  "at": %s\n}\n' "$(ci_release_json "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+        } > "$receipt"
+        cat "$receipt"
+        echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
