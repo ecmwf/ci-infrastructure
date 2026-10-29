@@ -31,6 +31,8 @@ ci-infrastructure-hpc = "ci_infrastructure.hpc.orchestrate:main"
 ci-infrastructure-ssh = "ci_infrastructure.hpc.retry_unresolved:ssh"
 ci-infrastructure-scp = "ci_infrastructure.hpc.retry_unresolved:scp"
 ci-infrastructure-render = "ci_infrastructure.render_job:main"
+# CD v3, experimental: docs/configuring/releases.rst.
+ci-infrastructure-release = "ci_infrastructure.release.__main__:main"
 ci-infrastructure-default-branch-status = "ci_infrastructure.default_branch_status:main"
 ci-infrastructure-sync-branch-prs = "ci_infrastructure.sync_branch_prs:main"
 # Local debugging only: actions/check-pr-declaration runs the stdlib-only module with -m.

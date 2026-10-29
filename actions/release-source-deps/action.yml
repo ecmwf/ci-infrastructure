@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Fetch a release's source deps (CD v3, experimental)
+description: >
+  Check out each source dep the release gate resolved ({repo, package, sha}) at exactly that
+  commit, under $RUNNER_TEMP, and output the CMAKE_PREFIX_PATH covering them, e.g. ecbuild,
+  whose source tree serves as its package config. See docs/configuring/releases.rst.
+
+inputs:
+  deps:
+    description: 'The gate''s source-deps output (JSON).'
+    required: true
+  token:
+    description: 'Read token for private deps; empty fetches anonymously.'
+    required: false
+    default: ''
+
+outputs:
+  cmake-prefix-path:
+    description: 'Semicolon-separated checkouts, for run-job-script''s cmake-prefix-path.'
+    value: ${{ steps.fetch.outputs.cmake-prefix-path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - id: fetch
+      shell: bash
+      env:
+        DEPS: ${{ inputs.deps }}
+        GIT_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        # From the environment, so no ~/.gitconfig keeps the token.
+        if [ -n "$GIT_TOKEN" ]; then
+          export GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="url.https://x-access-token:$GIT_TOKEN@github.com/.insteadOf" \
+            GIT_CONFIG_VALUE_0=https://github.com/
+        fi
+        unset GIT_TOKEN
+        root="$RUNNER_TEMP/release-source-deps"
+        rm -rf "$root"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.release source-deps --deps "$DEPS" --root "$root"
