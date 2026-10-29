@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish a release package to Nexus (CD v3, experimental)
+description: >
+  Upload the leg's package, only the bytes its install test passed, to the Nexus repository
+  of its nexus-target, and write receipt-<leg-id>.json. The same bytes already there is a
+  no-op; other bytes fail (versions are immutable). Test Nexus only unless allow-production.
+  The credential (user:token) comes from NEXUS_AUTH in the step's env, never an input.
+  For a leg the gate found published (state already-published) it only records what Nexus holds.
+  See docs/configuring/releases.rst.
+
+inputs:
+  urls:
+    description: 'JSON object: nexus-target -> repository URL.'
+    required: true
+  target:
+    description: 'The leg''s nexus-target.'
+    required: true
+  filename:
+    description: 'The package file name the gate expects (_release.filename).'
+    required: true
+  leg-id:
+    description: 'The leg id (_release.leg_id), naming the receipt.'
+    required: true
+  state:
+    description: 'The leg''s _release.state: build or already-published.'
+    required: false
+    default: 'build'
+  package-dir:
+    description: 'Directory holding the package (state build).'
+    required: false
+    default: ''
+  itest:
+    description: 'The install test receipt, itest-<leg-id>.json (state build).'
+    required: false
+    default: ''
+  sha:
+    description: 'The commit released (_release.sha); the install test receipt must name it (state build).'
+    required: false
+    default: ''
+  job-key:
+    description: 'The leg''s _release.job_key; the install test receipt must name it (state build).'
+    required: false
+    default: ''
+  receipt-dir:
+    description: 'Where to write receipt-<leg-id>.json.'
+    required: true
+  allow-production:
+    description: '"true" allows a production Nexus host.'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - shell: bash
+      env:
+        URLS: ${{ inputs.urls }}
+        TARGET: ${{ inputs.target }}
+        FILENAME: ${{ inputs.filename }}
+        LEG_ID: ${{ inputs.leg-id }}
+        STATE: ${{ inputs.state }}
+        PACKAGE_DIR: ${{ inputs.package-dir }}
+        ITEST: ${{ inputs.itest }}
+        SHA: ${{ inputs.sha }}
+        JOB_KEY: ${{ inputs.job-key }}
+        RECEIPT_DIR: ${{ inputs.receipt-dir }}
+        ALLOW_PRODUCTION: ${{ inputs.allow-production }}
+      run: |
+        set -euo pipefail
+        if [ -z "${NEXUS_AUTH:-}" ]; then
+          echo "::error::upload-nexus: NEXUS_AUTH is empty; set it from the environment's secret in the step's env" >&2
+          exit 1
+        fi
+        echo "::add-mask::$NEXUS_AUTH"
+        echo "::add-mask::${NEXUS_AUTH#*:}"
+        args=(--urls "$URLS" --target "$TARGET" --filename "$FILENAME" --leg-id "$LEG_ID" --state "$STATE"
+              --receipt-dir "$RECEIPT_DIR")
+        if [ "$STATE" = "build" ]; then
+          args+=(--package-dir "$PACKAGE_DIR" --itest "$ITEST" --sha "$SHA" --job-key "$JOB_KEY")
+        fi
+        if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.release upload-nexus "${args[@]}"
