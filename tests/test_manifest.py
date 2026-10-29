@@ -17,6 +17,7 @@ from ci_infrastructure.manifest import (
     ManifestFile,
     MatrixKindTable,
     PackageTable,
+    ReleaseTable,
     TriggerDownstreamTable,
     validate,
 )
@@ -27,7 +28,7 @@ _DEP: dict[str, Any] = {"repo": "o/b", "package": "b", "ref": "main", "compiler-
 
 @pytest.mark.parametrize(
     "table",
-    [PackageTable, DepTable, TriggerDownstreamTable, MatrixKindTable, GeneratedTable, DownstreamTable],
+    [PackageTable, DepTable, TriggerDownstreamTable, MatrixKindTable, GeneratedTable, DownstreamTable, ReleaseTable],
 )
 def test_every_key_is_described(table: type[BaseModel]) -> None:
     """The manifest reference is generated from these descriptions."""
@@ -75,3 +76,85 @@ def test_add_to_path_takes_dirs_inside_the_install_tree() -> None:
     for bad in ["/usr/bin", "../bin", "bin:sbin", ""]:
         with pytest.raises(ValidationError, match="add-to-path"):
             PackageTable.model_validate({**_PACKAGE, "add-to-path": [bad]})
+
+
+# --- [release] and release-ref (CD v3) -------------------------------------------------------------------------
+
+_RELEASE_KIND: dict[str, Any] = {
+    "packages": ["a-release"],
+    "publishes": False,
+    "include": [{"platform": "rocky-9", "channel": "rpm"}],
+}
+
+
+def _release_manifest(**over: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "package": _PACKAGE,
+        "deps": [{**_DEP, "release-ref": "1.2.3"}],
+        "packages": {"a-release": {"compiler-inputs": []}},
+        "release": {},
+        "matrix": {"release-rpm": _RELEASE_KIND},
+    }
+    data.update(over)
+    return data
+
+
+def test_release_defaults() -> None:
+    m = validate(_release_manifest())
+    assert m.release is not None
+    assert (m.release.package_name, m.release.tag_prefix, m.release.version_parts) == ("a", "", 3)
+    assert m.deps[0].release_ref == "1.2.3"
+
+
+def test_release_ref_false_means_from_the_image() -> None:
+    assert validate(_release_manifest(deps=[{**_DEP, "release-ref": False}])).deps[0].release_ref is False
+
+
+@pytest.mark.parametrize(
+    ("over", "match"),
+    [
+        ({"release": {"tag-prefix": "release-"}}, r"\[release\]\.tag-prefix"),
+        ({"release": {"version-parts": 2}}, r"\[release\]\.version-parts"),
+        ({"release": {"package-name": "a b"}}, r"\[release\]\.package-name"),
+        ({"release": {"summary": "two\nlines"}}, r"\[release\]\.summary"),
+        ({"deps": [_DEP]}, r"\[\[deps\]\]\[0\] \(o/b\) needs release-ref"),
+        ({"deps": [{**_DEP, "release-ref": True}]}, r"\[\[deps\]\]\[0\]\.release-ref must be a tag"),
+        ({"deps": [{**_DEP, "release-ref": ""}]}, r"release-ref must be a tag"),
+        ({"deps": [{"package": "a-release", "release-ref": "1.0.0"}]}, r"'release-ref' without 'repo'"),
+        (
+            {"packages": {"a-release": {"compiler-inputs": [], "deps": [_DEP]}}},
+            r"builds \[packages\.a-release\], which declares deps",
+        ),
+        ({"matrix": {"release-rpm": {**_RELEASE_KIND, "publishes": True}}}, r"set publishes = false"),
+        ({"matrix": {"release-rpm": {**_RELEASE_KIND, "triggers": ["upstream-change"]}}}, r"takes no triggers"),
+        (
+            {"matrix": {"release-rpm": {k: v for k, v in _RELEASE_KIND.items() if k != "packages"}}},
+            r"list the packages it builds",
+        ),
+    ],
+)
+def test_release_rules(over: dict[str, Any], match: str) -> None:
+    with pytest.raises(ManifestSchemaError, match=match):
+        validate(_release_manifest(**over))
+
+
+def test_release_ref_and_release_kinds_need_a_release_table() -> None:
+    with pytest.raises(ManifestSchemaError, match=r"no \[release\] table"):
+        validate({"package": _PACKAGE, "deps": [{**_DEP, "release-ref": "1.0.0"}]})
+    without = {k: v for k, v in _release_manifest(deps=[_DEP]).items() if k != "release"}
+    with pytest.raises(ManifestSchemaError, match="release kind but the manifest has no"):
+        validate(without)
+
+
+def test_release_ref_on_a_package_entry_is_refused() -> None:
+    packages = {
+        "a-release": {"compiler-inputs": []},
+        "b": {"compiler-inputs": [], "deps": [{**_DEP, "release-ref": "1"}]},
+    }
+    with pytest.raises(ManifestSchemaError, match=r"\[packages\.b\] sets release-ref"):
+        validate(_release_manifest(packages=packages))
+
+
+def test_a_manifest_without_release_is_unchanged() -> None:
+    m = validate({"package": _PACKAGE, "deps": [_DEP]})
+    assert m.release is None and m.deps[0].release_ref is None

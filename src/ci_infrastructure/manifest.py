@@ -36,6 +36,14 @@ _VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQ
 
 _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
+#: Kinds named `release-<channel>` build releases (see :doc:`/configuring/releases`), not CI artifacts.
+RELEASE_KIND_PREFIX: Final = "release-"
+_RELEASE_PACKAGE_NAME_RE: Final = re.compile(r"^[A-Za-z0-9._+-]+$")
+
+
+def is_release_kind(kind: str) -> bool:
+    return kind.startswith(RELEASE_KIND_PREFIX)
+
 
 def _check_repo(v: str) -> str:
     if v.count("/") != 1 or not all(v.split("/", 1)):
@@ -212,6 +220,13 @@ class DepTable(_Table):
         description="Rust crates of the upstream repo that the package's Cargo.toml depends on. Rust-bindings "
         "legs patch them to the commit the upstream's artifact was built from, and fail where Cargo.toml disagrees.",
     )
+    release_ref: str | Literal[False] | None = Field(
+        default=None,
+        alias="release-ref",
+        description="What a release build takes this dep at: a tag or 40-char SHA, fetched as source, or `false` "
+        "when the leg's image or modules provide it. Required on every dep with `repo` once `[release]` is "
+        "present; no `sync/` or `feature/` override applies. See :doc:`/configuring/releases`.",
+    )
 
     @field_validator("repo")
     @classmethod
@@ -233,12 +248,23 @@ class DepTable(_Table):
             raise ValueError('must be a branch, tag or 40-char SHA, e.g. "main"')
         return s
 
+    @field_validator("release_ref", mode="before")
+    @classmethod
+    def _release_ref_shape(cls, v: Any) -> Any:
+        if v is None or v is False:
+            return v
+        if isinstance(v, str) and v.strip() and not any(c.isspace() for c in v.strip()):
+            return v.strip()
+        raise ValueError(f'must be a tag or 40-char SHA, e.g. "3.16.0", or false; got {v!r}')
+
     @model_validator(mode="after")
     def _ref_goes_with_repo(self) -> DepTable:
         if self.repo is not None and self.ref is None:
             raise ValueError("needs a 'ref' with its 'repo'")
         if self.repo is None and self.ref is not None:
             raise ValueError("'ref' without 'repo': a package of this repo is built from the same commit")
+        if self.repo is None and self.release_ref is not None:
+            raise ValueError("'release-ref' without 'repo': a package of this repo is built from the same commit")
         return self
 
     @property
@@ -462,6 +488,41 @@ class DownstreamTable(_Table):
     )
 
 
+class ReleaseTable(_Table):
+    """`[release]`: how this repo's releases are named and described. Experimental (CD v3)."""
+
+    package_name: str | None = Field(
+        default=None,
+        alias="package-name",
+        description="Name of the released package, e.g. the rpm name; `[package].name` when absent.",
+    )
+    tag_prefix: Literal["", "v"] = Field(
+        default="", alias="tag-prefix", description='What precedes the version in a release tag: `""` or `"v"`.'
+    )
+    version_parts: Literal[3, 4] = Field(
+        default=3, alias="version-parts", description="Number of dot-separated parts in a version: 3 or 4."
+    )
+    summary: str = Field(default="", description="One-line package description.")
+    license: str = Field(default="", description="SPDX licence expression, e.g. `Apache-2.0`.")
+    vendor: str = Field(default="", description="Package vendor.")
+    maintainer: str = Field(default="", description="Package maintainer, e.g. an email address.")
+    homepage: str = Field(default="", description="Project URL.")
+
+    @field_validator("package_name")
+    @classmethod
+    def _package_name_shape(cls, v: str | None) -> str | None:
+        if v is not None and not _RELEASE_PACKAGE_NAME_RE.fullmatch(v):
+            raise ValueError(f"must match {_RELEASE_PACKAGE_NAME_RE.pattern!r}, got {v!r}")
+        return v
+
+    @field_validator("summary", "license", "vendor", "maintainer", "homepage")
+    @classmethod
+    def _one_line(cls, v: str) -> str:
+        if any(ord(c) < 0x20 or c == "\x7f" for c in v):
+            raise ValueError(f"must be a single line without control characters, got {v!r}")
+        return v.strip()
+
+
 class ManifestFile(_Table):
     """The whole of `.ci/manifest.toml`."""
 
@@ -472,6 +533,7 @@ class ManifestFile(_Table):
     downstream: DownstreamTable | None = None
     generated: GeneratedTable | None = None
     matrix: dict[str, MatrixKindTable] = Field(default_factory=dict)
+    release: ReleaseTable | None = None
 
     def published_by(self, kind: str) -> tuple[str, ...]:
         """The prefixes `kind` publishes; empty for a kind that publishes nothing."""
@@ -553,6 +615,46 @@ class ManifestFile(_Table):
             walk(node, [node])
 
     @model_validator(mode="after")
+    def _release_rules(self) -> ManifestFile:
+        """The dependency rule of :doc:`/configuring/releases`: a release leg gets exactly the `[[deps]]`
+        whose `release-ref` is a string, so every one of them must say which it is."""
+        if self.release is not None and self.release.package_name is None:
+            self.release.package_name = self.package.name
+        nested = [f"[packages.{k}]" for k, e in self.packages.items() if any(d.release_ref is not None for d in e.deps)]
+        if nested:
+            raise ValueError(f"{nested[0]} sets release-ref on a dep; it belongs on the top-level [[deps]] only")
+        release_kinds = [k for k in self.matrix if is_release_kind(k)]
+        if self.release is None:
+            if any(d.release_ref is not None for d in self.deps):
+                raise ValueError("[[deps]] sets release-ref but the manifest has no [release] table")
+            if release_kinds:
+                raise ValueError(
+                    f"[matrix.{release_kinds[0]}] is a release kind but the manifest has no [release] table"
+                )
+            return self
+        for i, d in enumerate(self.deps):
+            if d.repo is not None and d.release_ref is None:
+                raise ValueError(
+                    f"[[deps]][{i}] ({d.repo}) needs release-ref: a tag or 40-char SHA to build releases "
+                    "against, or false when the image or modules provide it"
+                )
+        for kind in release_kinds:
+            body = self.matrix[kind]
+            if body.publishes:
+                raise ValueError(f"[matrix.{kind}] is a release kind: set publishes = false")
+            if body.triggers:
+                raise ValueError(f"[matrix.{kind}] is a release kind: it takes no triggers")
+            if body.packages is None:
+                raise ValueError(f"[matrix.{kind}] is a release kind: list the packages it builds in packages")
+            for prefix in self.built_by(kind):
+                if prefix in self.packages and self.packages[prefix].deps:
+                    raise ValueError(
+                        f"[matrix.{kind}] builds [packages.{prefix}], which declares deps; a release package "
+                        "takes its deps from the top-level [[deps]] release-ref only"
+                    )
+        return self
+
+    @model_validator(mode="after")
     def _no_duplicate_triggers(self) -> ManifestFile:
         seen: set[str] = set()
         for t in self.trigger_downstream:
@@ -588,6 +690,7 @@ _LOC_HEADS: Final = {
     "package": "table",
     "generated": "table",
     "downstream": "table",
+    "release": "table",
 }
 
 
