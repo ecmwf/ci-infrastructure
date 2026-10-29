@@ -145,6 +145,8 @@ def test_probe_and_already_published(fake: tuple[str, type[_FakeNexus]]) -> None
         ("http://nexus-test.ecmwf.int/repository/rpm", False, "must be https"),
         ("https://u:p@nexus-test.ecmwf.int/repository/rpm", False, "credentials"),
         ("https://evil.example/repository/rpm", True, "not a Nexus host"),
+        ("https://nexus-test.ecmwf.int:8443/repository/rpm", False, "not a test Nexus host"),
+        ("https://nexus-test.ecmwf.int.evil.example/repository/rpm", False, "not a test Nexus host"),
     ],
 )
 def test_check_url_refuses(url: str, allow_production: bool, match: str) -> None:
@@ -157,6 +159,36 @@ def test_check_url_accepts_test_and_with_allow_production_prod() -> None:
         nexus.check_url("https://nexus-test.ecmwf.int/repository/rpm/") == "https://nexus-test.ecmwf.int/repository/rpm"
     )
     assert nexus.check_url("https://nexus.ecmwf.int/r", allow_production=True) == "https://nexus.ecmwf.int/r"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "https://nexus-test.ecmwf.int/repository/rpm",
+        "https://nexus-test.ecmwf.int/repository/rpm/",
+        "https://Nexus-Test.ecmwf.int/repository/rpm",
+        "https://nexus-test.ecmwf.int:443/repository/rpm",
+        "https://nexus-test.ecmwf.int/repository/rpm\n",
+    ],
+)
+def test_a_v2_url_secret_works_as_the_base_url(secret: str) -> None:
+    """The URL is v2's NEXUS_TEST_REPO_URL_* secret, which v2 PUTs ``<url>/<file>`` to; the
+    workflow builds the JSON around it, so a trailing newline lands raw inside the string."""
+    urls = nexus.parse_urls('{"rocky-9": "' + secret + '"}', what="--urls")
+    base = nexus.target_url(urls, "rocky-9", allow_production=False)
+    assert nexus.file_url(base, FILENAME) == secret.strip().rstrip("/") + "/" + FILENAME
+
+
+def test_a_masked_url_is_not_echoed_in_errors() -> None:
+    with pytest.raises(ReleaseError) as exc:
+        nexus.check_url("http://nexus-test.ecmwf.int/secret-repo")
+    assert "secret-repo" not in str(exc.value)
+
+
+@pytest.mark.parametrize(("text", "match"), [("[]", "JSON object"), ('{"t": "a"b"}', "not valid JSON")])
+def test_parse_urls_refuses(text: str, match: str) -> None:
+    with pytest.raises(ReleaseError, match=match):
+        nexus.parse_urls(text, what="--urls")
 
 
 def test_file_url_quotes_and_refuses_paths() -> None:

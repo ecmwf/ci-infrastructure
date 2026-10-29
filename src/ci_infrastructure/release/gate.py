@@ -343,9 +343,7 @@ def main(
     env = os.environ
     event_path = env.get("GITHUB_EVENT_PATH")
     payload = json.loads(Path(event_path).read_text()) if event_path else {}
-    urls = json.loads(nexus_read_urls or "{}")
-    if not isinstance(urls, dict):
-        raise ReleaseError("--nexus-read-urls must be a JSON object")
+    urls = nexus.parse_urls(nexus_read_urls, what="--nexus-read-urls")
     repo_root = manifest.resolve().parents[1]
     inp = GateInputs(
         repo_root=repo_root,
