@@ -9,6 +9,7 @@ description: |
   It does nothing if the infrastructure is already installed,
   either because of prior calls or because it is baked into the image.
   An installed copy that does not match the checkout is replaced, with a warning.
+  On a GitHub-hosted runner with an image version, e.g. ubuntu-latest, the venv is kept in the Actions cache.
 
   .. note::
     All actions that need the CI infrastructure are guaranteed to call it themselves,
@@ -29,12 +30,12 @@ inputs:
 outputs:
   python:
     description: 'Path to the ci-infrastructure venv interpreter.'
-    value: ${{ steps.bootstrap.outputs.python }}
+    value: ${{ steps.install.outputs.python }}
 
 runs:
   using: composite
   steps:
-    - id: bootstrap
+    - id: locate
       shell: bash
       env:
         FORCE_REINSTALL_INPUT: ${{ inputs.force-reinstall }}
@@ -123,6 +124,44 @@ runs:
           venv_root="${RUNNER_TOOL_CACHE}/ci-infrastructure-venv"
           venv="${venv_root}/${ref}-${src_hash}"
           python="$venv/bin/python"
+          # Hosted runners start empty. Only those with an image version, which keys the system
+          # Python the venv links to; not with uv, whose managed CPython is outside the venv.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && [ -n "${ImageVersion:-}" ] \
+             && ! $force_reinstall && [ ! -d "$venv" ] && ! command -v uv >/dev/null 2>&1; then
+            echo "cache-key=ci-infrastructure-venv-${ImageOS:-}-${ImageVersion}-$(uname -m)-${ref}-${src_hash}" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+        {
+          echo "baked=$baked_ok"
+          echo "force=$force_reinstall"
+          echo "repo-root=$repo_root"
+          echo "python=$python"
+          echo "venv=${venv:-}"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      if: steps.locate.outputs.cache-key != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ steps.locate.outputs.venv }}
+        key: ${{ steps.locate.outputs.cache-key }}
+
+    - id: install
+      shell: bash
+      env:
+        BAKED: ${{ steps.locate.outputs.baked }}
+        FORCE: ${{ steps.locate.outputs.force }}
+        REPO_ROOT: ${{ steps.locate.outputs.repo-root }}
+        PYTHON: ${{ steps.locate.outputs.python }}
+        VENV: ${{ steps.locate.outputs.venv }}
+      run: |
+        set -euo pipefail
+        python="$PYTHON"
+        if [ "$BAKED" != "true" ]; then
+          force_reinstall="$FORCE"
+          repo_root="$REPO_ROOT"
+          venv="$VENV"
+          venv_root="$(dirname "$venv")"
           if $force_reinstall && [ -d "$venv" ]; then
             echo "ensure-infrastructure-present: force-reinstall — discarding the cached venv at $venv"
             rm -rf "$venv"
@@ -195,3 +234,9 @@ runs:
         fi
         echo "CI_INFRASTRUCTURE_PYTHON=$python" >> "$GITHUB_ENV"
         echo "python=$python" >> "$GITHUB_OUTPUT"
+
+    - if: steps.locate.outputs.cache-key != '' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ steps.locate.outputs.venv }}
+        key: ${{ steps.locate.outputs.cache-key }}
