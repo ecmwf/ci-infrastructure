@@ -93,7 +93,22 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
     (
         "secret in a build job",
         _set("jobs.build-rpm.env", {"T": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
-        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
+        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN'] but is not a publish job",
+    ),
+    (
+        "URL secret in a build job",
+        _set("jobs.build-rpm.env", {"U": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}),
+        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_REPO_URL_ROCKY_9']",
+    ),
+    (
+        "credential secret in the gate job",
+        lambda d: _steps(d, "gate")[1]["env"].update({"T": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
+        "I5: job 'gate' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
+    ),
+    (
+        "toJSON(secrets) in the gate job",
+        lambda d: _steps(d, "gate")[1]["env"].update({"X": "${{ toJSON(secrets) }}"}),
+        "I5: job 'gate' reads `secrets` without a literal name",
     ),
     (
         "toJSON(secrets) in a build job",
@@ -105,14 +120,14 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         _set("jobs.build-rpm.env", {"X": "${{ secrets[inputs.name] }}"}),
         "I5: job 'build-rpm' reads `secrets` without a literal name",
     ),
-    ("run in env job", _add_run_step("publish-nexus", "echo hi"), "I6: environment job 'publish-nexus' has a `run:`"),
+    ("run in publish job", _add_run_step("publish-nexus", "echo hi"), "I6: publish job 'publish-nexus' has a `run:`"),
     (
-        "checkout in env job",
+        "checkout in publish job",
         lambda d: _steps(d, "publish-nexus").insert(0, {"uses": "actions/checkout@" + "a" * 40}),
-        "I6: environment job 'publish-nexus' uses 'actions/checkout",
+        "I6: publish job 'publish-nexus' uses 'actions/checkout",
     ),
     (
-        "build in env job",
+        "build in publish job",
         lambda d: _steps(d, "publish-nexus").insert(
             0, {"uses": "ecmwf/ci-infrastructure/actions/run-job-script@feature/cd-v3"}
         ),
@@ -120,9 +135,9 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
     ),
     *[
         (
-            f"{key} in an env job step",
+            f"{key} in a publish job step",
             lambda d, key=key: _upload_step(d)["env"].update({key: "x"}),
-            f"I6: environment job 'publish-nexus' step 3: `env` sets ['{key}']",
+            f"I6: publish job 'publish-nexus' step 3: `env` sets ['{key}']",
         )
         for key in (
             "BASH_ENV",
@@ -141,27 +156,27 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         )
     ],
     (
-        "startup env on an env job",
+        "startup env on a publish job",
         _set("jobs.publish-nexus.env", {"LD_PRELOAD": "/tmp/x.so"}),
-        "I6: environment job 'publish-nexus': `env` sets ['LD_PRELOAD']",
+        "I6: publish job 'publish-nexus': `env` sets ['LD_PRELOAD']",
     ),
     (
-        "expression env on an env job",
+        "expression env on a publish job",
         _set("jobs.publish-nexus.env", "${{ fromJSON(needs.gate.outputs.json) }}"),
-        "I6: environment job 'publish-nexus': `env` must be a literal mapping",
+        "I6: publish job 'publish-nexus': `env` must be a literal mapping",
     ),
     *[
         (
-            f"download-artifact {key} in an env job",
+            f"download-artifact {key} in a publish job",
             lambda d, key=key: _steps(d, "publish-nexus")[0]["with"].update({key: "x"}),
-            f"I6: environment job 'publish-nexus' step 1: download-artifact ['{key}']",
+            f"I6: publish job 'publish-nexus' step 1: download-artifact ['{key}']",
         )
         for key in ("run-id", "repository", "github-token")
     ],
     (
         "hosted runner",
         _set("jobs.publish-nexus.runs-on", "ubuntu-latest"),
-        "I6: environment job 'publish-nexus' runs-on",
+        "I6: publish job 'publish-nexus' runs-on",
     ),
     (
         "foreign container",
@@ -169,19 +184,19 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         "a container must come from eccr.ecmwf.int/",
     ),
     (
-        "publish outside an environment",
-        _set("jobs.publish-nexus.environment", _DELETE),
-        "I6: job 'publish-nexus' runs ecmwf/ci-infrastructure/actions/upload-nexus without an `environment:`",
+        "publish from a build job",
+        lambda d: _steps(d, "build-rpm").append(dict(_upload_step(d))),
+        "I6: publish job 'build-rpm' uses 'actions/checkout",
     ),
     (
-        "env job misses a build job",
+        "publish job misses a build job",
         _set("jobs.publish-nexus.needs", ["ci-approval", "gate", "build-rpm"]),
-        "I7: environment job 'publish-nexus' must need every build and test job; missing ['itest-rpm']",
+        "I7: publish job 'publish-nexus' must need every build and test job; missing ['itest-rpm']",
     ),
     (
-        "plain if on an env job",
+        "plain if on a publish job",
         _set("jobs.publish-nexus.if", "needs.gate.outputs.publish == 'true'"),
-        "I7: environment job 'publish-nexus' must run `if:",
+        "I7: publish job 'publish-nexus' must run `if:",
     ),
     (
         "expression in run",
@@ -229,8 +244,42 @@ def test_a_branch_ref_needs_allow_ref() -> None:
     assert problems and all("I9:" in p and "@feature/cd-v3 must be pinned" in p for p in problems)
 
 
-def test_the_upload_nexus_credential_is_a_secret_of_the_environment_job() -> None:
+def test_the_upload_nexus_credential_is_a_secret_of_the_publish_job() -> None:
     assert _upload_step(_sample())["env"] == {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}
+
+
+def test_a_publish_job_needs_no_environment() -> None:
+    doc = _sample()
+    assert "environment" not in doc["jobs"]["publish-nexus"]
+    assert _problems(doc) == []
+
+
+def test_an_environment_is_ignored() -> None:
+    doc = _sample()
+    doc["jobs"]["publish-nexus"]["environment"] = "anything"
+    doc["jobs"]["itest-rpm"]["environment"] = "anything"
+    assert _problems(doc) == []
+
+
+def test_a_job_with_an_environment_is_no_publish_job() -> None:
+    doc = _sample()
+    doc["jobs"]["build-rpm"]["environment"] = "release"
+    doc["jobs"]["build-rpm"]["env"] = {"T": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}
+    assert any("I5: job 'build-rpm' names secrets" in p for p in _problems(doc))
+
+
+def test_the_nexus_url_secret_may_be_read_by_the_gate() -> None:
+    doc = _sample()
+    gate_with = _steps(doc, "gate")[1]["with"]
+    assert "secrets.NEXUS_TEST_REPO_URL_ROCKY_9" in gate_with["nexus-read-urls"]
+    gate_with["nexus-read-urls"] = '{"rocky-8": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_8 }}"}'
+    assert _problems(doc) == []
+
+
+def test_the_url_exception_is_for_the_release_gate_action_not_the_job_name() -> None:
+    doc = _sample()
+    _steps(doc, "itest-rpm")[0]["with"]["name"] = "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"
+    assert any("I5: job 'itest-rpm' names secrets ['NEXUS_TEST_REPO_URL_ROCKY_9']" in p for p in _problems(doc))
 
 
 def test_cli_exit_codes(tmp_path: Path) -> None:

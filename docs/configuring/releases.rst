@@ -20,7 +20,7 @@ The pieces
 
 ``.github/workflows/cd-v3.yml``
    Copied from ``samples/cd/cd.yml``: ``ci-approval`` → ``gate`` → ``build-rpm`` → ``itest-rpm`` →
-   ``publish-nexus`` (environment ``cd-v3-test``) → ``record``.
+   ``publish-nexus`` (the publish job) → ``record``.
 ``[release]`` and ``release-ref`` in the manifest
    What the package is called and what the release builds against.
 ``[matrix.release-<channel>]``
@@ -160,14 +160,18 @@ Credentials and the threat model
 --------------------------------
 
 - Building runs the repo's own code (CMake, tests) and gets no publish credential. Only the
-  ``environment`` jobs hold one, and they run no ``run:`` step, check out nothing and build
-  nothing: they move artifacts and call ``upload-nexus``.
-- The upload credential is the org secret ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` (``user:token``, the one
-  v2 uses). An org secret is readable by any job that names it, so the check hook allows
-  ``secrets.*`` only in ``environment`` jobs. The environment ``cd-v3-test`` holds no secrets: it
-  allows the ``*-rc*`` tags only, and its reviewers (if any) approve each publish. The test-Nexus URL is the repo variable
-  ``NEXUS_TEST_URL_ROCKY_9``. ``upload-nexus`` takes the credential from the step's ``env``,
-  masks it, and refuses any host but test Nexus.
+  publish jobs (those that run ``upload-nexus``, ``hpc-promote`` or ``hpc-sync-tag``) hold one,
+  and they run no ``run:`` step, check out nothing and build nothing: they move artifacts and
+  call ``upload-nexus``.
+- No GitHub environment and no repo variable is needed: the workflow uses the org secrets v2
+  already uses. The upload credential is ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` (``user:token``), the
+  repository URL ``NEXUS_TEST_REPO_URL_ROCKY_9`` (the URL v2 PUTs ``<url>/<file>`` to). An org
+  secret is readable by any job that names it, so the check hook allows a non-CI secret only in
+  a publish job, and a ``NEXUS_TEST_REPO_URL_*`` URL also in the gate's job, which probes it
+  anonymously. Only the tag-push trigger reaches the publish job (``publish`` is false for a
+  rehearsal). ``upload-nexus`` takes the credential from the step's ``env``, masks it, and
+  refuses any host but test Nexus. GitHub masks the URL in logs too, so it prints as ``***``;
+  the receipts and the release record hold it in full.
 - ``upload-nexus`` uploads only the bytes the install test passed (their sha256 is in its
   receipt, with the commit and job key of the build it tested, which must be the leg's), and
   never overwrites: the same bytes are a no-op, other bytes fail.
@@ -180,7 +184,7 @@ Credentials and the threat model
 - **Known gap: ci-infrastructure cannot be pinned by SHA yet.** Every action nests
   ``ensure-infrastructure-present`` at a fixed ref (``@feature/cd-v3`` on this branch, ``@main``
   on main), which installs that ref's Python whatever ref the consumer named. So the
-  environment jobs run ci-infrastructure code at a mutable branch ref during the experiment.
+  publish jobs run ci-infrastructure code at a mutable branch ref during the experiment.
   A fix is for the bootstrap to install from the outer action's checkout (a ``source-path``
   input); until then ``check-cd-workflow`` accepts ``--allow-ref feature/cd-v3``.
 - **Known gap: images are** ``:latest`` (see above).
@@ -191,8 +195,8 @@ The workflow's shape
 ``check-cd-workflow`` (a pre-commit hook, and gate check 8) holds ``cd-v3.yml`` to the shape
 of ``samples/cd/cd.yml``: tag and labelled-PR triggers only; ``contents: read``; a concurrency
 group on the ref, never cancelled; no ``secrets: inherit`` or workflow ``env``; a non-CI secret
-only in an environment job; environment jobs as above, on an ECMWF runner, in an ECCR container,
-with no ``env`` that changes how processes start (``LD_*``, ``BASH_ENV``, ``PATH``, ``PYTHON*``,
+only in a publish job (a ``NEXUS_TEST_REPO_URL_*`` also in the gate's job); publish jobs as
+above, on an ECMWF runner, in an ECCR container, with no ``env`` that changes how processes start (``LD_*``, ``BASH_ENV``, ``PATH``, ``PYTHON*``,
 ``GIT_*``, ...), downloading only this run's artifacts (no ``run-id``, ``repository`` or
 ``github-token``), needing every build and test job and running exactly
 ``if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}``;
