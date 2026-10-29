@@ -73,7 +73,7 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "${NEXUS_AUTH:-}" ]; then
-          echo "::error::upload-nexus: NEXUS_AUTH is empty; set it from the environment's secret in the step's env" >&2
+          echo "::error::upload-nexus: NEXUS_AUTH is empty; set it from the org secret in the step's env" >&2
           exit 1
         fi
         echo "::add-mask::$NEXUS_AUTH"

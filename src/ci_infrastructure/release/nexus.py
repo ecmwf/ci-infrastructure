@@ -66,16 +66,26 @@ def urllib_http(method: str, url: str, *, data: bytes | None = None, auth: str |
 
 
 def check_url(url: str, *, allow_production: bool = False, allowed_hosts: frozenset[str] | None = None) -> str:
-    """An https URL on a test Nexus host (or a production one with allow-production); no credentials in it."""
+    """An https URL on a test Nexus host (or a production one with allow-production); no credentials in it.
+
+    The URL is the repository v2 PUTs ``<url>/<file>`` to, kept in an org secret
+    (NEXUS_TEST_REPO_URL_*): GitHub masks it in logs, so errors name its parts, not the URL.
+    """
     parsed = urllib.parse.urlsplit(url.strip())
     hosts = (
         allowed_hosts if allowed_hosts is not None else TEST_HOSTS | (PRODUCTION_HOSTS if allow_production else set())
     )
     if allowed_hosts is None and parsed.scheme != "https":
-        raise ReleaseError(f"Nexus URL must be https: {url!r}")
+        raise ReleaseError(f"Nexus URL must be https, not {parsed.scheme or '(no scheme)'!r}")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ReleaseError("Nexus URL must not carry credentials, a query or a fragment")
-    if parsed.netloc not in hosts:
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    # The host, any letter case, on the default https port, written or not.
+    host = parsed.hostname or ""
+    if host not in hosts or port not in (None, 443):
         what = "a test Nexus host" if not allow_production else "a Nexus host"
         raise ReleaseError(f"Nexus URL host {parsed.netloc!r} is not {what} ({sorted(hosts)})")
     return url.strip().rstrip("/")
@@ -178,6 +188,20 @@ def already_published(
     return _receipt(url, digest, "already-published", filename)
 
 
+def parse_urls(text: str, *, what: str) -> dict[str, Any]:
+    """The JSON object of target -> URL a workflow builds around a secret (`'{"t": "${{ secrets.X }}"}'`).
+
+    Lenient on control characters: a secret saved with a trailing newline still parses (check_url strips it).
+    """
+    try:
+        urls = json.loads(text or "{}", strict=False)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{what} is not valid JSON ({exc.msg}); a URL must not hold a quote or backslash") from None
+    if not isinstance(urls, dict):
+        raise ReleaseError(f"{what} must be a JSON object")
+    return urls
+
+
 def target_url(urls: Mapping[str, Any], target: str, *, allow_production: bool) -> str:
     url = urls.get(target)
     if not isinstance(url, str) or not url.strip():
@@ -213,8 +237,8 @@ def main(
     """Upload the leg's package to Nexus (credential: $NEXUS_AUTH, user:token) and write receipt-<leg>.json."""
     auth = os.environ.get(AUTH_ENV, "")
     if not auth:
-        raise ReleaseError(f"${AUTH_ENV} is empty: the job needs the Nexus credential from its environment")
-    base = target_url(json.loads(urls), target, allow_production=allow_production)
+        raise ReleaseError(f"${AUTH_ENV} is empty: set the Nexus credential (user:token) in the step's env")
+    base = target_url(parse_urls(urls, what="--urls"), target, allow_production=allow_production)
     if state == "already-published":
         receipt = already_published(base_url=base, filename=filename, auth=auth)
     else:
