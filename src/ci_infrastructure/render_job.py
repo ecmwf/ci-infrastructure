@@ -12,6 +12,7 @@ defaults to a path under the current directory and can be overridden from outsid
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -24,6 +25,9 @@ from ._errors import CIError
 from ._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from .generate_downstream_ci import Manifest, SchemaError, build_order, parse_manifest
 from .hpc import jobscript
+from .manifest import is_release_kind
+from .release import ReleaseError, legs, version
+from .release.detect import ReleaseEvent
 
 _ENV_DEFAULTS: Final[Mapping[str, str]] = {
     "CI_SOURCE_DIR": "$PWD",
@@ -103,6 +107,47 @@ def _from_manifest(manifest: Path, leg_title: str) -> tuple[Path, dict[str, Any]
     return m.repo_root / spec.removeprefix("./"), leg, m.matrices[kind].execution, job_title(m, kind, leg)
 
 
+def _head_sha(repo_root: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "0" * 40
+    return out or "0" * 40
+
+
+def _release_from_manifest(
+    manifest: Path, leg_title: str, mode: str, tag: str | None, sha: str | None
+) -> tuple[Path, dict[str, Any], Execution, str]:
+    """The leg as the release gate hands it to run-job-script: with ``_release``, without ``_resolved``."""
+    try:
+        rm = legs.load(manifest)
+        kind, leg = select_leg(rm.m, leg_title)
+        if not is_release_kind(kind):
+            raise CIError(f"--release renders a release leg ([matrix.release-*]); {leg_title!r} is in [matrix.{kind}]")
+        assert rm.raw.release is not None
+        project_version = version.read_project_version(rm.m.repo_root)
+        if mode == version.MODE_REHEARSAL:
+            if tag:
+                raise CIError("--release rehearsal takes no --tag")
+            v = version.rehearsal_version(project_version, parts=rm.raw.release.version_parts)
+        else:
+            if not tag:
+                raise CIError(f"--release {mode} needs --tag")
+            v = version.parse_tag(tag, prefix=rm.raw.release.tag_prefix, parts=rm.raw.release.version_parts)
+            if v.mode != mode:
+                raise CIError(f"tag {tag!r} is a {v.mode}, not a {mode}")
+            version.check_tag_matches_version(v, project_version)
+        commit = sha or _head_sha(rm.m.repo_root)
+        ctx = legs.release_context(rm, kind, leg, ReleaseEvent(version=v, sha=commit, head_sha=commit))
+    except ReleaseError as exc:
+        raise CIError(str(exc)) from exc
+    spec = str(leg.get("job-script") or "")
+    title = f"{job_title(rm.m, kind, leg)} [{mode}{' ' + tag if tag else ''}]"
+    return rm.m.repo_root / spec.removeprefix("./"), {**leg, "_release": ctx}, rm.m.matrices[kind].execution, title
+
+
 def _list_titles(manifest: Path) -> Sequence[str]:
     m = parse_manifest(manifest)
     return [
@@ -126,6 +171,14 @@ def _list_titles(manifest: Path) -> Sequence[str]:
     help="The lane, with --matrix-leg; --leg takes it from the manifest.",
 )
 @click.option("--artifact-name", "artifact_name", default="", help="Value for the template's `artifact_name`.")
+@click.option(
+    "--release",
+    "release_mode",
+    type=click.Choice(["rehearsal", "prerelease", "release"]),
+    help="Render a [matrix.release-*] leg (with --leg) as the release gate would, with its `_release` context.",
+)
+@click.option("--tag", help="The release tag, with --release prerelease|release, e.g. 2.5.0-rc1.")
+@click.option("--sha", help="The commit, with --release; default: HEAD of the manifest's repo.")
 @click.option("-o", "--output", type=click.Path(path_type=Path), help="Write here (executable) instead of stdout.")
 def main(
     manifest: Path,
@@ -135,12 +188,21 @@ def main(
     job_script: Path | None,
     execution: Execution,
     artifact_name: str,
+    release_mode: str | None,
+    tag: str | None,
+    sha: str | None,
     output: Path | None,
 ) -> None:
     if list_legs:
         click.echo("\n".join(_list_titles(manifest)))
         return
-    if matrix_leg is not None:
+    if release_mode is not None:
+        if leg_title is None or matrix_leg is not None:
+            raise click.UsageError("--release takes --leg (a [matrix.release-*] leg of --manifest)")
+        job_script, leg, execution, title = _release_from_manifest(manifest, leg_title, release_mode, tag, sha)
+    elif tag is not None or sha is not None:
+        raise click.UsageError("--tag and --sha go with --release")
+    elif matrix_leg is not None:
         if job_script is None:
             raise click.UsageError("--matrix-leg needs --job-script")
         leg = json.loads(matrix_leg)
