@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -16,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 from release_fixtures import SAMPLE_WORKFLOW, write_release_repo
 
-from ci_infrastructure.release import ReleaseError, gate
+from ci_infrastructure.release import ReleaseError, gate, nexus
 
 REPO = "o/pkg"
 SHA = "a" * 40
@@ -278,8 +279,51 @@ def test_a_workflow_breaking_the_rules_is_refused(tmp_path: Path) -> None:
 
 def test_a_missing_read_url_is_refused(root: Path) -> None:
     inp = _inputs(root, nexus_read_urls={})
-    with pytest.raises(ReleaseError, match="no Nexus read URL"):
+    with pytest.raises(ReleaseError, match="no Nexus URL for target"):
         gate.run_gate(inp, api=Api(), sleep=lambda s: None)
+
+
+def test_the_probe_uses_the_credential_and_keeps_it_out_of_the_outputs(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    def probe(base_url: str, filename: str, *, auth: str | None = None) -> str:
+        seen.append((base_url, auth))
+        return "present"
+
+    monkeypatch.setattr(nexus, "probe", probe)
+    inp = _inputs(root, nexus_auth="u:s3cr3t-token")
+    result = gate.run_gate(inp, api=Api(), sleep=lambda s: None)
+    assert seen == [("https://nexus-test.ecmwf.int/repository/rpm", "u:s3cr3t-token")]
+    assert result.legs["release-rpm"][0]["_release"]["state"] == "already-published"
+    out = capsys.readouterr().out
+    assert "s3cr3t" not in json.dumps(result.outputs()) + repr(inp) + out
+    assert "no Nexus credential" not in out
+
+
+def test_without_a_credential_the_probe_is_anonymous_and_warned(
+    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[str | None] = []
+
+    def probe(base_url: str, filename: str, *, auth: str | None = None) -> str:
+        seen.append(auth)
+        return "absent"
+
+    monkeypatch.setattr(nexus, "probe", probe)
+    gate.run_gate(_inputs(root), api=Api(), sleep=lambda s: None)
+    assert seen == [""]
+    assert "::warning::no Nexus credential ($NEXUS_AUTH): probing anonymously" in capsys.readouterr().out
+
+
+def test_a_refused_authenticated_probe_refuses_the_release(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def probe(base_url: str, filename: str, *, auth: str | None = None) -> str:
+        raise ReleaseError("Nexus refused the authenticated probe")
+
+    monkeypatch.setattr(nexus, "probe", probe)
+    with pytest.raises(ReleaseError, match="refused the authenticated probe"):
+        gate.run_gate(_inputs(root, nexus_auth="u:p"), api=Api(), sleep=lambda s: None)
 
 
 def test_a_production_read_url_is_refused(root: Path) -> None:
@@ -369,6 +413,7 @@ def test_cli_reads_the_github_environment(root: Path, monkeypatch: pytest.Monkey
         "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
         "CD_KILL_SWITCH": "on",
         "CD_KILL_SWITCH_REASON": "frozen",
+        "NEXUS_AUTH": "u:secret",
     }.items():
         monkeypatch.setenv(k, v)
     result = CliRunner().invoke(
@@ -376,6 +421,8 @@ def test_cli_reads_the_github_environment(root: Path, monkeypatch: pytest.Monkey
     )
     assert result.exit_code == 1
     assert "::error::CD kill switch is on: frozen" in result.output
+    # Taken out of the environment: no subprocess (gh) inherits it.
+    assert "NEXUS_AUTH" not in os.environ
 
 
 def test_workflow_path_from_the_ref() -> None:
