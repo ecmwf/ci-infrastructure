@@ -1,0 +1,107 @@
+{% extends "ci-infrastructure/cmake-runner.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   cmake-runner.sh.j2 for a release: configure with the CPack overrides of the `release`
+   context, build, test, install into a staging tree, and package with CPack into
+   $CI_INSTALL_PREFIX: the package, SHA256SUMS and build-meta.json.
+
+   No compiler cache, no artifact store. Its new blocks (`release_guard`, `packaging_tools`,
+   `build_meta`) sit inside blocks the base defines; Jinja drops a block only a child declares. #}
+{% block setup %}
+{{ super() }}
+# ci-infrastructure: release overlay
+{% block release_guard %}
+# A release is built from source alone: no compiler cache or launcher from the job environment.
+for _ci_var in SCCACHE_BUCKET RUSTC_WRAPPER CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER CMAKE_Fortran_COMPILER_LAUNCHER; do
+  if [ -n "${!_ci_var:-}" ]; then
+    echo "::error::release build: $_ci_var is set; a release build uses no compiler cache or launcher" >&2
+    exit 1
+  fi
+done
+{% endblock %}
+release_prefix={{ release.prefix | sh }}
+release_overrides="$build/ci-release-cpack-overrides.cmake"
+# A re-run on the same runner must not package or upload what an earlier attempt left.
+rm -rf "$CI_INSTALL_PREFIX" "$build/stage" "$build/_cpack"
+mkdir -p "$CI_INSTALL_PREFIX" "$build"
+{% block packaging_tools %}
+{% if release.cpack_generator == "RPM" %}
+if ! command -v rpmbuild >/dev/null 2>&1; then
+  echo "rpmbuild not in the image; installing rpm-build"
+  dnf -y install rpm-build
+fi
+{% endif %}
+{% endblock %}
+{% endblock %}
+
+{% block preflight %}
+{{ super() }}
+echo "Using: $(command -v cpack) ($(cpack --version | head -1))"
+{% if release.cpack_generator == "RPM" %}
+echo "Using: $(command -v rpmbuild) ($(rpmbuild --version | head -1))"
+{% endif %}
+echo "Release: {{ release.package_name }} {{ release.pkg_version }} ({{ release.mode }}{{ (" " ~ release.tag) if release.tag else "" }}) -> {{ release.filename }}"
+cat > "$release_overrides" <<'CI_RELEASE_CPACK_OVERRIDES'
+{{ release.cpack_overrides | trim }}
+CI_RELEASE_CPACK_OVERRIDES
+{% endblock %}
+
+{% block configure %}
+# shellcheck disable=SC2086
+cmake -C "$release_overrides" --preset {{ options | sh }} -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \
+  -DCMAKE_BUILD_TYPE={{ build_type | sh }} \
+  -DCMAKE_C_COMPILER="$(command -v {{ c_compiler_binary | sh }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx_compiler_binary | sh }})" \
+{% if fortran_compiler_binary %}
+  -DCMAKE_Fortran_COMPILER="$(command -v {{ fortran_compiler_binary | sh }})" \
+{% endif %}
+{% block cmake_args %}{% endblock %}
+  -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+  -DCMAKE_INSTALL_PREFIX="$release_prefix"
+{% endblock %}
+
+{% block install %}
+# Proves the install rules work on their own; CPack installs again into its own tree.
+DESTDIR="$build/stage" cmake --install "$build"
+{% endblock %}
+
+{% block publish %}
+cpack -G {{ release.cpack_generator | sh }} --config "$build/CPackConfig.cmake" -B "$build/_cpack"
+_ci_count="$(find "$build/_cpack" -maxdepth 1 -type f -name '*.rpm' | wc -l)"
+if [ "$_ci_count" -ne 1 ]; then
+  echo "::error::cpack made $_ci_count packages, expected exactly one:" >&2
+  ls -l "$build/_cpack" >&2
+  exit 1
+fi
+_ci_package="$(find "$build/_cpack" -maxdepth 1 -type f -name '*.rpm')"
+if [ "$(basename "$_ci_package")" != {{ release.filename | sh }} ]; then
+  echo "::error::cpack named the package $(basename "$_ci_package"), expected" {{ release.filename | sh }} >&2
+  exit 1
+fi
+mv "$_ci_package" "$CI_INSTALL_PREFIX/"
+( cd "$CI_INSTALL_PREFIX" && sha256sum {{ release.filename | sh }} > SHA256SUMS )
+{% block build_meta %}
+_ci_json() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+{
+  printf '{\n"release": '
+  cat <<'CI_RELEASE_BUILD_META'
+{{ release.build_meta | trim }}
+CI_RELEASE_BUILD_META
+  printf ',\n"sha256": %s' "$(_ci_json "$(cut -d' ' -f1 "$CI_INSTALL_PREFIX/SHA256SUMS")")"
+  printf ',\n"image": {"name": %s, "tag": %s, "created": %s}' \
+    "$(_ci_json "${CI_IMAGE_NAME:-}")" "$(_ci_json "${CI_IMAGE_TAG:-}")" "$(_ci_json "${CI_IMAGE_CREATED:-}")"
+  printf ',\n"tools": {"c": %s, "cxx": %s, "cmake": %s, "rpmbuild": %s}' \
+    "$(_ci_json "$({{ c_compiler_binary | sh }} --version | head -1)")" \
+    "$(_ci_json "$({{ cxx_compiler_binary | sh }} --version | head -1)")" \
+    "$(_ci_json "$(cmake --version | head -1)")" \
+    "$(_ci_json "$(rpmbuild --version 2>/dev/null | head -1)")"
+  printf ',\n"run": {"url": %s, "attempt": %s}\n}\n' \
+    "$(_ci_json "${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}")" \
+    "$(_ci_json "${GITHUB_RUN_ATTEMPT:-}")"
+} > "$CI_INSTALL_PREFIX/build-meta.json"
+{% endblock %}
+echo "Packaged:"
+ls -l "$CI_INSTALL_PREFIX"
+cat "$CI_INSTALL_PREFIX/SHA256SUMS"
+{% endblock %}

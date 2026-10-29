@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install-tree checks for a release, in plain bash: actions/install-test-package sources this
+# file, and a template may `include` it unchanged (it holds no Jinja syntax; a test keeps it so).
+# Each function prints what it finds to stderr and returns 1 on a finding.
+
+# ci_release_is_elf FILE
+ci_release_is_elf() {
+  [ -f "$1" ] && [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]
+}
+
+# ci_release_check_runpath ROOT ALLOWED_PREFIX...
+# Every RUNPATH/RPATH entry of every ELF file under ROOT is $ORIGIN-relative, or an absolute path
+# under an allowed prefix with no `.` or `..` component (`/opt/ecmwf/../../usr/lib64` escapes it).
+# An empty entry (`:/opt/ecmwf/lib`) is a finding: the loader reads it as the current directory.
+ci_release_check_runpath() {
+  local root="$1" bad=0 f entry ok allowed
+  shift
+  while IFS= read -r -d '' f; do
+    ci_release_is_elf "$f" || continue
+    while IFS= read -r entry; do
+      if [ -z "$entry" ]; then
+        echo "ci-release: $f: empty RUNPATH entry (the loader searches the current directory)" >&2
+        bad=1
+        continue
+      fi
+      ok=false
+      # shellcheck disable=SC2016 # the literal $ORIGIN of the dynamic loader
+      case "$entry" in
+        '$ORIGIN'|'$ORIGIN'/*|'${ORIGIN}'|'${ORIGIN}'/*) ok=true ;;
+        /*)
+          case "$entry/" in
+            */./*|*/../*) ;;
+            *)
+              for allowed in "$@"; do
+                case "$entry" in
+                  "$allowed"|"$allowed"/*) ok=true ;;
+                esac
+              done
+              ;;
+          esac
+          ;;
+      esac
+      if ! $ok; then
+        echo "ci-release: $f: RUNPATH entry '$entry' is neither \$ORIGIN-relative nor under: $*" >&2
+        bad=1
+      fi
+    done < <(readelf -d "$f" 2>/dev/null | sed -n 's/.*(\(RUNPATH\|RPATH\)).*\[\(.*\)\]$/\2/p' | tr ':' '\n')
+  done < <(find "$root" -type f -print0)
+  return "$bad"
+}
+
+# ci_release_check_ldd ROOT
+# No ELF file under ROOT has a library ldd cannot find, without LD_LIBRARY_PATH.
+ci_release_check_ldd() {
+  local root="$1" bad=0 f missing
+  while IFS= read -r -d '' f; do
+    ci_release_is_elf "$f" || continue
+    missing="$(env -u LD_LIBRARY_PATH ldd "$f" 2>/dev/null | grep 'not found' || true)"
+    if [ -n "$missing" ]; then
+      echo "ci-release: $f does not load:" >&2
+      printf '%s\n' "$missing" >&2
+      bad=1
+    fi
+  done < <(find "$root" -type f -print0)
+  return "$bad"
+}
+
+# ci_release_check_leaks ROOT [EXTRA_PATTERN...]
+# No build-machine path in the installed CMake config, pkg-config or share/ files.
+ci_release_check_leaks() {
+  local root="$1" p hits
+  shift
+  local -a args=()
+  for p in '/__w/' '/_temp/' 'github-ci/' '/staging/' '/tmpdirs/' '/tmp/build' '/github/home' "$@"; do
+    if [ -n "$p" ]; then args+=(-e "$p"); fi
+  done
+  hits="$(find "$root" -type f \( -name '*.cmake' -o -name '*.pc' -o -path '*/share/*' \) -print0 \
+    | xargs -0 -r grep -I -n -F "${args[@]}" || true)"
+  if [ -n "$hits" ]; then
+    echo "ci-release: build paths leaked into the install tree:" >&2
+    printf '%s\n' "$hits" >&2
+    return 1
+  fi
+}
+
+# ci_release_check_paths PREFIX  (paths on stdin, e.g. `rpm -qlp x.rpm`)
+# Every path is under PREFIX, or one of its parent directories.
+ci_release_check_paths() {
+  local prefix="$1" bad=0 path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      "$prefix"|"$prefix"/*) continue ;;
+    esac
+    case "$prefix/" in
+      "$path"/*) continue ;;
+    esac
+    echo "ci-release: $path is outside $prefix" >&2
+    bad=1
+  done
+  return "$bad"
+}
+
+# ci_release_json STRING: STRING as a JSON string, control characters dropped.
+ci_release_json() {
+  printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}

@@ -60,7 +60,16 @@ def job_name_for(artifact_name: str) -> str:
 
 JOB_TEMPLATE_SUFFIX: Final = ".j2"
 
-_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "ci_dep_shas", "ci_crates")
+_CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "ci_dep_shas", "ci_crates", "release")
+
+#: Leg keys the pipeline adds (``_resolved`` by resolve-deps, ``_release`` by the release gate): not leg fields.
+_INTERNAL_KEY_PREFIX: Final = "_"
+
+#: The release leg's context, under ``release`` in the template.
+RELEASE_KEY: Final = "_release"
+
+#: Every release overlay template emits this line; a recipe that bypasses the overlay renders without it.
+RELEASE_OVERLAY_MARKER: Final = "# ci-infrastructure: release overlay"
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
@@ -105,11 +114,21 @@ def template_var(field: str) -> str:
     return field.replace("-", "_")
 
 
-def job_template_environment(search_path: Path | None = None) -> jinja2.Environment:
+def _is_leg_field(key: str) -> bool:
+    return not key.startswith(_INTERNAL_KEY_PREFIX)
+
+
+def is_release_leg(leg: Mapping[str, Any]) -> bool:
+    return RELEASE_KEY in leg
+
+
+def job_template_environment(search_path: Path | None = None, *, release: bool = False) -> jinja2.Environment:
+    """``release``: ``templates/release`` shadows the shared templates, i.e. its cmake-all-lanes.sh.j2."""
+    shared: jinja2.BaseLoader = jinja2.PackageLoader("ci_infrastructure", "templates")
+    if release:
+        shared = jinja2.ChoiceLoader([jinja2.PackageLoader("ci_infrastructure", "templates/release"), shared])
     # The shared templates come first, so a repo file cannot shadow them.
-    loaders: list[jinja2.BaseLoader] = [
-        jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: jinja2.PackageLoader("ci_infrastructure", "templates")})
-    ]
+    loaders: list[jinja2.BaseLoader] = [jinja2.PrefixLoader({BASE_TEMPLATE_PREFIX: shared})]
     if search_path:
         loaders.append(jinja2.FileSystemLoader(str(search_path)))
     env = jinja2.Environment(
@@ -130,11 +149,14 @@ def job_template_environment(search_path: Path | None = None) -> jinja2.Environm
 
 
 def build_template_context(leg: Mapping[str, Any], *, execution: Execution, artifact_name: str = "") -> dict[str, Any]:
-    """``_resolved`` is left out: its runner-local paths are invalid on the cluster."""
+    """``_resolved`` is left out: its runner-local paths are invalid on the cluster.
+
+    ``_release`` becomes ``release`` (None for a CI leg); no other ``_`` key reaches the template.
+    """
     context: dict[str, Any] = {}
     origin: dict[str, str] = {}
     for key, value in leg.items():
-        if key == "_resolved":
+        if not _is_leg_field(key):
             continue
         name = template_var(key)
         if name in _CONTEXT_EXTRAS:
@@ -168,11 +190,12 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     # The commit resolve-deps built each dep's repo from, and the crates the manifest takes from it.
     context["ci_dep_shas"] = {d["repo"]: d["sha"] for d in resolved.get("deps") or []}
     context["ci_crates"] = dict(resolved.get("crates") or {})
+    context["release"] = leg.get(RELEASE_KEY)
     return context
 
 
 def declared_template_names(leg: Mapping[str, Any]) -> set[str]:
-    names = {template_var(k) for k in leg if k != "_resolved"}
+    names = {template_var(k) for k in leg if _is_leg_field(k)}
     names |= {name for name, source in _COMPILER_BINARIES.items() if source in names}
     return names | set(_CONTEXT_EXTRAS) | set(JOB_TEMPLATE_DEFAULTS)
 
@@ -210,7 +233,7 @@ def undeclared_template_names(
 
     Static, so misses ``leg['x']``.
     """
-    env = job_template_environment(search_path)
+    env = job_template_environment(search_path, release=is_release_leg(leg))
     assert env.loader is not None
     names: set[str] = set()
     defaulted: set[str] = set()
@@ -248,7 +271,7 @@ def undeclared_template_names(
 
 
 def undeclared_names_message(recipe: str, missing: set[str], leg: Mapping[str, Any]) -> str:
-    declared = sorted(k for k in leg if k != "_resolved")
+    declared = sorted(k for k in leg if _is_leg_field(k))
     return (
         f"recipe '{recipe}' reads {sorted(missing)}, which this "
         f"leg does not declare. The leg has {declared}; a template may read those "
@@ -277,7 +300,10 @@ def render_job_template(
     # The check the workflow generator runs, so a recipe it rejects fails in the pull request already.
     if missing := undeclared_template_names(template_source, leg, template_name=template_name, search_path=search_path):
         raise JobTemplateError(undeclared_names_message(template_name, missing, leg))
-    env = job_template_environment(search_path)
+    release = is_release_leg(leg)
+    if release and not isinstance(leg[RELEASE_KEY], Mapping):
+        raise JobTemplateError(f"{template_name}: the leg's {RELEASE_KEY} must be a table, got {leg[RELEASE_KEY]!r}")
+    env = job_template_environment(search_path, release=release)
     try:
         template = env.from_string(template_source)
         rendered = template.render(build_template_context(leg, execution=execution, artifact_name=artifact_name))
@@ -286,7 +312,7 @@ def render_job_template(
     except jinja2.TemplateNotFound as exc:
         raise JobTemplateError(f"{template_name}: template {exc.name!r} not found") from exc
     except jinja2.UndefinedError as exc:
-        declared = sorted(k for k in leg if k != "_resolved")
+        declared = sorted(k for k in leg if _is_leg_field(k))
         raise JobTemplateError(
             f"{template_name}: {exc.message}. The matrix leg declares {declared or '(nothing)'}; "
             f"a template may only read those (hyphens as underscores), plus `leg`, "
@@ -299,6 +325,12 @@ def render_job_template(
         raise JobTemplateError(
             f"{template_name} renders nothing for execution = {execution!r}; "
             "does a template it extends (e.g. cmake-all-lanes.sh.j2) have a branch for that lane?"
+        )
+    if release and RELEASE_OVERLAY_MARKER not in rendered.splitlines():
+        raise JobTemplateError(
+            f"{template_name} renders a release leg without the release overlay: a release recipe must "
+            f'extend "{BASE_TEMPLATE_PREFIX}/cmake-all-lanes.sh.j2", which the overlay replaces; one that '
+            "extends cmake-runner.sh.j2 or cmake-atos.sh.j2 directly would build it as CI does"
         )
     return rendered
 
