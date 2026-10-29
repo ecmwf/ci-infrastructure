@@ -23,6 +23,7 @@ it holds a publish credential. It needs no GitHub environment.
   this run's artifacts (no `run-id`, `repository`, `github-token`). `environment:` is ignored.
 - I7: a publish job needs every build and test job, and runs exactly
   `if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}`.
+  Its `name`, if any, does not use `matrix`: GitHub cannot evaluate it for a skipped job.
 - I8: no `${{ }}` inside a `run:` script; pass values through `env`.
 - I9: one ref for every ci-infrastructure action, a commit SHA unless allowed (`--allow-ref`);
   every other action pinned by commit SHA.
@@ -95,6 +96,7 @@ GATE_SECRET_ALLOWLIST: Final = (re.compile(r"^NEXUS_TEST_REPO_URL_[A-Z0-9_]+$"),
 _CACHE_NAMES: Final = re.compile(r"\b(AWS_[A-Z0-9_]*|ARTIFACT_S3_[A-Z0-9_]*|SCCACHE_[A-Z0-9_]*)")
 _SECRET_REF: Final = re.compile(r"secrets\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)|secrets\[\s*'([^']+)'\s*\]")
 _SECRETS_TOKEN: Final = re.compile(r"\bsecrets\b")
+_MATRIX_REF: Final = re.compile(r"\$\{\{[^}]*\bmatrix\b")
 _SHA_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 _ECMWF_RUNNER: Final = re.compile(r"^(arc-runner-[a-z0-9-]+|hpc-submit)$")
 _TRUSTED_REGISTRY: Final = "eccr.ecmwf.int/"
@@ -268,6 +270,11 @@ def _check_publish_jobs(jobs: dict[str, dict[str, Any]]) -> list[str]:
             out.append(f"I7: publish job {name!r} must need every build and test job; missing {missing}")
         if _strip_expr(str(job.get("if", ""))) != PUBLISH_JOB_IF:
             out.append(f"I7: publish job {name!r} must run `if: ${{{{ {PUBLISH_JOB_IF} }}}}`")
+        if _MATRIX_REF.search(str(job.get("name", ""))):
+            out.append(
+                f"I7: publish job {name!r}: its `name` uses `matrix`, which a skipped job shows unevaluated; "
+                "use a static name"
+            )
     return out
 
 

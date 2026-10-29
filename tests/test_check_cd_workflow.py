@@ -214,6 +214,11 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         "I9: every ci-infrastructure action must use one ref",
     ),
     (
+        "matrix in a publish job's name",
+        _set("jobs.publish-nexus.name", "publish-nexus (${{ matrix._release.leg_id }})"),
+        "I7: publish job 'publish-nexus': its `name` uses `matrix`",
+    ),
+    (
         "transitive approval",
         _set("jobs.itest-rpm.needs", ["gate", "build-rpm"]),
         "I10: job 'itest-rpm' must list 'ci-approval' in `needs:` directly",
@@ -280,6 +285,12 @@ def test_the_url_exception_is_for_the_release_gate_action_not_the_job_name() -> 
     doc = _sample()
     _steps(doc, "itest-rpm")[0]["with"]["name"] = "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"
     assert any("I5: job 'itest-rpm' names secrets ['NEXUS_TEST_REPO_URL_ROCKY_9']" in p for p in _problems(doc))
+
+
+def test_a_static_publish_name_may_say_matrix() -> None:
+    doc = _sample()
+    doc["jobs"]["publish-nexus"]["name"] = "publish matrix packages"
+    assert _problems(doc) == []
 
 
 def test_cli_exit_codes(tmp_path: Path) -> None:
