@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import click
 
-from . import source_deps
+from . import nexus, source_deps
 
 
 @click.group(help=__doc__)
@@ -17,6 +17,7 @@ def main() -> None:
 
 
 main.add_command(source_deps.main)
+main.add_command(nexus.main)
 
 
 if __name__ == "__main__":
