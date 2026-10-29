@@ -92,8 +92,8 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
     ("s3", _set("jobs.gate.env", {"A": "${{ secrets.ARTIFACT_S3_BUCKET }}"}), "I4: no CI cache"),
     (
         "secret in a build job",
-        _set("jobs.build-rpm.env", {"T": "${{ secrets.NEXUS_TEST_UPLOAD_AUTH }}"}),
-        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_UPLOAD_AUTH']",
+        _set("jobs.build-rpm.env", {"T": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
+        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
     ),
     (
         "toJSON(secrets) in a build job",
@@ -230,7 +230,7 @@ def test_a_branch_ref_needs_allow_ref() -> None:
 
 
 def test_the_upload_nexus_credential_is_a_secret_of_the_environment_job() -> None:
-    assert _upload_step(_sample())["env"] == {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_UPLOAD_AUTH }}"}
+    assert _upload_step(_sample())["env"] == {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}
 
 
 def test_cli_exit_codes(tmp_path: Path) -> None:
