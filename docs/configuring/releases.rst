@@ -162,8 +162,10 @@ Credentials and the threat model
 - Building runs the repo's own code (CMake, tests) and gets no publish credential. Only the
   ``environment`` jobs hold one, and they run no ``run:`` step, check out nothing and build
   nothing: they move artifacts and call ``upload-nexus``.
-- The environment ``cd-v3-test`` holds ``NEXUS_TEST_UPLOAD_AUTH`` (``user:token``) and allows the
-  ``*-rc*`` tags only; its reviewers approve each publish. The test-Nexus URL is the repo variable
+- The upload credential is the org secret ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` (``user:token``, the one
+  v2 uses). An org secret is readable by any job that names it, so the check hook allows
+  ``secrets.*`` only in ``environment`` jobs. The environment ``cd-v3-test`` holds no secrets: it
+  allows the ``*-rc*`` tags only, and its reviewers (if any) approve each publish. The test-Nexus URL is the repo variable
   ``NEXUS_TEST_URL_ROCKY_9``. ``upload-nexus`` takes the credential from the step's ``env``,
   masks it, and refuses any host but test Nexus.
 - ``upload-nexus`` uploads only the bytes the install test passed (their sha256 is in its

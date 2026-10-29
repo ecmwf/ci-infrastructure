@@ -175,7 +175,7 @@ jobs:
           path: itest
       - uses: ecmwf/ci-infrastructure/actions/upload-nexus@feature/cd-v3
         env:
-          NEXUS_AUTH: ${{ secrets.NEXUS_TEST_UPLOAD_AUTH }}
+          NEXUS_AUTH: ${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}
         with:
           urls: '{"rocky-9": "${{ vars.NEXUS_TEST_URL_ROCKY_9 }}"}'
           target: ${{ matrix._release.nexus_target }}
