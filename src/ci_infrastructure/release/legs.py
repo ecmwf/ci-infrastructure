@@ -24,7 +24,7 @@ from ..generate_downstream_ci import Manifest, SchemaError, parse_manifest
 from ..manifest import ManifestFile, is_release_kind
 from ..manifest import validate as validate_manifest
 from . import ReleaseError
-from .cpack import HEREDOC_DELIMITER, cpack_overrides, rpm_filename
+from .cpack import HEREDOC_DELIMITER, cpack_overrides, exclude_script, rpm_filename
 from .detect import ReleaseEvent
 from .version import PACKAGE_RELEASE
 
@@ -205,6 +205,8 @@ def release_context(
         install_prefix=prefix,
         package_release=PACKAGE_RELEASE,
     )
+    ctx["exclude"] = list(meta.exclude)
+    ctx["exclude_script"] = exclude_script(meta.exclude, install_prefix=prefix)
     build_meta = {k: ctx[k] for k in ("mode", "tag", "version", "pkg_version", "package_name", "prefix", "channel")}
     build_meta |= {
         "repo": rm.m.repo,
@@ -214,6 +216,7 @@ def release_context(
         "sha": event.sha,
         "head_sha": event.head_sha,
         "filename": filename,
+        "exclude": list(meta.exclude),
         "container": leg.get("container"),
         "options": leg.get("options"),
         "build_type": leg.get("build-type"),

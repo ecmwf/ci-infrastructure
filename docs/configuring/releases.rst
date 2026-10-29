@@ -46,6 +46,8 @@ The manifest
    vendor = "ECMWF"
    maintainer = "software@ecmwf.int"
    homepage = "https://github.com/ecmwf/eckit"
+   # Installed files left out of the package, relative to install-prefix (optional).
+   exclude = ["lib64/pkgconfig/eckit_test_value_custom_params.pc"]
 
    [[deps]]
    repo = "ecmwf/ecbuild"
@@ -100,6 +102,19 @@ A release leg must set ``channel``, ``options``, ``build-type``, ``install-prefi
 ``install-test-image`` come from ``eccr.ecmwf.int/``; it must not set ``tests = false``. Images are
 ``:latest``: ``build-meta.json`` records ``CI_IMAGE_NAME`` and ``CI_IMAGE_TAG`` of each build, as
 the registry keeps only the two newest versions of a pinned tag.
+
+``[release] exclude`` lists globs, relative to the leg's ``install-prefix``, of installed files to
+leave out of the package: for a file the project installs by mistake, such as a test-only
+``.pc`` that points into the build tree. The patterns are rendered into the build script as a
+CMake script that CPack runs on its staging tree before it packages
+(``cpack -D CPACK_PRE_BUILD_SCRIPTS=...``, CMake 3.19 or newer; the script fails if CPack did not
+run it). The rpm, and so the install test, never hold the file; the build log names each removed
+path. The syntax is CMake ``file(GLOB)``: ``*``, ``?`` and ``[...]``, each within one path
+component (``**`` is refused). A pattern is relative, with no ``.`` or ``..`` component, and uses
+only ``A-Z a-z 0-9 . _ + @ = , ~ - /`` besides. All patterns are expanded before anything is
+removed, and one that matches nothing fails the build, so a stale exclusion cannot linger: drop it
+once the project stops installing the file. An exclusion hides a file from the install tree's
+checks too, so it is for files that should not ship, never to silence a leak in one that should.
 
 Versions
 --------

@@ -55,7 +55,7 @@ compiler-inputs = ["cxx-compiler"]
 summary = "A package"
 license = "Apache-2.0"
 vendor = "ECMWF"
-
+{release_extra}
 [[deps]]
 repo = "o/ecbuild"
 package = "ecbuild"
@@ -96,12 +96,15 @@ def write_release_repo(
     leg: str = RPM_LEG,
     visibility: str = "private",
     workflow: str | None = None,
+    release_extra: str = "",
 ) -> Path:
     """The repo at `root`: manifest, recipe, VERSION (no newline) and .github/workflows/cd-v3.yml."""
     ci = root / ".ci"
     ci.mkdir(parents=True, exist_ok=True)
     manifest = ci / "manifest.toml"
-    manifest.write_text(MANIFEST.format(ecbuild_ref=ecbuild_ref, visibility=visibility) + leg)
+    manifest.write_text(
+        MANIFEST.format(ecbuild_ref=ecbuild_ref, visibility=visibility, release_extra=release_extra) + leg
+    )
     (ci / "build.sh.j2").write_text(RECIPE)
     (root / "VERSION").write_text(version)
     wf = root / ".github" / "workflows" / "cd-v3.yml"
