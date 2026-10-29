@@ -9,7 +9,7 @@ description: |
   It does nothing if the infrastructure is already installed,
   either because of prior calls or because it is baked into the image.
   An installed copy that does not match the checkout is replaced, with a warning.
-  On a GitHub-hosted runner the venv is kept in the Actions cache.
+  On a GitHub-hosted runner with an image version, e.g. ubuntu-latest, the venv is kept in the Actions cache.
 
   .. note::
     All actions that need the CI infrastructure are guaranteed to call it themselves,
@@ -124,14 +124,11 @@ runs:
           venv_root="${RUNNER_TOOL_CACHE}/ci-infrastructure-venv"
           venv="${venv_root}/${ref}-${src_hash}"
           python="$venv/bin/python"
-          # Hosted runners start empty. Not with uv: its managed CPython is outside the venv.
-          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && ! $force_reinstall && [ ! -d "$venv" ] \
-             && ! command -v uv >/dev/null 2>&1; then
-            # The venv links to a system Python: a key per interpreter, else a moved one is restored broken forever.
-            py_id="$(for c in python3.13 python3.12 python3.11 python3; do
-              p="$(command -v "$c")" && echo "$(readlink -f "$p") $("$p" -V 2>&1)"
-            done | sha256sum | cut -c1-8)" || true
-            echo "cache-key=ci-infrastructure-venv-$(uname -m)-${py_id}-${ref}-${src_hash}" >> "$GITHUB_OUTPUT"
+          # Hosted runners start empty. Only those with an image version, which keys the system
+          # Python the venv links to; not with uv, whose managed CPython is outside the venv.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && [ -n "${ImageVersion:-}" ] \
+             && ! $force_reinstall && [ ! -d "$venv" ] && ! command -v uv >/dev/null 2>&1; then
+            echo "cache-key=ci-infrastructure-venv-${ImageOS:-}-${ImageVersion}-$(uname -m)-${ref}-${src_hash}" >> "$GITHUB_OUTPUT"
           fi
         fi
         {
