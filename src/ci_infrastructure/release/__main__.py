@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import click
 
-from . import nexus, source_deps
+from . import gate, nexus, source_deps
 
 
 @click.group(help=__doc__)
@@ -16,6 +16,7 @@ def main() -> None:
     pass
 
 
+main.add_command(gate.main)
 main.add_command(source_deps.main)
 main.add_command(nexus.main)
 
