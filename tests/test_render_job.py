@@ -12,6 +12,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 from conftest import write_repo
+from release_fixtures import write_release_repo
 
 from ci_infrastructure.render_job import main
 
@@ -104,3 +105,61 @@ def test_unknown_leg_lists_the_titles(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["--manifest", str(_repo(tmp_path)), "--leg", "build (nope)"])
     assert result.exit_code != 0
     assert "pkg/build (ubuntu-24.04, Debug)" in result.output
+
+
+# --- --release (CD v3) ---------------------------------------------------------------------------------------
+
+_RELEASE_LEG_TITLE = "release-rpm (rocky-9, g++-11, release)"
+
+
+def test_release_renders_the_leg_as_the_gate_hands_it_over(tmp_path: Path) -> None:
+    manifest = write_release_repo(tmp_path)
+    out = _run(
+        "--manifest",
+        str(manifest),
+        "--leg",
+        _RELEASE_LEG_TITLE,
+        "--release",
+        "prerelease",
+        "--tag",
+        "2.5.0-RC1",
+        "--sha",
+        "f" * 40,
+    )
+    lines = out.splitlines()
+    assert lines[1] == f"# pkg/{_RELEASE_LEG_TITLE} [prerelease 2.5.0-RC1]"
+    assert "# ci-infrastructure: release overlay" in lines
+    assert 'set(CPACK_PACKAGE_VERSION "2.5.0~rc1" CACHE STRING "" FORCE)' in lines
+    assert '  "job_key": "pkg-2.5.0-rc1-rpm-rocky-9-gxx-11-ffffffff",' in lines
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
+
+
+def test_release_rehearsal_defaults_to_the_repos_head(tmp_path: Path) -> None:
+    manifest = write_release_repo(tmp_path)
+    out = _run("--manifest", str(manifest), "--leg", _RELEASE_LEG_TITLE, "--release", "rehearsal")
+    assert '  "mode": "rehearsal",' in out.splitlines()
+    assert "pkg-2.5.0-1.x86_64.rpm" in out
+
+
+def _fails(*args: str) -> str:
+    result = CliRunner().invoke(main, list(args))
+    assert result.exit_code != 0
+    return result.output
+
+
+def test_release_refusals(tmp_path: Path) -> None:
+    m = str(write_release_repo(tmp_path))
+    assert "bump VERSION" in _fails(
+        "--manifest", m, "--leg", _RELEASE_LEG_TITLE, "--release", "prerelease", "--tag", "2.5.1-rc1"
+    )
+    assert "is a release, not a prerelease" in _fails(
+        "--manifest", m, "--leg", _RELEASE_LEG_TITLE, "--release", "prerelease", "--tag", "2.5.0"
+    )
+    assert "needs --tag" in _fails("--manifest", m, "--leg", _RELEASE_LEG_TITLE, "--release", "prerelease")
+    assert "takes no --tag" in _fails(
+        "--manifest", m, "--leg", _RELEASE_LEG_TITLE, "--release", "rehearsal", "--tag", "2.5.0"
+    )
+    assert "renders a release leg" in _fails(
+        "--manifest", m, "--leg", "build (rocky-9, g++-11)", "--release", "rehearsal"
+    )
+    assert "go with --release" in _fails("--manifest", m, "--leg", "build (rocky-9, g++-11)", "--tag", "2.5.0")
