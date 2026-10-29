@@ -20,3 +20,13 @@
   entry: ci-infrastructure-check-ci-result
   language: python
   files: ^\.github/workflows/ci\.ya?ml$
+
+- id: check-cd-workflow
+  name: hold the CD v3 release workflow to its safe shape
+  description: >
+    Experimental (CD v3). Fails a release workflow whose shape could leak a publish
+    credential or publish what was not tested; see docs/configuring/releases.rst.
+    Pass `args: [--allow-ref, feature/cd-v3]` while the release actions live on that branch.
+  entry: ci-infrastructure-check-cd-workflow
+  language: python
+  files: ^\.github/workflows/(cd|cd-v3|release)\.ya?ml$
