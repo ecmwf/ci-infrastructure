@@ -152,7 +152,9 @@ jobs:
   publish-nexus:
     needs: [ci-approval, gate, build-rpm, itest-rpm]
     if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
-    name: publish-nexus (${{ matrix._release.leg_id }})
+    # A static name: GitHub cannot evaluate `matrix` for a job it skips (every rehearsal),
+    # and would show the expression itself.
+    name: publish-nexus
     runs-on: arc-runner-normal
     container:
       image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest

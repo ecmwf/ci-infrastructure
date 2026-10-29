@@ -199,7 +199,8 @@ only in a publish job (a ``NEXUS_TEST_REPO_URL_*`` also in the gate's job); publ
 above, on an ECMWF runner, in an ECCR container, with no ``env`` that changes how processes start (``LD_*``, ``BASH_ENV``, ``PATH``, ``PYTHON*``,
 ``GIT_*``, ...), downloading only this run's artifacts (no ``run-id``, ``repository`` or
 ``github-token``), needing every build and test job and running exactly
-``if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}``;
+``if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}``,
+with a ``name`` that uses no ``matrix`` (GitHub shows it unevaluated for a skipped job);
 no ``${{ }}`` inside ``run:``; one ci-infrastructure ref, other actions pinned by SHA; every job
 needing ``ci-approval`` and ``gate`` directly; every ``upload-artifact`` with ``overwrite: true``.
 
