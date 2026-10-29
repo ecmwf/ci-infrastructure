@@ -128,8 +128,11 @@ def test_a_ci_leg_renders_byte_identically(lane: str, golden: str) -> None:
     assert jobscript.RELEASE_OVERLAY_MARKER not in out
 
 
-def _release_leg(tmp_path: Path, tag: str = "2.5.0-rc1") -> dict[str, Any]:
-    rm = legs.load(write_release_repo(tmp_path))
+EXCLUDE: Final = 'exclude = ["lib64/pkgconfig/pkg_test_*.pc"]\n'
+
+
+def _release_leg(tmp_path: Path, tag: str = "2.5.0-rc1", release_extra: str = "") -> dict[str, Any]:
+    rm = legs.load(write_release_repo(tmp_path, release_extra=release_extra))
     event = ReleaseEvent(version=parse_tag(tag), sha=SHA, head_sha=SHA)
     [leg] = legs.expand(rm, ["release-rpm"], event)["release-rpm"]
     return leg
@@ -168,10 +171,26 @@ def test_release_leg_renders_the_overlay(tmp_path: Path) -> None:
     assert 'ctest --test-dir "$build" --output-on-failure -j "$jobs"' in lines
 
 
-def test_rendered_release_script_is_valid_bash(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_extra", ["", EXCLUDE], ids=["plain", "exclude"])
+def test_rendered_release_script_is_valid_bash(tmp_path: Path, release_extra: str) -> None:
     script = tmp_path / "job.sh"
-    script.write_text(_render(_release_leg(tmp_path)))
+    script.write_text(_render(_release_leg(tmp_path, release_extra=release_extra)))
     subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_release_exclude_is_rendered_into_the_script(tmp_path: Path) -> None:
+    assert "CPACK_PRE_BUILD_SCRIPTS" not in _render(_release_leg(tmp_path))
+    leg = _release_leg(tmp_path, release_extra=EXCLUDE)
+    out = _render(leg)
+    lines = out.splitlines()
+    assert "cat > \"$release_exclude\" <<'CI_RELEASE_EXCLUDE'" in lines
+    assert 'foreach(_ci_glob IN ITEMS "lib64/pkgconfig/pkg_test_*.pc")' in lines
+    assert 'set(_ci_root "${CPACK_TEMPORARY_DIRECTORY}/opt/ecmwf")' in lines
+    assert '  -D "CPACK_PRE_BUILD_SCRIPTS=$release_exclude"' in lines
+    assert 'if [ ! -f "$build/ci-release-exclude.done" ]; then' in lines
+    assert "CI_INFRASTRUCTURE_PYTHON" not in out
+    assert leg["_release"]["exclude"] == ["lib64/pkgconfig/pkg_test_*.pc"]
+    assert '  "exclude": [' in lines  # in build-meta.json
 
 
 def test_a_recipe_that_bypasses_the_overlay_is_refused(tmp_path: Path) -> None:
@@ -232,19 +251,33 @@ _STUBS: Final = {
         esac
         """
     ),
-    # Writes the package CPack would name, or $STUB_RPM_NAME.
+    # Writes the package CPack would name, or $STUB_RPM_NAME. With CPACK_PRE_BUILD_SCRIPTS, stages
+    # $STUB_STAGED under the prefix and runs the scripts with the real cmake ($REAL_CMAKE), as
+    # CPack does; the package's bytes are then the staged files that are left.
     "cpack": textwrap.dedent(
         """\
         case "$1" in --version) echo "cpack version 3.31.0"; exit 0 ;; esac
-        while [ $# -gt 0 ]; do [ "$1" = -B ] && out="$2"; shift; done
+        pre=""
+        while [ $# -gt 0 ]; do
+          [ "$1" = -B ] && out="$2"
+          case "$1" in -D) case "$2" in CPACK_PRE_BUILD_SCRIPTS=*) pre="${2#*=}" ;; esac ;; esac
+          shift
+        done
         mkdir -p "$out"
-        echo rpm-bytes > "$out/${STUB_RPM_NAME:-pkg-2.5.0~rc1-1.x86_64.rpm}"
+        content=rpm-bytes
+        if [ -n "$pre" ]; then
+          tmp="$out/_CPack_Packages/Linux/RPM/pkg"
+          for f in $STUB_STAGED; do mkdir -p "$(dirname "$tmp/opt/ecmwf/$f")"; echo x > "$tmp/opt/ecmwf/$f"; done
+          "$REAL_CMAKE" -DCPACK_TEMPORARY_DIRECTORY="$tmp" -P "$pre" || exit 1
+          content="$(cd "$tmp" && find . -type f | sort)"
+        fi
+        printf '%s\\n' "$content" > "$out/${STUB_RPM_NAME:-pkg-2.5.0~rc1-1.x86_64.rpm}"
         """
     ),
 }
 
 
-def _run_stubbed(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
+def _run_stubbed(tmp_path: Path, release_extra: str = "", **env: str) -> subprocess.CompletedProcess[str]:
     from ci_infrastructure.render_job import wrap
 
     bin_dir = tmp_path / "bin"
@@ -253,7 +286,7 @@ def _run_stubbed(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]
         stub = bin_dir / name
         stub.write_text("#!/bin/bash\n" + body)
         stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    leg = _release_leg(tmp_path)
+    leg = _release_leg(tmp_path, release_extra=release_extra)
     script = tmp_path / "job.sh"
     script.write_text(wrap(_render(leg), leg=leg, execution="runner"))
     run_env = {
@@ -293,6 +326,53 @@ def test_the_script_refuses_a_package_named_otherwise(tmp_path: Path) -> None:
     result = _run_stubbed(tmp_path, STUB_RPM_NAME="pkg-2.5.0-1.x86_64.rpm")
     assert result.returncode != 0
     assert "expected pkg-2.5.0~rc1-1.x86_64.rpm" in result.stderr.replace("'", "")
+
+
+needs_cmake = pytest.mark.skipif(shutil.which("cmake") is None, reason="needs cmake")
+
+_STAGED: Final = "lib64/pkgconfig/pkg.pc lib64/pkgconfig/pkg_test_custom.pc bin/pkg-version"
+
+
+@needs_cmake
+def test_the_script_leaves_excluded_files_out_of_the_package(tmp_path: Path) -> None:
+    result = _run_stubbed(tmp_path, release_extra=EXCLUDE, REAL_CMAKE=str(shutil.which("cmake")), STUB_STAGED=_STAGED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "removing /opt/ecmwf/lib64/pkgconfig/pkg_test_custom.pc" in result.stdout
+    packaged = (tmp_path / "out" / "pkg-2.5.0~rc1-1.x86_64.rpm").read_text().split()
+    assert packaged == ["./opt/ecmwf/bin/pkg-version", "./opt/ecmwf/lib64/pkgconfig/pkg.pc"]
+
+
+@needs_cmake
+def test_the_script_fails_on_an_exclusion_that_matches_nothing(tmp_path: Path) -> None:
+    result = _run_stubbed(
+        tmp_path,
+        release_extra='exclude = ["lib64/pkgconfig/pkg_test_*.pc", "lib/pkgconfig/pkg_test_*.pc"]\n',
+        REAL_CMAKE=str(shutil.which("cmake")),
+        STUB_STAGED=_STAGED,
+    )
+    assert result.returncode != 0
+    assert "matched nothing in the install tree" in result.stdout + result.stderr
+    assert "lib/pkgconfig/pkg_test_*.pc" in result.stdout + result.stderr
+    assert not (tmp_path / "out" / "pkg-2.5.0~rc1-1.x86_64.rpm").exists()
+
+
+def test_the_script_fails_when_cpack_skips_the_exclusion(tmp_path: Path) -> None:
+    """An older CPack ignores CPACK_PRE_BUILD_SCRIPTS: the job must notice, not ship the file."""
+    result = _run_stubbed(tmp_path, release_extra=EXCLUDE, REAL_CMAKE="/bin/true", STUB_STAGED=_STAGED)
+    assert result.returncode != 0
+    assert "CPack did not run the [release] exclude script" in result.stderr
+
+
+def test_the_script_refuses_to_replace_the_projects_own_pre_build_scripts(tmp_path: Path) -> None:
+    """cpack -D replaces a project's CPACK_PRE_BUILD_SCRIPTS: refuse rather than silently drop its hook."""
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "CPackConfig.cmake").write_text(
+        'set(CPACK_GENERATOR "RPM")\nset(CPACK_PRE_BUILD_SCRIPTS "/src/project-hook.cmake")\n'
+    )
+    result = _run_stubbed(tmp_path, release_extra=EXCLUDE, REAL_CMAKE="/bin/true", STUB_STAGED=_STAGED)
+    assert result.returncode != 0
+    assert "cannot be combined with the project's own CPACK_PRE_BUILD_SCRIPTS" in result.stderr
+    assert not (tmp_path / "build" / "_cpack").exists()
 
 
 # --- _checks.sh.j2 -------------------------------------------------------------------------------------------

@@ -39,6 +39,8 @@ _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 #: Kinds named `release-<channel>` build releases (see :doc:`/configuring/releases`), not CI artifacts.
 RELEASE_KIND_PREFIX: Final = "release-"
 _RELEASE_PACKAGE_NAME_RE: Final = re.compile(r"^[A-Za-z0-9._+-]+$")
+#: A `[release] exclude` glob: CMake `file(GLOB)` syntax, nothing CMake or a heredoc reads specially.
+_RELEASE_EXCLUDE_RE: Final = re.compile(r"^[A-Za-z0-9._+@=,~*?\[\]/-]+$")
 
 
 def is_release_kind(kind: str) -> bool:
@@ -507,6 +509,14 @@ class ReleaseTable(_Table):
     vendor: str = Field(default="", description="Package vendor.")
     maintainer: str = Field(default="", description="Package maintainer, e.g. an email address.")
     homepage: str = Field(default="", description="Project URL.")
+    exclude: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Globs, relative to the install prefix, of installed files to leave out of the package "
+            '(e.g. `"lib64/pkgconfig/pkg_test_*.pc"`): CMake `file(GLOB)` syntax, so `*` and `?` stay within '
+            "one path component. Each removed path is logged; a glob that matches nothing fails the build."
+        ),
+    )
 
     @field_validator("package_name")
     @classmethod
@@ -521,6 +531,23 @@ class ReleaseTable(_Table):
         if any(ord(c) < 0x20 or c == "\x7f" for c in v):
             raise ValueError(f"must be a single line without control characters, got {v!r}")
         return v.strip()
+
+    @field_validator("exclude")
+    @classmethod
+    def _exclude_globs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        for pattern in v:
+            parts = pattern.split("/")
+            if not pattern or pattern.startswith("/"):
+                raise ValueError(f"must be a non-empty glob relative to the install prefix, got {pattern!r}")
+            if not _RELEASE_EXCLUDE_RE.fullmatch(pattern):
+                raise ValueError(f"must match {_RELEASE_EXCLUDE_RE.pattern!r}, got {pattern!r}")
+            if any(part in ("", ".", "..") for part in parts):
+                raise ValueError(f"must have no empty, '.' or '..' path component, got {pattern!r}")
+            if "**" in pattern:
+                raise ValueError(f"'**' is not recursive in CMake file(GLOB); name each directory, got {pattern!r}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"lists a glob twice: {list(v)}")
+        return v
 
 
 class ManifestFile(_Table):

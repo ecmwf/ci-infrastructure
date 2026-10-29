@@ -106,6 +106,14 @@ def test_release_defaults() -> None:
     assert m.deps[0].release_ref == "1.2.3"
 
 
+def test_release_exclude() -> None:
+    m = validate(_release_manifest(release={"exclude": ["lib64/pkgconfig/a_test_*.pc", "share/a/t[0-9]?"]}))
+    assert m.release is not None
+    assert m.release.exclude == ("lib64/pkgconfig/a_test_*.pc", "share/a/t[0-9]?")
+    m = validate(_release_manifest())
+    assert m.release is not None and m.release.exclude == ()
+
+
 def test_release_ref_false_means_from_the_image() -> None:
     assert validate(_release_manifest(deps=[{**_DEP, "release-ref": False}])).deps[0].release_ref is False
 
@@ -117,6 +125,19 @@ def test_release_ref_false_means_from_the_image() -> None:
         ({"release": {"version-parts": 2}}, r"\[release\]\.version-parts"),
         ({"release": {"package-name": "a b"}}, r"\[release\]\.package-name"),
         ({"release": {"summary": "two\nlines"}}, r"\[release\]\.summary"),
+        ({"release": {"exclude": [""]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["/opt/ecmwf/lib/x.pc"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/../etc/x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["../x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib//x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["./lib/x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/$x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/a;b"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ['lib/"x"']}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/**/x.pc"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib\\\\x"]}}, r"\[release\]\.exclude"),
+        ({"release": {"exclude": ["lib/x", "lib/x"]}}, r"\[release\]\.exclude"),
         ({"deps": [_DEP]}, r"\[\[deps\]\]\[0\] \(o/b\) needs release-ref"),
         ({"deps": [{**_DEP, "release-ref": True}]}, r"\[\[deps\]\]\[0\]\.release-ref must be a tag"),
         ({"deps": [{**_DEP, "release-ref": ""}]}, r"release-ref must be a tag"),

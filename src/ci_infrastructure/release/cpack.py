@@ -11,6 +11,7 @@ so ``ci-infrastructure-render --release`` reproduces the script offline.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Final, Literal
 
 from ..manifest import ReleaseTable
@@ -91,6 +92,53 @@ def cpack_overrides(
     text = "\n".join(lines) + "\n"
     if HEREDOC_DELIMITER in text:
         raise ReleaseError(f"CPack overrides contain the heredoc delimiter {HEREDOC_DELIMITER}")
+    return text
+
+
+#: The heredoc delimiter the template writes the exclusion script under.
+EXCLUDE_HEREDOC_DELIMITER: Final = "CI_RELEASE_EXCLUDE"
+#: What the exclusion script writes beside itself once it has run: the job checks CPack ran it
+#: (CPACK_PRE_BUILD_SCRIPTS needs CMake 3.19; an older CPack would ignore it and package everything).
+EXCLUDE_DONE_MARKER: Final = "ci-release-exclude.done"
+
+
+def exclude_script(patterns: Sequence[str], *, install_prefix: str) -> str:
+    """A ``CPACK_PRE_BUILD_SCRIPTS`` script: remove the `[release] exclude` globs from CPack's staging tree.
+
+    CPack installs the project into ``${CPACK_TEMPORARY_DIRECTORY}<packaging prefix>`` and packages
+    that tree, so what is removed here is not in the package. All globs are expanded before anything
+    is removed; one that matches nothing fails the build, so a stale exclusion cannot linger.
+    Empty when there is nothing to exclude.
+    """
+    if not patterns:
+        return ""
+    items = " ".join(f'"{cmake_escape(p)}"' for p in patterns)
+    text = f"""# ci-infrastructure release: [release] exclude (generated), run by CPack before it packages
+set(_ci_root "${{CPACK_TEMPORARY_DIRECTORY}}{cmake_escape(install_prefix)}")
+if(NOT IS_DIRECTORY "${{_ci_root}}")
+  message(FATAL_ERROR "ci-release: [release] exclude: no staging tree at ${{_ci_root}}")
+endif()
+set(_ci_hits "")
+set(_ci_unmatched "")
+foreach(_ci_glob IN ITEMS {items})
+  file(GLOB _ci_glob_hits LIST_DIRECTORIES true RELATIVE "${{_ci_root}}" "${{_ci_root}}/${{_ci_glob}}")
+  if(NOT _ci_glob_hits)
+    list(APPEND _ci_unmatched "${{_ci_glob}}")
+  endif()
+  list(APPEND _ci_hits ${{_ci_glob_hits}})
+endforeach()
+if(_ci_unmatched)
+  message(FATAL_ERROR "ci-release: [release] exclude: matched nothing in the install tree: ${{_ci_unmatched}}")
+endif()
+list(REMOVE_DUPLICATES _ci_hits)
+foreach(_ci_hit IN LISTS _ci_hits)
+  message(STATUS "ci-release: [release] exclude: removing {cmake_escape(install_prefix)}/${{_ci_hit}}")
+  file(REMOVE_RECURSE "${{_ci_root}}/${{_ci_hit}}")
+endforeach()
+file(WRITE "${{CMAKE_CURRENT_LIST_DIR}}/{EXCLUDE_DONE_MARKER}" "")
+"""
+    if EXCLUDE_HEREDOC_DELIMITER in text:
+        raise ReleaseError(f"the exclusion script contains the heredoc delimiter {EXCLUDE_HEREDOC_DELIMITER}")
     return text
 
 

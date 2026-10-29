@@ -45,6 +45,13 @@ echo "Release: {{ release.package_name }} {{ release.pkg_version }} ({{ release.
 cat > "$release_overrides" <<'CI_RELEASE_CPACK_OVERRIDES'
 {{ release.cpack_overrides | trim }}
 CI_RELEASE_CPACK_OVERRIDES
+{% if release.exclude_script %}
+# [release] exclude: CPack runs this on its staging tree before it packages (CPACK_PRE_BUILD_SCRIPTS).
+release_exclude="$build/ci-release-exclude.cmake"
+cat > "$release_exclude" <<'CI_RELEASE_EXCLUDE'
+{{ release.exclude_script | trim }}
+CI_RELEASE_EXCLUDE
+{% endif %}
 {% endblock %}
 
 {% block configure %}
@@ -67,7 +74,22 @@ DESTDIR="$build/stage" cmake --install "$build"
 {% endblock %}
 
 {% block publish %}
+{% if release.exclude_script %}
+rm -f "$build/ci-release-exclude.done"
+# -D replaces the project's own CPACK_PRE_BUILD_SCRIPTS rather than adding to it: refuse, not drop its hook.
+if grep -q '^set(CPACK_PRE_BUILD_SCRIPTS ' "$build/CPackConfig.cmake" 2>/dev/null; then
+  echo "::error::[release] exclude cannot be combined with the project's own CPACK_PRE_BUILD_SCRIPTS yet" >&2
+  exit 1
+fi
+cpack -G {{ release.cpack_generator | sh }} --config "$build/CPackConfig.cmake" -B "$build/_cpack" \
+  -D "CPACK_PRE_BUILD_SCRIPTS=$release_exclude"
+if [ ! -f "$build/ci-release-exclude.done" ]; then
+  echo "::error::CPack did not run the [release] exclude script (CPACK_PRE_BUILD_SCRIPTS needs CMake >= 3.19)" >&2
+  exit 1
+fi
+{% else %}
 cpack -G {{ release.cpack_generator | sh }} --config "$build/CPackConfig.cmake" -B "$build/_cpack"
+{% endif %}
 _ci_count="$(find "$build/_cpack" -maxdepth 1 -type f -name '*.rpm' | wc -l)"
 if [ "$_ci_count" -ne 1 ]; then
   echo "::error::cpack made $_ci_count packages, expected exactly one:" >&2
