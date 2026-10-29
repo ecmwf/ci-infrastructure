@@ -22,6 +22,8 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
           _resolved.crates                {crate: repo} of the built packages' deps' `crates`
           _resolved.job-name              job title without its lane prefix, used as
                                           `name: build+test (${{ matrix._resolved['job-name'] }})`
+          _resolved.error                 only on a leg one of whose deps is not to be had; its
+                                          deps are then one `unresolved` entry, on which fetch-deps fails
 
     json=<JSON: all blocks keyed by matrix name>
 """
@@ -42,8 +44,8 @@ from typing import Any, Final, Literal, NewType
 
 import click
 
-from . import job_names, s3_store
-from ._errors import CIError
+from . import failure_reasons, job_names, s3_store
+from ._errors import CIError, escape_command_data
 from ._github_api import (
     _OPTION_TOKEN_RE,
     EXECUTION_RUNNER,
@@ -112,6 +114,14 @@ def parse_pin(pin: str) -> dict[Repo, Ref]:
 
 class ResolveError(Exception):
     """Resolver gave up."""
+
+
+class LegError(ResolveError):
+    """One dep's artifact is not to be had now, though the manifests could produce it: only its leg fails."""
+
+    def __init__(self, package: str, message: str) -> None:
+        super().__init__(message)
+        self.package = package
 
 
 @dataclass(frozen=True)
@@ -614,28 +624,31 @@ def _classify_orphan_pin(
         return "triggered rebuild"
 
     if pinned:
-        raise ResolveError(
+        raise LegError(
+            spec.package,
             f"dep '{spec.package}' is pinned to {spec.repo}@{sha[:8]}, the commit under test, but "
             f"no artifact named '{artifact_name}' exists and no CI is in flight for it: "
-            "that commit's CI did not publish this leg."
+            "that commit's CI did not publish this leg.",
         )
 
     if not is_normal_ref(spec, ref, sync_branch, sync_exists_by_repo):
-        raise ResolveError(
+        raise LegError(
+            spec.package,
             f"dep '{spec.package}' from {spec.repo}@{ref} is pinned to a non-default ref but "
             f"no artifact named '{artifact_name}' exists in the producer's store and no CI is "
             "in flight for that commit. Refusing to auto-rebuild on a divergent ref — fix the pin "
             f"in the consumer manifest (declared ref was {spec.ref!r}), or trigger the producer "
-            "CI manually for that ref."
+            "CI manually for that ref.",
         )
 
     if not can_dispatch:
-        raise ResolveError(
+        raise LegError(
+            spec.package,
             f"dep '{spec.package}' from {spec.repo}@{ref} resolved to {sha}, "
             f"but no artifact named '{artifact_name}' is in the producer's store "
             "and no producer CI is in flight for that commit. The pin is orphaned. "
             "Pass client-id and app-private-key to actions/resolve-deps to enable "
-            "auto-recovery via consumer-driven dispatch."
+            "auto-recovery via consumer-driven dispatch.",
         )
 
     if producer_manifest is not None:
@@ -844,9 +857,11 @@ def resolve_leg(
             else:
                 ci_run = latest_ci_run(spec.repo, sha, token)
                 if ci_run is not None and ci_run.conclusion == "failure":
-                    raise ResolveError(
+                    raise LegError(
+                        spec.package,
                         f"dep '{spec.package}' from {spec.repo}@{sha[:8]} has no artifact '{artifact_name}', "
                         f"and that commit's CI was red, so it is not rebuilt: {ci_run.url}"
+                        + failure_reasons.explain(ci_run.url, token),
                     )
                 source = _classify_orphan_pin(
                     spec=spec,
@@ -928,6 +943,23 @@ def resolve_leg(
         deps_hash=own_deps_hash,
         direct_artifact_names=tuple(direct_dep_artifact_names),
     )
+
+
+def unresolved_leg(own_name: str, job_name: str, error: LegError) -> dict[str, Any]:
+    """A leg's `_resolved` when a dep is not to be had: one `unresolved` dep, on which fetch-deps fails at once."""
+    dep = {
+        "name": error.package,
+        "repo": "",
+        "ref": "",
+        "sha": "",
+        "artifact-name": "",
+        # Nothing to wait for.
+        "cached": True,
+        "source": "unresolved",
+        "error": str(error),
+        "install-path": "",
+    }
+    return {"own-name": own_name, "own-artifact-name": "", "job-name": job_name, "error": str(error), "deps": [dep]}
 
 
 def resolve_packages(
@@ -1187,6 +1219,7 @@ def _run(
     artifact_cache: dict[ArtifactName, bool] = {}
     run_state_cache: dict[tuple[Repo, Sha], bool] = {}
     matrices_out: dict[str, dict[str, Any]] = {}
+    unresolved: list[str] = []
 
     # Without an App token from resolve-deps, orphan pins hard-fail.
     dispatch_token = os.environ.get("DISPATCH_TOKEN", "").strip()
@@ -1214,25 +1247,32 @@ def _run(
         lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
         package = local_manifest.packages.get(prefixes[0], local_manifest.packages[local_manifest.package.prefix])
         for entry in include:
-            deps_resolved, per_package = resolve_packages(
-                local_manifest,
-                prefixes,
-                own_sha=own_sha,
-                own_ref=own_ref,
-                matrix_entry=entry,
-                manifest_cache=manifest_cache,
-                sync_branch=sync_branch,
-                sync_exists_by_repo=sync_exists,
-                sha_cache=sha_cache,
-                artifact_cache=artifact_cache,
-                run_state_cache=run_state_cache,
-                token=token,
-                can_dispatch=can_dispatch,
-                lane=lane,
-                dispatch_plans=dispatch_plans,
-                pins=pins,
-                published_in_run=published_in_run,
-            )
+            job_name = job_names.name_suffix(entry, include, package.compiler_inputs)
+            try:
+                deps_resolved, per_package = resolve_packages(
+                    local_manifest,
+                    prefixes,
+                    own_sha=own_sha,
+                    own_ref=own_ref,
+                    matrix_entry=entry,
+                    manifest_cache=manifest_cache,
+                    sync_branch=sync_branch,
+                    sync_exists_by_repo=sync_exists,
+                    sha_cache=sha_cache,
+                    artifact_cache=artifact_cache,
+                    run_state_cache=run_state_cache,
+                    token=token,
+                    can_dispatch=can_dispatch,
+                    lane=lane,
+                    dispatch_plans=dispatch_plans,
+                    pins=pins,
+                    published_in_run=published_in_run,
+                )
+            except LegError as e:
+                print(f"::warning::[{mname}] {job_name}: {escape_command_data(str(e))}", file=sys.stderr)
+                unresolved.append(f"[{mname}] {job_name}")
+                out_include.append({**entry, "_resolved": unresolved_leg(local_manifest.package.name, job_name, e)})
+                continue
             own = per_package[prefixes[0]]
             cmake_paths = [str(d.install_path) for d in deps_resolved]
             all_artifact_names = [d.artifact_name for d in deps_resolved]
@@ -1253,7 +1293,7 @@ def _run(
                 "own-tar-name": f"{own.artifact_name}.tar.gz",
                 "deps": [d.to_json() for d in deps_resolved],
                 "direct-artifact-names": " ".join(own.direct_artifact_names),
-                "job-name": job_names.name_suffix(entry, include, package.compiler_inputs),
+                "job-name": job_name,
             }
             resolved_block["crates"] = leg_crates(local_manifest, prefixes, entry, lane)
             resolved_block["packages"] = {
@@ -1310,11 +1350,19 @@ def _run(
         for entry in mdata["include"]:
             label_bits = [f"{k}={v}" for k, v in entry.items() if k != "_resolved"]
             print(f"  [{mname}] " + " ".join(label_bits))
+            if "error" in entry["_resolved"]:
+                print("    unresolved, the leg will fail: " + entry["_resolved"]["error"].replace("\n", "\n    "))
+                continue
             print(f"    own:  {entry['_resolved']['own-artifact-name']}")
             for dep in entry["_resolved"]["deps"]:
                 src = dep["source"]
                 cached = "cached" if dep["cached"] else "—"
                 print(f"    dep:  {dep['name']:24s} source={src:17s} {cached:>6s}  {dep['artifact-name']}")
+    if unresolved:
+        print(
+            f"::warning::{len(unresolved)} leg(s) will fail, as a dep of theirs is not to be had: "
+            + ", ".join(unresolved)
+        )
     if sync_branch:
         sync_repos = [r for r, present in sync_exists.items() if present]
         print(f"'{sync_branch}' also used in: {', '.join(sync_repos) if sync_repos else '(none)'}")

@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
 
-from ci_infrastructure import resolve_deps
+from ci_infrastructure import failure_reasons, resolve_deps
 from ci_infrastructure._github_api import (
     EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
@@ -25,6 +26,7 @@ from ci_infrastructure.manifest import DepTable
 from ci_infrastructure.resolve_deps import (
     ArtifactName,
     DepSpec,
+    LegError,
     Manifest,
     PackageName,
     PackageSpec,
@@ -422,10 +424,53 @@ def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.usefixtures("offline")
-def test_a_red_commit_is_not_rebuilt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_red_commit_is_not_rebuilt_and_fails_only_its_leg_with_the_reasons(monkeypatch: pytest.MonkeyPatch) -> None:
     _missing_artifact(monkeypatch, CiRun(7, "failure", "o/base", "https://run/7"))
-    with pytest.raises(ResolveError, match=r"CI was red.*https://run/7"):
+    monkeypatch.setattr(failure_reasons, "explain", lambda url, token: f"\n  o/base › build: red because of {url}")
+    with pytest.raises(LegError, match=r"CI was red.*https://run/7\n  o/base › build: red because") as e:
         _resolve(_own("top"), [_dep_spec("base")], dict(_LEG))
+    assert e.value.package == "base"
+
+
+def test_a_leg_without_its_dep_is_emitted_to_fail_while_the_others_resolve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(_PY_LEGS_PRODUCER)
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.delenv("DISPATCH_TOKEN", raising=False)
+    monkeypatch.setattr(resolve_deps, "select_token", lambda: None)
+    monkeypatch.setattr(resolve_deps, "bfs_load_manifests", lambda **kw: ({}, {}))
+    real = resolve_deps.resolve_packages
+
+    def resolve_packages(*args: Any, **kwargs: Any) -> Any:
+        if kwargs["matrix_entry"]["python-version"] == "3.12":
+            raise LegError("base", "dep 'base' has no artifact: https://run/7")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(resolve_deps, "resolve_packages", resolve_packages)
+    resolve_deps._run(str(manifest), "main", "build", "", ".ci/manifest.toml", pin=f"o/up@{_PINNED}")
+
+    legs = json.loads(next(line for line in out.read_text().splitlines() if line.startswith("matrix-build="))[13:])[
+        "include"
+    ]
+    assert [leg["python-version"] for leg in legs] == ["3.11", "3.12"]
+    assert "error" not in legs[0]["_resolved"]
+    assert legs[1]["_resolved"]["error"] == "dep 'base' has no artifact: https://run/7"
+    assert legs[1]["_resolved"]["job-name"]
+    assert [(d["name"], d["source"], d["cached"]) for d in legs[1]["_resolved"]["deps"]] == [
+        ("base", "unresolved", True)
+    ]
+
+
+def test_a_manifest_mismatch_still_fails_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A variant no producer leg publishes can never be built: no leg is worth starting."""
+    _in_flight(monkeypatch)
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
+    with pytest.raises(ResolveError) as e:
+        _resolve(_own("top"), [_dep_spec("up")], {**_LEG, "python-version": "3.11"}, manifest_cache=cache)
+    assert not isinstance(e.value, LegError)
 
 
 def _classify_pinned(ci_run: CiRun | None) -> dict[tuple[Repo, Ref, Execution], resolve_deps.DispatchPlan]:

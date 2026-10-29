@@ -39,6 +39,9 @@ A missing artifact is rebuilt unless that commit's ``CI`` was red:
 on the declared ref or sync branch through ``rebuild-request``,
 for any other commit, such as one under test, by re-running that commit's ``CI``.
 A fork's commit is never rebuilt.
+An artifact that is not to be had, such as one of a red commit, fails only the legs that need it,
+in their first step, with the errors of the red run and of the runs those link to, up to the first failure.
+A request that no producer leg can ever build fails the whole resolve.
 The order follows from ``[[deps]]``:
 ``eccodes``' ``build`` waits for the ``build`` kinds of ``ecbuild``, ``stack-dependencies`` and ``eckit``,
 its ``build-hpc`` for their ``build-hpc``.
