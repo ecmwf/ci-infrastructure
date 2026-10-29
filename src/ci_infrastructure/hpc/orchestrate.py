@@ -68,6 +68,13 @@ def batch_packages(matrix_leg: str) -> dict[str, str]:
     return {name: str(info["own-artifact-name"]) for name, info in packages.items()}
 
 
+def sccache_supports(matrix_leg: str) -> bool:
+    """sccache passes -fdiagnostics-color=always to NVHPC's nvc/nvc++, which reject it."""
+    leg = _parse_matrix_leg(matrix_leg)
+    fields = ("c-compiler", "cxx-compiler", "c-compiler-binary", "cxx-compiler-binary")
+    return not any(str(leg.get(f, "")).startswith("nvc") for f in fields)
+
+
 def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) -> str:
     source = repo_script.read_text()
     if not jobscript.is_job_template(repo_script):
@@ -583,7 +590,7 @@ def submit_wait(
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
 
     ships_source = bool(source_dir and run_id)
-    sccache = ships_source and bool(sccache_binary)
+    sccache = ships_source and bool(sccache_binary) and sccache_supports(matrix_leg)
     if ships_source:
         remote_cmake_prefix, local_prefixes, remote_deps_dir = plan_remote_prefixes(cmake_prefix_path, paths.staging)
     else:

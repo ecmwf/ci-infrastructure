@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Sequence
@@ -421,6 +422,19 @@ def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[s
 
     _echo_remote_output(_Boom(), "/scratch/ci/hpc-jobs/pkg.out")
     assert "could not read job output" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("leg", "supported"),
+    [
+        ({"cxx-compiler": "g++-8", "c-compiler-binary": "gcc"}, True),
+        ({"cxx-compiler": "nvc++-26.1", "c-compiler-binary": "nvc", "cxx-compiler-binary": "nvc++"}, False),
+        ({"cxx-compiler": "nvc++"}, False),
+        ({}, True),
+    ],
+)
+def test_sccache_skips_nvhpc(leg: dict[str, str], supported: bool) -> None:
+    assert orch.sccache_supports(json.dumps(leg) if leg else "") is supported
 
 
 @pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])
