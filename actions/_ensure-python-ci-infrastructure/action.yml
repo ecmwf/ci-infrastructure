@@ -117,6 +117,9 @@ runs:
 
         if ! $baked_ok; then
           ref="${GITHUB_ACTION_REF:-main}"
+          # One directory level per venv: feature/x would nest under feature/, which the
+          # idle sweep below (-maxdepth 1) could remove while this job still uses it.
+          ref="${ref//\//-}"
           src_hash="$(cd "$repo_root" && find pyproject.toml src \
             \( -name '__pycache__' -o -name '*.egg-info' \) -prune -o \
             -type f -exec sha256sum {} + | sort -k 2 | sha256sum | cut -c1-16)"
