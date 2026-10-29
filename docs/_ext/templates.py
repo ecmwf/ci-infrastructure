@@ -51,6 +51,11 @@ def _generate(app: Sphinx) -> None:
     folder = Path(app.config.ghactions_root) / _TEMPLATES
     url = f"https://github.com/{app.config.ghactions_repo}/blob/{app.config.ghactions_ref}/{_TEMPLATES.as_posix()}"
     rows = [_row(path.name, path.read_text(encoding="utf-8"), url) for path in sorted(folder.glob("*.j2"))]
+    # The release overlay (configuring/releases.rst): shadows the shared names for a leg with `_release`.
+    rows += [
+        _row(f"release/{path.name}", path.read_text(encoding="utf-8"), url)
+        for path in sorted((folder / "release").glob("*.j2"))
+    ]
     lines = [
         "Job-script templates",
         "====================",

@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   The release overlay of cmake-all-lanes.sh.j2: for a leg with `_release`, a recipe that extends
+   "ci-infrastructure/cmake-all-lanes.sh.j2" gets this one, which builds the package the leg's
+   channel names. Experimental (CD v3); the runner (rpm) lane only so far.
+
+   A lane with no branch here renders nothing, which render_job_template rejects. #}
+{% if execution == "runner" %}
+{% extends "ci-infrastructure/cmake-runner-release.sh.j2" %}
+{% endif %}
