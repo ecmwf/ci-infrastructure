@@ -26,6 +26,7 @@ _TABLES = [
     ("[[trigger-downstream]]", manifest.TriggerDownstreamTable),
     ("[downstream]", manifest.DownstreamTable),
     ("[generated]", manifest.GeneratedTable),
+    ("[release]", manifest.ReleaseTable),
 ]
 
 
