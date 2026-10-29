@@ -14,12 +14,15 @@ it holds a publish credential. It needs no GitHub environment.
 - I2: workflow permissions at most `contents: read`.
 - I3: a `concurrency` group on the ref, never cancelled in progress.
 - I4: no `secrets: inherit`, no workflow `env`, nothing of the CI caches (AWS_*, ARTIFACT_S3_*, SCCACHE_*).
-- I5: a secret outside the CI allowlist only in a publish job; a test Nexus URL secret
-  (`NEXUS_TEST_REPO_URL_*`, a URL, not a credential) also in the release gate's job, which
-  probes it anonymously. Outside a publish job, `secrets` only by a literal name.
+- I5: a secret outside the CI allowlist only in a publish job; in the release gate's job also a
+  test Nexus URL secret (`NEXUS_TEST_REPO_URL_*`, a URL, not a credential), and the test Nexus
+  credential `NEXUS_TEST_REPO_UPLOAD_TOKEN` only as the release-gate step's `env: NEXUS_AUTH`
+  (it authenticates the probe: the repositories are private). Outside a publish job, `secrets`
+  only by a literal name.
 - I6: a publish job runs no `run:` step, checks out nothing, builds nothing; uses only
   artifact transfer and the publish actions; on an ECMWF runner, in an ECCR container; sets no
-  `env` that changes process startup (LD_*, BASH_ENV, PATH, PYTHON*, GIT_*, ...); downloads only
+  `env` that changes process startup (LD_*, BASH_ENV, PATH, PYTHON*, GIT_*, ...), in the job, a
+  step or `container.env`, and no `container.options`, `container.volumes` or `services`; downloads only
   this run's artifacts (no `run-id`, `repository`, `github-token`). `environment:` is ignored.
 - I7: a publish job needs every build and test job, and runs exactly
   `if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}`.
@@ -28,6 +31,11 @@ it holds a publish credential. It needs no GitHub environment.
 - I9: one ref for every ci-infrastructure action, a commit SHA unless allowed (`--allow-ref`);
   every other action pinned by commit SHA.
 - I10: every job but `ci-approval` needs it directly; every job but those two needs `gate` directly.
+- I11: the release gate's job, which holds the Nexus credential, is held to the publish job's
+  hardening where it fits: no `run:` step; only actions/checkout (with `persist-credentials: false`)
+  and release-gate; on an ECMWF runner, in an ECCR container if any; no `env` that changes process
+  startup (job, step or `container.env`), no `container.options`, `container.volumes` or `services`.
+  Builds and tests stay in other jobs, which never see the credential.
 - Every `actions/upload-artifact` sets `overwrite: true`, so re-running a job can replace its upload.
 
 Imports only click and yaml, so the pre-commit hook needs nothing else.
@@ -93,6 +101,11 @@ SECRET_ALLOWLIST: Final = (
 )
 #: Secrets the release gate's job may name besides: test Nexus repository URLs (as v2 keeps them), not credentials.
 GATE_SECRET_ALLOWLIST: Final = (re.compile(r"^NEXUS_TEST_REPO_URL_[A-Z0-9_]+$"),)
+#: The credential the release gate's Nexus probe authenticates with, only as its step's `env` NEXUS_AUTH.
+GATE_PROBE_SECRET: Final = "NEXUS_TEST_REPO_UPLOAD_TOKEN"
+GATE_PROBE_ENV: Final = "NEXUS_AUTH"
+#: What the release gate's job may run.
+RELEASE_GATE_JOB_ACTIONS: Final = (CHECKOUT, RELEASE_GATE_ACTION)
 _CACHE_NAMES: Final = re.compile(r"\b(AWS_[A-Z0-9_]*|ARTIFACT_S3_[A-Z0-9_]*|SCCACHE_[A-Z0-9_]*)")
 _SECRET_REF: Final = re.compile(r"secrets\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)|secrets\[\s*'([^']+)'\s*\]")
 _SECRETS_TOKEN: Final = re.compile(r"\bsecrets\b")
@@ -214,15 +227,38 @@ def _secrets_of(job: dict[str, Any]) -> set[str]:
     return {m.group(1) or m.group(2) for s in _strings(job) for m in _SECRET_REF.finditer(s)}
 
 
+def _without_probe_auth(job: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
+    """The job without its release-gate steps' `env: NEXUS_AUTH`, and those values."""
+    steps, values = [], []
+    for step in job.get("steps") or []:
+        env = step.get("env") if isinstance(step, dict) else None
+        if isinstance(env, dict) and GATE_PROBE_ENV in env and _action(_uses(step)) == RELEASE_GATE_ACTION:
+            values.append(env[GATE_PROBE_ENV])
+            step = {**step, "env": {k: v for k, v in env.items() if k != GATE_PROBE_ENV}}
+        steps.append(step)
+    return {**job, "steps": steps}, values
+
+
 def _check_secrets(jobs: dict[str, dict[str, Any]]) -> list[str]:
     out = []
     for name, job in jobs.items():
         if _is_publish_job(job):
             continue
-        allowed = SECRET_ALLOWLIST + (GATE_SECRET_ALLOWLIST if _is_release_gate_job(job) else ())
-        extra = sorted(s for s in _secrets_of(job) if not any(p.match(s) for p in allowed))
+        gate = _is_release_gate_job(job)
+        allowed = SECRET_ALLOWLIST + (GATE_SECRET_ALLOWLIST if gate else ())
+        rest, probe_auth = _without_probe_auth(job) if gate else (job, [])
+        if bad := sorted(_secrets_of({"env": probe_auth}) - {GATE_PROBE_SECRET}):
+            out.append(
+                f"I5: job {name!r}: the release gate's `{GATE_PROBE_ENV}` may name only {GATE_PROBE_SECRET}, not {bad}"
+            )
+        extra = sorted(s for s in _secrets_of(rest) if not any(p.match(s) for p in allowed))
         if extra:
-            out.append(f"I5: job {name!r} names secrets {extra} but is not a publish job")
+            hint = (
+                f" ({GATE_PROBE_SECRET} only as the release-gate step's `env: {GATE_PROBE_ENV}`)"
+                if gate and GATE_PROBE_SECRET in extra
+                else ""
+            )
+            out.append(f"I5: job {name!r} names secrets {extra} but is not a publish job{hint}")
         # Anything that reads `secrets` other than by a literal name (toJSON(secrets), secrets[inputs.x])
         # could expose any secret, so it is refused outside a publish job.
         dynamic = sorted({s for s in _strings(job) if len(_SECRETS_TOKEN.findall(s)) > len(_SECRET_REF.findall(s))})
@@ -265,6 +301,9 @@ def _check_publish_jobs(jobs: dict[str, dict[str, Any]]) -> list[str]:
                 out.append(
                     f"I6: publish job {name!r}: a container must come from {_TRUSTED_REGISTRY}, with credentials"
                 )
+            out += _container_startup(f"publish job {name!r}", container)
+        if "services" in job:
+            out.append(f"I6: publish job {name!r} has `services`: a sibling container can reach its credential")
         missing = sorted(set(build_jobs) - set(_needs(job)) - {name})
         if missing:
             out.append(f"I7: publish job {name!r} must need every build and test job; missing {missing}")
@@ -278,8 +317,54 @@ def _check_publish_jobs(jobs: dict[str, dict[str, Any]]) -> list[str]:
     return out
 
 
+def _check_release_gate_job(jobs: dict[str, dict[str, Any]]) -> list[str]:
+    """I11: the release gate's job holds the Nexus credential: harden it like a publish job, where it fits."""
+    out = []
+    for name, job in jobs.items():
+        if not _is_release_gate_job(job) or _is_publish_job(job):
+            continue
+        where = f"release gate job {name!r}"
+        out += [p.replace("I6:", "I11:", 1) for p in _startup_env(where, job.get("env"))]
+        for i, step in enumerate(_steps(job)):
+            uses = _uses(step)
+            if "run" in step:
+                out.append(f"I11: {where} has a `run:` step; it holds the Nexus credential")
+            elif _action(uses) not in RELEASE_GATE_JOB_ACTIONS:
+                out.append(f"I11: {where} uses {uses!r}; allowed: {list(RELEASE_GATE_JOB_ACTIONS)}")
+            elif _action(uses) == CHECKOUT and (step.get("with") or {}).get("persist-credentials") not in (
+                False,
+                "false",
+            ):
+                out.append(f"I11: {where} step {i + 1}: actions/checkout must set `persist-credentials: false`")
+            out += [p.replace("I6:", "I11:", 1) for p in _startup_env(f"{where} step {i + 1}", step.get("env"))]
+        runs_on = job.get("runs-on")
+        if not (isinstance(runs_on, str) and _ECMWF_RUNNER.fullmatch(runs_on)):
+            out.append(f"I11: {where} runs-on {runs_on!r}; use an arc-runner-* or hpc-submit runner")
+        container = job.get("container")
+        if container is not None:
+            image = container.get("image") if isinstance(container, dict) else container
+            if not (isinstance(image, str) and image.startswith(_TRUSTED_REGISTRY)):
+                out.append(f"I11: {where}: a container must come from {_TRUSTED_REGISTRY}")
+            out += [p.replace("I6:", "I11:", 1) for p in _container_startup(where, container)]
+        if "services" in job:
+            out.append(f"I11: {where} has `services`: a sibling container can reach its credential")
+    return out
+
+
+def _container_startup(where: str, container: Any) -> list[str]:
+    """A publish or release gate job's container: its `env` reaches every process of the job like the job's
+    `env`, and `options` (`--env`, `--volume`, `--entrypoint`, ...) or `volumes` can change how they start
+    (or plant files over the image's), so neither is allowed."""
+    if not isinstance(container, dict):
+        return []
+    out = _startup_env(f"{where} container", container.get("env"))
+    if bad := sorted(k for k in ("options", "volumes") if k in container):
+        out.append(f"I6: {where}: the container sets {bad}, which can change how processes start")
+    return out
+
+
 def _startup_env(where: str, env: Any) -> list[str]:
-    """A publish job's `env` may not change how its processes start (LD_PRELOAD, BASH_ENV, ...)."""
+    """A publish or release gate job's `env` may not change how its processes start (LD_PRELOAD, BASH_ENV, ...)."""
     if env is None:
         return []
     if not isinstance(env, dict):
@@ -373,6 +458,7 @@ def check_text(text: str, *, allow_refs: Sequence[str] = (), name: str = "<workf
         *_check_inherit_env_caches(doc, jobs),
         *_check_secrets(jobs),
         *_check_publish_jobs(jobs),
+        *_check_release_gate_job(jobs),
         *_check_run_expressions(jobs),
         *_check_refs(jobs, allow_refs),
         *_check_needs(jobs),

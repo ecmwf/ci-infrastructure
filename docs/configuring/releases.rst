@@ -167,9 +167,16 @@ The gate
 7. Each string ``release-ref`` is a tag or commit of its repo; a branch is refused.
 8. The workflow file at the commit passes ``check-cd-workflow`` (below).
 9. The release legs, each with its ``_release`` context.
-10. For a publishing run, each rpm already on Nexus (an anonymous probe of its URL) is marked
+10. For a publishing run, each rpm already on Nexus (a ``HEAD`` of its URL) is marked
     ``already-published``. It stays in the matrix, its build and install test are skipped, and
-    the publish job records what Nexus holds. A probe that gets no answer builds the leg anyway.
+    the publish job records what Nexus holds. The probe authenticates with the Nexus credential
+    from the release-gate step's ``env: NEXUS_AUTH`` (``NEXUS_TEST_REPO_UPLOAD_TOKEN``): the test
+    repositories are private, and an anonymous ``HEAD`` of a published rpm gets ``403`` (seen on
+    ``private-rocky-stable`` after the ``2.5.0-rc2`` release), so an anonymous probe never finds
+    one; "Re-run all jobs" then rebuilds the leg and ``upload-nexus`` refuses the new bytes.
+    ``200`` is published, ``404`` is not; ``401``/``403`` to the authenticated probe refuses the
+    release (it cannot tell). A probe that gets no answer (unreachable, ``5xx`` after retries)
+    builds the leg anyway. Without ``NEXUS_AUTH`` the probe is anonymous and the gate warns.
 
 Credentials and the threat model
 --------------------------------
@@ -177,13 +184,22 @@ Credentials and the threat model
 - Building runs the repo's own code (CMake, tests) and gets no publish credential. Only the
   publish jobs (those that run ``upload-nexus``, ``hpc-promote`` or ``hpc-sync-tag``) hold one,
   and they run no ``run:`` step, check out nothing and build nothing: they move artifacts and
-  call ``upload-nexus``.
+  call ``upload-nexus``. The release gate's job holds the test Nexus credential too, for its
+  probe, in the release-gate step's ``env`` only; it is held to the same hardening where it fits:
+  no ``run:`` step, only ``actions/checkout`` (``persist-credentials: false``, to read the
+  manifest and the workflow) and ``release-gate``, an ECMWF runner, an ECCR container, no
+  ``env`` that changes how processes start (in the job, a step or ``container.env``: it reaches
+  every process of the job, the release gate's own ``bash`` steps included, before the credential
+  is masked), and no ``container.options``, ``container.volumes`` or ``services`` (``--env``, ``--volume``,
+  ``--entrypoint`` can do the same). The gate masks it, sends it only as the probe's basic
+  auth, removes it from its environment before calling ``gh``, and never writes it to an output
+  or the provenance.
 - No GitHub environment and no repo variable is needed: the workflow uses the org secrets v2
   already uses. The upload credential is ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` (``user:token``), the
   repository URL ``NEXUS_TEST_REPO_URL_ROCKY_9`` (the URL v2 PUTs ``<url>/<file>`` to). An org
   secret is readable by any job that names it, so the check hook allows a non-CI secret only in
-  a publish job, and a ``NEXUS_TEST_REPO_URL_*`` URL also in the gate's job, which probes it
-  anonymously. Only the tag-push trigger reaches the publish job (``publish`` is false for a
+  a publish job; in the gate's job also a ``NEXUS_TEST_REPO_URL_*`` URL, and
+  ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` only as the release-gate step's ``env: NEXUS_AUTH``. Only the tag-push trigger reaches the publish job (``publish`` is false for a
   rehearsal). ``upload-nexus`` takes the credential from the step's ``env``, masks it, and
   refuses any host but test Nexus. GitHub masks the URL in logs too, so it prints as ``***``;
   the receipts and the release record hold it in full.
@@ -210,12 +226,13 @@ The workflow's shape
 ``check-cd-workflow`` (a pre-commit hook, and gate check 8) holds ``cd-v3.yml`` to the shape
 of ``samples/cd/cd.yml``: tag and labelled-PR triggers only; ``contents: read``; a concurrency
 group on the ref, never cancelled; no ``secrets: inherit`` or workflow ``env``; a non-CI secret
-only in a publish job (a ``NEXUS_TEST_REPO_URL_*`` also in the gate's job); publish jobs as
-above, on an ECMWF runner, in an ECCR container, with no ``env`` that changes how processes start (``LD_*``, ``BASH_ENV``, ``PATH``, ``PYTHON*``,
-``GIT_*``, ...), downloading only this run's artifacts (no ``run-id``, ``repository`` or
+only in a publish job (in the gate's job also a ``NEXUS_TEST_REPO_URL_*``, and the upload token
+as the release-gate step's ``NEXUS_AUTH``; that job hardened as above); publish jobs as above, on an ECMWF runner, in an ECCR container, with no ``env`` that changes how processes start (``LD_*``, ``BASH_ENV``, ``PATH``, ``PYTHON*``,
+``GIT_*``, ...) in the job, a step or ``container.env``, no ``container.options``,
+``container.volumes`` or ``services``, downloading only this run's artifacts (no ``run-id``, ``repository`` or
 ``github-token``), needing every build and test job and running exactly
 ``if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}``,
-with a ``name`` that uses no ``matrix`` (GitHub shows it unevaluated for a skipped job);
+with a ``name`` that uses no ``matrix``;
 no ``${{ }}`` inside ``run:``; one ci-infrastructure ref, other actions pinned by SHA; every job
 needing ``ci-approval`` and ``gate`` directly; every ``upload-artifact`` with ``overwrite: true``.
 
@@ -226,6 +243,20 @@ needing ``ci-approval`` and ``gate`` directly; every ``upload-artifact`` with ``
      hooks:
        - id: check-cd-workflow
          args: [--allow-ref, feature/cd-v3]
+
+Job names
+---------
+
+GitHub does not evaluate the ``name`` of a matrix job it skips: ``publish-nexus`` is skipped in
+every rehearsal, and ``name: publish-nexus (${{ matrix._release.leg_id }})`` showed literally
+as that text (run ``40902451849`` of eckit-cd-test). Any expression on ``matrix`` is the same,
+``format()`` included, so ``check-cd-workflow`` refuses one in a publish job's name. A static
+name gets every matrix value of the leg appended
+(``publish-nexus (./.ci/build.sh.j2, rpm, rocky-9, g++-11, ...)``): long, but right whether the
+job runs or is skipped. ``build-rpm`` and ``itest-rpm`` name the leg (``build-rpm
+(${{ matrix._release.leg_id }})``); they are skipped only when there is no rpm leg, and then
+show the expression. A short name for both cases would need a matrix of only the leg id, which
+is not done.
 
 Re-runs and resume
 ------------------
