@@ -17,3 +17,4 @@ This tutorial brings a repository onto ``ci-infrastructure``, step by step.
    hpc
    job-scripts
    fork-pull-requests
+   releases
