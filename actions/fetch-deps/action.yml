@@ -40,7 +40,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
 
     - name: Fetch resolved deps
       id: fetch-deps

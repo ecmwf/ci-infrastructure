@@ -32,7 +32,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
 
     - name: Remove the tree from the cluster
       shell: bash

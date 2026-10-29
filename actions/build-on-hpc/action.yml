@@ -96,7 +96,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
 
     - name: Configure S3 artifact store
       shell: bash
@@ -167,7 +167,7 @@ runs:
 
     - name: Publish
       if: ${{ inputs.publish != 'false' && steps.submit.outputs.batch != 'true' }}
-      uses: ecmwf/ci-infrastructure/actions/publish-artifact@main
+      uses: ecmwf/ci-infrastructure/actions/publish-artifact@feature/cd-v3
       with:
         install-path: ${{ steps.submit.outputs.install-path }}
         artifact-name: ${{ inputs.artifact-name }}
