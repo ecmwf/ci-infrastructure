@@ -425,16 +425,16 @@ def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[s
 
 
 @pytest.mark.parametrize(
-    ("leg", "supported"),
+    ("leg", "wanted"),
     [
-        ({"cxx-compiler": "g++-8", "c-compiler-binary": "gcc"}, True),
-        ({"cxx-compiler": "nvc++-26.1", "c-compiler-binary": "nvc", "cxx-compiler-binary": "nvc++"}, False),
-        ({"cxx-compiler": "nvc++"}, False),
+        ({"cxx-compiler": "nvc++", "sccache": False}, False),
+        ({"sccache": True}, True),
+        ({"cxx-compiler": "g++-8"}, True),
         ({}, True),
     ],
 )
-def test_sccache_skips_nvhpc(leg: dict[str, str], supported: bool) -> None:
-    assert orch.sccache_supports(json.dumps(leg) if leg else "") is supported
+def test_a_leg_opts_out_of_sccache(leg: dict[str, Any], wanted: bool) -> None:
+    assert orch.sccache_wanted(json.dumps(leg) if leg else "") is wanted
 
 
 @pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])

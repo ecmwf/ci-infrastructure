@@ -31,7 +31,7 @@ the sccache that :action:`setup-sccache` installs and a file with its configurat
 which only its owner can read.
 The job reads and deletes that file, starts sccache and sets ``CMAKE_<LANG>_COMPILER_LAUNCHER``;
 if sccache cannot reach its bucket, the job builds without it.
-Legs with NVHPC compilers (``nvc``, ``nvc++``) build without sccache, which passes them ``-fdiagnostics-color=always``.
+A leg with ``sccache = false`` builds without it.
 Every ``ssh`` and ``scp`` that fails because the host name does not resolve is tried twice more,
 after 10 and 30 seconds, as the runner pods' DNS drops such lookups now and then.
 

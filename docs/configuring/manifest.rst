@@ -191,6 +191,10 @@ Together with ``ctest-args`` this is what the generated workflows need
 to build the package on behalf of an upstream change, the subject of :doc:`downstream`.
 Since the ``ci.yml`` runs the same recipe, the build is described once for both.
 
+A leg builds through sccache when the runner has a bucket for it;
+``sccache = false`` turns it off for a compiler it breaks,
+such as NVHPC's ``nvc``, which rejects the ``-fdiagnostics-color=always`` sccache passes it.
+
 The job script
 ----------------
 
