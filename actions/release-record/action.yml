@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Record a release (CD v3, experimental)
+description: >
+  Collect the gate's provenance and every leg's build-meta, install test and Nexus receipt
+  from the downloaded artifacts into release-record.json and a step-summary table. Fails when
+  an expected piece is missing: the release is partial, and "Re-run failed jobs" completes it.
+  See docs/configuring/releases.rst.
+
+inputs:
+  provenance:
+    description: 'The gate''s provenance output.'
+    required: true
+  legs:
+    description: 'The gate''s json output.'
+    required: true
+  publish:
+    description: 'The gate''s publish output.'
+    required: true
+  needs:
+    description: 'toJSON(needs) of the calling job.'
+    required: false
+    default: '{}'
+  artifacts:
+    description: 'Directory the release, itest and receipt artifacts were downloaded into (one subdirectory each).'
+    required: true
+  out:
+    description: 'Where to write release-record.json.'
+    required: false
+    default: 'release-record.json'
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - shell: bash
+      env:
+        PROVENANCE: ${{ inputs.provenance }}
+        LEGS: ${{ inputs.legs }}
+        PUBLISH: ${{ inputs.publish }}
+        NEEDS: ${{ inputs.needs }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+        OUT: ${{ inputs.out }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.release record \
+          --provenance "$PROVENANCE" --legs "$LEGS" --publish "$PUBLISH" --needs "$NEEDS" \
+          --artifacts "$ARTIFACTS" --out "$OUT"
