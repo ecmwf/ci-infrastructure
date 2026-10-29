@@ -11,6 +11,7 @@ ci_infrastructure package nests ensure-infrastructure-present itself; an action 
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any, Final
@@ -147,3 +148,19 @@ def test_ci_python_runs_isolated(path: Path) -> None:
         if line.lstrip().startswith("#"):
             continue
         assert not _CI_PYTHON_CALL.search(line), f"{path.name}:{lineno}: call $CI_INFRASTRUCTURE_PYTHON with -I"
+
+
+def test_bootstrap_venv_dir_is_one_path_component_for_a_branch_ref() -> None:
+    """A ref like feature/cd-v3 must not nest the venv under feature/, which the idle sweep (-maxdepth 1) removes."""
+    script = _steps(yaml.safe_load((ACTIONS_DIR / BOOTSTRAP / "action.yml").read_text()))[0]["run"]
+    lines = [line.strip() for line in script.splitlines()]
+    start = lines.index('ref="${GITHUB_ACTION_REF:-main}"')
+    snippet = "\n".join(line for line in lines[start : start + 4] if line.startswith("ref="))
+    out = subprocess.run(
+        ["bash", "-c", f'{snippet}\nprintf %s "$ref"'],
+        env={"GITHUB_ACTION_REF": "feature/cd-v3", "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out == "feature-cd-v3"
