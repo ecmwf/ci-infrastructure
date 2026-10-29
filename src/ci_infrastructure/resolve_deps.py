@@ -16,7 +16,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
           _resolved.all-artifact-names    space-separated transitive artifact names
           _resolved.own-*                 own-name, own-artifact-name, own-tar-name, own-sha,
                                           own-ref, own-platform, own-compiler,
-                                          own-build-type, own-python, own-deps-hash
+                                          own-build-type, own-python, own-option, own-deps-hash
           _resolved.deps                  list of {name, repo, ref, sha, artifact-name,
                                                    source, install-path}
           _resolved.crates                {crate: repo} of the built packages' deps' `crates`
@@ -203,6 +203,7 @@ class ResolvedDep:
     compiler: str | None
     build_type: str
     python_version: str | None
+    option: str
     deps_hash: str | None
     # Install-relative dirs the producer asks its consumers to put on PATH.
     add_to_path: Sequence[str] = ()
@@ -221,6 +222,7 @@ class ResolvedDep:
             "compiler": self.compiler or "",
             "build-type": self.build_type,
             "python-version": self.python_version or "",
+            "option": self.option,
             "deps-hash": self.deps_hash or "",
             "add-to-path": list(self.add_to_path),
         }
@@ -233,6 +235,7 @@ class ResolvedOwn:
     compiler: str | None
     build_type: str
     python_version: str | None
+    option: str
     deps_hash: str | None
     direct_artifact_names: tuple[ArtifactName, ...] = ()
 
@@ -873,6 +876,7 @@ def resolve_leg(
             compiler=compiler,
             build_type=build_type,
             python_version=dep_python,
+            option=dep_option,
             deps_hash=deps_hash8,
             add_to_path=tuple(info.add_to_path) if info is not None else (),
         )
@@ -920,6 +924,7 @@ def resolve_leg(
         compiler=own_compiler,
         build_type=own_build_type,
         python_version=own_python,
+        option=own_option,
         deps_hash=own_deps_hash,
         direct_artifact_names=tuple(direct_dep_artifact_names),
     )
@@ -1028,6 +1033,7 @@ def _as_local(prefix: PackageName, repo: Repo, ref: Ref, sha: Sha, own: Resolved
         compiler=own.compiler,
         build_type=own.build_type,
         python_version=own.python_version,
+        option=own.option,
         deps_hash=own.deps_hash,
     )
 
@@ -1242,6 +1248,7 @@ def _run(
                 "own-compiler": own.compiler or "",
                 "own-build-type": own.build_type,
                 "own-python": own.python_version or "",
+                "own-option": own.option,
                 "own-deps-hash": own.deps_hash or "",
                 "own-tar-name": f"{own.artifact_name}.tar.gz",
                 "deps": [d.to_json() for d in deps_resolved],
