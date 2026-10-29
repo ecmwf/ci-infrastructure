@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release gate (CD v3, experimental)
+description: >
+  Decide whether this run may release, and what: the kill switch, the event (a release tag
+  push, or a same-repo pull request labelled approved-for-cd for a rehearsal), tag against
+  VERSION, CI passed on exactly this commit (waiting while it runs), the tag not moved, each
+  source dep's release-ref a tag or SHA, the workflow passing check-cd-workflow, and which
+  release legs are on Nexus already. Run it in a job that checked out github.sha.
+  See docs/configuring/releases.rst. Reads CD_KILL_SWITCH and CD_KILL_SWITCH_REASON from the
+  step's env.
+
+inputs:
+  kinds:
+    description: 'Comma-separated release kinds of the manifest, e.g. release-rpm.'
+    required: true
+  manifest:
+    description: 'The manifest, relative to the workspace.'
+    required: false
+    default: '.ci/manifest.toml'
+  allow-production:
+    description: '"true" allows release mode and production targets; milestone 1 keeps it "false".'
+    required: false
+    default: 'false'
+  nexus-read-urls:
+    description: 'JSON object: nexus-target -> repository URL, probed anonymously for what is published.'
+    required: false
+    default: '{}'
+  ci-wait-seconds:
+    description: 'How long to wait for CI on the commit to pass.'
+    required: false
+    default: '7200'
+  allow-ref:
+    description: 'A ci-infrastructure ref the workflow may use besides a commit SHA (check-cd-workflow --allow-ref).'
+    required: false
+    default: ''
+  token:
+    description: 'Token to read workflow runs and the deps'' tags; defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  mode:
+    description: 'release, prerelease or rehearsal.'
+    value: ${{ steps.gate.outputs.mode }}
+  publish:
+    description: '"true" when this run publishes (not a rehearsal).'
+    value: ${{ steps.gate.outputs.publish }}
+  sha:
+    description: 'The commit to build.'
+    value: ${{ steps.gate.outputs.sha }}
+  head-sha:
+    description: 'The pull request head of a rehearsal; the commit otherwise.'
+    value: ${{ steps.gate.outputs.head-sha }}
+  tag:
+    description: 'The release tag; empty for a rehearsal.'
+    value: ${{ steps.gate.outputs.tag }}
+  version:
+    description: 'The project version (VERSION).'
+    value: ${{ steps.gate.outputs.version }}
+  json:
+    description: 'JSON: per release kind, {"include": [legs]}, each leg with its _release context.'
+    value: ${{ steps.gate.outputs.json }}
+  source-deps:
+    description: 'JSON list of {repo, package, ref, sha}: the deps a release builds from source.'
+    value: ${{ steps.gate.outputs.source-deps }}
+  provenance:
+    description: 'JSON: what the gate decided, from what; for the release record.'
+    value: ${{ steps.gate.outputs.provenance }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        MANIFEST: ${{ inputs.manifest }}
+        KINDS: ${{ inputs.kinds }}
+        ALLOW_PRODUCTION: ${{ inputs.allow-production }}
+        NEXUS_READ_URLS: ${{ inputs.nexus-read-urls }}
+        CI_WAIT_SECONDS: ${{ inputs.ci-wait-seconds }}
+        ALLOW_REF: ${{ inputs.allow-ref }}
+        CI_RELEASE_ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        args=(--manifest "$GITHUB_WORKSPACE/$MANIFEST" --kinds "$KINDS"
+              --nexus-read-urls "$NEXUS_READ_URLS" --ci-wait-seconds "$CI_WAIT_SECONDS")
+        if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi
+        if [ -n "$ALLOW_REF" ]; then args+=(--allow-ref "$ALLOW_REF"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.release gate "${args[@]}"
