@@ -75,6 +75,7 @@ def _dep(**overrides: Any) -> ResolvedDep:
         compiler="clang++-18",
         build_type="Release",
         python_version="3.11",
+        option="eckit-geo",
         deps_hash="abc12345",
     )
     return replace(base, **overrides)
@@ -88,10 +89,10 @@ def test_to_json_carries_structured_fields_and_blanks_absent_optionals() -> None
         "Release",
         "main",
     )
-    assert (j["python-version"], j["deps-hash"]) == ("3.11", "abc12345")
+    assert (j["python-version"], j["option"], j["deps-hash"]) == ("3.11", "eckit-geo", "abc12345")
 
-    j = _dep(compiler=None, python_version=None, deps_hash=None).to_json()
-    assert (j["compiler"], j["python-version"], j["deps-hash"]) == ("", "", "")
+    j = _dep(compiler=None, python_version=None, option="", deps_hash=None).to_json()
+    assert (j["compiler"], j["python-version"], j["option"], j["deps-hash"]) == ("", "", "", "")
     assert (j["platform"], j["build-type"]) == ("ubuntu-24.04", "Release")
 
 
