@@ -50,7 +50,7 @@ runs:
   using: composite
   steps:
     - if: inputs.check-workflows == 'true'
-      uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+      uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@feature/cd-v3
 
     - id: gate
       shell: bash

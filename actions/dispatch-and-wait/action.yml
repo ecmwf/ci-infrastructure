@@ -90,7 +90,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@feature/cd-v3
 
     - name: Configure S3 artifact store
       shell: bash

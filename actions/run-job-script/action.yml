@@ -42,14 +42,14 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@feature/cd-v3
 
     # uv and the bases' tools for the job script on a host that is not an official image; a no-op in one.
-    - uses: ecmwf/ci-infrastructure/actions/ensure-environment@main
+    - uses: ecmwf/ci-infrastructure/actions/ensure-environment@feature/cd-v3
 
     - name: Get install prefix
       id: prefix
-      uses: ecmwf/ci-infrastructure/actions/install-prefix@main
+      uses: ecmwf/ci-infrastructure/actions/install-prefix@feature/cd-v3
 
     - name: Set paths
       id: set-paths
@@ -66,7 +66,7 @@ runs:
 
     - name: Set up sccache
       if: env.SCCACHE_BUCKET != '' && toJSON(fromJSON(inputs.matrix-leg).sccache) != 'false'
-      uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
+      uses: ecmwf/ci-infrastructure/actions/setup-sccache@feature/cd-v3
       with:
         cache-key-suffix: ${{ fromJSON(inputs.matrix-leg).cxx-compiler }}-${{ fromJSON(inputs.matrix-leg).build-type }}${{ fromJSON(inputs.matrix-leg).options && format('-{0}', fromJSON(inputs.matrix-leg).options) || '' }}
 

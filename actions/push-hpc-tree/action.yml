@@ -38,7 +38,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@feature/cd-v3
 
     - name: Push the tree up to the cluster
       id: push
