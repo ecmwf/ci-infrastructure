@@ -38,3 +38,18 @@ def test_compose_exports_lib_dirs_only_for_deps_that_run_here(tmp_path: Path, st
     assert files["GITHUB_OUTPUT"].read_text(encoding="utf-8") == f"cmake-prefix-path={dep}\n"
     assert (f"LD_LIBRARY_PATH={dep}/lib" in files["GITHUB_ENV"].read_text(encoding="utf-8")) is exported
     assert (f"{dep}/bin" in files["GITHUB_PATH"].read_text(encoding="utf-8")) is exported
+
+
+def test_an_unresolved_dep_fails_the_leg_before_fetching_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    from click.testing import CliRunner
+
+    from ci_infrastructure import fetch_deps
+
+    monkeypatch.setattr(fetch_deps, "fetch_one", lambda dep, token: pytest.fail("fetched"))
+    deps = [
+        {"name": "eckit", "source": "artifact", "cached": True},
+        {"name": "base", "source": "unresolved", "cached": True, "error": "dep 'base' was red\n  o/base › build: x"},
+    ]
+    result = CliRunner().invoke(fetch_deps.main, ["--deps-json", json.dumps(deps)])
+    assert result.exit_code == 1
+    assert "::error::dep 'base' was red%0A  o/base › build: x" in result.output

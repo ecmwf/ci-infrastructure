@@ -23,8 +23,8 @@ from typing import Final, Literal, TypedDict
 
 import click
 
-from . import s3_store
-from ._errors import CIError
+from . import failure_reasons, s3_store
+from ._errors import CIError, escape_command_data
 from ._github_api import IN_PROGRESS_STATUSES, WorkflowRuns, probe_workflow_runs, select_token, write_outputs
 
 _DEFAULT_POLL_INTERVAL: Final = 60
@@ -66,14 +66,12 @@ class Dep(TypedDict):
     install_path: Path
 
 
-def _diagnose_missing_artifact(name: str, repo: str, sha: str, run: WorkflowRuns) -> None:
+def _diagnose_missing_artifact(name: str, repo: str, sha: str, run: WorkflowRuns, token: str | None) -> None:
     if run.state == "completed":
         where = f" Run: {run.url}" if run.url else ""
-        print(
-            f"::error::Upstream CI for {repo}@{sha[:8]} completed ({run.conclusion}) "
-            f"without publishing '{name}'.{where}",
-            file=sys.stderr,
-        )
+        reasons = failure_reasons.explain(run.url, token) if run.conclusion == "failure" else ""
+        message = f"Upstream CI for {repo}@{sha[:8]} completed ({run.conclusion}) without publishing '{name}'.{where}"
+        print(f"::error::{escape_command_data(message + reasons)}", file=sys.stderr)
         use = "Re-run that upstream run, then use" if run.conclusion == "failure" else "Use"
         print(
             f"::warning::{use} 'Re-run all jobs' on this workflow, not 'Re-run failed jobs': "
@@ -141,7 +139,7 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
             time.sleep(poll_interval)
             continue
 
-        _diagnose_missing_artifact(name, repo, sha, run)
+        _diagnose_missing_artifact(name, repo, sha, run, token)
         return False
 
 
@@ -199,6 +197,12 @@ def main(deps_json: str) -> None:
     raw = json.loads(deps_json)
     if not isinstance(raw, list):
         raise CIError("--deps-json must be a JSON array")
+
+    unresolved = [e for e in raw if isinstance(e, dict) and e.get("source") == "unresolved"]
+    if unresolved:
+        raise CIError(
+            "\n".join(str(e.get("error") or f"dep {e.get('name')} could not be resolved") for e in unresolved)
+        )
 
     if not raw:
         print("fetch_deps: no deps to fetch for this leg; nothing to do.")
