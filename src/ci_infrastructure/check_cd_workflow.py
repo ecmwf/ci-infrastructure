@@ -7,16 +7,21 @@
 Experimental; see docs/configuring/releases.rst. The release gate runs the same check on the
 workflow file of the commit it releases, so the rules hold in CI, not only in pre-commit.
 
+A publish job is one that runs a publish action (upload-nexus, hpc-promote, hpc-sync-tag); only
+it holds a publish credential. It needs no GitHub environment.
+
 - I1: runs on tag pushes, `pull_request: [labeled]`, `workflow_dispatch` or `schedule` only.
 - I2: workflow permissions at most `contents: read`.
 - I3: a `concurrency` group on the ref, never cancelled in progress.
 - I4: no `secrets: inherit`, no workflow `env`, nothing of the CI caches (AWS_*, ARTIFACT_S3_*, SCCACHE_*).
-- I5: a secret outside the CI allowlist only in a job with an `environment`.
-- I6: an environment job runs no `run:` step, checks out nothing, builds nothing; uses only
+- I5: a secret outside the CI allowlist only in a publish job; a test Nexus URL secret
+  (`NEXUS_TEST_REPO_URL_*`, a URL, not a credential) also in the release gate's job, which
+  probes it anonymously. Outside a publish job, `secrets` only by a literal name.
+- I6: a publish job runs no `run:` step, checks out nothing, builds nothing; uses only
   artifact transfer and the publish actions; on an ECMWF runner, in an ECCR container; sets no
   `env` that changes process startup (LD_*, BASH_ENV, PATH, PYTHON*, GIT_*, ...); downloads only
-  this run's artifacts (no `run-id`, `repository`, `github-token`).
-- I7: an environment job needs every build and test job, and runs exactly
+  this run's artifacts (no `run-id`, `repository`, `github-token`). `environment:` is ignored.
+- I7: a publish job needs every build and test job, and runs exactly
   `if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}`.
 - I8: no `${{ }}` inside a `run:` script; pass values through `env`.
 - I9: one ref for every ci-infrastructure action, a commit SHA unless allowed (`--allow-ref`);
@@ -40,25 +45,26 @@ import yaml
 
 GATE_JOB: Final = "ci-approval"
 RELEASE_GATE_JOB: Final = "gate"
-#: Not a build or test job: it summarises, and runs after the environment jobs.
+#: Not a build or test job: it summarises, and runs after the publish jobs.
 RECORD_JOB: Final = "record"
 
 CI_INFRA: Final = "ecmwf/ci-infrastructure/"
 APPROVAL_ACTION: Final = "ecmwf/ci-infrastructure/actions/require-ci-approval"
+RELEASE_GATE_ACTION: Final = "ecmwf/ci-infrastructure/actions/release-gate"
 UPLOAD_ARTIFACT: Final = "actions/upload-artifact"
 DOWNLOAD_ARTIFACT: Final = "actions/download-artifact"
 CHECKOUT: Final = "actions/checkout"
 
-#: What an environment job may run.
-ENVIRONMENT_ACTIONS: Final = (
+#: What a publish job may run.
+PUBLISH_JOB_ACTIONS: Final = (
     UPLOAD_ARTIFACT,
     DOWNLOAD_ARTIFACT,
     "ecmwf/ci-infrastructure/actions/upload-nexus",
     "ecmwf/ci-infrastructure/actions/hpc-promote",
     "ecmwf/ci-infrastructure/actions/hpc-sync-tag",
 )
-#: Only an environment job may run these: they publish.
-PUBLISH_ACTIONS: Final = ENVIRONMENT_ACTIONS[2:]
+#: Running one of these makes a job a publish job.
+PUBLISH_ACTIONS: Final = PUBLISH_JOB_ACTIONS[2:]
 #: Build the release; never next to a publish credential.
 BUILD_ACTIONS: Final = (
     "ecmwf/ci-infrastructure/actions/run-job-script",
@@ -66,18 +72,16 @@ BUILD_ACTIONS: Final = (
     "ecmwf/ci-infrastructure/actions/release-source-deps",
 )
 
-#: `env` names an environment job may not set: they change how its processes start.
+#: `env` names a publish job may not set: they change how its processes start.
 _STARTUP_ENV: Final = re.compile(
     r"^(BASH_ENV|ENV|LD_[A-Z0-9_]+|PATH|NODE_OPTIONS|NODE_PATH|PYTHON[A-Z0-9_]*|GIT_[A-Z0-9_]*"
     r"|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB)$",
     re.I,
 )
-#: download-artifact inputs that fetch from another run or repository; refused in an environment job.
+#: download-artifact inputs that fetch from another run or repository; refused in a publish job.
 _FOREIGN_DOWNLOAD_INPUTS: Final = ("run-id", "repository", "github-token")
 
-ENVIRONMENT_JOB_IF: Final = (
-    "!cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure')"
-)
+PUBLISH_JOB_IF: Final = "!cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure')"
 
 #: Secrets any job may name: the CI's own, not a publish credential.
 SECRET_ALLOWLIST: Final = (
@@ -86,6 +90,8 @@ SECRET_ALLOWLIST: Final = (
     re.compile(r"^ECCR_PULL_ROBOT_[A-Z0-9_]+$"),
     re.compile(r"^CI_PERMISSIONS_APP_[A-Z0-9_]+$"),
 )
+#: Secrets the release gate's job may name besides: test Nexus repository URLs (as v2 keeps them), not credentials.
+GATE_SECRET_ALLOWLIST: Final = (re.compile(r"^NEXUS_TEST_REPO_URL_[A-Z0-9_]+$"),)
 _CACHE_NAMES: Final = re.compile(r"\b(AWS_[A-Z0-9_]*|ARTIFACT_S3_[A-Z0-9_]*|SCCACHE_[A-Z0-9_]*)")
 _SECRET_REF: Final = re.compile(r"secrets\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)|secrets\[\s*'([^']+)'\s*\]")
 _SECRETS_TOKEN: Final = re.compile(r"\bsecrets\b")
@@ -141,8 +147,12 @@ def _strings(node: Any) -> Iterator[str]:
             yield from _strings(v)
 
 
-def _is_environment_job(job: dict[str, Any]) -> bool:
-    return bool(job.get("environment"))
+def _is_publish_job(job: dict[str, Any]) -> bool:
+    return any(_action(_uses(s)) in PUBLISH_ACTIONS for s in _steps(job))
+
+
+def _is_release_gate_job(job: dict[str, Any]) -> bool:
+    return any(_action(_uses(s)) == RELEASE_GATE_ACTION for s in _steps(job))
 
 
 def _check_triggers(doc: dict[Any, Any]) -> list[str]:
@@ -205,67 +215,64 @@ def _secrets_of(job: dict[str, Any]) -> set[str]:
 def _check_secrets(jobs: dict[str, dict[str, Any]]) -> list[str]:
     out = []
     for name, job in jobs.items():
-        if _is_environment_job(job):
+        if _is_publish_job(job):
             continue
-        extra = sorted(s for s in _secrets_of(job) if not any(p.match(s) for p in SECRET_ALLOWLIST))
+        allowed = SECRET_ALLOWLIST + (GATE_SECRET_ALLOWLIST if _is_release_gate_job(job) else ())
+        extra = sorted(s for s in _secrets_of(job) if not any(p.match(s) for p in allowed))
         if extra:
-            out.append(f"I5: job {name!r} names secrets {extra} but has no `environment:`")
+            out.append(f"I5: job {name!r} names secrets {extra} but is not a publish job")
         # Anything that reads `secrets` other than by a literal name (toJSON(secrets), secrets[inputs.x])
-        # could expose any secret, so it is refused outside an environment job.
+        # could expose any secret, so it is refused outside a publish job.
         dynamic = sorted({s for s in _strings(job) if len(_SECRETS_TOKEN.findall(s)) > len(_SECRET_REF.findall(s))})
         if dynamic:
             out.append(f"I5: job {name!r} reads `secrets` without a literal name: {dynamic}")
     return out
 
 
-def _check_environment_jobs(jobs: dict[str, dict[str, Any]]) -> list[str]:
+def _check_publish_jobs(jobs: dict[str, dict[str, Any]]) -> list[str]:
     out = []
-    env_jobs = {n for n, j in jobs.items() if _is_environment_job(j)}
-    after_env = _jobs_after(jobs, env_jobs)
-    build_jobs = [n for n in jobs if n not in env_jobs and n not in after_env and n != RECORD_JOB]
+    publish_jobs = {n for n, j in jobs.items() if _is_publish_job(j)}
+    after_publish = _jobs_after(jobs, publish_jobs)
+    build_jobs = [n for n in jobs if n not in publish_jobs and n not in after_publish and n != RECORD_JOB]
     for name, job in jobs.items():
-        for step in _steps(job):
-            action = _action(_uses(step))
-            if action in PUBLISH_ACTIONS and name not in env_jobs:
-                out.append(f"I6: job {name!r} runs {action} without an `environment:`")
-        if name not in env_jobs:
+        if name not in publish_jobs:
             continue
-        out += _startup_env(f"environment job {name!r}", job.get("env"))
+        out += _startup_env(f"publish job {name!r}", job.get("env"))
         for i, step in enumerate(_steps(job)):
             uses = _uses(step)
             if "run" in step:
-                out.append(f"I6: environment job {name!r} has a `run:` step; use an action")
-            elif _action(uses) not in ENVIRONMENT_ACTIONS:
-                out.append(f"I6: environment job {name!r} uses {uses!r}; allowed: {list(ENVIRONMENT_ACTIONS)}")
-            out += _startup_env(f"environment job {name!r} step {i + 1}", step.get("env"))
+                out.append(f"I6: publish job {name!r} has a `run:` step; use an action")
+            elif _action(uses) not in PUBLISH_JOB_ACTIONS:
+                out.append(f"I6: publish job {name!r} uses {uses!r}; allowed: {list(PUBLISH_JOB_ACTIONS)}")
+            out += _startup_env(f"publish job {name!r} step {i + 1}", step.get("env"))
             with_ = step.get("with")
             if _action(uses) == DOWNLOAD_ARTIFACT and isinstance(with_, dict):
                 if foreign := sorted(k for k in with_ if str(k) in _FOREIGN_DOWNLOAD_INPUTS):
                     out.append(
-                        f"I6: environment job {name!r} step {i + 1}: download-artifact {foreign} fetches from "
+                        f"I6: publish job {name!r} step {i + 1}: download-artifact {foreign} fetches from "
                         "another run or repository; download only this run's artifacts"
                     )
         runs_on = job.get("runs-on")
         if not (isinstance(runs_on, str) and _ECMWF_RUNNER.fullmatch(runs_on)):
-            out.append(f"I6: environment job {name!r} runs-on {runs_on!r}; use an arc-runner-* or hpc-submit runner")
+            out.append(f"I6: publish job {name!r} runs-on {runs_on!r}; use an arc-runner-* or hpc-submit runner")
         container = job.get("container")
         if container is not None:
             image = container.get("image") if isinstance(container, dict) else container
             creds = container.get("credentials") if isinstance(container, dict) else None
             if not (isinstance(image, str) and image.startswith(_TRUSTED_REGISTRY)) or not creds:
                 out.append(
-                    f"I6: environment job {name!r}: a container must come from {_TRUSTED_REGISTRY}, with credentials"
+                    f"I6: publish job {name!r}: a container must come from {_TRUSTED_REGISTRY}, with credentials"
                 )
         missing = sorted(set(build_jobs) - set(_needs(job)) - {name})
         if missing:
-            out.append(f"I7: environment job {name!r} must need every build and test job; missing {missing}")
-        if _strip_expr(str(job.get("if", ""))) != ENVIRONMENT_JOB_IF:
-            out.append(f"I7: environment job {name!r} must run `if: ${{{{ {ENVIRONMENT_JOB_IF} }}}}`")
+            out.append(f"I7: publish job {name!r} must need every build and test job; missing {missing}")
+        if _strip_expr(str(job.get("if", ""))) != PUBLISH_JOB_IF:
+            out.append(f"I7: publish job {name!r} must run `if: ${{{{ {PUBLISH_JOB_IF} }}}}`")
     return out
 
 
 def _startup_env(where: str, env: Any) -> list[str]:
-    """An environment job's `env` may not change how its processes start (LD_PRELOAD, BASH_ENV, ...)."""
+    """A publish job's `env` may not change how its processes start (LD_PRELOAD, BASH_ENV, ...)."""
     if env is None:
         return []
     if not isinstance(env, dict):
@@ -358,7 +365,7 @@ def check_text(text: str, *, allow_refs: Sequence[str] = (), name: str = "<workf
         *_check_concurrency(doc),
         *_check_inherit_env_caches(doc, jobs),
         *_check_secrets(jobs),
-        *_check_environment_jobs(jobs),
+        *_check_publish_jobs(jobs),
         *_check_run_expressions(jobs),
         *_check_refs(jobs, allow_refs),
         *_check_needs(jobs),

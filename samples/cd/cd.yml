@@ -7,7 +7,9 @@
 # keep its shape: check-cd-workflow (a pre-commit hook, and the release gate) enforces it.
 #
 # A pull request labelled approved-for-cd rehearses: everything but the publish jobs.
-# A pushed X.Y.Z-rcN tag publishes to test Nexus, from the `cd-v3-test` environment.
+# A pushed X.Y.Z-rcN tag publishes to test Nexus from the publish job, with the org secrets v2
+# uses: NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; only in the publish job) and
+# NEXUS_TEST_REPO_URL_ROCKY_9 (the upload repository URL; the gate also probes it anonymously).
 #
 # While the release actions live on ci-infrastructure's feature/cd-v3 they are used at that
 # ref (check-cd-workflow --allow-ref feature/cd-v3); a commit SHA once they are on main.
@@ -65,7 +67,7 @@ jobs:
           CD_KILL_SWITCH_REASON: ${{ vars.CD_KILL_SWITCH_REASON }}
         with:
           kinds: release-rpm
-          nexus-read-urls: '{"rocky-9": "${{ vars.NEXUS_TEST_URL_ROCKY_9 }}"}'
+          nexus-read-urls: '{"rocky-9": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}'
           ci-wait-seconds: ${{ vars.ARTIFACT_WAIT_TIMEOUT || '7200' }}
           allow-ref: feature/cd-v3
 
@@ -151,7 +153,6 @@ jobs:
     needs: [ci-approval, gate, build-rpm, itest-rpm]
     if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
     name: publish-nexus (${{ matrix._release.leg_id }})
-    environment: cd-v3-test
     runs-on: arc-runner-normal
     container:
       image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
@@ -177,7 +178,7 @@ jobs:
         env:
           NEXUS_AUTH: ${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}
         with:
-          urls: '{"rocky-9": "${{ vars.NEXUS_TEST_URL_ROCKY_9 }}"}'
+          urls: '{"rocky-9": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}'
           target: ${{ matrix._release.nexus_target }}
           filename: ${{ matrix._release.filename }}
           leg-id: ${{ matrix._release.leg_id }}
