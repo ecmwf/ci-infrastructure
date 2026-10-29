@@ -8,8 +8,9 @@
 #
 # A pull request labelled approved-for-cd rehearses: everything but the publish jobs.
 # A pushed X.Y.Z-rcN tag publishes to test Nexus from the publish job, with the org secrets v2
-# uses: NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; only in the publish job) and
-# NEXUS_TEST_REPO_URL_ROCKY_9 (the upload repository URL; the gate also probes it anonymously).
+# uses: NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; in the publish job, and in the release-gate
+# step, whose probe for what is published needs it: the repository is private and refuses an
+# anonymous probe) and NEXUS_TEST_REPO_URL_ROCKY_9 (the upload repository URL, also probed).
 #
 # While the release actions live on ci-infrastructure's feature/cd-v3 they are used at that
 # ref (check-cd-workflow --allow-ref feature/cd-v3); a commit SHA once they are on main.
@@ -65,6 +66,8 @@ jobs:
         env:
           CD_KILL_SWITCH: ${{ vars.CD_KILL_SWITCH }}
           CD_KILL_SWITCH_REASON: ${{ vars.CD_KILL_SWITCH_REASON }}
+          # Authenticates the Nexus probe; only this step of the gate job may name it.
+          NEXUS_AUTH: ${{ github.event_name == 'push' && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}
         with:
           kinds: release-rpm
           nexus-read-urls: '{"rocky-9": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}'
@@ -152,8 +155,10 @@ jobs:
   publish-nexus:
     needs: [ci-approval, gate, build-rpm, itest-rpm]
     if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
-    # A static name: GitHub cannot evaluate `matrix` for a job it skips (every rehearsal),
-    # and would show the expression itself.
+    # A static name: GitHub does not evaluate the name of a matrix job it skips (every
+    # rehearsal) and shows `publish-nexus (${{ matrix._release.leg_id }})` literally; any
+    # expression on `matrix` (format(...) too) is the same. A static name of a matrix job gets
+    # every matrix value appended: long, but right whether it runs or is skipped.
     name: publish-nexus
     runs-on: arc-runner-normal
     container:

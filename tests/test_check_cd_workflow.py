@@ -106,6 +106,81 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         "I5: job 'gate' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
     ),
     (
+        "credential in the gate's checkout step",
+        lambda d: _steps(d, "gate")[0].update({"env": {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}}),
+        "I5: job 'gate' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN'] but is not a publish job (NEXUS_TEST_REPO",
+    ),
+    (
+        "credential in the gate job's env",
+        _set("jobs.gate.env", {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
+        "I5: job 'gate' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
+    ),
+    (
+        "credential as a release-gate input",
+        lambda d: _steps(d, "gate")[1]["with"].update({"token": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
+        "I5: job 'gate' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN']",
+    ),
+    (
+        "another credential as the probe's NEXUS_AUTH",
+        lambda d: _steps(d, "gate")[1]["env"].update({"NEXUS_AUTH": "${{ secrets.NEXUS_PROD_UPLOAD_TOKEN }}"}),
+        "I5: job 'gate': the release gate's `NEXUS_AUTH` may name only NEXUS_TEST_REPO_UPLOAD_TOKEN, "
+        "not ['NEXUS_PROD_UPLOAD_TOKEN']",
+    ),
+    (
+        "the probe's NEXUS_AUTH in a build job",
+        _set("jobs.build-rpm.env", {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}),
+        "I5: job 'build-rpm' names secrets ['NEXUS_TEST_REPO_UPLOAD_TOKEN'] but is not a publish job",
+    ),
+    ("run step in the gate job", _add_run_step("gate", "true"), "I11: release gate job 'gate' has a `run:` step"),
+    (
+        "another action in the gate job",
+        lambda d: _steps(d, "gate").insert(1, {"uses": "actions/setup-python@" + "a" * 40}),
+        "I11: release gate job 'gate' uses 'actions/setup-python@",
+    ),
+    (
+        "download-artifact in the gate job",
+        lambda d: _steps(d, "gate").insert(
+            1, {"uses": "actions/download-artifact@" + "a" * 40, "with": {"run-id": "1", "github-token": "x"}}
+        ),
+        "I11: release gate job 'gate' uses 'actions/download-artifact@",
+    ),
+    (
+        "persisted checkout credentials in the gate job",
+        lambda d: _steps(d, "gate")[0]["with"].pop("persist-credentials"),
+        "I11: release gate job 'gate' step 1: actions/checkout must set `persist-credentials: false`",
+    ),
+    (
+        "startup env in the gate step",
+        lambda d: _steps(d, "gate")[1]["env"].update({"BASH_ENV": "/tmp/x"}),
+        "I11: release gate job 'gate' step 2: `env` sets ['BASH_ENV']",
+    ),
+    (
+        "startup env in the gate job",
+        _set("jobs.gate.env", {"PYTHONPATH": "/tmp"}),
+        "I11: release gate job 'gate': `env` sets ['PYTHONPATH']",
+    ),
+    ("gate job on a GitHub runner", _set("jobs.gate.runs-on", "ubuntu-latest"), "I11: release gate job 'gate' runs-on"),
+    (
+        "gate job in a foreign container",
+        _set("jobs.gate.container", {"image": "docker.io/library/ubuntu:24.04"}),
+        "I11: release gate job 'gate': a container must come from eccr.ecmwf.int/",
+    ),
+    (
+        "startup env in the gate container",
+        lambda d: d["jobs"]["gate"]["container"].update({"env": {"BASH_ENV": "/tmp/x"}}),
+        "I11: release gate job 'gate' container: `env` sets ['BASH_ENV']",
+    ),
+    (
+        "container options in the gate job",
+        lambda d: d["jobs"]["gate"]["container"].update({"options": "--env LD_PRELOAD=/x.so"}),
+        "I11: release gate job 'gate': the container sets ['options']",
+    ),
+    (
+        "container volumes in the gate job",
+        lambda d: d["jobs"]["gate"]["container"].update({"volumes": ["/tmp/x:/usr/local/bin"]}),
+        "I11: release gate job 'gate': the container sets ['volumes']",
+    ),
+    (
         "toJSON(secrets) in the gate job",
         lambda d: _steps(d, "gate")[1]["env"].update({"X": "${{ toJSON(secrets) }}"}),
         "I5: job 'gate' reads `secrets` without a literal name",
@@ -184,6 +259,16 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         "a container must come from eccr.ecmwf.int/",
     ),
     (
+        "startup env in the publish container",
+        lambda d: d["jobs"]["publish-nexus"]["container"].update({"env": {"LD_PRELOAD": "/x.so"}}),
+        "I6: publish job 'publish-nexus' container: `env` sets ['LD_PRELOAD']",
+    ),
+    (
+        "container options in a publish job",
+        lambda d: d["jobs"]["publish-nexus"]["container"].update({"options": "-e BASH_ENV=/x"}),
+        "I6: publish job 'publish-nexus': the container sets ['options']",
+    ),
+    (
         "publish from a build job",
         lambda d: _steps(d, "build-rpm").append(dict(_upload_step(d))),
         "I6: publish job 'build-rpm' uses 'actions/checkout",
@@ -253,6 +338,23 @@ def test_the_upload_nexus_credential_is_a_secret_of_the_publish_job() -> None:
     assert _upload_step(_sample())["env"] == {"NEXUS_AUTH": "${{ secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN }}"}
 
 
+def test_the_gate_probe_authenticates_with_the_upload_token_only_in_its_step_env() -> None:
+    doc = _sample()
+    # Only a pushed tag publishes and probes; a labelled pull request's rehearsal gets no token.
+    assert _steps(doc, "gate")[1]["env"]["NEXUS_AUTH"] == (
+        "${{ github.event_name == 'push' && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}"
+    )
+    assert _problems(doc) == []
+    del _steps(doc, "gate")[1]["env"]["NEXUS_AUTH"]
+    assert _problems(doc) == []  # anonymous: allowed, the gate warns
+
+
+def test_no_build_or_test_job_sees_the_upload_token() -> None:
+    doc = _sample()
+    for job in ("build-rpm", "itest-rpm", "record"):
+        assert "NEXUS_TEST_REPO_UPLOAD_TOKEN" not in yaml.safe_dump(doc["jobs"][job])
+
+
 def test_a_publish_job_needs_no_environment() -> None:
     doc = _sample()
     assert "environment" not in doc["jobs"]["publish-nexus"]
@@ -290,6 +392,26 @@ def test_the_url_exception_is_for_the_release_gate_action_not_the_job_name() -> 
 def test_a_static_publish_name_may_say_matrix() -> None:
     doc = _sample()
     doc["jobs"]["publish-nexus"]["name"] = "publish matrix packages"
+    assert _problems(doc) == []
+
+
+@pytest.mark.parametrize("job", ["gate", "publish-nexus"])
+def test_services_are_refused_in_credential_jobs(job: str) -> None:
+    doc = _sample()
+    doc["jobs"][job]["services"] = {"x": {"image": "eccr.ecmwf.int/x:1", "volumes": ["/:/host"]}}
+    assert any("has `services`" in p and repr(job) in p for p in _problems(doc)), _problems(doc)
+
+
+def test_a_container_env_that_leaves_startup_alone_is_allowed() -> None:
+    doc = _sample()
+    doc["jobs"]["gate"]["container"]["env"] = {"LANG": "C.UTF-8"}
+    doc["jobs"]["publish-nexus"]["container"]["env"] = {"LANG": "C.UTF-8"}
+    assert _problems(doc) == []
+
+
+def test_a_container_given_as_a_bare_image_is_allowed_for_the_gate() -> None:
+    doc = _sample()
+    doc["jobs"]["gate"]["container"] = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
     assert _problems(doc) == []
 
 
