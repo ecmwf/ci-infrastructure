@@ -272,6 +272,44 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
     assert trap_i < marker_i
 
 
+def test_render_starts_sccache_after_the_marker_and_reports_it_last() -> None:
+    script = _script(staging_dir="/scratch/staging/art", run_id="99-1", sccache=True)
+    lines = script.splitlines()
+    unpack_i = next(i for i, ln in enumerate(lines) if ln == 'cd "$CI_SOURCE_DIR"')
+    env_i = lines.index('  . "/scratch/staging/art/sccache.env"')
+    first_cmd = next(i for i, ln in enumerate(lines) if ln.startswith("cmake "))
+    assert unpack_i < env_i < first_cmd
+    assert '  export PATH="/scratch/staging/art/tools:$PATH"' in lines
+    assert "sccache --show-stats" in lines[-2]
+    assert "sccache" not in _script(staging_dir="/scratch/staging/art", run_id="99-1")
+    assert "sccache" not in _script(sccache=True)
+
+
+@pytest.mark.parametrize(("starts", "launcher"), [(True, "sccache"), (False, "")])
+def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Path, starts: bool, launcher: str) -> None:
+    staging = tmp_path / "staging"
+    (staging / "tools").mkdir(parents=True)
+    fake = staging / "tools" / "sccache"
+    fake.write_text(f"#!/bin/sh\nexit {0 if starts else 2}\n")
+    fake.chmod(0o755)
+    (staging / "sccache.env").write_text(jobscript.sccache_env_file({"SCCACHE_BUCKET": "b"}))
+    block = "\n".join(jobscript._sccache_block(str(staging)))
+    out = subprocess.run(
+        ["bash", "-euc", f'{block}\necho "$SCCACHE_BUCKET|${{CMAKE_CXX_COMPILER_LAUNCHER:-}}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path)},
+    ).stdout
+    assert out.splitlines()[-1] == f"b|{launcher}"
+    assert not (staging / "sccache.env").exists()
+
+
+def test_sccache_env_file_quotes_values_and_skips_the_unset() -> None:
+    env = {"SCCACHE_BUCKET": "b", "AWS_SECRET_ACCESS_KEY": "a'b $c", "SCCACHE_REGION": "", "HOME": "/h"}
+    assert jobscript.sccache_env_file(env) == ("export SCCACHE_BUCKET=b\nexport AWS_SECRET_ACCESS_KEY='a'\"'\"'b $c'\n")
+
+
 def test_render_omits_marker_wait_without_staging() -> None:
     script = _script()
     assert "CI_SOURCE_DIR" not in script

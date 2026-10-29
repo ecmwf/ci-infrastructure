@@ -25,7 +25,12 @@ A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
 and ``PATH`` at the directories each declares in ``add-to-path``.
-The cluster therefore needs neither a GitHub token nor access to S3.
+The cluster therefore needs no GitHub token.
+When the runner has an sccache bucket (``SCCACHE_BUCKET``),
+the sccache that :action:`setup-sccache` installs and a file with its configuration and credentials go into the staging directory too,
+which only its owner can read.
+The job reads and deletes that file, starts sccache and sets ``CMAKE_<LANG>_COMPILER_LAUNCHER``;
+if sccache cannot reach its bucket, the job builds without it.
 Every ``ssh`` and ``scp`` that fails because the host name does not resolve is tried twice more,
 after 10 and 30 seconds, as the runner pods' DNS drops such lookups now and then.
 

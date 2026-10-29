@@ -117,6 +117,13 @@ runs:
         if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
         echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
 
+    # Installs sccache on the runner and resolves its config; the job gets both shipped.
+    - name: Set up sccache
+      if: env.SCCACHE_BUCKET != ''
+      uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
+      with:
+        cache-key-suffix: ${{ fromJSON(inputs.matrix-leg || '{}').platform }}-${{ fromJSON(inputs.matrix-leg || '{}').cxx-compiler }}-${{ fromJSON(inputs.matrix-leg || '{}').build-type }}${{ fromJSON(inputs.matrix-leg || '{}').options && format('-{0}', fromJSON(inputs.matrix-leg || '{}').options) || '' }}
+
     - name: Submit build job and wait
       id: submit
       shell: bash
@@ -163,6 +170,7 @@ runs:
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
+        if [ -n "${SCCACHE_BUCKET:-}" ]; then args+=(--sccache-binary "$(command -v sccache)"); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
     - name: Publish

@@ -516,6 +516,12 @@ def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
     help="The matrix leg as JSON; the render context for a .j2 job-script. Ignored for any other recipe.",
 )
 @click.option("--cmake-prefix-path", "cmake_prefix_path", default="", help="Resolved dependency prefixes")
+@click.option(
+    "--sccache-binary",
+    "sccache_binary",
+    default="",
+    help="Runner-local sccache, shipped with the source; the job uses the SCCACHE_*/AWS_* of this environment.",
+)
 @click.option("--dryrun", is_flag=True, default=False, help="Render + go through troika in dry-run mode; do not submit")
 @click.option(
     "--no-publish",
@@ -538,6 +544,7 @@ def submit_wait(
     tar_dir: str,
     matrix_leg: str,
     cmake_prefix_path: str,
+    sccache_binary: str,
     dryrun: bool,
     no_publish: bool,
 ) -> None:
@@ -576,6 +583,7 @@ def submit_wait(
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
 
     ships_source = bool(source_dir and run_id)
+    sccache = ships_source and bool(sccache_binary)
     if ships_source:
         remote_cmake_prefix, local_prefixes, remote_deps_dir = plan_remote_prefixes(cmake_prefix_path, paths.staging)
     else:
@@ -594,6 +602,7 @@ def submit_wait(
         marker_wait_timeout=marker_wait_timeout,
         packages=list(packages),
         path_dirs=path_dirs,
+        sccache=sccache,
     )
     print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
     print(rendered)
@@ -615,15 +624,30 @@ def submit_wait(
         with transfer.ship_lock(site._connection, staging_dir=paths.staging, run_id=this_run_id):
             if shipped():
                 return
-            transfer.ship_source(
-                site._connection,
-                local_source_dir=source_dir,
-                staging_dir=paths.staging,
-                run_id=this_run_id,
-                tar_dir=tar_dir,
-                local_prefixes=local_prefixes,
-                remote_deps_dir=remote_deps_dir,
-            )
+            extra_files: list[tuple[str, str, int]] = []
+            env_file = Path(tar_dir) / f"{this_run_id}.{jobscript.SCCACHE_ENV_NAME}"
+            if sccache:
+                Path(tar_dir).mkdir(parents=True, exist_ok=True)
+                env_file.unlink(missing_ok=True)
+                with os.fdopen(os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+                    f.write(jobscript.sccache_env_file(os.environ))
+                extra_files = [
+                    (sccache_binary, f"{jobscript.SCCACHE_BIN_DIR}/sccache", 0o755),
+                    (str(env_file), jobscript.SCCACHE_ENV_NAME, 0o600),
+                ]
+            try:
+                transfer.ship_source(
+                    site._connection,
+                    local_source_dir=source_dir,
+                    staging_dir=paths.staging,
+                    run_id=this_run_id,
+                    tar_dir=tar_dir,
+                    local_prefixes=local_prefixes,
+                    remote_deps_dir=remote_deps_dir,
+                    extra_files=extra_files,
+                )
+            finally:
+                env_file.unlink(missing_ok=True)
 
     # Serialise submit per artifact: the reattach check is check-then-act on a
     # shared scheduler. Lock order is always submit -> ship.
