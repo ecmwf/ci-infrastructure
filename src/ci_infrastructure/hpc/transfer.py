@@ -212,7 +212,9 @@ def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> No
             f"mkdir -p {q_parent}",
             f"if [ -e {q_staging} ]; then mv {q_staging} {q_trash} 2>/dev/null || true; fi",
             f"rm -rf {q_trash} 2>/dev/null || true",
+            # Private: it may hold the sccache credentials.
             f"mkdir -p {q_staging}",
+            f"chmod 700 {q_staging}",
         ]
     )
     _run_remote(conn, ["bash", "-c", reset], what="Staging reset")
@@ -227,9 +229,11 @@ def ship_source(
     tar_dir: str,
     local_prefixes: Sequence[str] = (),
     remote_deps_dir: str | None = None,
+    extra_files: Sequence[tuple[str, str, int]] = (),
     dryrun: bool = False,
 ) -> None:
-    """Reset ``staging_dir``, ship the checkout and dep prefixes (to ``<remote_deps_dir>/<i>``), then the marker.
+    """Reset ``staging_dir``, ship the checkout, dep prefixes (to ``<remote_deps_dir>/<i>``) and ``extra_files``
+    (local path, path under staging, mode), then the marker.
 
     The marker comes last so the job never sees a partial copy.
     """
@@ -262,6 +266,11 @@ def ship_source(
                 tarball_suffix="",
                 local_tar_name=f"{run_id}.dep{index}.tgz",
             )
+    for local, rel, mode in extra_files:
+        remote = str(PurePosixPath(staging_dir) / rel)
+        _run_remote(conn, ["mkdir", "-p", str(PurePosixPath(remote).parent)], what=f"Remote mkdir for {rel}")
+        conn.sendfile(local, remote)
+        _run_remote(conn, ["chmod", f"{mode:o}", remote], what=f"Remote chmod of {rel}")
     _run_remote(conn, ["touch", _marker_path(staging_dir)], what="Transfer-complete marker")
     print(f"ship: done in {time.monotonic() - start:.0f}s")
 
