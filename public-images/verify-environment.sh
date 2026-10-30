@@ -171,6 +171,56 @@ expect_rust() {
   echo "rust: $(rustc --version), $(cargo --version)"
 }
 
+# The libraries release builds link (README "Release images"): build, link and run against each,
+# with the named gcc, as a release build finds them (default search paths, no flags of its own).
+expect_release() {
+  local cc="$1" cxx eigen_flags out
+  [ -n "$cc" ] || fail "'$variant' names release but no gcc to build with"
+  cxx="${cc/gcc/g++}"
+  cat >"$omp_tmp/release.c" <<'EOF'
+#include <bzlib.h>
+#include <libaec.h>
+#include <lz4.h>
+extern double ddot_(const int* n, const double* x, const int* incx, const double* y, const int* incy);
+extern void dgesv_(const int* n, const int* nrhs, double* a, const int* lda, int* ipiv, double* b,
+                   const int* ldb, int* info);
+int main(void) {
+    struct aec_stream strm = {0};
+    int n = 1, one = 1, ipiv = 0, info = 0;
+    double x = 3, y = 5, a = 2, b = 4;
+    strm.bits_per_sample = 8;
+    strm.block_size = 16;
+    strm.rsi = 1;
+    if (aec_encode_init(&strm) != AEC_OK) return 1;
+    aec_encode_end(&strm);
+    if (!BZ2_bzlibVersion() || LZ4_versionNumber() <= 0) return 1;
+    if (ddot_(&n, &x, &one, &y, &one) != 15.0) return 1;
+    dgesv_(&n, &one, &a, &n, &ipiv, &b, &n, &info);
+    return info != 0 || b != 2.0;
+}
+EOF
+  if ! out="$("$cc" "$omp_tmp/release.c" -o "$omp_tmp/release.bin" -laec -lbz2 -llz4 -llapack -lblas 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    fail "$cc cannot build against libaec, bzip2, lz4, LAPACK and BLAS"
+  fi
+  "$omp_tmp/release.bin" || fail "the libaec/bzip2/lz4/LAPACK/BLAS program does not run"
+  printf '%s\n' '#include <Eigen/Dense>' \
+    'int main() { Eigen::Matrix2d m; m << 1, 2, 3, 4; return m.determinant() > -1.5; }' >"$omp_tmp/eigen.cxx"
+  eigen_flags="$(pkg-config --cflags eigen3 2>/dev/null)" || eigen_flags="-I/usr/include/eigen3"
+  # shellcheck disable=SC2086
+  if ! out="$("$cxx" $eigen_flags "$omp_tmp/eigen.cxx" -o "$omp_tmp/eigen.bin" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    fail "$cxx cannot build against Eigen ($eigen_flags)"
+  fi
+  "$omp_tmp/eigen.bin" || fail "the Eigen program does not run"
+  echo "release libraries: libaec, bzip2, lz4, LAPACK/BLAS, Eigen (${eigen_flags})"
+  # The packager, so a release build installs nothing at run time.
+  if command -v dnf >/dev/null; then
+    command -v rpmbuild >/dev/null || fail "rpmbuild is not on PATH"
+    echo "packager: $(rpmbuild --version | head -1)"
+  fi
+}
+
 variant=""
 [ "$mode" = image ] && variant="${DECLARES#*/}"
 declares_gcc=""
@@ -226,6 +276,7 @@ if [ "$mode" = image ]; then
                       expect_openmp gfortran f ;;
       openmpi)        expect_openmpi "${gnu_cc:-}" ;;
       rust[0-9]*)     expect_rust "${token#rust}" "${gnu_cc:-}" ;;
+      release)        expect_release "${gnu_cc:-}" ;;
     esac
   done
 fi
