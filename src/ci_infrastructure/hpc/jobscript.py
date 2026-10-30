@@ -10,6 +10,7 @@ the job waits for that marker, unpacks into node-local ``$TMPDIR`` and builds.
 
 from __future__ import annotations
 
+import functools
 import shlex
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -73,6 +74,11 @@ RELEASE_OVERLAY_MARKER: Final = "# ci-infrastructure: release overlay"
 
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
+
+#: The release overlay's blocks a repo recipe may still define in a release: its CMake flags (re-declared
+#: inside the overlay's configure), and how an image without rpmbuild gets it. Every other block an
+#: overlay template defines is release-owned (:func:`release_owned_blocks`).
+RELEASE_RECIPE_BLOCKS: Final = frozenset({"cmake_args", "packaging_tools"})
 
 #: Runner legs name their compilers in the compiler-input fields; the recipes read these.
 #: The binary a recipe calls: the leg's `*-compiler-binary`, else the compiler that identifies the
@@ -146,6 +152,85 @@ def job_template_environment(search_path: Path | None = None, *, release: bool =
     # For a single shell word only; a list of flags must stay unquoted.
     env.filters["quote"] = env.filters["sh"] = shlex.quote
     return env
+
+
+@functools.cache
+def release_owned_blocks() -> frozenset[str]:
+    """Every block a release overlay template (``templates/release/``) defines, but :data:`RELEASE_RECIPE_BLOCKS`.
+
+    A repo recipe defining one would replace what the release does there (configure, install, publish, the
+    HPC install test in ``verify``, ...), so a release render refuses it.
+    """
+    env = jinja2.Environment()
+    loader = jinja2.PackageLoader("ci_infrastructure", "templates/release")
+    names: set[str] = set()
+    for name in loader.list_templates():
+        source, _, _ = loader.get_source(env, name)
+        names |= {b.name for b in env.parse(source, name=name).find_all(jinja2.nodes.Block)}
+    return frozenset(names - RELEASE_RECIPE_BLOCKS)
+
+
+def _is_base_template(env: jinja2.Environment, name: str) -> bool:
+    """Whether ci-infrastructure's own loader serves ``name``: the name prefix alone would also match a repo file."""
+    loader = env.loader
+    if isinstance(loader, jinja2.ChoiceLoader):
+        loader = loader.loaders[0]
+    if not isinstance(loader, jinja2.PrefixLoader):
+        return False
+    try:
+        loader.get_source(env, name)
+    except jinja2.TemplateNotFound:
+        return False
+    return True
+
+
+def repo_template_blocks(template_source: str, *, template_name: str, env: jinja2.Environment) -> dict[str, list[str]]:
+    """Block name -> the repo templates defining it: the recipe and every repo template it references.
+
+    From the parsed templates (nested blocks too), not their rendering. Every ``extends``, ``include``,
+    ``import`` and ``from ... import`` is followed, wherever it sits (an included template may itself
+    extend ci-infrastructure's and override its blocks); only ci-infrastructure's own templates are not.
+    A template named by a computed expression is refused: it cannot be checked.
+    """
+    assert env.loader is not None
+    out: dict[str, list[str]] = {}
+    seen = {template_name}
+    pending = [(template_source, template_name)]
+    while pending:
+        source, name = pending.pop()
+        try:
+            ast = env.parse(source, filename=name)
+        except jinja2.TemplateSyntaxError as exc:
+            raise JobTemplateError(f"{name}:{exc.lineno}: {exc.message}") from exc
+        for block in ast.find_all(jinja2.nodes.Block):
+            out.setdefault(block.name, []).append(name)
+        for ref in jinja2.meta.find_referenced_templates(ast):
+            if ref is None:
+                raise JobTemplateError(
+                    f"{name}: extends/include/import names a template by a computed expression, which a "
+                    "release cannot check; name it literally"
+                )
+            if ref in seen or _is_base_template(env, ref):
+                continue
+            seen.add(ref)
+            try:
+                ref_source, _, _ = env.loader.get_source(env, ref)
+            except jinja2.TemplateNotFound as exc:
+                raise JobTemplateError(f"{name}: template {ref!r} not found") from exc
+            pending.append((ref_source, ref))
+    return out
+
+
+def check_release_recipe(template_source: str, *, template_name: str, env: jinja2.Environment) -> None:
+    """Refuse a repo recipe (or a repo template it extends, includes or imports) that defines a release-owned block."""
+    blocks = repo_template_blocks(template_source, template_name=template_name, env=env)
+    if owned := sorted(set(blocks) & release_owned_blocks()):
+        where = "; ".join(f"{b!r} in {', '.join(sorted(set(blocks[b])))}" for b in owned)
+        raise JobTemplateError(
+            f"{template_name}: a release recipe defines the release-owned block(s) {where}. The release overlay "
+            "owns them (its configure, install, publish and install test must run as written), so a release "
+            f"recipe may define only {sorted(RELEASE_RECIPE_BLOCKS)}; move the rest into those, or out of the recipe"
+        )
 
 
 def build_template_context(leg: Mapping[str, Any], *, execution: Execution, artifact_name: str = "") -> dict[str, Any]:
@@ -304,6 +389,8 @@ def render_job_template(
     if release and not isinstance(leg[RELEASE_KEY], Mapping):
         raise JobTemplateError(f"{template_name}: the leg's {RELEASE_KEY} must be a table, got {leg[RELEASE_KEY]!r}")
     env = job_template_environment(search_path, release=release)
+    if release:
+        check_release_recipe(template_source, template_name=template_name, env=env)
     try:
         template = env.from_string(template_source)
         rendered = template.render(build_template_context(leg, execution=execution, artifact_name=artifact_name))

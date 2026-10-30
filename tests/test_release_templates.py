@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from release_fixtures import HPC_LEG, RECIPE, RPM_LEG, write_release_repo
+from release_fixtures import HPC_LEG, RECIPE, REPO_ROOT, RPM_LEG, write_release_repo
 
+from ci_infrastructure._github_api import Execution
 from ci_infrastructure.hpc import jobscript, orchestrate
 from ci_infrastructure.release import legs
 from ci_infrastructure.release.detect import ReleaseEvent
@@ -197,6 +198,151 @@ def test_a_recipe_that_bypasses_the_overlay_is_refused(tmp_path: Path) -> None:
     leg = _release_leg(tmp_path)
     with pytest.raises(jobscript.JobTemplateError, match="without the release overlay"):
         _render(leg, '{% extends "ci-infrastructure/cmake-runner.sh.j2" %}\n')
+
+
+_EXTENDS: Final = '{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}\n'
+ECKIT_CD_TEST_RECIPE: Final = REPO_ROOT.parent / "eckit-cd-test" / ".ci" / "build.sh.j2"
+
+
+def _lane_leg(tmp_path: Path, lane: str) -> dict[str, Any]:
+    return _hpc_leg(tmp_path) if lane == "hpc-atos" else _release_leg(tmp_path)
+
+
+def test_the_release_owned_blocks_are_what_the_overlay_defines() -> None:
+    assert jobscript.release_owned_blocks() == {
+        "setup",
+        "release_guard",
+        "preflight",
+        "configure",
+        "install",
+        "release_exclude",
+        "publish",
+        "build_meta",
+        "verify",
+    }
+    assert not jobscript.release_owned_blocks() & jobscript.RELEASE_RECIPE_BLOCKS
+
+
+@pytest.mark.parametrize("lane", ["runner", "hpc-atos"])
+@pytest.mark.parametrize("block", ["verify", "publish", "install", "setup", "preflight", "configure", "build_meta"])
+def test_a_recipe_overriding_a_release_owned_block_is_refused(tmp_path: Path, lane: str, block: str) -> None:
+    """Even with super(): what the overlay does there is not the recipe's to change in a release."""
+    recipe = RECIPE + f"{{% block {block} %}}{{{{ super() }}}}\necho skipped{{% endblock %}}\n"
+    with pytest.raises(jobscript.JobTemplateError, match=rf"release-owned block\(s\) '{block}' in build.sh.j2"):
+        _render(_lane_leg(tmp_path, lane), recipe, execution=lane)
+
+
+@pytest.mark.parametrize("lane", ["runner", "hpc-atos"])
+def test_a_release_owned_block_nested_in_an_allowed_one_is_refused(tmp_path: Path, lane: str) -> None:
+    recipe = _EXTENDS + "{% block cmake_args %}{% block verify %}{% endblock %}{% endblock %}\n"
+    with pytest.raises(jobscript.JobTemplateError, match="'verify'"):
+        _render(_lane_leg(tmp_path, lane), recipe, execution=lane)
+
+
+@pytest.mark.parametrize("lane", ["runner", "hpc-atos"])
+def test_a_release_owned_block_in_a_repo_base_template_is_refused(tmp_path: Path, lane: str) -> None:
+    """The repo's whole extends chain is checked, up to ci-infrastructure's own templates."""
+    repo = tmp_path / "ci"
+    repo.mkdir()
+    (repo / "base.sh.j2").write_text(_EXTENDS + "{% block publish %}{% endblock %}\n")
+    with pytest.raises(jobscript.JobTemplateError, match="'publish' in base.sh.j2"):
+        jobscript.render_job_template(
+            template_source='{% extends "base.sh.j2" %}\n',
+            template_name="build.sh.j2",
+            leg=_lane_leg(tmp_path, lane),
+            execution=lane,  # type: ignore[arg-type]
+            search_path=repo,
+        )
+
+
+_OVERRIDING: Final = (
+    _EXTENDS
+    + "{% block verify %}echo SKIPPED-VERIFY{% endblock %}\n"
+    + "{% block install %}echo SKIPPED-INSTALL{% endblock %}\n"
+)
+_LANES: Final[tuple[Execution, ...]] = ("runner", "hpc-atos")
+
+
+def _render_in_repo(tmp_path: Path, lane: Execution, recipe: str, repo: Path) -> str:
+    return jobscript.render_job_template(
+        template_source=recipe,
+        template_name="build.sh.j2",
+        leg=_lane_leg(tmp_path, lane),
+        execution=lane,
+        search_path=repo,
+    )
+
+
+@pytest.mark.parametrize("lane", _LANES)
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        '{% include "evil.sh.j2" %}\n',
+        _EXTENDS + '{% block cmake_args %}{% include "evil.sh.j2" %}{% endblock %}\n',
+        '{% import "evil.sh.j2" as evil %}' + _EXTENDS,
+        '{% from "evil.sh.j2" import x %}' + _EXTENDS,
+    ],
+    ids=["top-level-include", "include-in-cmake_args", "import", "from-import"],
+)
+def test_a_release_owned_block_in_an_included_repo_template_is_refused(
+    tmp_path: Path, lane: Execution, recipe: str
+) -> None:
+    """An included template that extends ci-infrastructure's renders its own overrides: a bypass otherwise."""
+    repo = tmp_path / "ci"
+    repo.mkdir()
+    (repo / "evil.sh.j2").write_text(_OVERRIDING)
+    with pytest.raises(jobscript.JobTemplateError, match="'install' in evil.sh.j2; 'verify' in evil.sh.j2"):
+        _render_in_repo(tmp_path, lane, recipe, repo)
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_a_repo_template_under_the_base_prefix_is_still_checked(tmp_path: Path, lane: Execution) -> None:
+    """A repo file at ci-infrastructure/<name> that the shared templates lack is the repo's, not exempt."""
+    repo = tmp_path / "ci"
+    (repo / "ci-infrastructure").mkdir(parents=True)
+    (repo / "ci-infrastructure" / "evil.sh.j2").write_text(_OVERRIDING)
+    with pytest.raises(jobscript.JobTemplateError, match="'verify' in ci-infrastructure/evil.sh.j2"):
+        _render_in_repo(tmp_path, lane, '{% include "ci-infrastructure/evil.sh.j2" %}\n', repo)
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_a_computed_template_name_is_refused_in_a_release(tmp_path: Path, lane: Execution) -> None:
+    recipe = _EXTENDS + "{% block cmake_args %}{% include name_of_it %}{% endblock %}\n"
+    with pytest.raises(jobscript.JobTemplateError, match="computed expression"):
+        _render_in_repo(tmp_path, lane, recipe, tmp_path)
+
+
+@pytest.mark.parametrize("lane", _LANES)
+def test_an_included_repo_snippet_without_owned_blocks_still_renders(tmp_path: Path, lane: Execution) -> None:
+    repo = tmp_path / "ci"
+    repo.mkdir()
+    (repo / "flags.j2").write_text("-DFROM_SNIPPET=ON \\\n")
+    recipe = _EXTENDS + '{% block cmake_args %}{% include "flags.j2" %}{% endblock %}\n'
+    assert "-DFROM_SNIPPET=ON \\" in _render_in_repo(tmp_path, lane, recipe, repo).splitlines()
+
+
+@pytest.mark.parametrize("lane", ["runner", "hpc-atos"])
+def test_the_allowed_blocks_and_ci_only_blocks_still_render(tmp_path: Path, lane: str) -> None:
+    recipe = RECIPE + "{% block packaging_tools %}echo own-rpmbuild{% endblock %}\n"
+    recipe += "{% block set_environment %}echo own-env{% endblock %}\n"
+    out = _render(_lane_leg(tmp_path, lane), recipe, execution=lane)
+    assert "echo own-env" in out
+    assert ("echo own-rpmbuild" in out) == (lane == "runner")  # packaging_tools is the runner overlay's
+
+
+def test_a_ci_leg_may_still_override_any_block() -> None:
+    recipe = _EXTENDS + "{% block install %}echo own-install{% endblock %}\n"
+    out = jobscript.render_job_template(
+        template_source=recipe, template_name="build.sh.j2", leg=_CI_LEG, execution="runner"
+    )
+    assert "echo own-install" in out
+
+
+@pytest.mark.skipif(not ECKIT_CD_TEST_RECIPE.is_file(), reason="eckit-cd-test is not checked out beside this repo")
+@pytest.mark.parametrize("lane", ["runner", "hpc-atos"])
+def test_eckit_cd_tests_recipe_passes(tmp_path: Path, lane: str) -> None:
+    out = _render(_lane_leg(tmp_path, lane), ECKIT_CD_TEST_RECIPE.read_text(), execution=lane)
+    assert jobscript.RELEASE_OVERLAY_MARKER in out.splitlines()
 
 
 def test_an_rpm_leg_renders_nothing_on_the_hpc_lane(tmp_path: Path) -> None:
