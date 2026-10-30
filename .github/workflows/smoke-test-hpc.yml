@@ -104,9 +104,10 @@ jobs:
           echo "hpc-e2e $GITHUB_RUN_ID" > "$src/hello.txt"
           echo deep > "$src/nested/deep.txt"
 
+      # Not ./actions: hpc-submit pods share no volume with the job container, so the runner never sees the checkout.
       - name: Push the tree up to the cluster
         id: push
-        uses: ./actions/push-hpc-tree
+        uses: ecmwf/ci-infrastructure/actions/push-hpc-tree@main
         with:
           site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
@@ -116,7 +117,7 @@ jobs:
 
       - name: Fetch the tree back from the cluster
         id: fetch
-        uses: ./actions/fetch-hpc-tree
+        uses: ecmwf/ci-infrastructure/actions/fetch-hpc-tree@main
         with:
           site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
@@ -132,7 +133,7 @@ jobs:
 
       # Last step, no `if:`: a failed run leaves the tree for debugging.
       - name: Remove the cluster scratch dir
-        uses: ./actions/remove-hpc-tree
+        uses: ecmwf/ci-infrastructure/actions/remove-hpc-tree@main
         with:
           site: ${{ matrix.site }}
           troika-user: ${{ secrets.HPC_CI_SSH_USER }}
