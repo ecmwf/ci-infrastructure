@@ -22,6 +22,11 @@ Checks, in order; the first that fails refuses the release:
     credential from ``$NEXUS_AUTH`` (the publish credential: the test repositories are private and
     answer an anonymous probe 403); a refused authenticated probe fails the gate. Without it the
     probe is anonymous, warned about, and a private repository's legs are always rebuilt.
+    An HPC module leg is not probed here (the gate cannot reach the cluster): its build job looks
+    at the leg's prefix first and skips the build when this release is installed there already.
+
+The hpc-module legs install under ``hpc_root`` (default ``$SCRATCH/cd-v3-dry-run``, expanded on
+the cluster), never ``/usr/local/apps`` without allow-production.
 """
 
 from __future__ import annotations
@@ -74,6 +79,7 @@ class GateInputs:
     kill_switch: str = ""
     kill_switch_reason: str = ""
     allow_refs: Sequence[str] = ()
+    hpc_root: str = legs.DEFAULT_HPC_ROOT
     #: ``user:token`` for the Nexus probe; never in an output or the provenance.
     nexus_auth: str = field(default="", repr=False)
 
@@ -295,14 +301,14 @@ def run_gate(
     if problems := check_cd_workflow.check(workflow_file, allow_refs=inp.allow_refs):
         raise ReleaseError("the release workflow breaks the rules check-cd-workflow enforces:\n" + "\n".join(problems))
     # 9
-    expanded = legs.expand(rm, inp.kinds, event, allow_production=inp.allow_production)
+    expanded = legs.expand(rm, inp.kinds, event, allow_production=inp.allow_production, hpc_root=inp.hpc_root)
     # 10
     if event.mode != MODE_REHEARSAL:
         probe = probe or _probe(inp.nexus_read_urls, inp.allow_production, inp.nexus_auth)
         for kind_legs in expanded.values():
             for i, leg in enumerate(kind_legs):
                 ctx = leg["_release"]
-                if ctx["channel"] == "rpm" and probe(ctx["nexus_target"], ctx["filename"]) == "present":
+                if ctx["channel"] == legs.CHANNEL_RPM and probe(ctx["nexus_target"], ctx["filename"]) == "present":
                     print(f"::notice::{ctx['filename']} is on Nexus already: leg {ctx['leg_id']} is not rebuilt")
                     kind_legs[i] = {**leg, "_release": {**ctx, "state": legs.STATE_ALREADY_PUBLISHED}}
     provenance = {
@@ -319,8 +325,17 @@ def run_gate(
         "ci_run": {"id": ci_run.get("id"), "url": ci_run.get("html_url"), "event": ci_run.get("event")},
         "source_deps": deps,
         "containers": sorted(
-            {str(leg.get(k)) for kl in expanded.values() for leg in kl for k in ("container", "install-test-image")}
+            {
+                str(leg[k])
+                for kl in expanded.values()
+                for leg in kl
+                for k in ("container", "install-test-image")
+                if leg.get(k)
+            }
         ),
+        "hpc_root": inp.hpc_root
+        if any(leg["_release"]["channel"] == legs.CHANNEL_HPC_MODULE for kl in expanded.values() for leg in kl)
+        else None,
         "legs": {
             kind: [{"leg_id": leg["_release"]["leg_id"], "state": leg["_release"]["state"]} for leg in kl]
             for kind, kl in expanded.items()
@@ -337,6 +352,12 @@ def run_gate(
 @click.option("--ci-wait-seconds", type=int, default=7200, show_default=True)
 @click.option("--poll-seconds", type=int, default=60, show_default=True)
 @click.option("--allow-ref", "allow_refs", multiple=True, help="As check-cd-workflow --allow-ref.")
+@click.option(
+    "--hpc-root",
+    default=legs.DEFAULT_HPC_ROOT,
+    show_default=True,
+    help="Where the hpc-module legs install ({root} of their install-prefix); expanded on the cluster.",
+)
 def main(
     manifest: Path,
     kinds: str,
@@ -345,6 +366,7 @@ def main(
     ci_wait_seconds: int,
     poll_seconds: int,
     allow_refs: tuple[str, ...],
+    hpc_root: str,
 ) -> None:
     """Run the release gate for this workflow run (GITHUB_* env); write its outputs.
 
@@ -376,6 +398,7 @@ def main(
         kill_switch=env.get("CD_KILL_SWITCH", ""),
         kill_switch_reason=env.get("CD_KILL_SWITCH_REASON", ""),
         allow_refs=allow_refs,
+        hpc_root=hpc_root,
         nexus_auth=nexus_auth,
     )
     token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")

@@ -8,7 +8,7 @@ description: >
   push, or a same-repo pull request labelled approved-for-cd for a rehearsal), tag against
   VERSION, CI passed on exactly this commit (waiting while it runs), the tag not moved, each
   source dep's release-ref a tag or SHA, the workflow passing check-cd-workflow, and which
-  release legs are on Nexus already. Run it in a job that checked out github.sha.
+  rpm legs are on Nexus already (an HPC leg's build job looks at its prefix itself). Run it in a job that checked out github.sha.
   See docs/configuring/releases.rst. Reads CD_KILL_SWITCH and CD_KILL_SWITCH_REASON from the
   step's env, and NEXUS_AUTH (user:token, as upload-nexus takes it; never an input): the
   credential the Nexus probe authenticates with, since a private repository answers an
@@ -38,6 +38,12 @@ inputs:
     description: 'A ci-infrastructure ref the workflow may use besides a commit SHA (check-cd-workflow --allow-ref).'
     required: false
     default: ''
+  hpc-root:
+    description: >
+      Where hpc-module legs install: the {root} of their install-prefix, expanded on the cluster.
+      $SCRATCH/..., $HOME/... or absolute; /usr/local/apps only with allow-production.
+    required: false
+    default: '$SCRATCH/cd-v3-dry-run'
   token:
     description: 'Token to read workflow runs and the deps'' tags; defaults to github.token.'
     required: false
@@ -87,6 +93,7 @@ runs:
         NEXUS_READ_URLS: ${{ inputs.nexus-read-urls }}
         CI_WAIT_SECONDS: ${{ inputs.ci-wait-seconds }}
         ALLOW_REF: ${{ inputs.allow-ref }}
+        HPC_ROOT: ${{ inputs.hpc-root }}
         CI_RELEASE_ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
@@ -95,7 +102,8 @@ runs:
           echo "::add-mask::${NEXUS_AUTH#*:}"
         fi
         args=(--manifest "$GITHUB_WORKSPACE/$MANIFEST" --kinds "$KINDS"
-              --nexus-read-urls "$NEXUS_READ_URLS" --ci-wait-seconds "$CI_WAIT_SECONDS")
+              --nexus-read-urls "$NEXUS_READ_URLS" --ci-wait-seconds "$CI_WAIT_SECONDS"
+              --hpc-root "$HPC_ROOT")
         if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi
         if [ -n "$ALLOW_REF" ]; then args+=(--allow-ref "$ALLOW_REF"); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.release gate "${args[@]}"

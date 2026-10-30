@@ -44,6 +44,33 @@ c-flags = "-fno-fast-math"
 cxx-flags = "-fno-fast-math"
 """
 
+#: The [matrix.release-hpc] kind with one leg, shaped like eckit-cd-test's; append it to RPM_LEG.
+HPC_LEG: Final = """
+[matrix.release-hpc]
+packages = ["pkg-release"]
+publishes = false
+execution = "hpc-atos"
+
+[[matrix.release-hpc.include]]
+job-script = "./.ci/build.sh.j2"
+channel = "hpc-module"
+platform = "hpc-atos-gnu"
+cxx-compiler = "g++-8"
+c-compiler-binary = "gcc"
+cxx-compiler-binary = "g++"
+runs-on = "hpc-submit"
+container = "eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"
+site = "hpc-batch"
+modules = ["load prgenv/gnu", "unload gcc", "load gcc/old", "load cmake"]
+time = "01:00:00"
+build-type = "Release"
+options = "release"
+install-prefix = "{root}/{package}/{version}/GNU/8.5"
+install-test-command = "bin/pkg-version"
+c-flags = "-fno-fast-math"
+cxx-flags = "-fno-fast-math"
+"""
+
 MANIFEST: Final = """
 [package]
 name = "pkg"
