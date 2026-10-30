@@ -68,7 +68,7 @@ env:
 
 jobs:
   discover:
-    # Not ubuntu-slim: imagetools needs docker. Anonymous reads, so no secrets.
+    # Anonymous reads, so no secrets.
     runs-on: ubuntu-latest
     outputs:
       base-matrix: ${{ steps.d.outputs.base-matrix }}
@@ -189,7 +189,7 @@ jobs:
             && (cancelled()
                 || (needs.build-base.result == 'success'
                     && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped'))) }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - name: Delete this run's bases from the scratch registry
         env:
@@ -219,7 +219,7 @@ jobs:
             && needs.discover.outputs.base-in-set == 'true'
             && needs.build-base.result == 'success'
             && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       # github.token cannot dispatch into another repo.
       - id: mint

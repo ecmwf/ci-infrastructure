@@ -33,7 +33,7 @@ A small Python project could test itself with the following ``.github/workflows/
 
    jobs:
      pre-commit:
-       runs-on: ubuntu-slim
+       runs-on: ubuntu-latest
        steps:
          - uses: actions/checkout@v6
          - uses: ecmwf/ci-infrastructure/actions/pre-commit@main
@@ -53,8 +53,10 @@ A small Python project could test itself with the following ``.github/workflows/
 
 The jobs run in sequence, and the tests start only if :action:`pre-commit` succeeded.
 It rejects formatting and lint errors cheaply,
-on the small GitHub-hosted ``ubuntu-slim`` runner,
+on a GitHub-hosted runner,
 before the actual tests occupy a larger runner.
+A public repository uses ``ubuntu-latest``, which is free there and has four CPUs;
+elsewhere the single-CPU ``ubuntu-slim`` costs less.
 The tests run on the self-hosted ``arc-runner-normal`` group inside one of the official images;
 the runner groups and images to choose from are listed in :doc:`../reference/runners`.
 :action:`announce-image` comes first in every job with a ``container:``,
@@ -86,7 +88,7 @@ It is a commit status that :action:`ci-result` posts from the last job of ``ci.y
        name: collect results
        if: always()
        needs: [test]
-       runs-on: ubuntu-slim
+       runs-on: ubuntu-latest
        permissions:
          statuses: write
        steps:
@@ -131,7 +133,7 @@ They report a second status, ``ci-result/hpc-atos``, which a repository with HPC
    jobs:
      hpc-gate:
        needs: ci-approval
-       runs-on: ubuntu-slim
+       runs-on: ubuntu-latest
        permissions:
          pull-requests: read
        outputs:
@@ -157,7 +159,7 @@ They report a second status, ``ci-result/hpc-atos``, which a repository with HPC
        name: collect HPC results
        if: always() && needs.hpc-gate.outputs.run == 'true'
        needs: [hpc-gate, wait-build-hpc, build-hpc]
-       runs-on: ubuntu-slim
+       runs-on: ubuntu-latest
        permissions:
          statuses: write
        steps:
@@ -216,7 +218,7 @@ For that, ``ci.yml`` needs three changes:
      ci-approval:
        # A fork's own pull_request run does nothing; ci-fork.yml runs this workflow instead.
        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-       runs-on: ubuntu-slim
+       runs-on: ubuntu-latest
        permissions:
          pull-requests: write
        steps:

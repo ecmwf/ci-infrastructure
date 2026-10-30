@@ -4,11 +4,20 @@
 
 name: Run pre-commit
 description: >
-  Run `pre-commit run --all-files`. Needs Python and a prior checkout.
-  pre-commit/action still runs on Node 20; FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:
-  'true' in the job's env silences GitHub's deprecation warning.
+  Run `pre-commit run --all-files`, with pre-commit from uv and the hook
+  environments cached per config. Needs a prior checkout.
 
 runs:
   using: composite
   steps:
-    - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      with:
+        enable-cache: false
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-uv|${{ runner.os }}-${{ runner.arch }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
+    - shell: bash
+      run: uvx pre-commit run --show-diff-on-failure --color=always --all-files
