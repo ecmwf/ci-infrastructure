@@ -275,7 +275,7 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
     ),
     (
         "publish job misses a build job",
-        _set("jobs.publish-nexus.needs", ["ci-approval", "gate", "build-rpm"]),
+        _set("jobs.publish-nexus.needs", ["ci-approval", "gate", "build-rpm", "build-hpc"]),
         "I7: publish job 'publish-nexus' must need every build and test job; missing ['itest-rpm']",
     ),
     (
@@ -318,6 +318,69 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         lambda d: _steps(d, "build-rpm")[3]["with"].pop("overwrite"),
         "job 'build-rpm': actions/upload-artifact must set `overwrite: true`",
     ),
+    # The HPC jobs: build-hpc builds; promote-hpc and sync-tag-hpc are publish jobs by their actions.
+    (
+        "HPC build into the artifact store",
+        lambda d: _steps(d, "build-hpc")[2]["with"].update({"publish": "true"}),
+        "I4: job 'build-hpc' step 3: build-on-hpc must set `publish: archive`",
+    ),
+    (
+        "HPC build with the default publish",
+        lambda d: _steps(d, "build-hpc")[2]["with"].pop("publish"),
+        "I4: job 'build-hpc' step 3: build-on-hpc must set `publish: archive`",
+    ),
+    (
+        "HPC upload without overwrite",
+        lambda d: _steps(d, "build-hpc")[3]["with"].pop("overwrite"),
+        "job 'build-hpc': actions/upload-artifact must set `overwrite: true`",
+    ),
+    (
+        "promote before the HPC build",
+        _set("jobs.promote-hpc.needs", ["ci-approval", "gate", "build-rpm", "itest-rpm"]),
+        "I7: publish job 'promote-hpc' must need every build and test job; missing ['build-hpc']",
+    ),
+    (
+        "promote with a plain if",
+        _set("jobs.promote-hpc.if", "needs.gate.outputs.publish == 'true'"),
+        "I7: publish job 'promote-hpc' must run `if:",
+    ),
+    (
+        "sync-tag with a plain if",
+        _set("jobs.sync-tag-hpc.if", "always()"),
+        "I7: publish job 'sync-tag-hpc' must run `if:",
+    ),
+    ("run step in promote", _add_run_step("promote-hpc", "ls release"), "I6: publish job 'promote-hpc' has a `run:`"),
+    ("run step in sync-tag", _add_run_step("sync-tag-hpc", "true"), "I6: publish job 'sync-tag-hpc' has a `run:`"),
+    (
+        "checkout in promote",
+        lambda d: _steps(d, "promote-hpc").insert(0, dict(_steps(d, "build-hpc")[0])),
+        "I6: publish job 'promote-hpc' uses 'actions/checkout",
+    ),
+    (
+        "promote off an ECMWF runner",
+        _set("jobs.promote-hpc.runs-on", "ubuntu-latest"),
+        "I6: publish job 'promote-hpc' runs-on 'ubuntu-latest'",
+    ),
+    (
+        "promote in a third-party image",
+        _set("jobs.promote-hpc.container", {"image": "docker.io/ubuntu:24.04"}),
+        "I6: publish job 'promote-hpc': a container must come from eccr.ecmwf.int/",
+    ),
+    (
+        "matrix in promote's name",
+        _set("jobs.promote-hpc.name", "promote-hpc (${{ matrix._release.leg_id }})"),
+        "I7: publish job 'promote-hpc': its `name` uses `matrix`",
+    ),
+    (
+        "promote building",
+        lambda d: _steps(d, "promote-hpc").append(dict(_steps(d, "build-hpc")[2])),
+        "I6: publish job 'promote-hpc' uses 'ecmwf/ci-infrastructure/actions/build-on-hpc",
+    ),
+    (
+        "sync-tag without a direct gate need",
+        _set("jobs.sync-tag-hpc.needs", ["ci-approval", "build-rpm", "itest-rpm", "build-hpc", "promote-hpc"]),
+        "I10: job 'sync-tag-hpc' must list 'gate' in `needs:` directly",
+    ),
 ]
 
 
@@ -327,6 +390,19 @@ def test_each_rule_catches_its_violation(mutate: Callable[[Doc], None], expected
     mutate(doc)
     problems = _problems(doc)
     assert any(expected in p for p in problems), problems
+
+
+def test_the_hpc_publish_jobs_hold_only_the_ci_hpc_user() -> None:
+    """promote-hpc and sync-tag-hpc are publish jobs by the actions they run, with no environment."""
+    doc = _sample()
+    for name in ("promote-hpc", "sync-tag-hpc"):
+        assert check_cd_workflow._is_publish_job(doc["jobs"][name]) and "environment" not in doc["jobs"][name]
+        assert check_cd_workflow._secrets_of(doc["jobs"][name]) <= {
+            "HPC_CI_SSH_USER",
+            "ECCR_PULL_ROBOT_NAME",
+            "ECCR_PULL_ROBOT_TOKEN",
+        }
+    assert not check_cd_workflow._is_publish_job(doc["jobs"]["build-hpc"])
 
 
 def test_a_branch_ref_needs_allow_ref() -> None:

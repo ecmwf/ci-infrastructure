@@ -13,7 +13,8 @@ it holds a publish credential. It needs no GitHub environment.
 - I1: runs on tag pushes, `pull_request: [labeled]`, `workflow_dispatch` or `schedule` only.
 - I2: workflow permissions at most `contents: read`.
 - I3: a `concurrency` group on the ref, never cancelled in progress.
-- I4: no `secrets: inherit`, no workflow `env`, nothing of the CI caches (AWS_*, ARTIFACT_S3_*, SCCACHE_*).
+- I4: no `secrets: inherit`, no workflow `env`, nothing of the CI caches (AWS_*, ARTIFACT_S3_*, SCCACHE_*);
+  build-on-hpc only with `publish: archive`, which never touches the artifact store.
 - I5: a secret outside the CI allowlist only in a publish job; in the release gate's job also a
   test Nexus URL secret (`NEXUS_TEST_REPO_URL_*`, a URL, not a credential), and the test Nexus
   credential `NEXUS_TEST_REPO_UPLOAD_TOKEN` only as the release-gate step's `env: NEXUS_AUTH`
@@ -80,6 +81,9 @@ BUILD_ACTIONS: Final = (
     "ecmwf/ci-infrastructure/actions/build-on-hpc",
     "ecmwf/ci-infrastructure/actions/release-source-deps",
 )
+BUILD_ON_HPC: Final = "ecmwf/ci-infrastructure/actions/build-on-hpc"
+#: build-on-hpc's publish mode of a release: the job's archive, never the CI artifact store.
+BUILD_ON_HPC_PUBLISH: Final = "archive"
 
 #: `env` names a publish job may not set: they change how its processes start.
 _STARTUP_ENV: Final = re.compile(
@@ -220,6 +224,14 @@ def _check_inherit_env_caches(doc: dict[Any, Any], jobs: dict[str, dict[str, Any
     hits = sorted({m.group(1) for s in _strings(doc) for m in _CACHE_NAMES.finditer(s)})
     if hits:
         out.append(f"I4: no CI cache or artifact store in a release: {hits}")
+    for name, job in jobs.items():
+        for i, step in enumerate(_steps(job)):
+            publish = (step.get("with") or {}).get("publish") if isinstance(step.get("with"), dict) else None
+            if _action(_uses(step)) == BUILD_ON_HPC and publish != BUILD_ON_HPC_PUBLISH:
+                out.append(
+                    f"I4: job {name!r} step {i + 1}: build-on-hpc must set `publish: {BUILD_ON_HPC_PUBLISH}` "
+                    "(the release archive; any other mode uses the CI artifact store)"
+                )
     return out
 
 

@@ -4,8 +4,9 @@
 
 name: Record a release (CD v3, experimental)
 description: >
-  Collect the gate's provenance and every leg's build-meta, install test and Nexus receipt
-  from the downloaded artifacts into release-record.json and a step-summary table. Fails when
+  Collect the gate's provenance and every leg's build-meta, install test and publish receipt
+  (Nexus upload, or HPC promote) from the downloaded artifacts into release-record.json and a
+  step-summary table. Fails when
   an expected piece is missing: the release is partial, and "Re-run failed jobs" completes it.
   See docs/configuring/releases.rst.
 

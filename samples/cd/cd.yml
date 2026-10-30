@@ -2,15 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CD v3 (experimental): a release workflow for the rpm channel; see docs/configuring/releases.rst.
-# Copy it to .github/workflows/cd-v3.yml, replace `my-package` with the repo's [package].name, and
-# keep its shape: check-cd-workflow (a pre-commit hook, and the release gate) enforces it.
+# CD v3 (experimental): a release workflow for the rpm and HPC module channels; see
+# docs/configuring/releases.rst. Copy it to .github/workflows/cd-v3.yml, replace `my-package` with
+# the repo's [package].name, drop the jobs of a channel the manifest has no release kind for (and
+# that kind from the gate's kinds and every needs:), and keep its shape: check-cd-workflow (a
+# pre-commit hook, and the release gate) enforces it.
 #
 # A pull request labelled approved-for-cd rehearses: everything but the publish jobs.
-# A pushed X.Y.Z-rcN tag publishes to test Nexus from the publish job, with the org secrets v2
-# uses: NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; in the publish job, and in the release-gate
-# step, whose probe for what is published needs it: the repository is private and refuses an
-# anonymous probe) and NEXUS_TEST_REPO_URL_ROCKY_9 (the upload repository URL, also probed).
+# A pushed X.Y.Z-rcN tag publishes:
+# - the rpm to test Nexus from publish-nexus, with the org secrets v2 uses:
+#   NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; in the publish job, and in the release-gate step,
+#   whose probe for what is published needs it: the repository is private and refuses an
+#   anonymous probe) and NEXUS_TEST_REPO_URL_ROCKY_9 (the upload repository URL, also probed);
+# - the HPC module, built and install-tested in one SLURM job (build-hpc), into a dry-run root
+#   ($SCRATCH/cd-v3-dry-run, the gate's hpc-root) from promote-hpc, then sync-tag-hpc prints
+#   the module sync/tag commands it would run. Both run as the CI's HPC user
+#   (secrets.HPC_CI_SSH_USER) with its runner settings (vars.HPC_CI_WORK_DIR,
+#   vars.HPC_CI_REMOTE_WORK_DIR); their locks and kill switch (DISABLED) are under $HOME/.cd-locks
+#   there. Optional repo variables tune the locks: CD_V3_LOCK_TIMEOUT (s), CD_V3_LOCK_STALE_MIN,
+#   CD_V3_SYNC_HOLD_SECONDS (contention tests).
 #
 # While the release actions live on ci-infrastructure's feature/cd-v3 they are used at that
 # ref (check-cd-workflow --allow-ref feature/cd-v3); a commit SHA once they are on main.
@@ -69,7 +79,7 @@ jobs:
           # Authenticates the Nexus probe; only this step of the gate job may name it.
           NEXUS_AUTH: ${{ github.event_name == 'push' && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}
         with:
-          kinds: release-rpm
+          kinds: release-rpm,release-hpc
           nexus-read-urls: '{"rocky-9": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}'
           ci-wait-seconds: ${{ vars.ARTIFACT_WAIT_TIMEOUT || '7200' }}
           allow-ref: feature/cd-v3
@@ -152,8 +162,58 @@ jobs:
           retention-days: 30
           overwrite: true
 
+  # The HPC module: built, tested and install-tested (a fresh unpack, modules purged and reloaded,
+  # no LD_LIBRARY_PATH) in one SLURM job. A publishing run first looks at the leg's prefix on the
+  # cluster: a release installed there already is not rebuilt (its artifact holds state.json
+  # only), and promote-hpc records it.
+  build-hpc:
+    needs: [ci-approval, gate]
+    if: fromJSON(needs.gate.outputs.json)['release-hpc'].include[0] != null
+    name: build-hpc (${{ matrix._release.leg_id }})
+    runs-on: ${{ matrix['runs-on'] }}
+    container:
+      image: ${{ matrix.container }}
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.gate.outputs.json)['release-hpc'] }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - id: deps
+        uses: ecmwf/ci-infrastructure/actions/release-source-deps@feature/cd-v3
+        with:
+          deps: ${{ needs.gate.outputs.source-deps }}
+      - id: build
+        uses: ecmwf/ci-infrastructure/actions/build-on-hpc@feature/cd-v3
+        with:
+          site: ${{ matrix.site }}
+          job-script: ${{ matrix.job-script }}
+          matrix-leg: ${{ toJSON(matrix) }}
+          # Package, tag, leg and commit: also the SLURM job name, so a run of rc2 never
+          # reattaches to an rc1 job, nor shares its install dir.
+          artifact-name: ${{ matrix._release.job_key }}
+          cmake-prefix-path: ${{ steps.deps.outputs.cmake-prefix-path }}
+          work-dir: ${{ vars.HPC_CI_WORK_DIR }}
+          remote-work-dir: ${{ vars.HPC_CI_REMOTE_WORK_DIR }}
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          publish: archive
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-${{ matrix._release.job_key }}
+          path: ${{ steps.build.outputs.archive-dir }}
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
   publish-nexus:
-    needs: [ci-approval, gate, build-rpm, itest-rpm]
+    needs: [ci-approval, gate, build-rpm, itest-rpm, build-hpc]
     if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
     # A static name: GitHub does not evaluate the name of a matrix job it skips (every
     # rehearsal) and shows `publish-nexus (${{ matrix._release.leg_id }})` literally; any
@@ -203,8 +263,68 @@ jobs:
           retention-days: 90
           overwrite: true
 
+  # Unpacks the tested archive into the leg's prefix under the dry-run root, once, read-only,
+  # under a per-package lock; the same bytes again are a no-op, other bytes fail.
+  promote-hpc:
+    needs: [ci-approval, gate, build-rpm, itest-rpm, build-hpc]
+    if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
+    name: promote-hpc
+    runs-on: hpc-submit
+    container:
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.gate.outputs.json)['release-hpc'] }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ matrix._release.job_key }}
+          path: release
+      - uses: ecmwf/ci-infrastructure/actions/hpc-promote@feature/cd-v3
+        with:
+          site: ${{ matrix.site }}
+          matrix-leg: ${{ toJSON(matrix) }}
+          archive-dir: release
+          receipt-dir: receipt
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          lock-timeout: ${{ vars.CD_V3_LOCK_TIMEOUT || '1800' }}
+          lock-stale-minutes: ${{ vars.CD_V3_LOCK_STALE_MIN || '120' }}
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: receipt-${{ matrix._release.job_key }}
+          path: receipt
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  # Dry run: under the one cross-repo modulemgr lock, checks each promoted prefix and prints the
+  # sync/tag commands; runs none of them.
+  sync-tag-hpc:
+    needs: [ci-approval, gate, build-rpm, itest-rpm, build-hpc, promote-hpc]
+    if: ${{ !cancelled() && needs.gate.outputs.publish == 'true' && !contains(needs.*.result, 'failure') }}
+    name: sync-tag-hpc
+    runs-on: hpc-submit
+    container:
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    permissions: {}
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/hpc-sync-tag@feature/cd-v3
+        with:
+          legs: ${{ needs.gate.outputs.json }}
+          troika-user: ${{ secrets.HPC_CI_SSH_USER }}
+          lock-timeout: ${{ vars.CD_V3_LOCK_TIMEOUT || '1800' }}
+          lock-stale-minutes: ${{ vars.CD_V3_LOCK_STALE_MIN || '120' }}
+          hold-seconds: ${{ vars.CD_V3_SYNC_HOLD_SECONDS || '0' }}
+
   record:
-    needs: [ci-approval, gate, build-rpm, itest-rpm, publish-nexus]
+    needs: [ci-approval, gate, build-rpm, itest-rpm, build-hpc, publish-nexus, promote-hpc, sync-tag-hpc]
     if: ${{ always() && needs.gate.result == 'success' }}
     runs-on: arc-runner-normal
     container:
