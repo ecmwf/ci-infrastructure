@@ -50,6 +50,9 @@ outputs:
   pull-request:
     description: "The pull request's number when it was looked up (a fork or a dispatch), else ''."
     value: ${{ steps.ctx.outputs.pull-request }}
+  hpc-only:
+    description: "'true' when the CI run that completed re-ran only from its hpc-gate job, after a successful attempt."
+    value: ${{ steps.ctx.outputs.hpc-only }}
 
 runs:
   using: composite
@@ -194,6 +197,23 @@ runs:
 
         if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then head_branch="$base_ref"; fi
 
+        # hpc-label-decision re-runs a successful CI from hpc-gate on: resolve keeps its earlier attempt.
+        hpc_only=false
+        attempt=$(jq -r '.workflow_run.run_attempt // 1' "$GITHUB_EVENT_PATH" 2>/dev/null || echo 1)
+        if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ] && [ -n "$conclusion" ] && [ "$attempt" -gt 1 ]; then
+          run_id=$(jq -r '.workflow_run.id' "$GITHUB_EVENT_PATH")
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+            > "$tmp/dispatch-context-attempt-jobs.json"
+          previous=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/attempts/$((attempt - 1))" --jq '.conclusion // ""')
+          if [ "$previous" = success ] && jq -e --argjson a "$attempt" '
+               def job($n): first(.jobs[] | select(.name == $n or (.name | endswith(" / " + $n))));
+               job("hpc-gate").run_attempt == $a and job("resolve").run_attempt < $a' \
+               "$tmp/dispatch-context-attempt-jobs.json" >/dev/null 2>&1; then
+            hpc_only=true
+            why="$why; attempt ${attempt} re-ran only the HPC legs"
+          fi
+        fi
+
         {
           echo "head-sha=$head_sha"
           echo "head-branch=$head_branch"
@@ -201,5 +221,6 @@ runs:
           echo "ci-url=$url"
           echo "ci-summary=$summary"
           echo "pull-request=$pull_request"
+          echo "hpc-only=$hpc_only"
         } >> "$GITHUB_OUTPUT"
         echo "Dispatch context: $why"

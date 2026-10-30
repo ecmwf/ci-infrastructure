@@ -10,6 +10,9 @@ and feeds the action `toJSON(needs)`. Its own check run is `collect results`, so
 fork's skipped pull_request run never stands in for the status ci-fork.yml posts.
 Which jobs it needs is up to the repo; a failure propagates as a skip, which
 counts as failed.
+
+A repo with HPC legs may collect them in a second job, `collect-result-hpc`, which
+posts `ci-result/hpc-atos` and runs only when actions/hpc-gate lets them run.
 """
 
 from __future__ import annotations
@@ -23,6 +26,9 @@ import yaml
 JOB = "ci-result"
 # The job's own check run must not pass for the status, nor vary per repo.
 JOB_NAME = "collect results"
+HPC_JOB = "collect-result-hpc"
+HPC_JOB_NAME = "collect HPC results"
+HPC_CONTEXT = "ci-result/hpc-atos"
 # Remote (consumers) and local (ci-infrastructure itself) spellings.
 ACTIONS = ("ecmwf/ci-infrastructure/actions/ci-result@", "./actions/ci-result")
 NEEDS_INPUT = "${{ toJSON(needs) }}"
@@ -35,14 +41,36 @@ def _needs(job: dict[str, Any]) -> set[str]:
     return {raw} if isinstance(raw, str) else {str(n) for n in raw} if isinstance(raw, list) else set()
 
 
-def _uses_action(job: dict[str, Any]) -> bool:
+def _uses_action(job: dict[str, Any], context: str) -> bool:
     for step in job.get("steps") or []:
         if not isinstance(step, dict) or not str(step.get("uses", "")).startswith(ACTIONS):
             continue
         with_block = step.get("with")
-        if isinstance(with_block, dict) and "".join(str(with_block.get("needs", "")).split()) == _SQUASHED_INPUT:
+        if (
+            isinstance(with_block, dict)
+            and "".join(str(with_block.get("needs", "")).split()) == _SQUASHED_INPUT
+            and with_block.get("context", JOB) == context
+        ):
             return True
     return False
+
+
+def _check_hpc(workflow: Path, job: dict[str, Any], permissions: Any) -> list[str]:
+    problems = []
+    if "always()" not in str(job.get("if", "")):
+        problems.append(f"{workflow}: job {HPC_JOB!r} must run `if: always() && ...`, or a failed job skips it")
+    if not _uses_action(job, HPC_CONTEXT):
+        problems.append(
+            f"{workflow}: job {HPC_JOB!r} must use {ACTIONS[0]}main with `needs: {NEEDS_INPUT}` "
+            f"and `context: {HPC_CONTEXT}`"
+        )
+    if job.get("name") != HPC_JOB_NAME:
+        problems.append(f"{workflow}: job {HPC_JOB!r} needs `name: {HPC_JOB_NAME}`")
+    if not (isinstance(permissions, dict) and permissions.get("statuses") == "write"):
+        problems.append(f"{workflow}: job {HPC_JOB!r} needs `permissions: statuses: write` to post {HPC_CONTEXT!r}")
+    if not _needs(job):
+        problems.append(f"{workflow}: job {HPC_JOB!r} needs no job, so it checks nothing")
+    return problems
 
 
 def check(workflow: Path) -> list[str]:
@@ -61,7 +89,7 @@ def check(workflow: Path) -> list[str]:
         problems.append(
             f"{workflow}: job {JOB!r} must run `if: always()`, or a failed job skips it and it reports success"
         )
-    if not _uses_action(job):
+    if not _uses_action(job, JOB):
         problems.append(f"{workflow}: job {JOB!r} must use {ACTIONS[0]}main with `needs: {NEEDS_INPUT}`")
 
     if job.get("name") != JOB_NAME:
@@ -71,6 +99,9 @@ def check(workflow: Path) -> list[str]:
         problems.append(f"{workflow}: job {JOB!r} needs `permissions: statuses: write` to post {JOB!r}")
     if not _needs(job):
         problems.append(f"{workflow}: job {JOB!r} needs no job, so it checks nothing")
+    if HPC_JOB in jobs:
+        hpc = jobs[HPC_JOB]
+        problems.extend(_check_hpc(workflow, hpc, hpc.get("permissions", doc.get("permissions"))))
     return problems
 
 

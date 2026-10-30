@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Gate the HPC legs on a label
+description: >
+  Decide whether this run's HPC legs run: always outside a pull request, and on
+  one only if it carries `label`. Gate the HPC jobs on the output `run`. Posts
+  no status: the collecting ci-result job reports the legs, and
+  hpc-label-decision handles the labels. That workflow starts the legs for a
+  label added later by re-running this job, so the labels are read live, not
+  from the event a re-run keeps. Never fails for a missing label. Needs jq and
+  gh.
+
+inputs:
+  label:
+    description: 'Label that lets the HPC legs run on a pull request.'
+    required: false
+    default: 'run-hpc-ci'
+  token:
+    description: 'Token with pull-requests:read. Defaults to github.token.'
+    required: false
+    default: ''
+
+outputs:
+  run:
+    description: "'true' if the HPC legs run, else 'false'."
+    value: ${{ steps.gate.outputs.run }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        LABEL_INPUT: ${{ inputs.label }}
+        GH_TOKEN: ${{ inputs.token || github.token }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${LABEL_INPUT:-}" ]; then
+          echo "::error title=HPC gate::input 'label' is required and was empty." >&2
+          exit 1
+        fi
+
+        decide() {
+          echo "run=$1" >> "$GITHUB_OUTPUT"
+          echo "HPC legs run: $1 ($2)"
+        }
+
+        pr_number="$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH:-/dev/null}" 2>/dev/null || true)"
+        if [ -z "$pr_number" ]; then
+          decide true "not a pull request"
+          exit 0
+        fi
+
+        if ! labels="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" --jq '.[].name')"; then
+          echo "::error title=HPC gate::could not read the labels of #${pr_number}; check this job's token." >&2
+          exit 1
+        fi
+        if grep -qxF -- "$LABEL_INPUT" <<< "$labels"; then
+          decide true "labelled $LABEL_INPUT"
+        else
+          decide false "not labelled $LABEL_INPUT"
+        fi

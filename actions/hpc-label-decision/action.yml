@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Act on a pull request's HPC labels
+description: >
+  On a label change (pull_request_target) or a completed CI run (workflow_run),
+  bring the pull request's HPC legs in line with its labels. With `label` and a
+  completed CI run that skipped them, re-run that run's hpc-gate job, which
+  re-runs the HPC jobs that need it; a run still going is handled on its
+  completion. Also set the status `context`: success with `opt-out-label` alone,
+  and the HPC result once the legs ran; with neither label nothing is posted.
+  Does nothing for a CI run without an hpc-gate job, or for a commit
+  that is no longer the head. Reads the labels and runs live, not from code of
+  the pull request. Needs bash, jq and gh.
+
+inputs:
+  label:
+    description: 'Label that lets the HPC legs run on a pull request.'
+    required: false
+    default: 'run-hpc-ci'
+  opt-out-label:
+    description: 'Label that deliberately skips them.'
+    required: false
+    default: 'hpc-ci-not-needed'
+  context:
+    description: 'Commit status context the HPC legs report under.'
+    required: false
+    default: 'ci-result/hpc-atos'
+  ci-workflow:
+    description: 'File name of the CI workflow.'
+    required: false
+    default: 'ci.yml'
+  fork-ci-workflow:
+    description: "File name of the workflow running CI for approved fork pull requests; '' when the repo takes none."
+    required: false
+    default: ''
+  client-id:
+    description: "Client ID of the App that re-runs the job: unlike github.token, its re-run's completion starts the workflows that follow CI. '' re-runs with github.token."
+    required: false
+    default: ''
+  app-private-key:
+    description: 'Private key of that App.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: mint
+      if: inputs.client-id != ''
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        permission-actions: write
+
+    - id: decide
+      shell: bash
+      env:
+        # Statuses with github.token: the required checks expect GitHub Actions to post them.
+        GH_TOKEN: ${{ github.token }}
+        RERUN_TOKEN: ${{ steps.mint.outputs.token || github.token }}
+        LABEL_INPUT: ${{ inputs.label }}
+        OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
+        CONTEXT_INPUT: ${{ inputs.context }}
+        CI_WORKFLOW_INPUT: ${{ inputs.ci-workflow }}
+        FORK_CI_WORKFLOW_INPUT: ${{ inputs.fork-ci-workflow }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        for var in LABEL_INPUT OPT_OUT_INPUT CONTEXT_INPUT CI_WORKFLOW_INPUT; do
+          if [ -z "${!var:-}" ]; then
+            echo "::error title=HPC label decision::input '${var%_INPUT}' is required and was empty." >&2
+            exit 1
+          fi
+        done
+        tmp="${RUNNER_TEMP:-/tmp}"
+        event="$GITHUB_EVENT_PATH"
+        repo="$GITHUB_REPOSITORY"
+
+        run_id=""
+        run_sha=""
+        case "${GITHUB_EVENT_NAME:-}" in
+          pull_request_target)
+            pr="$(jq -r '.pull_request.number' "$event")"
+            ;;
+          workflow_run)
+            run_id="$(jq -r '.workflow_run.id' "$event")"
+            path="$(jq -r '.workflow_run.path // ""' "$event")"
+            if [ -n "${FORK_CI_WORKFLOW_INPUT:-}" ] && [ "${path##*/}" = "$FORK_CI_WORKFLOW_INPUT" ]; then
+              # A pull_request_target run carries the base branch's commit; its run-name the PR's.
+              title="$(jq -r '.workflow_run.display_title // ""' "$event")"
+              if ! [[ "$title" =~ \#([0-9]+)\ @\ ([0-9a-f]{40})$ ]]; then
+                echo "Run-name '${title}' names no pull request; nothing to do"
+                exit 0
+              fi
+              pr="${BASH_REMATCH[1]}"
+              run_sha="${BASH_REMATCH[2]}"
+            else
+              pr="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$event")"
+              run_sha="$(jq -r '.workflow_run.head_sha' "$event")"
+            fi
+            if [ -z "$pr" ]; then
+              echo "CI of no pull request (a push); nothing to do"
+              exit 0
+            fi
+            ;;
+          *)
+            echo "::error title=HPC label decision::runs on pull_request_target or workflow_run, not '${GITHUB_EVENT_NAME:-}'." >&2
+            exit 1
+            ;;
+        esac
+
+        gh api "repos/${repo}/pulls/${pr}" > "$tmp/hpc-pr.json"
+        sha="$(jq -r '.head.sha' "$tmp/hpc-pr.json")"
+        head_repo="$(jq -r '.head.repo.full_name // ""' "$tmp/hpc-pr.json")"
+        if [ "$(jq -r '.state' "$tmp/hpc-pr.json")" != open ] || { [ -n "$run_sha" ] && [ "$run_sha" != "$sha" ]; }; then
+          echo "#${pr} is closed or has moved on from that commit; nothing to do"
+          exit 0
+        fi
+        labels="$(jq -r '.labels[].name' "$tmp/hpc-pr.json")"
+        has() { grep -qxF -- "$1" <<< "$labels"; }
+
+        if [ -z "$run_id" ]; then
+          if [ "$head_repo" = "$repo" ]; then
+            run_id="$(gh api "repos/${repo}/actions/workflows/${CI_WORKFLOW_INPUT}/runs?head_sha=${sha}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')"
+          elif [ -n "${FORK_CI_WORKFLOW_INPUT:-}" ]; then
+            run_id="$(gh api "repos/${repo}/actions/workflows/${FORK_CI_WORKFLOW_INPUT}/runs?event=pull_request_target&per_page=100" \
+              --jq "first(.workflow_runs[] | select(.display_title | endswith(\"#${pr} @ ${sha}\")) | .id) // empty")"
+          fi
+        fi
+        if [ -z "$run_id" ]; then
+          echo "No CI run for ${sha} yet; its hpc-gate job reads the labels"
+          exit 0
+        fi
+        gh api "repos/${repo}/actions/runs/${run_id}" > "$tmp/hpc-run.json"
+        gh api "repos/${repo}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" > "$tmp/hpc-jobs.json"
+        # A fork's jobs are named `<caller job> / <job>`.
+        job() { jq -c --arg n "$1" 'first(.jobs[] | select(.name == $n or (.name | endswith(" / " + $n)))) // {}' "$tmp/hpc-jobs.json"; }
+        gate="$(job hpc-gate)"
+        collect="$(job "collect HPC results")"
+        if [ "$gate" = "{}" ]; then
+          echo "CI run ${run_id} has no hpc-gate job; nothing to do"
+          exit 0
+        fi
+        collected="$(jq -r '.conclusion // ""' <<< "$collect")"
+
+        post() {
+          gh api -X POST "/repos/${repo}/statuses/${sha}" \
+            -f state="$1" -f context="$CONTEXT_INPUT" -f target_url="$2" -f description="${3:0:140}" >/dev/null
+          echo "$CONTEXT_INPUT: $1, $3"
+        }
+
+        if has "$OPT_OUT_INPUT" && ! has "$LABEL_INPUT"; then
+          post success "$RUN_URL" "HPC CI not needed"
+        elif [ "$collected" = success ] || [ "$collected" = failure ]; then
+          # Labels changed after the legs ran: their result stands.
+          post "$collected" "$(jq -r '.html_url' <<< "$collect")" "HPC legs: ${collected}"
+        elif has "$LABEL_INPUT"; then
+          if [ "$(jq -r '.status' "$tmp/hpc-run.json")" != completed ]; then
+            echo "CI run ${run_id} is still going; on its completion this starts the HPC legs if it skipped them"
+          elif [ "$(jq -r '.conclusion' "$tmp/hpc-run.json")" = cancelled ]; then
+            echo "CI run ${run_id} was cancelled; push or re-run it"
+          elif [ "$(jq -r '.conclusion' <<< "$gate")" != success ] || [ "$(jq -r '.run_attempt' "$tmp/hpc-run.json")" -ge 5 ]; then
+            # Never loop on a gate that cannot pass.
+            echo "::warning title=HPC label decision::hpc-gate of CI run ${run_id} did not pass, or the run was re-run too often; re-run it by hand."
+          else
+            GH_TOKEN="$RERUN_TOKEN" gh api -X POST "repos/${repo}/actions/jobs/$(jq -r '.id' <<< "$gate")/rerun" >/dev/null
+            post pending "$(jq -r '.html_url' "$tmp/hpc-run.json")" "HPC legs requested"
+          fi
+        else
+          echo "Neither $LABEL_INPUT nor $OPT_OUT_INPUT; $CONTEXT_INPUT left as it is"
+        fi

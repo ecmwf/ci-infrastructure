@@ -10,7 +10,9 @@ description: >
   `<label>:<n>`, is pending until the dispatched lanes report; more than one level
   label is failure. Otherwise nothing is posted: an undecided pull request's
   statuses stay "Expected", and a finished result is never reset. A lane without
-  consumers (`no-consumers`) is success on every event. Payload-only, so safe
+  consumers (`no-consumers`) is success on every event. An HPC lane
+  (`hpc-contexts`) also needs `hpc-label`: with `hpc-opt-out-label` instead it is
+  success, and with neither a run decision posts nothing to it. Payload-only, so safe
   under pull_request_target.
 
 inputs:
@@ -18,6 +20,18 @@ inputs:
     description: 'Space-separated statuses the decision goes to, e.g. `downstream/runner downstream/hpc-atos`.'
     required: false
     default: ''
+  hpc-contexts:
+    description: 'Space-separated statuses of HPC lanes, which follow the decision only with `hpc-label`: `hpc-opt-out-label` alone is success, and a run decision without either posts nothing.'
+    required: false
+    default: ''
+  hpc-label:
+    description: "Label that runs CI's HPC legs, without which an HPC lane has no artifacts to build against."
+    required: false
+    default: 'run-hpc-ci'
+  hpc-opt-out-label:
+    description: 'Label that deliberately skips the HPC legs.'
+    required: false
+    default: 'hpc-ci-not-needed'
   no-consumers:
     description: 'Space-separated statuses of lanes without consumers, posted as success whatever the labels.'
     required: false
@@ -48,6 +62,9 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         CONTEXTS_INPUT: ${{ inputs.contexts }}
+        HPC_CONTEXTS_INPUT: ${{ inputs.hpc-contexts }}
+        HPC_LABEL_INPUT: ${{ inputs.hpc-label }}
+        HPC_OPT_OUT_INPUT: ${{ inputs.hpc-opt-out-label }}
         NO_CONSUMERS_INPUT: ${{ inputs.no-consumers }}
         LABEL_INPUT: ${{ inputs.label }}
         OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
@@ -55,8 +72,8 @@ runs:
       run: |
         set -euo pipefail
 
-        if [ -z "${CONTEXTS_INPUT:-}${NO_CONSUMERS_INPUT:-}" ]; then
-          echo "::error title=Downstream decision::inputs 'contexts' and 'no-consumers' are both empty." >&2
+        if [ -z "${CONTEXTS_INPUT:-}${HPC_CONTEXTS_INPUT:-}${NO_CONSUMERS_INPUT:-}" ]; then
+          echo "::error title=Downstream decision::inputs 'contexts', 'hpc-contexts' and 'no-consumers' are all empty." >&2
           exit 1
         fi
         for var in LABEL_INPUT OPT_OUT_INPUT; do
@@ -125,7 +142,24 @@ runs:
             -f target_url="$RUN_URL" \
             -f description="$3"
         }
+        labelled() { jq -e --arg l "$1" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; }
         for context in ${NO_CONSUMERS_INPUT:-}; do post "$context" success "No downstream consumers"; done
+        for context in ${HPC_CONTEXTS_INPUT:-}; do
+          if [ "$decision" = skip ]; then
+            post "$context" "$state" "$description"
+          elif labelled "$HPC_LABEL_INPUT"; then
+            if [ "$decision" = run ] && [ "$(jq -r '.action // empty' "$event")" = labeled ] &&
+               [ "$(jq -r '.label.name // empty' "$event")" = "$HPC_LABEL_INPUT" ]; then
+              post "$context" pending "Downstream CI waits for the HPC legs"
+            elif [ -n "$state" ]; then
+              post "$context" "$state" "$description"
+            fi
+          elif labelled "$HPC_OPT_OUT_INPUT"; then
+            post "$context" success "HPC CI not needed"
+          elif [ "$decision" != run ] && [ -n "$state" ]; then
+            post "$context" "$state" "$description"
+          fi
+        done
         if [ -z "$state" ]; then
           echo "Downstream decision: $decision; statuses left as they are"
           exit 0

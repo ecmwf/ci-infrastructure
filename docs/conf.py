@@ -96,6 +96,8 @@ ghactions_groups = [
         "Decide whether a pull request may run CI or downstream CI, and whether it may merge.",
         [
             "ci-result",
+            "hpc-gate",
+            "hpc-label-decision",
             "require-ci-approval",
             "require-label-decision",
             "post-downstream-decision",

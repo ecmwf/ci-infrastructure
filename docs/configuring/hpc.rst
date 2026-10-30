@@ -140,3 +140,5 @@ To see what a leg produces, without a cluster, use :doc:`../reference/cli/ci-inf
 The ``ci.yml`` runs :action:`build-on-hpc` in place of the build step,
 and its log shows every rendered job script before it is submitted.
 The blocks, the fields a template may use and their defaults are in :doc:`../reference/hpc`.
+On a pull request the HPC legs run only with the label ``run-hpc-ci``, unless ``hpc-ci-not-needed`` waives them, and report their own required status;
+see :doc:`ci-yml` for the jobs this takes.
