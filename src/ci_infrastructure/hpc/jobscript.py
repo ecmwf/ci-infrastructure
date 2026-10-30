@@ -41,7 +41,7 @@ def sentinel_regex(jid: int | str) -> str:
 DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
 #: Fixed names (not per run), so a reattaching runner can check and re-drop them.
-SOURCE_TARBALL_NAME: Final = "source.tgz"
+SOURCE_TARBALL_NAME: Final = "source.tar.zst"
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 INSTALL_ARCHIVE_SUFFIX: Final = "install.tar.zst"
@@ -363,7 +363,7 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
         "done",
         f'export CI_SOURCE_DIR="${{TMPDIR:-/tmp}}/ci-src-{run_id}"',
         'mkdir -p "$CI_SOURCE_DIR"',
-        f'tar -xzf "{tarball}" -C "$CI_SOURCE_DIR"',
+        f'zstd -dc "{tarball}" | tar -xf - -C "$CI_SOURCE_DIR"',
         'cd "$CI_SOURCE_DIR"',
     ]
 
