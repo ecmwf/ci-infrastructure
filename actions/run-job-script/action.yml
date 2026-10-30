@@ -62,7 +62,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Set up sccache
-      if: env.SCCACHE_BUCKET != '' && fromJSON(inputs.matrix-leg).sccache != false
+      if: env.SCCACHE_BUCKET != '' && toJSON(fromJSON(inputs.matrix-leg).sccache) != 'false'
       uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
       with:
         cache-key-suffix: ${{ fromJSON(inputs.matrix-leg).cxx-compiler }}-${{ fromJSON(inputs.matrix-leg).build-type }}${{ fromJSON(inputs.matrix-leg).options && format('-{0}', fromJSON(inputs.matrix-leg).options) || '' }}
