@@ -133,7 +133,7 @@ for repo in "$@"; do
 
   # 15368 = GitHub Actions, which posts all of them.
   status_checks=$(jq -n --argjson c "$checks" '{type: "required_status_checks", parameters: {
-    strict_required_status_checks_policy: true, do_not_enforce_on_create: true,
+    strict_required_status_checks_policy: false, do_not_enforce_on_create: true,
     required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
 
   bodies=(
