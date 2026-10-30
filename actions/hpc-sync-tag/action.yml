@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Sync and tag HPC release modules (CD v3, experimental, dry run)
+description: >
+  For each HPC module of the release (the gate's json, kind release-hpc), under the one
+  cross-repo lock <lock-root>/modulemgr (owner, heartbeat, stale recovery; modulemgr and
+  software-sync are not safe to run concurrently): check that promote installed it, and print
+  the modulemgr / software-sync commands v2 would run (sync to the other clusters; tag a
+  release, never a prerelease). Milestone 1 runs none of them. <lock-root>/DISABLED stops it.
+  hold-seconds keeps the lock longer, for contention tests. See docs/configuring/releases.rst.
+
+inputs:
+  legs:
+    description: 'The release gate''s json output.'
+    required: true
+  kind:
+    description: 'The release kind of the HPC legs.'
+    required: false
+    default: 'release-hpc'
+  site:
+    description: 'Troika site; empty uses the one the legs name.'
+    required: false
+    default: ''
+  troika-user:
+    description: 'Remote user for troika. Empty lets ssh/troika decide.'
+    required: false
+    default: ''
+  troika-config:
+    description: 'Path to a troika config. Empty uses the one packaged with ci-infrastructure.'
+    required: false
+    default: ''
+  lock-root:
+    description: 'Cluster dir of the release locks (modulemgr) and the DISABLED kill switch; expanded on the cluster.'
+    required: false
+    default: '$HOME/.cd-locks'
+  lock-timeout:
+    description: 'Seconds to wait for the modulemgr lock.'
+    required: false
+    default: '1800'
+  lock-stale-minutes:
+    description: 'A lock unchanged this long (its holder''s heartbeat stopped) is broken, its owner printed.'
+    required: false
+    default: '120'
+  hold-seconds:
+    description: 'Hold the lock this many seconds more: for lock contention tests.'
+    required: false
+    default: '0'
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - shell: bash
+      env:
+        LEGS: ${{ inputs.legs }}
+        KIND: ${{ inputs.kind }}
+        SITE: ${{ inputs.site }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        LOCK_ROOT: ${{ inputs.lock-root }}
+        LOCK_TIMEOUT: ${{ inputs.lock-timeout }}
+        LOCK_STALE_MINUTES: ${{ inputs.lock-stale-minutes }}
+        HOLD_SECONDS: ${{ inputs.hold-seconds }}
+      run: |
+        set -euo pipefail
+        # Verbatim: '$HOME/...' is expanded on the cluster, not here.
+        args=(--legs "$LEGS" --kind "$KIND" --lock-root "$LOCK_ROOT" --lock-timeout "$LOCK_TIMEOUT"
+              --lock-stale-minutes "$LOCK_STALE_MINUTES" --hold-seconds "$HOLD_SECONDS")
+        if [ -n "$SITE" ]; then args+=(--site "$SITE"); fi
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc sync-tag "${args[@]}"

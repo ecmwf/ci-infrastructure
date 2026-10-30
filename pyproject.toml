@@ -58,7 +58,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "ci_infrastructure" = ["certs/*.pem", "templates/*.j2", "templates/release/*.j2"]
-"ci_infrastructure.hpc" = ["troika-config.yml"]
+"ci_infrastructure.hpc" = ["troika-config.yml", "module-clusters.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

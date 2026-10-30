@@ -9,6 +9,11 @@
 ``submit-wait`` is idempotent: a cache hit skips, an active job with the same
 name is reattached, otherwise a fresh job is submitted. The output sentinel,
 not ``squeue``, is the verdict; ``squeue`` is only a slow liveness guard.
+
+With ``--fetch-archive`` (build-on-hpc ``publish: archive``, a release's hpc-module leg) there is no
+artifact store at all: the job's archive and its sidecars are fetched, never unpacked, and checked
+against the install test the job ran on them. A publishing release first looks at the leg's prefix
+on the cluster: when this release is installed there already, nothing is built.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import os
 import random
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,7 +38,9 @@ import click
 from .. import s3_store
 from .._errors import CIError
 from .._github_api import EXECUTION_HPC_ATOS, write_outputs
-from . import jobscript, transfer
+from ..release import ReleaseError
+from ..release.legs import check_install_prefix
+from . import jobscript, promote, release_tree, sync_tag, transfer
 from .site import SlurmSiteLike, ensure_batch_site, load_site, resolve_remote_path
 
 ACTIVE_STATES: Final = frozenset(
@@ -90,6 +98,22 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
         )
     except jobscript.JobTemplateError as exc:
         raise CIError(str(exc)) from exc
+
+
+def release_leg_for_cluster(conn: Any, matrix_leg: str) -> tuple[str, dict[str, Any]]:
+    """The leg with its release prefix expanded on the cluster (``$SCRATCH/...``): the job script gets
+    an absolute path and needs no variable of the login shell. Refuses a production prefix."""
+    leg = json.loads(matrix_leg)
+    ctx = release_tree.release_context(leg)
+    prefix = resolve_remote_path(conn, str(ctx["prefix"]))
+    try:
+        check_install_prefix(prefix)
+    except ReleaseError as exc:
+        raise CIError(f"the release prefix {ctx['prefix']} is {prefix} on the cluster: {exc}") from exc
+    if prefix != ctx["prefix"]:
+        print(f"submit-wait: release prefix {ctx['prefix']} -> {prefix}")
+    ctx |= {"prefix": prefix, "prefix_sh": shlex.quote(prefix)}
+    return json.dumps({**leg, "_release": ctx}), ctx
 
 
 def write_job_script(path: Path, rendered: str) -> None:
@@ -524,6 +548,13 @@ def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
     default=False,
     help="Test-only: run the job for its pass/fail, skip the artifact cache check and fetch no install tree.",
 )
+@click.option(
+    "--fetch-archive",
+    "fetch_archive",
+    default="",
+    help="A release (hpc-module leg): no artifact store; fetch the job's archive and sidecars into this "
+    "runner-local dir, unpacked never, checked against the job's install test.",
+)
 def submit_wait(
     site_name: str,
     troika_config: str | None,
@@ -540,6 +571,7 @@ def submit_wait(
     cmake_prefix_path: str,
     dryrun: bool,
     no_publish: bool,
+    fetch_archive: str,
 ) -> None:
     if run_id and not _SAFE_RUN_ID.fullmatch(run_id):
         raise CIError(
@@ -550,10 +582,19 @@ def submit_wait(
 
     packages = batch_packages(matrix_leg)
     batch = "true" if packages else "false"
+    archive_dir = Path(fetch_archive) if fetch_archive else None
+    release_ctx: dict[str, Any] = {}
+    if archive_dir is not None:
+        if no_publish:
+            raise CIError("--fetch-archive and --no-publish exclude each other")
+        if packages:
+            raise CIError("--fetch-archive builds one release package; a kind that publishes several is refused")
+        release_ctx = release_tree.release_context(matrix_leg)
 
     def cache_hit() -> bool:
         names = list(packages.values()) or [artifact_name]
-        if dryrun or no_publish or not all(s3_store.object_exists(n) for n in names):
+        # A release never touches the artifact store.
+        if archive_dir is not None or dryrun or no_publish or not all(s3_store.object_exists(n) for n in names):
             return False
         print(f"submit-wait: {', '.join(repr(n) for n in names)} already in the store — skipping build (cache hit).")
         write_outputs({"install-path": local_install_path, "cache-hit": "true", "batch": batch})
@@ -574,6 +615,31 @@ def submit_wait(
 
     resolved_work_dir = _resolve_reported("submit-wait", site._connection, remote_work_dir)
     paths = RemotePaths.derive(resolved_work_dir, artifact_name)
+
+    if archive_dir is not None:
+        shutil.rmtree(archive_dir, ignore_errors=True)
+        archive_dir.mkdir(parents=True)
+        matrix_leg, release_ctx = release_leg_for_cluster(site._connection, matrix_leg)
+        if release_ctx["mode"] != "rehearsal":
+            state, installed = release_tree.probe_prefix(site._connection, release_ctx["prefix"], release_ctx)
+            if state == release_tree.STATE_ALREADY_PUBLISHED and installed is not None:
+                print(
+                    f"::notice::{release_ctx['prefix']} holds this release already (sha256 {installed.get('sha256')}): "
+                    "not rebuilt; promote records it"
+                )
+                release_tree.write_already_published(archive_dir, installed)
+                write_outputs(
+                    {
+                        "install-path": "",
+                        "cache-hit": "false",
+                        "batch": batch,
+                        "archive-dir": str(archive_dir),
+                        "archive-sha256": str(installed.get("sha256") or ""),
+                        "release-state": state,
+                    }
+                )
+                return
+        recipe = resolve_recipe(repo_script, matrix_leg=matrix_leg, artifact_name=artifact_name)
 
     ships_source = bool(source_dir and run_id)
     if ships_source:
@@ -679,6 +745,28 @@ def submit_wait(
     # A timed-out wait leaves the job running.
     if ships_source and verdict != "TIMEOUT":
         drop_staging(site._connection, paths, run_id=run_id)
+
+    if verdict == "SUCCESS" and archive_dir is not None:
+        print(f"submit-wait: job {jid} finished successfully. Fetching the release archive...")
+        build = release_tree.fetch_archive(
+            site._connection, remote_install_dir=paths.install, local_dir=archive_dir, ctx=release_ctx
+        )
+        try:
+            site._connection.getfile(paths.output, archive_dir / release_tree.BUILD_LOG)
+        except Exception as exc:
+            print(f"::warning::submit-wait: could not fetch the job log {paths.output}: {exc}")
+        print(f"submit-wait: {build.archive} (sha256 {build.sha256}), its install test passed in the job")
+        write_outputs(
+            {
+                "install-path": "",
+                "cache-hit": "false",
+                "batch": batch,
+                "archive-dir": str(archive_dir),
+                "archive-sha256": build.sha256,
+                "release-state": release_tree.STATE_BUILD,
+            }
+        )
+        return
 
     if verdict == "SUCCESS":
         if no_publish:
@@ -853,6 +941,105 @@ def remove_tree_cmd(
         print(f"remove-tree: dry run; would remove {resolved}")
         return
     print(f"remove-tree: removed {resolved}")
+
+
+def _lock_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    for option in reversed(
+        [
+            click.option(
+                "--lock-root",
+                "lock_root",
+                default=promote.DEFAULT_LOCK_ROOT,
+                show_default=True,
+                help="Cluster dir of the release locks and the DISABLED kill switch; expanded on the cluster.",
+            ),
+            click.option(
+                "--lock-timeout", "lock_timeout", type=int, default=promote.DEFAULT_LOCK_TIMEOUT, show_default=True
+            ),
+            click.option(
+                "--lock-stale-minutes",
+                "lock_stale_minutes",
+                type=int,
+                default=promote.DEFAULT_LOCK_STALE_MINUTES,
+                show_default=True,
+                help="A lock unchanged this long (its holder's heartbeat stopped) is broken.",
+            ),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
+@main.command("promote", help="Promote a release's HPC build (build-on-hpc publish: archive) into its prefix.")
+@_site_options
+@click.option("--matrix-leg", "matrix_leg", required=True, help="The hpc-module release leg as JSON (with _release).")
+@click.option("--archive-dir", "archive_dir", required=True, help="The build's release-<job_key> artifact, downloaded.")
+@click.option("--receipt-dir", "receipt_dir", required=True, help="Where to write receipt-<leg_id>.json.")
+@_lock_options
+def promote_cmd(
+    site_name: str,
+    troika_config: str | None,
+    troika_user: str | None,
+    matrix_leg: str,
+    archive_dir: str,
+    receipt_dir: str,
+    lock_root: str,
+    lock_timeout: int,
+    lock_stale_minutes: int,
+) -> None:
+    site = load_site(site_name, config_path=troika_config, user=troika_user)
+    promote.run_promote(
+        site._connection,
+        matrix_leg=matrix_leg,
+        archive_dir=Path(archive_dir),
+        lock_root=lock_root,
+        receipt_dir=Path(receipt_dir),
+        timeout=lock_timeout,
+        stale_minutes=lock_stale_minutes,
+    )
+
+
+@main.command("sync-tag", help="Sync and tag a release's HPC modules: a dry run (lock, check, print the commands).")
+@click.option("--site", "site_name", default="", help="Troika site; default: the one the legs name.")
+@click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
+@click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
+@click.option("--legs", "legs_json", required=True, help="The release gate's json output.")
+@click.option("--kind", default="release-hpc", show_default=True, help="The release kind of the HPC legs.")
+@click.option(
+    "--hold-seconds",
+    "hold_seconds",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Hold the modulemgr lock this much longer: for lock contention tests.",
+)
+@_lock_options
+def sync_tag_cmd(
+    site_name: str,
+    troika_config: str | None,
+    troika_user: str | None,
+    legs_json: str,
+    kind: str,
+    hold_seconds: int,
+    lock_root: str,
+    lock_timeout: int,
+    lock_stale_minutes: int,
+) -> None:
+    if not sync_tag.modules_of(legs_json, kind):
+        print(f"sync-tag: no {kind} legs; nothing to do")
+        return
+    site_name = site_name or sync_tag.site_of(legs_json, kind)
+    site = load_site(site_name, config_path=troika_config, user=troika_user)
+    sync_tag.run_sync_tag(
+        site._connection,
+        legs_json=legs_json,
+        kind=kind,
+        site=site_name,
+        lock_root=lock_root,
+        timeout=lock_timeout,
+        stale_minutes=lock_stale_minutes,
+        hold_seconds=hold_seconds,
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Promote an HPC release (CD v3, experimental)
+description: >
+  Unpack a release's HPC build (the release-<job_key> artifact of build-on-hpc publish:
+  archive) into its prefix on the cluster, once: only the bytes the in-job install test
+  passed, checked safe to unpack, under a per-package lock (owner, heartbeat, stale
+  recovery), read-only, renamed into place atomically, with .release.json and build.log.
+  The same release with the same bytes is a no-op; other bytes or another release at the
+  prefix fail (an installed tree is never replaced). A build skipped as already installed is
+  only checked. <lock-root>/DISABLED on the cluster stops it. Writes receipt-<leg_id>.json.
+  Milestone 1 installs under the dry-run root the gate gave the leg; /usr/local/apps is
+  refused. See docs/configuring/releases.rst.
+
+inputs:
+  site:
+    description: 'Troika site to reach the cluster through (the leg''s site).'
+    required: true
+  matrix-leg:
+    description: 'The hpc-module release leg as JSON (toJSON(matrix)), with its _release context.'
+    required: true
+  archive-dir:
+    description: 'The downloaded release-<job_key> artifact.'
+    required: true
+  receipt-dir:
+    description: 'Where to write receipt-<leg_id>.json.'
+    required: true
+  troika-user:
+    description: 'Remote user for troika. Empty lets ssh/troika decide.'
+    required: false
+    default: ''
+  troika-config:
+    description: 'Path to a troika config. Empty uses the one packaged with ci-infrastructure.'
+    required: false
+    default: ''
+  lock-root:
+    description: 'Cluster dir of the release locks (promote/<package>) and the DISABLED kill switch; expanded on the cluster.'
+    required: false
+    default: '$HOME/.cd-locks'
+  lock-timeout:
+    description: 'Seconds to wait for the promote lock.'
+    required: false
+    default: '1800'
+  lock-stale-minutes:
+    description: 'A lock unchanged this long (its holder''s heartbeat stopped) is broken, its owner printed.'
+    required: false
+    default: '120'
+
+outputs:
+  receipt:
+    description: 'Path of receipt-<leg_id>.json.'
+    value: ${{ steps.promote.outputs.receipt }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
+
+    - id: promote
+      shell: bash
+      env:
+        SITE: ${{ inputs.site }}
+        MATRIX_LEG: ${{ inputs.matrix-leg }}
+        ARCHIVE_DIR: ${{ inputs.archive-dir }}
+        RECEIPT_DIR: ${{ inputs.receipt-dir }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        LOCK_ROOT: ${{ inputs.lock-root }}
+        LOCK_TIMEOUT: ${{ inputs.lock-timeout }}
+        LOCK_STALE_MINUTES: ${{ inputs.lock-stale-minutes }}
+      run: |
+        set -euo pipefail
+        # Verbatim: '$HOME/...' is expanded on the cluster, not here.
+        args=(--site "$SITE" --matrix-leg "$MATRIX_LEG" --archive-dir "$ARCHIVE_DIR" --receipt-dir "$RECEIPT_DIR"
+              --lock-root "$LOCK_ROOT" --lock-timeout "$LOCK_TIMEOUT" --lock-stale-minutes "$LOCK_STALE_MINUTES")
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc promote "${args[@]}"

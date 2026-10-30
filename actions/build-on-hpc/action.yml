@@ -6,7 +6,9 @@ name: Build a package on HPC via SLURM
 description: >
   Submit .ci/hpc/build-<toolchain>.sh via troika/SLURM, ship source and deps,
   wait, and publish the install tree to S3. Restartable: a cache hit skips, and
-  a running job with the same artifact name is reattached.
+  a running job with the same artifact name is reattached. With publish: archive
+  (a release's hpc-module leg, CD v3) there is no S3: the job's archive, its
+  sidecars and its in-job install test are fetched into archive-dir instead.
 
 inputs:
   site:
@@ -54,7 +56,12 @@ inputs:
     required: false
     default: ''
   publish:
-    description: '"false": run the job for pass/fail only; no cache check, fetch or publish.'
+    description: >
+      "true": publish the install tree to S3 (cache check first). "false": run the job for
+      pass/fail only; no cache check, fetch or publish. "archive": a release (the leg's
+      _release context, hpc-module channel): no S3 at all; fetch the job's archive and
+      sidecars, never unpacked, into archive-dir, checked against the job's install test.
+      A publishing release whose prefix on the cluster holds it already is not rebuilt.
     required: false
     default: 'true'
   s3-bucket:
@@ -92,6 +99,15 @@ outputs:
   batch:
     description: '"true" for a kind that publishes several packages: install-path holds one tree per package, which the caller publishes'
     value: ${{ steps.submit.outputs.batch }}
+  archive-dir:
+    description: 'publish: archive: the directory to upload as release-<job_key> (archive, SHA256SUMS, build-meta.json, itest-<leg_id>.json, modules.txt, build.log; or state.json alone when already installed)'
+    value: ${{ steps.submit.outputs.archive-dir }}
+  archive-sha256:
+    description: 'publish: archive: the archive''s sha256 (of what is installed, when already installed)'
+    value: ${{ steps.submit.outputs.archive-sha256 }}
+  release-state:
+    description: 'publish: archive: "build", or "already-published" when the prefix holds this release already'
+    value: ${{ steps.submit.outputs.release-state }}
 
 runs:
   using: composite
@@ -99,6 +115,7 @@ runs:
     - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@feature/cd-v3
 
     - name: Configure S3 artifact store
+      if: ${{ inputs.publish != 'archive' }}
       shell: bash
       env:
         S3_BUCKET_INPUT: ${{ inputs.s3-bucket }}
@@ -162,11 +179,16 @@ runs:
         if [ -n "$MATRIX_LEG" ]; then args+=(--matrix-leg "$MATRIX_LEG"); fi
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
-        if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
+        case "$PUBLISH" in
+          true) ;;
+          false) args+=(--no-publish) ;;
+          archive) args+=(--fetch-archive "$work_dir/release/$ARTIFACT_NAME") ;;
+          *) echo "::error::publish must be true, false or archive, got '$PUBLISH'" >&2; exit 1 ;;
+        esac
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
     - name: Publish
-      if: ${{ inputs.publish != 'false' && steps.submit.outputs.batch != 'true' }}
+      if: ${{ inputs.publish == 'true' && steps.submit.outputs.batch != 'true' }}
       uses: ecmwf/ci-infrastructure/actions/publish-artifact@feature/cd-v3
       with:
         install-path: ${{ steps.submit.outputs.install-path }}

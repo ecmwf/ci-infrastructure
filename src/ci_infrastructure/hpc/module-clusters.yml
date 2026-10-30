@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Which clusters a module installed on one is synced to, and tagged on: hpc-sync-tag (CD v3).
+# Ported unchanged from reusable-workflows v2 (cd-actions/hpc-sync-tag/config/hpc.yml); keyed by
+# troika site. A site not listed (e.g. hpc-batch) is treated as aa-batch, as v2 does.
+sync_clusters:
+  aa-batch: [ab, ac, ad]
+  ab-batch: [aa, ac, ad]
+  ac-batch: [aa, ab, ad]
+  ad-batch: [aa, ab, ac]
+  ag-batch: []
+  lumi: []
+
+tag_clusters:
+  aa-batch: [aa, ab, ac, ad]
+  ab-batch: [aa, ab, ac, ad]
+  ac-batch: [aa, ab, ac, ad]
+  ad-batch: [aa, ab, ac, ad]
+  ag-batch: [ag]
+  lumi: []

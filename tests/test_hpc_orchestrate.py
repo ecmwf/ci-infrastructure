@@ -401,7 +401,17 @@ def test_submit_wait_rejects_an_unsafe_run_id(tmp_path: Path, bad: str) -> None:
 
 def test_every_cli_command_dispatches_through_the_group() -> None:
     """The composite actions call these names verbatim."""
-    expected = {"submit-wait", "cancel", "gc", "fetch-tree", "push-tree", "remove-tree", "render"}
+    expected = {
+        "submit-wait",
+        "cancel",
+        "gc",
+        "fetch-tree",
+        "push-tree",
+        "remove-tree",
+        "render",
+        "promote",
+        "sync-tag",
+    }
     assert set(orch.main.commands) == expected
     runner = CliRunner()
     for name in sorted(expected):
