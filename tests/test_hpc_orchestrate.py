@@ -296,13 +296,13 @@ def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Pat
     (staging / "sccache.env").write_text(jobscript.sccache_env_file({"SCCACHE_BUCKET": "b"}))
     block = "\n".join(jobscript._sccache_block(str(staging)))
     out = subprocess.run(
-        ["bash", "-euc", f'{block}\necho "$SCCACHE_BUCKET|${{CMAKE_CXX_COMPILER_LAUNCHER:-}}"'],
+        ["bash", "-euc", f'{block}\necho "$SCCACHE_BUCKET|${{CMAKE_CXX_COMPILER_LAUNCHER:-}}|$SCCACHE_BASEDIRS"'],
         capture_output=True,
         text=True,
         check=True,
-        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path)},
+        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1"},
     ).stdout
-    assert out.splitlines()[-1] == f"b|{launcher}"
+    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{tmp_path}:{staging}"
     assert not (staging / "sccache.env").exists()
 
 

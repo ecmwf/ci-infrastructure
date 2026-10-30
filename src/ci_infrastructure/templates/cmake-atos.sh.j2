@@ -5,18 +5,19 @@
    The runner template plus what a SLURM job on Atos needs: the #SBATCH header,
    the modules, the node-local build tree and the install archive.
 
-   Any change here must bump _github_api.HPC_TEMPLATE_VERSION.
+   A change to what gets built must bump _github_api.HPC_TEMPLATE_VERSION;
+   resources and parallelism change no artifact and do not.
 
    A leg field read through `| default(...)` may be omitted from the manifest. #}
 {% set ntasks = ntasks | default(8) %}
+{# 64 CPUs, as the old downstream CI; ntasks only splits them into MPI ranks. #}
+{% set cpus_per_task = cpus_per_task | default([64 // ntasks, 1] | max) %}
 {% block header %}
 {% block sbatch %}
 #SBATCH --qos={{ qos | default("nf") }}
 #SBATCH --nodes={{ nodes | default(1) }}
 #SBATCH --ntasks={{ ntasks }}
-{% if cpus_per_task | default("") %}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
-{% endif %}
 {% if gpus_per_task | default("") %}
 #SBATCH --gpus-per-task={{ gpus_per_task }}
 {% endif %}
@@ -34,7 +35,8 @@ module {{ m }}
 
 {% block setup %}
 build="${TMPDIR:-/tmp}/build"
-jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-{{ ntasks }}}}"
+jobs="${SLURM_CPUS_ON_NODE:-{{ ntasks * cpus_per_task }}}"
+test_jobs="${SLURM_CPUS_PER_TASK:-{{ cpus_per_task }}}"
 install_root="$CI_INSTALL_PREFIX"
 gen_flag=""
 if command -v ninja >/dev/null 2>&1; then gen_flag="-GNinja"; fi
