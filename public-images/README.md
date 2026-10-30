@@ -42,7 +42,9 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 
 `<platform>/gcc<N>-gfortran<N>-release` is the platform's gcc variant plus what a release build
 (CD v3, `[matrix.release-*]`) links and packages with, so the package it builds has every optional
-feature its project offers and nothing is installed at build time. Release builds pin the tag.
+feature its project offers and nothing is installed at build time. Release builds use `:latest`
+and record the tag they ran in (`CI_IMAGE_TAG`): registry cleanup keeps only the two newest
+versions, so a pinned tag would disappear.
 
 - It holds the platform's packager (`rpm-build`) and these libraries with headers, from the
   distribution and its add-on repositories (EPEL, CRB/PowerTools): libaec, bzip2, lz4, BLAS/LAPACK
