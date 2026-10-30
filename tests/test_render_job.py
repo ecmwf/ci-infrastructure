@@ -180,3 +180,13 @@ def test_release_refusals(tmp_path: Path) -> None:
         "--manifest", m, "--leg", "build (rocky-9, g++-11)", "--release", "rehearsal"
     )
     assert "go with --release" in _fails("--manifest", m, "--leg", "build (rocky-9, g++-11)", "--tag", "2.5.0")
+
+
+def test_release_refuses_a_recipe_owning_a_release_block(tmp_path: Path) -> None:
+    """The CLI's --release goes through the same check as build-on-hpc and run-job-script."""
+    m = write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG)
+    recipe = m.parent / "build.sh.j2"
+    recipe.write_text(recipe.read_text() + "{% block verify %}{% endblock %}\n{% block install %}{% endblock %}\n")
+    for title in (_RELEASE_LEG_TITLE, "release-hpc (hpc-atos-gnu, g++-8, release)"):
+        out = _fails("--manifest", str(m), "--leg", title, "--release", "prerelease", "--tag", "2.5.0-rc1")
+        assert "release-owned block(s) 'install' in " in out and "; 'verify' in " in out

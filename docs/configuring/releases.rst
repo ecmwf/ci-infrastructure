@@ -36,6 +36,22 @@ The release overlay
    unchanged. A recipe must extend that template: one that extends ``cmake-runner.sh.j2`` or
    ``cmake-atos.sh.j2`` directly is refused for a release leg, as it would build as CI does.
 
+   The overlay owns every block it defines: ``setup``, ``release_guard``, ``preflight``,
+   ``configure``, ``install``, ``release_exclude``, ``publish``, ``build_meta`` and ``verify`` (the
+   HPC install test). A release render (the build jobs, and ``ci-infrastructure-render
+   --release``) refuses a recipe that defines one, even with ``{{ super() }}``, naming the block
+   and the template; otherwise a recipe could skip the install, the install test or the packaging
+   checks and still produce an archive. The check reads the parsed templates (nested blocks
+   too) of the recipe and every repo template it references, through ``extends``, ``include``,
+   ``import`` or ``from ... import`` and wherever the reference sits (an included template that
+   extends ci-infrastructure's renders its own overrides), not ci-infrastructure's own; a repo
+   file under a ``ci-infrastructure/`` directory is the repo's, and a template named by a computed
+   expression is refused, as it cannot be checked. A release
+   recipe may define ``cmake_args`` (its CMake flags, kept inside the overlay's ``configure``),
+   ``packaging_tools`` (how an image without ``rpmbuild`` gets it) and the CI blocks the overlay
+   leaves alone (e.g. ``set_environment``, ``header``, ``sbatch``, ``build``, ``test``). A CI
+   leg of the same recipe is not checked.
+
 The manifest
 ------------
 
