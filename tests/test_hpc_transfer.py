@@ -59,7 +59,7 @@ class CopyingConnection(FakeConnection):
         proc = super().execute(command, stdout, stderr, dryrun)
         argv = [str(c) for c in command]
         if argv[:2] == ["bash", "-c"]:
-            subprocess.run(argv[2], shell=True, check=True)
+            subprocess.run(["bash", "-c", argv[2]], check=True)
         else:
             subprocess.run(argv, check=True)
         return proc
