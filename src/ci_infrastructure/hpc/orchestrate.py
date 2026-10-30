@@ -374,6 +374,32 @@ def _install_cancel_handler(site: SlurmSiteLike, script_path: Path, output: str,
     signal.signal(signal.SIGINT, handler)
 
 
+def stop_local_submitters(artifact_name: str, *, proc_root: Path = Path("/proc"), timeout: float = 30.0) -> None:
+    """SIGTERM this artifact's submit-wait processes and wait for them to exit.
+
+    A cancelled container step leaves its process running without a signal; stopped here, it can no
+    longer submit after the cancel, and one that already submitted cancels its own job.
+    """
+    pids: list[int] = []
+    for cmdline in proc_root.glob("[0-9]*/cmdline"):
+        try:
+            argv = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"submit-wait" in argv and artifact_name.encode() in argv and int(cmdline.parent.name) != os.getpid():
+            pids.append(int(cmdline.parent.name))
+    for pid in pids:
+        print(f"cancel: stopping submit-wait (pid {pid})")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+    deadline = time.monotonic() + timeout
+    while pids and time.monotonic() < deadline:
+        pids = [pid for pid in pids if (proc_root / str(pid)).exists()]
+        time.sleep(0.5)
+
+
 def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float], Verdict | None]:
     """Fails closed: only a sentinel naming ``jid`` counts.
 
@@ -734,15 +760,22 @@ def submit_wait(
 @main.command("cancel", help="Cancel the active job for an artifact (used on workflow cancellation).")
 @_site_options
 @click.option("--artifact-name", "artifact_name", required=True, help="Artifact whose job should be cancelled")
-@click.option("--output", "output", required=True, help="Absolute job output path on the cluster")
+@click.option(
+    "--remote-work-dir",
+    "remote_work_dir",
+    required=True,
+    help="Cluster work dir, as given to submit-wait. May name cluster variables (e.g. '$SCRATCH/github-ci').",
+)
 def cancel(
     site_name: str,
     troika_config: str | None,
     troika_user: str | None,
     artifact_name: str,
-    output: str,
+    remote_work_dir: str,
 ) -> None:
+    stop_local_submitters(artifact_name)
     site = load_site(site_name, config_path=troika_config, user=troika_user)
+    output = RemotePaths.derive(_resolve_reported("cancel", site._connection, remote_work_dir), artifact_name).output
     found = find_active_job_by_name(site._connection, job_name=jobscript.job_name_for(artifact_name), user=troika_user)
     if found is None:
         print(f"cancel: no active job for '{artifact_name}'; nothing to cancel.")

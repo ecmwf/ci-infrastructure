@@ -236,7 +236,9 @@ A job is named ``ci-<artifact>``.
 A re-run therefore skips an artifact that exists,
 reattaches to a job of the same name that is still in the queue,
 and submits a new one otherwise.
-Cancelling the GitHub job cancels the SLURM job.
+Cancelling the GitHub job cancels the SLURM job:
+the container hook gives the cancelled step no signal,
+so a step that runs only on cancellation stops the submitter and cancels the job by name.
 
 A new submission clears the artifact's staging directory,
 and the run removes it as soon as the job has finished or left the queue,
