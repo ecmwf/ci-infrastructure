@@ -79,6 +79,41 @@ def test_an_already_published_leg_needs_only_its_receipt(tmp_path: Path) -> None
     assert missing == []
 
 
+HPC_KEY, HPC_LEG = "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-aaaaaaaa", "hpc-hpc-atos-gnu-gxx-8"
+
+
+def _hpc_legs() -> dict[str, Any]:
+    ctx = {"job_key": HPC_KEY, "leg_id": HPC_LEG, "state": "build", "filename": "pkg-2.5.0-rc1-x.tar.zst", "sha": SHA}
+    return {"release-hpc": {"include": [{"platform": "hpc-atos-gnu", "_release": ctx}]}}
+
+
+def test_an_hpc_legs_install_test_is_in_its_build_artifact(tmp_path: Path) -> None:
+    """The HPC install test runs in the build's SLURM job: itest-<leg>.json comes in release-<job_key>."""
+    _write(tmp_path, f"release-{HPC_KEY}", "build-meta.json", {"release": {"job_key": HPC_KEY}, "sha256": DIGEST})
+    itest = {"result": "passed", "sha256": DIGEST, "sha": SHA, "job_key": HPC_KEY}
+    _write(tmp_path, f"release-{HPC_KEY}", f"itest-{HPC_LEG}.json", itest)
+    _write(
+        tmp_path, f"receipt-{HPC_KEY}", f"receipt-{HPC_LEG}.json", {"action": "promoted", "sha256": DIGEST, "url": "/p"}
+    )
+    rec, missing = record.build_record(provenance=_PROV, legs_by_kind=_hpc_legs(), artifacts=tmp_path, publish=True)
+    assert missing == []
+    assert rec["legs"][0]["itest"]["result"] == "passed"
+    assert "| promoted /p |" in record.summary(rec)
+
+
+def test_an_hpc_leg_its_build_found_installed_needs_only_its_receipt(tmp_path: Path) -> None:
+    """Re-run all: the build saw the release under the prefix, built nothing; promote recorded it."""
+    _write(tmp_path, f"release-{HPC_KEY}", "state.json", {"state": "already-published"})
+    receipt = {"action": "already-published", "sha256": DIGEST, "url": "/p"}
+    _write(tmp_path, f"receipt-{HPC_KEY}", f"receipt-{HPC_LEG}.json", receipt)
+    rec, missing = record.build_record(provenance=_PROV, legs_by_kind=_hpc_legs(), artifacts=tmp_path, publish=True)
+    assert missing == []
+    # Without that receipt it is a build that is missing.
+    (tmp_path / f"receipt-{HPC_KEY}" / f"receipt-{HPC_LEG}.json").unlink()
+    _, missing = record.build_record(provenance=_PROV, legs_by_kind=_hpc_legs(), artifacts=tmp_path, publish=True)
+    assert any("no build" in m for m in missing) and any("not published" in m for m in missing)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "needs", "expected"),
     [

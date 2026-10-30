@@ -5,12 +5,17 @@
 """The release record: what the gate decided, and per leg what was built, tested and published.
 
 Reads the gate's provenance and legs and the downloaded artifacts (``release-<job_key>/build-meta.json``,
-``itest-<job_key>/itest-<leg_id>.json``, ``receipt-<job_key>/receipt-<leg_id>.json``); writes
+``itest-<job_key>/itest-<leg_id>.json``, ``receipt-<job_key>/receipt-<leg_id>.json``; an HPC leg's
+install test ran in its build job, so its ``itest-<leg_id>.json`` is in ``release-<job_key>``); writes
 ``release-record.json`` and a step-summary table. download-artifact without a name puts each
 artifact in its own directory, except when the run has exactly one: that one lands directly in
 the download path, so a file is also looked for there (a build-meta.json only counts when it
 names the leg's job key). Fails when an expected piece is missing:
 the release is partial, and "Re-run failed jobs" completes it.
+
+A leg is not built when the gate found it published (state ``already-published``), or when its
+publish job found it so (receipt action ``already-published``: an HPC leg whose build job saw the
+release installed under its prefix); then its receipt alone is expected.
 """
 
 from __future__ import annotations
@@ -51,6 +56,15 @@ def _build_meta(artifacts: Path, key: str) -> dict[str, Any] | None:
     return meta
 
 
+def _itest(artifacts: Path, key: str, lid: str) -> dict[str, Any] | None:
+    """``itest-<key>/itest-<lid>.json`` (rpm: its own job), else in ``release-<key>`` (HPC: the build job's)."""
+    name = f"itest-{lid}.json"
+    found = _find(artifacts, f"itest-{key}", name)
+    if found is None and (artifacts / f"release-{key}").is_dir():
+        found = _load(artifacts / f"release-{key}" / name)
+    return found
+
+
 def build_record(
     *,
     provenance: Mapping[str, Any],
@@ -65,10 +79,10 @@ def build_record(
         for leg in (body or {}).get("include") or []:
             ctx = leg.get("_release") or {}
             key, lid, state = ctx.get("job_key"), ctx.get("leg_id"), ctx.get("state")
-            built = state != STATE_ALREADY_PUBLISHED
-            meta = _build_meta(artifacts, str(key)) if built else None
-            itest = _find(artifacts, f"itest-{key}", f"itest-{lid}.json") if built else None
             receipt = _find(artifacts, f"receipt-{key}", f"receipt-{lid}.json") if publish else None
+            built = state != STATE_ALREADY_PUBLISHED and (receipt or {}).get("action") != STATE_ALREADY_PUBLISHED
+            meta = _build_meta(artifacts, str(key)) if built else None
+            itest = _itest(artifacts, str(key), str(lid)) if built else None
             if built and meta is None:
                 missing.append(f"{lid}: no build (build-meta.json)")
             if built and (itest is None or itest.get("result") != "passed"):
