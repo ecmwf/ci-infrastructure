@@ -30,10 +30,25 @@ def _promoted(leg: dict[str, Any]) -> None:
     (prefix / ".release.json").write_text(json.dumps({**release_tree.identity(leg["_release"]), "sha256": "d" * 64}))
 
 
-def _run(tmp_path: Path, legs: str, **kw: Any) -> list[str]:
+def _on(cluster: str) -> Any:
+    """A cluster detector: the connection runs on ``cluster``."""
+    return lambda _conn: cluster
+
+
+def _run(tmp_path: Path, legs: str, *, cluster_site: str = "ac-batch", on: str = "ac", **kw: Any) -> list[str]:
     return sync_tag.run_sync_tag(
-        LocalConn(), legs_json=legs, kind="release-hpc", site="hpc-batch", lock_root=str(tmp_path / "locks"), **kw
+        LocalConn(),
+        legs_json=legs,
+        kind="release-hpc",
+        cluster_site=cluster_site,
+        lock_root=str(tmp_path / "locks"),
+        detect=_on(on),
+        **kw,
     )
+
+
+def _plan(site: str) -> sync_tag.Plan:
+    return sync_tag.plan_for(site, sync_tag.load_clusters())
 
 
 def test_a_prerelease_is_synced_not_tagged_and_nothing_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -43,27 +58,179 @@ def test_a_prerelease_is_synced_not_tagged_and_nothing_runs(tmp_path: Path, caps
     assert cmds == [
         "module load modulemgr",
         "modulemgr -v -f sync pkg",
-        "/home/deploy/software-sync/bin/software-sync -s local -t ab,ac,ad -p pkg",
-        "modulemgr -v -f -m ab,ac,ad sync pkg",
+        "/home/deploy/software-sync/bin/software-sync -s local -t aa,ab,ad -p pkg",
+        "modulemgr -v -f -m aa,ab,ad sync pkg",
     ]
     out = capsys.readouterr().out
+    assert "sync-tag: on cluster ac (cluster site ac-batch)" in out
     assert "sync-tag (dry run, not run): pkg/2.5.0-rc1" in out
     assert not (tmp_path / "locks" / "modulemgr").exists()
 
 
 def test_a_release_is_tagged_new(tmp_path: Path) -> None:
     module = sync_tag.Module(name="pkg", version="2.5.0", tag="new")
-    cmds = sync_tag.commands(module, site="ab-batch", clusters=sync_tag.load_clusters())
+    cmds = sync_tag.commands(module, _plan("ab-batch"))
     assert cmds[-1] == "modulemgr -m aa,ab,ac,ad -f -v tag pkg 2.5.0 new"
     assert "-t aa,ac,ad" in cmds[2]
 
 
-def test_a_site_without_clusters_only_syncs_locally(tmp_path: Path) -> None:
+def test_a_site_without_targets_only_syncs_locally() -> None:
+    clusters = {"site_cluster": {"x-batch": "ab"}, "sync_clusters": {"x-batch": []}, "tag_clusters": {"x-batch": []}}
     module = sync_tag.Module(name="pkg", version="2.5.0", tag="new")
-    assert sync_tag.commands(module, site="lumi", clusters=sync_tag.load_clusters()) == [
+    assert sync_tag.commands(module, sync_tag.plan_for("x-batch", clusters)) == [
         "module load modulemgr",
         "modulemgr -v -f sync pkg",
     ]
+
+
+@pytest.mark.parametrize("site", ["hpc-batch", "lumi", "aa"])
+def test_a_site_the_cluster_map_does_not_list_is_refused_not_guessed(tmp_path: Path, site: str) -> None:
+    """v2 treated such a site as aa-batch: rc5 planned `-m ab,ac,ad` for a module built on ac."""
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    with pytest.raises(CIError, match=rf"cluster site '{site}' is not in module-clusters.yml"):
+        _run(tmp_path, _gate_json(leg), cluster_site=site)
+    assert not (tmp_path / "locks").exists()  # refused before the cluster is touched
+
+
+def test_a_cluster_site_on_ag_is_refused(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    with pytest.raises(CIError, match="'ag-batch' is on ag: nothing is synced or tagged from it"):
+        _run(tmp_path, _gate_json(leg), cluster_site="ag-batch", on="ag")
+    assert not (tmp_path / "locks").exists()
+
+
+@pytest.mark.parametrize(
+    ("sync", "tag", "match"),
+    [
+        (["ab", "ag"], [], r"sync targets of 'aa-batch' \['ab', 'ag'\] name \['ag'\]"),
+        ([], ["aa", "ag"], r"tag targets of 'aa-batch' \['aa', 'ag'\] name \['ag'\]"),
+    ],
+)
+def test_a_plan_targeting_ag_is_refused(sync: list[str], tag: list[str], match: str) -> None:
+    clusters = {
+        "site_cluster": {"aa-batch": "aa"},
+        "sync_clusters": {"aa-batch": sync},
+        "tag_clusters": {"aa-batch": tag},
+    }
+    with pytest.raises(CIError, match=match):
+        sync_tag.plan_for("aa-batch", clusters)
+
+
+def test_the_packaged_map_never_reaches_ag() -> None:
+    clusters = sync_tag.load_clusters()
+    for site in clusters["site_cluster"]:
+        if clusters["site_cluster"][site] in sync_tag.FORBIDDEN_CLUSTERS:
+            with pytest.raises(CIError, match="nothing is synced or tagged from it"):
+                sync_tag.plan_for(site, clusters)
+            continue
+        plan = sync_tag.plan_for(site, clusters)
+        assert "ag" not in plan.sync + plan.tag_on + [plan.source]
+
+
+def test_a_connection_on_ag_is_refused_under_the_lock(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    with pytest.raises(CIError, match="this connection runs on ag: nothing is synced or tagged from it"):
+        _run(tmp_path, _gate_json(leg), on="ag")
+    assert not (tmp_path / "locks" / "modulemgr").exists()  # released
+
+
+def test_a_connection_on_another_cluster_is_refused(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    with pytest.raises(CIError, match="runs on ab, but cluster site 'ac-batch' is ac"):
+        _run(tmp_path, _gate_json(leg), on="ab")
+
+
+def test_the_cluster_is_read_under_the_lock(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    held: list[bool] = []
+
+    def detect(_conn: Any) -> str:
+        held.append((tmp_path / "locks" / "modulemgr").is_dir())
+        return "ac"
+
+    sync_tag.run_sync_tag(
+        LocalConn(),
+        legs_json=_gate_json(leg),
+        kind="release-hpc",
+        cluster_site="ac-batch",
+        lock_root=str(tmp_path / "locks"),
+        detect=detect,
+    )
+    assert held == [True]
+
+
+@pytest.mark.parametrize(
+    ("hostname", "ec_cluster", "cluster"),
+    [("ac6-115.bullx", "", "ac"), ("aa1-100", "aa", "aa"), ("ag3-12.bullx", "", "ag")],
+)
+def test_the_cluster_of_a_hostname(hostname: str, ec_cluster: str, cluster: str) -> None:
+    assert sync_tag.cluster_of_host(hostname, ec_cluster) == cluster
+
+
+@pytest.mark.parametrize(
+    ("hostname", "ec_cluster", "match"),
+    [
+        ("hpc-login", "", "cannot tell the cluster"),
+        ("uan01", "", "cannot tell the cluster"),
+        ("", "", "cannot tell the cluster"),
+        ("ac6-115.bullx", "ab", "EC_CLUSTER says 'ab'"),
+    ],
+)
+def test_an_unknown_or_ambiguous_host_is_refused(hostname: str, ec_cluster: str, match: str) -> None:
+    with pytest.raises(CIError, match=match):
+        sync_tag.cluster_of_host(hostname, ec_cluster)
+
+
+class _HostConn:
+    def __init__(self, stdout: bytes, returncode: int = 0) -> None:
+        self.stdout, self.returncode = stdout, returncode
+        self.argv: list[str] = []
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> Any:
+        self.argv = command
+        conn = self
+
+        class _Proc:
+            returncode = conn.returncode
+
+            def communicate(self) -> tuple[bytes, bytes]:
+                return conn.stdout, b""
+
+        return _Proc()
+
+
+def test_detect_cluster_reads_hostname_and_ec_cluster() -> None:
+    conn = _HostConn(b"ad2-7.bullx\nad\n")
+    assert sync_tag.detect_cluster(conn) == "ad"
+    assert conn.argv[:2] == ["bash", "-lc"]
+    assert sync_tag.detect_cluster(_HostConn(b"ad2-7.bullx\n\n")) == "ad"
+    with pytest.raises(CIError, match="hostname failed"):
+        sync_tag.detect_cluster(_HostConn(b"", returncode=255))
+
+
+def test_the_real_detector_refuses_a_machine_that_is_no_atos_node(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    _promoted(leg)
+    with pytest.raises(CIError, match="cannot tell the cluster|EC_CLUSTER"):
+        sync_tag.run_sync_tag(
+            LocalConn(),
+            legs_json=_gate_json(leg),
+            kind="release-hpc",
+            cluster_site="ac-batch",
+            lock_root=str(tmp_path / "locks"),
+        )
+
+
+def test_the_cli_refuses_an_unlisted_site_before_connecting(tmp_path: Path) -> None:
+    leg = hpc_leg(tmp_path)
+    result = CliRunner().invoke(orchestrate.main, ["sync-tag", "--legs", _gate_json(leg)])
+    assert result.exit_code != 0
+    assert "cluster site 'hpc-batch' is not in module-clusters.yml" in result.output
 
 
 def test_a_module_not_promoted_is_refused(tmp_path: Path) -> None:
@@ -125,11 +292,12 @@ def test_hold_seconds_holds_the_lock(tmp_path: Path) -> None:
     sync_tag.sync_tag(
         LocalConn(),
         modules=sync_tag.modules_of(_gate_json(leg), "release-hpc"),
-        site="hpc-batch",
+        cluster_site="ac-batch",
         lock_root=str(tmp_path / "locks"),
         run_id="1-1",
         hold_seconds=5,
         sleep=sleep,
+        detect=_on("ac"),
     )
     assert held == [True]
 

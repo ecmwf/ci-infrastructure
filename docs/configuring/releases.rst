@@ -263,7 +263,29 @@ sends the archive and checks its digest there, unpacks it into a new ``.incoming
 ``sync-tag-hpc`` (``hpc-sync-tag``) takes the one cross-repo lock ``<lock-root>/modulemgr``,
 checks each promoted prefix, and prints the ``modulemgr`` / ``software-sync`` commands v2 would
 run (sync to the other clusters; a release, never a prerelease, tagged ``new``). In milestone 1 it
-runs none of them.
+runs none of them: it never calls ``software-sync`` or ``modulemgr``.
+
+Where a module is synced to and tagged on comes from ``module-clusters.yml``, keyed by the
+*cluster site*: the leg's troika ``site``, or the ``cluster-site`` input of ``hpc-sync-tag`` (for a
+module built through another site name). Unlike v2, nothing is guessed, and nothing is ever
+synced from or to, or tagged on, ``ag``:
+
+- A cluster site the map does not list is refused, before the cluster is touched. ``hpc-batch`` is
+  not listed: it lands on any cluster, so v2's fallback to ``aa-batch`` would sync the wrong
+  cluster's tree (``2.5.0-rc5`` was built on ``ac`` and planned ``-m ab,ac,ad``). Build and promote
+  on ``aa-batch`` … ``ad-batch``, or name the one with ``cluster-site``.
+- A cluster site on ``ag``, or one whose sync or tag targets name ``ag``, is refused. The map keeps
+  v2's ``ag-batch`` entries (no sync, tag on ``ag``) for parity, but ``ag-batch`` is always refused,
+  so ``ag`` is never tagged either.
+- Under the lock it reads the cluster the connection runs on from its ``hostname`` (an Atos node
+  such as ``ac6-115.bullx`` is ``ac``; ``$EC_CLUSTER``, when the login shell sets it, must agree),
+  and refuses when that is ``ag``, cannot be told, or is not the cluster site's cluster.
+
+.. note::
+
+   Open item: the cluster map (which sites there are, the cluster each is on, and the hostname
+   rule) is ported from v2 and must be confirmed with the HPC admins before a real sync is
+   enabled.
 
 Locks and the kill switch
 ~~~~~~~~~~~~~~~~~~~~~~~~~
