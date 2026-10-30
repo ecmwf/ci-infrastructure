@@ -119,3 +119,16 @@ def test_a_pull_request_stacked_on_the_commit_lends_no_label(tmp_path: Path) -> 
     pulls = [_pull("abc123", ["downstream-ci-not-needed"]), _pull("def456", [f"{LABEL}:all"])]
     code, out, _ = _run_gate(tmp_path, pulls)
     assert (code, out["run"], out["depth"]) == (0, "false", "")
+
+
+@pytest.mark.parametrize(("labels", "run"), [([f"{LABEL}:1", "run-hpc-ci"], "true"), ([f"{LABEL}:1"], "false")])
+def test_a_required_label_must_be_there_too(tmp_path: Path, labels: list[str], run: str) -> None:
+    code, out, _ = _run_gate(tmp_path, [_pull("abc123", labels)], REQUIRE_LABEL_INPUT="run-hpc-ci")
+    assert (code, out["run"]) == (0, run)
+
+
+@pytest.mark.parametrize(("labels", "run"), [(["run-hpc-ci"], "true"), ([], "false")])
+def test_a_dispatched_level_still_needs_the_required_label(tmp_path: Path, labels: list[str], run: str) -> None:
+    pr = {"state": "open", "labels": [{"name": n} for n in labels]}
+    code, out, _ = _run_gate(tmp_path, pr, LEVEL_INPUT="all", PULL_REQUEST_INPUT="7", REQUIRE_LABEL_INPUT="run-hpc-ci")
+    assert (code, out["run"]) == (0, run)

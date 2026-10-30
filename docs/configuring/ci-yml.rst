@@ -118,6 +118,75 @@ and passes ``toJSON(needs)`` to the action.
      hooks:
        - id: check-ci-result
 
+HPC legs
+--------
+
+Legs that build on the HPC (see :doc:`hpc`) are scarce, so a pull request runs them only once it carries the label ``run-hpc-ci``,
+or waives them with ``hpc-ci-not-needed``, just as ``downstream-ci-not-needed`` waives the downstream CI.
+They report a second status, ``ci-result/hpc-atos``, which a repository with HPC legs also requires before merge.
+:action:`hpc-gate` decides whether they run, and a second :action:`ci-result` job collects them:
+
+.. code:: yaml
+
+   jobs:
+     hpc-gate:
+       needs: ci-approval
+       runs-on: ubuntu-slim
+       permissions:
+         statuses: write
+         pull-requests: read
+       outputs:
+         run: ${{ steps.gate.outputs.run }}
+       steps:
+         - id: gate
+           uses: ecmwf/ci-infrastructure/actions/hpc-gate@main
+
+     wait-build-hpc:
+       needs: [ci-approval, resolve, hpc-gate]
+       if: needs.hpc-gate.outputs.run == 'true'
+       # ...
+
+     build-hpc:
+       needs: [resolve, wait-build-hpc]
+       # ...
+
+     ci-result:
+       needs: [hpc-gate, test]  # no HPC job
+       # ...
+
+     collect-result-hpc:
+       name: collect HPC results
+       if: always() && needs.hpc-gate.outputs.run == 'true'
+       needs: [hpc-gate, wait-build-hpc, build-hpc]
+       runs-on: ubuntu-slim
+       permissions:
+         statuses: write
+       steps:
+         - uses: ecmwf/ci-infrastructure/actions/ci-result@main
+           with:
+             needs: ${{ toJSON(needs) }}
+             context: ci-result/hpc-atos
+
+Outside a pull request the HPC legs always run.
+On a pull request :action:`hpc-gate` lets them run with ``run-hpc-ci`` and sets ``ci-result/hpc-atos`` to pending until ``collect-result-hpc`` reports;
+with ``hpc-ci-not-needed`` alone it sets it to success.
+With neither label nothing posts it, so, like the downstream statuses, the required check blocks the merge as *Expected*.
+The HPC legs never count towards ``ci-result``.
+
+Adding ``run-hpc-ci`` later starts the HPC legs by itself, without running the rest of ``CI`` again.
+The generator writes ``pr-label-hpc-ci.yml`` into every repository with HPC legs,
+which runs :action:`hpc-label-decision` on a change of either label and whenever ``CI`` completes.
+If the pull request's ``CI`` finished with its HPC legs skipped, it re-runs the job ``hpc-gate``,
+and with it every job that needs it: the HPC legs, ``collect-result-hpc`` and ``ci-result``.
+If ``CI`` is still running, it does so once ``CI`` has completed.
+The gate reads the labels anew, since a re-run keeps the event of the run it repeats.
+The downstream CI follows the re-run's completion; its ``runner`` lane skips such an attempt, whose runner legs did not run again.
+Removing a label never resets the result of HPC legs that ran.
+
+``check-ci-result`` also checks ``collect-result-hpc`` if it exists:
+an ``if:`` with ``always()``, ``name: collect HPC results``, ``statuses: write``, at least one needed job,
+and ``toJSON(needs)`` and ``context: ci-result/hpc-atos`` passed to the action.
+
 What comes next
 ---------------
 

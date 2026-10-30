@@ -18,6 +18,8 @@ from conftest import action_run_body, stub_gh
 LABEL: Final = "run-downstream-ci"
 OPT_OUT: Final = "downstream-ci-not-needed"
 CONTEXTS: Final = ("downstream/runner", "downstream/hpc-atos")
+HPC_LABEL: Final = "run-hpc-ci"
+HPC_OPT_OUT: Final = "hpc-ci-not-needed"
 
 
 def _payload(action: str = "opened", *, labels: list[str] | None = None, label: str | None = None) -> dict[str, Any]:
@@ -51,7 +53,9 @@ class Result:
         return [next(a.removeprefix(prefix) for a in call if a.startswith(prefix)) for call in self.gh_calls]
 
 
-def _run(tmp_path: Path, payload: dict[str, Any], *, contexts: str = " ".join(CONTEXTS), idle: str = "") -> Result:
+def _run(
+    tmp_path: Path, payload: dict[str, Any], *, contexts: str = " ".join(CONTEXTS), idle: str = "", hpc: str = ""
+) -> Result:
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload))
     gh_log = tmp_path / "gh-calls.log"
@@ -66,6 +70,9 @@ def _run(tmp_path: Path, payload: dict[str, Any], *, contexts: str = " ".join(CO
         "RUN_URL": "https://example.invalid/run",
         "CONTEXTS_INPUT": contexts,
         "NO_CONSUMERS_INPUT": idle,
+        "HPC_CONTEXTS_INPUT": hpc,
+        "HPC_LABEL_INPUT": HPC_LABEL,
+        "HPC_OPT_OUT_INPUT": HPC_OPT_OUT,
         "LABEL_INPUT": LABEL,
         "OPT_OUT_INPUT": OPT_OUT,
     }
@@ -145,10 +152,34 @@ def test_a_leaf_needs_no_label(tmp_path: Path) -> None:
 def test_without_any_context_fails(tmp_path: Path) -> None:
     r = _run(tmp_path, _payload(), contexts="")
     assert r.code == 1
-    assert "both empty" in r.err
+    assert "all empty" in r.err
 
 
 def test_no_pull_request_fails(tmp_path: Path) -> None:
     r = _run(tmp_path, {"action": "labeled"})
     assert r.code == 1
     assert "only runs on pull_request" in r.err
+
+
+@pytest.mark.parametrize(
+    ("labels", "label", "runner", "hpc"),
+    [
+        # A level label without either HPC label leaves the HPC lane "Expected".
+        ([f"{LABEL}:1"], f"{LABEL}:1", "pending", None),
+        ([f"{LABEL}:1", HPC_LABEL], f"{LABEL}:1", "pending", ("pending", "Downstream CI requested; waiting for it")),
+        ([f"{LABEL}:1", HPC_OPT_OUT], f"{LABEL}:1", "pending", ("success", "HPC CI not needed")),
+        # run-hpc-ci after the level label: CI's HPC legs come first.
+        ([f"{LABEL}:1", HPC_LABEL], HPC_LABEL, None, ("pending", "Downstream CI waits for the HPC legs")),
+        ([OPT_OUT], OPT_OUT, "success", ("success", "Downstream CI not needed")),
+        # Undecided: the HPC waiver alone settles the HPC lane.
+        ([HPC_OPT_OUT], HPC_OPT_OUT, None, ("success", "HPC CI not needed")),
+        ([HPC_LABEL], HPC_LABEL, None, None),
+    ],
+)
+def test_the_hpc_lane_follows_the_hpc_labels(
+    tmp_path: Path, labels: list[str], label: str, runner: str | None, hpc: tuple[str, str] | None
+) -> None:
+    r = _run(tmp_path, _payload("labeled", labels=labels, label=label), contexts=CONTEXTS[0], hpc=CONTEXTS[1])
+    assert r.code == 0, r.err
+    posted = dict(zip(r.posted("context"), zip(r.posted("state"), r.posted("description"), strict=True), strict=True))
+    assert (posted.get(CONTEXTS[0], (None,))[0], posted.get(CONTEXTS[1])) == (runner, hpc)

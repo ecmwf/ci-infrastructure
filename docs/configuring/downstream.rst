@@ -60,6 +60,8 @@ Once the workflow ``CI`` of a pull request has completed successfully,
 the downstream CI builds every consumer against the commit under test,
 in dependency order,
 and posts the result as the status ``downstream/runner`` (and ``downstream/hpc-atos``) on the pull request.
+The ``hpc-atos`` lane also needs the label ``run-hpc-ci``, without which the commit's ``CI`` built no HPC artifacts;
+with ``hpc-ci-not-needed`` instead, its status is a success at once.
 
 The generated files must follow the manifests, also those of the other repositories.
 :action:`validate-generated-workflows` reports when they have drifted.
@@ -116,6 +118,8 @@ Until a pull request decides, nothing posts them, so they block as *Expected*.
 :action:`post-downstream-decision` sets them to success for the opt-out,
 and to pending as soon as a level label is set, until the downstream CI reports its result on them.
 A lane without consumers is set to success on every event, whatever the labels.
+The ``hpc-atos`` lane also follows the HPC labels (see :doc:`ci-yml`):
+``hpc-ci-not-needed`` alone sets it to success, and a level label without ``run-hpc-ci`` leaves it *Expected*.
 The generator writes it as ``pr-label-downstream-ci.yml`` into every repository,
 so the required checks are the same everywhere and need no update when consumers come or go.
 It runs on ``pull_request_target``, which is safe since it only reads the labels from the event:

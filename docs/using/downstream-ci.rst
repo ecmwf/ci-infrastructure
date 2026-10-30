@@ -47,6 +47,8 @@ the results ``downstream/runner`` and ``downstream/hpc-atos`` are required to me
 and only the opt-out label or a successful downstream CI sets them to success.
 A lane without consumers needs no label: its result is a success right away,
 so a repository without consumers needs no label at all.
+The HPC lane builds against the HPC artifacts of the pull request's ``CI``,
+so it also needs the label ``run-hpc-ci``, which runs those legs; ``hpc-ci-not-needed`` waives both.
 
 The downstream CI starts once the ``CI`` of the pull request has completed successfully.
 Adding the label later is not a problem: if ``CI`` already succeeded, the label starts the downstream CI directly,
