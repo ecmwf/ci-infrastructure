@@ -228,9 +228,8 @@ runs:
             fi
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
           fi
-          # mtime = last use; drop venvs idle a week.
-          touch "$venv"
-          find "$venv_root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+          # Persistent hosts would collect one venv per ci-infrastructure change; keep only this one.
+          find "$venv_root" -mindepth 1 -maxdepth 1 -type d ! -path "$venv" -exec rm -rf {} + 2>/dev/null || true
         fi
         echo "CI_INFRASTRUCTURE_PYTHON=$python" >> "$GITHUB_ENV"
         echo "python=$python" >> "$GITHUB_OUTPUT"
