@@ -133,7 +133,6 @@ They report a second status, ``ci-result/hpc-atos``, which a repository with HPC
        needs: ci-approval
        runs-on: ubuntu-slim
        permissions:
-         statuses: write
          pull-requests: read
        outputs:
          run: ${{ steps.gate.outputs.run }}
@@ -168,9 +167,9 @@ They report a second status, ``ci-result/hpc-atos``, which a repository with HPC
              context: ci-result/hpc-atos
 
 Outside a pull request the HPC legs always run.
-On a pull request :action:`hpc-gate` lets them run with ``run-hpc-ci`` and sets ``ci-result/hpc-atos`` to pending until ``collect-result-hpc`` reports;
-with ``hpc-ci-not-needed`` alone it sets it to success.
-With neither label nothing posts it, so, like the downstream statuses, the required check blocks the merge as *Expected*.
+On a pull request :action:`hpc-gate` lets them run only with ``run-hpc-ci``, and ``collect-result-hpc`` posts their result as ``ci-result/hpc-atos``.
+:action:`hpc-label-decision` (below) sets it to success for ``hpc-ci-not-needed`` alone.
+Until then nothing posts it, so, like the downstream statuses, the required check blocks the merge as *Expected*.
 The HPC legs never count towards ``ci-result``.
 
 Adding ``run-hpc-ci`` later starts the HPC legs by itself, without running the rest of ``CI`` again.
