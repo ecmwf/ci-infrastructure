@@ -23,6 +23,7 @@ from ci_infrastructure.generate_downstream_ci import (
     BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
+    PUBLIC_RUNNER,
     SLIM_RUNNER,
     SchemaError,
     _cross_package_deps,
@@ -34,6 +35,7 @@ from ci_infrastructure.generate_downstream_ci import (
     derive_cross_repo_needs,
     parse_manifest_text,
     render_orchestrator_workflow,
+    render_sync_branch_workflow,
     render_workflow,
     resolve_consumer_refs,
     transitive_cross_repo_needs,
@@ -1170,6 +1172,25 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/test"]
     assert doc["jobs"]["b"]["name"] == "b"
+
+
+@pytest.mark.parametrize(("visibility", "runner"), [("public", PUBLIC_RUNNER), ("private", SLIM_RUNNER)])
+def test_public_repos_run_api_jobs_on_ubuntu_latest(tmp_path: Path, visibility: str, runner: str) -> None:
+    write_repo(
+        tmp_path,
+        "a",
+        f"""
+        [package]
+        visibility = "{visibility}"
+        name = "a"
+        prefix = "a"
+        repo = "org/a"
+        compiler-inputs = []
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    jobs = yaml.safe_load(render_sync_branch_workflow(m))["jobs"]
+    assert {job["runs-on"] for job in jobs.values()} == {runner}
 
 
 def test_job_runners(tmp_path: Path) -> None:

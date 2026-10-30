@@ -84,6 +84,8 @@ def _normalise_header(header: str) -> str:
 
 # 1-CPU, unprivileged, cheap: only for jobs that talk to APIs and shuffle YAML.
 SLIM_RUNNER: Final = "ubuntu-slim"
+# Free for public repositories, with 4 CPUs: replaces SLIM_RUNNER there.
+PUBLIC_RUNNER: Final = "ubuntu-latest"
 # For short jobs that run the ci_infrastructure package: baked in, so no pip install from PyPI.
 BASE_IMAGE_RUNNER: Final = "arc-runner-normal"
 BASE_IMAGE: Final = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
@@ -143,6 +145,14 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
         allow_unicode=True,
     )
     return out
+
+
+def _render_doc(m: Manifest, doc: Mapping[str, Any]) -> str:
+    if m.visibility == VISIBILITY_PUBLIC:
+        for job in doc.get("jobs", {}).values():
+            if job.get("runs-on") == SLIM_RUNNER:
+                job["runs-on"] = PUBLIC_RUNNER
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
 def _lane_label(lane: Execution) -> str:
@@ -703,7 +713,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
         },
         "jobs": jobs,
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
@@ -1271,7 +1281,7 @@ def render_orchestrator_workflow(
         },
         "jobs": jobs,
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 _CONTEXT_JOB_ID: Final = "context"
@@ -1931,7 +1941,7 @@ def render_fork_workflow(m: Manifest) -> str | None:
             }
         },
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> str:
@@ -1963,7 +1973,7 @@ def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> s
         "permissions": {"statuses": "write", **({"actions": "write"} if lanes else {})},
         "jobs": {"gate": {"runs-on": SLIM_RUNNER, "steps": steps}},
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def render_hpc_label_workflow(m: Manifest) -> str | None:
@@ -2005,7 +2015,7 @@ def render_hpc_label_workflow(m: Manifest) -> str | None:
             }
         },
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def render_sync_branch_workflow(m: Manifest) -> str:
@@ -2032,7 +2042,7 @@ def render_sync_branch_workflow(m: Manifest) -> str:
             }
         },
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def _regen_command(manifest_path: str) -> str:
