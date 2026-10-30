@@ -45,7 +45,6 @@ from ._github_api import (
     ManifestSchemaError,
     fetch_manifests_layer,
     lane_suffix,
-    resolve_reuse_matrix,
     select_token,
 )
 from .hpc import jobscript
@@ -296,16 +295,9 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
 
 def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
     raw_matrix = raw.matrix
-    blocks = {
-        k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw_matrix.items()
-    }
-
     resolved: dict[str, MatrixKind] = {}
     for kind, body in raw_matrix.items():
-        try:
-            legs = resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks)
-        except ManifestSchemaError as e:
-            raise SchemaError(f"{path}: {e}") from e
+        legs = raw.legs(kind)
 
         scripted = [bool(leg.get("job-script")) for leg in legs]
         if any(scripted) and not all(scripted):
@@ -445,48 +437,6 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
     _check_trigger_cycles(manifests, by_repo)
     _check_needs(manifests, by_pkg, by_repo)
     _check_kinds_have_legs(manifests)
-    _check_leg_identity_uniqueness(manifests)
-
-
-# Leg fields make_artifact_name reads (plus [package].compiler-inputs).
-_FIXED_NAME_FIELDS: Final = ("build-type", "platform", "python-version", "options")
-
-
-def _artifact_identity(leg: Mapping[str, Any], compiler_inputs: Sequence[str]) -> tuple[str, ...]:
-    """The leg fields the artifact name depends on, with resolve_deps' defaults."""
-    parts = [str(leg.get(f, "Release" if f == "build-type" else "")).strip() for f in _FIXED_NAME_FIELDS]
-    parts.extend(str(leg.get(f, "")).strip() for f in sorted(compiler_inputs))
-    return tuple(parts)
-
-
-def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
-    for m in manifests:
-        for kind, mk in m.matrices.items():
-            if not mk.publishes:
-                continue
-            for prefix in mk.packages or (m.prefix,):
-                _check_leg_identities(m, kind, mk, m.packages[prefix].compiler_inputs)
-
-
-def _check_leg_identities(m: Manifest, kind: str, mk: MatrixKind, compiler_inputs: Sequence[str]) -> None:
-    seen: dict[tuple[str, ...], dict[str, Any]] = {}
-    for leg in mk.legs:
-        identity = _artifact_identity(leg, compiler_inputs)
-        twin = seen.get(identity)
-        if twin is not None:
-            shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
-            differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
-            raise SchemaError(
-                f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
-                f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
-                f"the artifact name, so they would publish different builds under one name. "
-                f"The name is built from platform + "
-                f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
-                f"python-version + options; give them distinct values there. For a different "
-                f"module set or compiler that means a distinct `platform` slug (e.g. "
-                f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
-            )
-        seen[identity] = leg
 
 
 def validate_job_templates(m: Manifest) -> None:

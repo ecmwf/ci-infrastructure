@@ -41,6 +41,7 @@ from ci_infrastructure.generate_downstream_ci import (
     transitive_cross_repo_needs,
     validate_graph,
 )
+from ci_infrastructure.resolve_deps import parse_manifest as resolve_parse_manifest
 
 
 def _render_orch(tmp_path: Path, lane: Execution = EXECUTION_RUNNER, pkg: str = "a") -> str | None:
@@ -2118,12 +2119,15 @@ _SCHEDULING_ONLY_LEGS: Final = """
     ],
 )
 def test_leg_artifact_identity(tmp_path: Path, manifest: str, match: str | None) -> None:
+    """Checked by the shared schema, so resolve-deps rejects such a manifest as the generator does."""
     write_repo(tmp_path, "a", manifest)
     if match is None:
         validate_graph(parse_all(tmp_path))
     else:
         with pytest.raises(SchemaError, match=match):
-            validate_graph(parse_all(tmp_path))
+            parse_all(tmp_path)
+        with pytest.raises(ValueError, match=match):
+            resolve_parse_manifest((tmp_path / "a" / ".ci" / "manifest.toml").read_text())
 
 
 _PRODUCER: Final = """

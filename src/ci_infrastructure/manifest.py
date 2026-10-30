@@ -10,7 +10,7 @@ Cross-manifest rules (the `needs` graph, trigger cycles) live in `generate_downs
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, TypeAlias
 
@@ -22,6 +22,7 @@ from ._github_api import (
     EXECUTION_RUNNER,
     Execution,
     ManifestSchemaError,
+    resolve_reuse_matrix,
 )
 
 Visibility: TypeAlias = Literal["public", "private"]
@@ -534,6 +535,30 @@ class ManifestFile(_Table):
                 )
         return self
 
+    def legs(self, kind: str) -> tuple[dict[str, Any], ...]:
+        """The legs of `kind`, over its `defaults`, after `reuse-matrix`."""
+        blocks = {
+            k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults}
+            for k, b in self.matrix.items()
+        }
+        body = self.matrix[kind]
+        return resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks)
+
+    def compiler_inputs_of(self, prefix: str) -> tuple[str, ...]:
+        entry = self.packages.get(prefix)
+        return self.package.compiler_inputs if entry is None else entry.compiler_inputs
+
+    @model_validator(mode="after")
+    def _unique_artifact_identities(self) -> ManifestFile:
+        for kind in self.matrix:
+            try:
+                legs = self.legs(kind)
+            except ManifestSchemaError as exc:
+                raise ValueError(str(exc)) from exc
+            for prefix in self.published_by(kind):
+                _check_leg_identities(kind, legs, self.compiler_inputs_of(prefix))
+        return self
+
     def _no_sibling_cycle(self) -> None:
         edges = {k: [p for d in e.deps if d.repo is None for p in d.packages] for k, e in self.packages.items()}
         edges[self.package.prefix] = [p for d in self.deps if d.repo is None for p in d.packages]
@@ -560,6 +585,38 @@ class ManifestFile(_Table):
                 raise ValueError(f"duplicate [[trigger-downstream]] for {t.repo!r}")
             seen.add(t.repo)
         return self
+
+
+# Leg fields make_artifact_name reads (plus [package].compiler-inputs).
+_FIXED_NAME_FIELDS: Final = ("build-type", "platform", "python-version", "options")
+
+
+def _artifact_identity(leg: Mapping[str, Any], compiler_inputs: Sequence[str]) -> tuple[str, ...]:
+    """The leg fields the artifact name depends on, with resolve_deps' defaults."""
+    parts = [str(leg.get(f, "Release" if f == "build-type" else "")).strip() for f in _FIXED_NAME_FIELDS]
+    parts.extend(str(leg.get(f, "")).strip() for f in sorted(compiler_inputs))
+    return tuple(parts)
+
+
+def _check_leg_identities(kind: str, legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[str]) -> None:
+    seen: dict[tuple[str, ...], Mapping[str, Any]] = {}
+    for leg in legs:
+        identity = _artifact_identity(leg, compiler_inputs)
+        twin = seen.get(identity)
+        if twin is not None:
+            shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
+            differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
+            raise ValueError(
+                f"[matrix.{kind}] has two legs with the same artifact identity "
+                f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
+                f"the artifact name, so they would publish different builds under one name. "
+                f"The name is built from platform + "
+                f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
+                f"python-version + options; give them distinct values there. For a different "
+                f"module set or compiler that means a distinct `platform` slug (e.g. "
+                f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
+            )
+        seen[identity] = leg
 
 
 def validate(data: Mapping[str, Any]) -> ManifestFile:
