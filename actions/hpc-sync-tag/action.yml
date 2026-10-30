@@ -9,6 +9,8 @@ description: >
   software-sync are not safe to run concurrently): check that promote installed it, and print
   the modulemgr / software-sync commands v2 would run (sync to the other clusters; tag a
   release, never a prerelease). Milestone 1 runs none of them. <lock-root>/DISABLED stops it.
+  The cluster site must be listed in module-clusters.yml (hpc-batch is not: nothing is guessed),
+  must not be on ag, and the connection must land on its cluster; nothing touches ag.
   hold-seconds keeps the lock longer, for contention tests. See docs/configuring/releases.rst.
 
 inputs:
@@ -21,6 +23,12 @@ inputs:
     default: 'release-hpc'
   site:
     description: 'Troika site; empty uses the one the legs name.'
+    required: false
+    default: ''
+  cluster-site:
+    description: >-
+      The module-clusters.yml site the module was built and promoted on (e.g. ac-batch). Empty
+      uses site. A site the map does not list is refused.
     required: false
     default: ''
   troika-user:
@@ -58,6 +66,7 @@ runs:
         LEGS: ${{ inputs.legs }}
         KIND: ${{ inputs.kind }}
         SITE: ${{ inputs.site }}
+        CLUSTER_SITE: ${{ inputs.cluster-site }}
         TROIKA_USER: ${{ inputs.troika-user }}
         TROIKA_CONFIG: ${{ inputs.troika-config }}
         LOCK_ROOT: ${{ inputs.lock-root }}
@@ -70,6 +79,7 @@ runs:
         args=(--legs "$LEGS" --kind "$KIND" --lock-root "$LOCK_ROOT" --lock-timeout "$LOCK_TIMEOUT"
               --lock-stale-minutes "$LOCK_STALE_MINUTES" --hold-seconds "$HOLD_SECONDS")
         if [ -n "$SITE" ]; then args+=(--site "$SITE"); fi
+        if [ -n "$CLUSTER_SITE" ]; then args+=(--cluster-site "$CLUSTER_SITE"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc sync-tag "${args[@]}"

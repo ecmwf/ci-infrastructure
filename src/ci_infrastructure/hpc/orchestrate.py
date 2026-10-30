@@ -1001,6 +1001,13 @@ def promote_cmd(
 
 @main.command("sync-tag", help="Sync and tag a release's HPC modules: a dry run (lock, check, print the commands).")
 @click.option("--site", "site_name", default="", help="Troika site; default: the one the legs name.")
+@click.option(
+    "--cluster-site",
+    "cluster_site",
+    default="",
+    help="The module-clusters.yml site the module is on (e.g. ac-batch); default: --site. "
+    "A site the map does not list is refused.",
+)
 @click.option("--troika-config", "troika_config", default=None, help="Path to troika config (default: packaged)")
 @click.option("--troika-user", "troika_user", default=None, help="Remote/scheduler user for troika")
 @click.option("--legs", "legs_json", required=True, help="The release gate's json output.")
@@ -1016,6 +1023,7 @@ def promote_cmd(
 @_lock_options
 def sync_tag_cmd(
     site_name: str,
+    cluster_site: str,
     troika_config: str | None,
     troika_user: str | None,
     legs_json: str,
@@ -1029,12 +1037,15 @@ def sync_tag_cmd(
         print(f"sync-tag: no {kind} legs; nothing to do")
         return
     site_name = site_name or sync_tag.site_of(legs_json, kind)
+    cluster_site = cluster_site or site_name
+    # Refused before connecting: a site the cluster map does not list, or one on ag.
+    sync_tag.plan_for(cluster_site, sync_tag.load_clusters())
     site = load_site(site_name, config_path=troika_config, user=troika_user)
     sync_tag.run_sync_tag(
         site._connection,
         legs_json=legs_json,
         kind=kind,
-        site=site_name,
+        cluster_site=cluster_site,
         lock_root=lock_root,
         timeout=lock_timeout,
         stale_minutes=lock_stale_minutes,

@@ -3,8 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Which clusters a module installed on one is synced to, and tagged on: hpc-sync-tag (CD v3).
-# Ported unchanged from reusable-workflows v2 (cd-actions/hpc-sync-tag/config/hpc.yml); keyed by
-# troika site. A site not listed (e.g. hpc-batch) is treated as aa-batch, as v2 does.
+# sync_clusters and tag_clusters are ported unchanged from reusable-workflows v2
+# (cd-actions/hpc-sync-tag/config/hpc.yml), keyed by cluster site. Unlike v2, a site not listed
+# in all three maps (e.g. hpc-batch, or lumi) is refused, never treated as aa-batch, and nothing
+# is synced from or to, or tagged on, ag (sync_tag.FORBIDDEN_CLUSTERS), whatever this file says.
+# OPEN: confirm this map with the HPC admins before a real (non-dry-run) sync is enabled.
+
+# The cluster each site's nodes are on; sync-tag checks the connection's hostname against it.
+site_cluster:
+  aa-batch: aa
+  ab-batch: ab
+  ac-batch: ac
+  ad-batch: ad
+  ag-batch: ag
+
 sync_clusters:
   aa-batch: [ab, ac, ad]
   ab-batch: [aa, ac, ad]
