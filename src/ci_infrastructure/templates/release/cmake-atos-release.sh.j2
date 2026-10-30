@@ -1,0 +1,176 @@
+{% extends "ci-infrastructure/cmake-atos.sh.j2" %}
+{# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+   SPDX-License-Identifier: Apache-2.0
+
+   cmake-atos.sh.j2 for a release (the hpc-module channel): configure for the final prefix,
+   build, test, install into a staging tree (DESTDIR), archive the prefix's tree, then test,
+   in the same SLURM job, what was archived: with the build tree gone and the modules purged
+   and reloaded, a digest-checked unpack is checked (RUNPATH, ldd without LD_LIBRARY_PATH,
+   build paths leaked into CMake, pkg-config or share/ files) and its smoke command run.
+
+   Beside $CI_INSTALL_ARCHIVE it writes .sha256, .modules, .build-meta.json and .itest.json,
+   which build-on-hpc (publish: archive) fetches. Everything release-specific is rendered from
+   the `release` context: the job needs bash and the leg's modules, never ci-infrastructure's
+   Python, which the compute node does not have.
+
+   Its new blocks (`release_guard`, `release_exclude`, `build_meta`, `verify`) sit inside blocks
+   the base defines; Jinja drops a block only a child declares. #}
+{% block setup %}
+{{ super() }}
+# ci-infrastructure: release overlay
+{% block release_guard %}
+# A release is built from source alone: no compiler cache or launcher from the job environment.
+for _ci_var in SCCACHE_BUCKET RUSTC_WRAPPER CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER CMAKE_Fortran_COMPILER_LAUNCHER; do
+  if [ -n "${!_ci_var:-}" ]; then
+    echo "::error::release build: $_ci_var is set; a release build uses no compiler cache or launcher" >&2
+    exit 1
+  fi
+done
+{% endblock %}
+release_prefix={{ release.prefix_sh }}
+case "$release_prefix" in
+  /?*) ;;
+  *)
+    # shellcheck disable=SC2016 # the prefix as the manifest writes it, unexpanded
+    echo "::error::the release prefix" {{ release.prefix | sh }} "is '$release_prefix' here, not an absolute path" >&2
+    exit 1
+    ;;
+esac
+echo "Modules:"
+module list 2>&1
+# A re-run under the same job key must not archive or test what an earlier attempt left.
+rm -rf "$install_root" "$build" "$CI_INSTALL_ARCHIVE" "$CI_INSTALL_ARCHIVE".*
+mkdir -p "$install_root"
+{% endblock %}
+
+{% block preflight %}
+{{ super() }}
+echo "Release: {{ release.package_name }} {{ release.pkg_version }} ({{ release.mode }}{{ (" " ~ release.tag) if release.tag else "" }}) -> $release_prefix"
+{% endblock %}
+
+{% block configure %}
+# shellcheck disable=SC2086
+cmake --preset {{ options | sh }} -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \
+  -DCMAKE_BUILD_TYPE={{ build_type | sh }} \
+  -DCMAKE_C_COMPILER="$(command -v {{ c_compiler_binary | sh }})" \
+  -DCMAKE_CXX_COMPILER="$(command -v {{ cxx_compiler_binary | sh }})" \
+{% if fortran_compiler_binary %}
+  -DCMAKE_Fortran_COMPILER="$(command -v {{ fortran_compiler_binary | sh }})" \
+{% endif %}
+{% block cmake_args %}{% endblock %}
+  -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+  -DCMAKE_INSTALL_PREFIX="$release_prefix"
+{% endblock %}
+
+{% block install %}
+DESTDIR="$install_root" cmake --install "$build"
+release_tree="$install_root$release_prefix"
+if [ ! -d "$release_tree" ]; then
+  echo "::error::cmake --install put nothing under $release_prefix" >&2
+  exit 1
+fi
+{% block release_exclude %}
+{% if release.exclude %}
+# [release] exclude: installed by mistake, left out of the module. Every glob must match.
+shopt -s nullglob
+_ci_unmatched=()
+_ci_hits=()
+_ci_globs=({% for pattern in release.exclude %} {{ pattern | sh }}{% endfor %} )
+for _ci_glob in "${_ci_globs[@]}"; do
+  # shellcheck disable=SC2206 # the glob expands here, under the tree
+  _ci_found=( "$release_tree"/$_ci_glob )
+  if [ -z "${_ci_found[*]:-}" ]; then _ci_unmatched+=("$_ci_glob"); fi
+  _ci_hits+=("${_ci_found[@]}")
+done
+shopt -u nullglob
+if [ -n "${_ci_unmatched[*]:-}" ]; then
+  echo "::error::[release] exclude matched nothing in the install tree: ${_ci_unmatched[*]}" >&2
+  exit 1
+fi
+for _ci_hit in "${_ci_hits[@]}"; do
+  echo "ci-release: [release] exclude: removing $release_prefix/${_ci_hit#"$release_tree"/}"
+  rm -rf "$_ci_hit"
+done
+{% endif %}
+{% endblock %}
+{% endblock %}
+
+{% block publish %}
+{% include "ci-infrastructure/_checks.sh.j2" %}
+
+# The module's tree, relative to its prefix: promote unpacks it there. .part + mv, so the
+# fetcher only ever sees it complete.
+mkdir -p "$(dirname "$CI_INSTALL_ARCHIVE")"
+tar -cf - -C "$release_tree" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"
+mv "$CI_INSTALL_ARCHIVE.part" "$CI_INSTALL_ARCHIVE"
+ci_release_digest="$(sha256sum "$CI_INSTALL_ARCHIVE" | cut -d' ' -f1)"
+printf '%s\n' "$ci_release_digest" > "$CI_INSTALL_ARCHIVE.sha256"
+module list > "$CI_INSTALL_ARCHIVE.modules" 2>&1
+{% block build_meta %}
+{
+  printf '{\n"release": '
+  cat <<'CI_RELEASE_BUILD_META'
+{{ release.build_meta | trim }}
+CI_RELEASE_BUILD_META
+  printf ',\n"sha256": %s' "$(ci_release_json "$ci_release_digest")"
+  printf ',\n"prefix": %s' "$(ci_release_json "$release_prefix")"
+  printf ',\n"host": %s,\n"slurm_job_id": %s' "$(ci_release_json "$(hostname)")" "$(ci_release_json "${SLURM_JOB_ID:-}")"
+  printf ',\n"tools": {"c": %s, "cxx": %s, "cmake": %s}' \
+    "$(ci_release_json "$({{ c_compiler_binary | sh }} --version | head -1)")" \
+    "$(ci_release_json "$({{ cxx_compiler_binary | sh }} --version | head -1)")" \
+    "$(ci_release_json "$(cmake --version | head -1)")"
+  printf ',\n"modules": %s\n}\n' "$(ci_release_json "$(tr '\n' ';' < "$CI_INSTALL_ARCHIVE.modules")")"
+} > "$CI_INSTALL_ARCHIVE.build-meta.json"
+{% endblock %}
+echo "Archived $release_prefix: $CI_INSTALL_ARCHIVE (sha256 $ci_release_digest)"
+{% block verify %}
+
+# --- Install test: the archive as promote unpacks it, with nothing of the build around ---
+rm -rf "$build" "$install_root"
+module purge
+{% for m in modules %}
+module {{ m }}
+{% endfor %}
+echo "Modules for the install test:"
+module list 2>&1
+# A RUNPATH may point into the modules' libraries, and into the prefix; nothing else absolute.
+ci_release_allowed=("$release_prefix")
+IFS=: read -r -a _ci_dirs <<< "${LD_LIBRARY_PATH:-}"
+for _ci_dir in "${_ci_dirs[@]}"; do
+  case "$_ci_dir" in /?*) ci_release_allowed+=("${_ci_dir%/}") ;; esac
+done
+unset LD_LIBRARY_PATH
+if [ "$(sha256sum "$CI_INSTALL_ARCHIVE" | cut -d' ' -f1)" != "$(cat "$CI_INSTALL_ARCHIVE.sha256")" ]; then
+  echo "::error::$CI_INSTALL_ARCHIVE is not the archive written above (sha256 differs)" >&2
+  exit 1
+fi
+ci_itest_root="${TMPDIR:-/tmp}/ci-itest-${SLURM_JOB_ID:-$$}"
+rm -rf "$ci_itest_root"
+ci_itest_tree="$ci_itest_root$release_prefix"
+mkdir -p "$ci_itest_tree"
+zstd -dc "$CI_INSTALL_ARCHIVE" | tar -xf - -C "$ci_itest_tree"
+ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}"
+ci_release_check_ldd "$ci_itest_tree"
+ci_release_check_leaks "$ci_itest_tree" "$install_root" "${CI_SOURCE_DIR:-}" "${TMPDIR:-}"
+echo "Install test:" {{ install_test_command | sh }} "(in $ci_itest_tree, the unpacked $release_prefix)"
+(
+  cd "$ci_itest_tree"
+  export CI_RELEASE_PREFIX="$ci_itest_tree"
+  {{ install_test_command }}
+)
+{
+  printf '{\n  "leg_id": %s,\n' "$(ci_release_json {{ release.leg_id | sh }})"
+  printf '  "filename": %s,\n' "$(ci_release_json {{ release.filename | sh }})"
+  printf '  "sha256": %s,\n' "$(ci_release_json "$ci_release_digest")"
+  printf '  "sha": %s,\n' "$(ci_release_json {{ release.sha | sh }})"
+  printf '  "job_key": %s,\n' "$(ci_release_json {{ release.job_key | sh }})"
+  printf '  "result": "passed",\n'
+  printf '  "prefix": %s,\n' "$(ci_release_json "$release_prefix")"
+  printf '  "host": %s,\n' "$(ci_release_json "$(hostname)")"
+  printf '  "smoke_command": %s,\n' "$(ci_release_json {{ install_test_command | sh }})"
+  printf '  "at": %s\n}\n' "$(ci_release_json "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+} > "$CI_INSTALL_ARCHIVE.itest.json"
+rm -rf "$ci_itest_root"
+cat "$CI_INSTALL_ARCHIVE.itest.json"
+{% endblock %}
+{% endblock %}

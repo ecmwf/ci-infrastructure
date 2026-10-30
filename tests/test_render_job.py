@@ -12,7 +12,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 from conftest import write_repo
-from release_fixtures import write_release_repo
+from release_fixtures import HPC_LEG, RPM_LEG, write_release_repo
 
 from ci_infrastructure.render_job import main
 
@@ -139,6 +139,23 @@ def test_release_rehearsal_defaults_to_the_repos_head(tmp_path: Path) -> None:
     out = _run("--manifest", str(manifest), "--leg", _RELEASE_LEG_TITLE, "--release", "rehearsal")
     assert '  "mode": "rehearsal",' in out.splitlines()
     assert "pkg-2.5.0-1.x86_64.rpm" in out
+
+
+def test_release_renders_an_hpc_leg_for_its_root(tmp_path: Path) -> None:
+    manifest = write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG)
+    title = "release-hpc (hpc-atos-gnu, g++-8, release)"
+    assert f"pkg/{title}" in _run("--manifest", str(manifest), "--list").splitlines()
+    args = ("--manifest", str(manifest), "--leg", title, "--release", "prerelease", "--tag", "2.5.0-rc1")
+    out = _run(*args, "--sha", "f" * 40)
+    lines = out.splitlines()
+    # The #SBATCH header stays first, so the script is also a SLURM job.
+    assert lines[1].startswith("#SBATCH ")
+    assert 'export CI_INSTALL_ARCHIVE="${CI_INSTALL_ARCHIVE:-$CI_INSTALL_PREFIX.install.tar.zst}"' in lines
+    assert 'release_prefix="$SCRATCH"/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5' in lines
+    subprocess.run(["bash", "-n"], input=out, text=True, check=True)
+    out = _run(*args, "--hpc-root", "/ec/res4/scratch/me/cd")
+    assert "release_prefix=/ec/res4/scratch/me/cd/pkg/2.5.0-rc1/GNU/8.5" in out.splitlines()
+    assert "allow-production" in _fails(*args, "--hpc-root", "/usr/local/apps")
 
 
 def _fails(*args: str) -> str:

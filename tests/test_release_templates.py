@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from release_fixtures import RECIPE, write_release_repo
+from release_fixtures import HPC_LEG, RECIPE, RPM_LEG, write_release_repo
 
 from ci_infrastructure.hpc import jobscript, orchestrate
 from ci_infrastructure.release import legs
@@ -199,9 +199,203 @@ def test_a_recipe_that_bypasses_the_overlay_is_refused(tmp_path: Path) -> None:
         _render(leg, '{% extends "ci-infrastructure/cmake-runner.sh.j2" %}\n')
 
 
-def test_the_hpc_lane_has_no_release_overlay_yet(tmp_path: Path) -> None:
+def test_an_rpm_leg_renders_nothing_on_the_hpc_lane(tmp_path: Path) -> None:
     with pytest.raises(jobscript.JobTemplateError, match="renders nothing"):
         _render(_release_leg(tmp_path), execution="hpc-atos")
+
+
+def test_an_hpc_leg_renders_nothing_on_a_runner(tmp_path: Path) -> None:
+    with pytest.raises(jobscript.JobTemplateError, match="renders nothing"):
+        _render(_hpc_leg(tmp_path), execution="runner")
+
+
+# --- the HPC (hpc-module) overlay -----------------------------------------------------------------------------
+
+
+def _hpc_leg(tmp_path: Path, tag: str = "2.5.0-rc1", release_extra: str = "") -> dict[str, Any]:
+    rm = legs.load(write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG, release_extra=release_extra))
+    event = ReleaseEvent(version=parse_tag(tag), sha=SHA, head_sha=SHA)
+    [leg] = legs.expand(rm, ["release-hpc"], event)["release-hpc"]
+    return leg
+
+
+def test_hpc_release_leg_renders_the_overlay_and_its_install_test(tmp_path: Path) -> None:
+    out = _render(_hpc_leg(tmp_path, release_extra=EXCLUDE), execution="hpc-atos")
+    lines = out.splitlines()
+    assert jobscript.RELEASE_OVERLAY_MARKER in lines
+    # The atos base still frames it: #SBATCH header and the leg's modules.
+    assert "#SBATCH --time=01:00:00" in lines and "module load gcc/old" in lines
+    assert 'release_prefix="$SCRATCH"/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5' in lines
+    assert "-DCMAKE_C_FLAGS=-fno-fast-math \\" in lines  # the recipe's cmake_args, re-declared
+    assert '  -DCMAKE_INSTALL_PREFIX="$release_prefix"' in lines
+    assert "USE_LINK_PATH" not in out
+    assert 'ctest --test-dir "$build" --output-on-failure -j "$jobs"' in lines
+    assert 'DESTDIR="$install_root" cmake --install "$build"' in lines
+    # The blocks only the overlay declares render: they sit inside blocks the base defines.
+    assert "for _ci_var in SCCACHE_BUCKET RUSTC_WRAPPER" in out  # release_guard, inside setup
+    assert "_ci_globs=( 'lib64/pkgconfig/pkg_test_*.pc' )" in lines  # release_exclude, inside install
+    assert '} > "$CI_INSTALL_ARCHIVE.build-meta.json"' in lines  # build_meta, inside publish
+    assert '} > "$CI_INSTALL_ARCHIVE.itest.json"' in lines  # verify, inside publish
+    assert '  "job_key": "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567",' in lines
+    # The install test: build gone, modules purged and reloaded, no LD_LIBRARY_PATH, the checks.
+    verify = out[out.index("# --- Install test") :]
+    for needle in (
+        'rm -rf "$build" "$install_root"',
+        "module purge",
+        "module load gcc/old",
+        "module list 2>&1",
+        "unset LD_LIBRARY_PATH",
+        'ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}"',
+        'ci_release_check_ldd "$ci_itest_tree"',
+        "ci_release_check_leaks",
+        "  bin/pkg-version",
+    ):
+        assert needle in verify, needle
+    assert verify.index("module purge") < verify.index("unset LD_LIBRARY_PATH") < verify.index("bin/pkg-version")
+    assert "ci_release_check_runpath() {" in out  # _checks.sh.j2, included
+    # Nothing the compute node does not have.
+    assert "CI_INFRASTRUCTURE_PYTHON" not in out and "python" not in out.lower()
+
+
+@pytest.mark.parametrize("release_extra", ["", EXCLUDE], ids=["plain", "exclude"])
+def test_rendered_hpc_release_script_is_valid_bash(tmp_path: Path, release_extra: str) -> None:
+    from ci_infrastructure.render_job import wrap
+
+    leg = _hpc_leg(tmp_path, release_extra=release_extra)
+    script = tmp_path / "job.sh"
+    script.write_text(wrap(_render(leg, execution="hpc-atos"), leg=leg, execution="hpc-atos"))
+    subprocess.run(["bash", "-n", str(script)], check=True)
+    if shutil.which("shellcheck"):
+        subprocess.run(["shellcheck", str(script)], check=True)
+
+
+def test_the_hpc_lane_base_templates_are_unchanged() -> None:
+    """The HPC overlay extends cmake-atos.sh.j2; it never edits it (HPC_TEMPLATE_VERSION pins its digest)."""
+    overlay = (resources.files("ci_infrastructure") / "templates" / "release" / "cmake-atos-release.sh.j2").read_text()
+    assert overlay.startswith('{% extends "ci-infrastructure/cmake-atos.sh.j2" %}')
+
+
+_HPC_STUBS: Final = {
+    "module": 'case "$1" in list) echo "Currently Loaded Modules: gcc/8.5.0 cmake" >&2 ;; esac',
+    "gcc": 'echo "gcc (GCC) 8.5.0"',
+    "g++": 'echo "g++ (GCC) 8.5.0"',
+    "ctest": "exit 0",
+    # Installs a tree as the project would: a smoke program, a .pc, a test-only .pc to exclude,
+    # and with STUB_LEAK a CMake file naming the node-local source dir.
+    "cmake": textwrap.dedent(
+        """\
+        case "$1" in
+          --version) echo "cmake version 3.31.0" ;;
+          --preset|--build) ;;
+          --install)
+            t="$DESTDIR$STUB_PREFIX"
+            mkdir -p "$t/bin" "$t/lib64/pkgconfig" "$t/lib64/cmake/pkg"
+            printf '#!/bin/bash\\n[ -z "${STUB_SMOKE_FAIL:-}" ] && echo "pkg 2.5.0 in $PWD"\\n' > "$t/bin/pkg-version"
+            chmod +x "$t/bin/pkg-version"
+            echo "prefix=$STUB_PREFIX" > "$t/lib64/pkgconfig/pkg.pc"
+            echo "prefix=/nowhere" > "$t/lib64/pkgconfig/pkg_test_custom.pc"
+            if [ -n "${STUB_LEAK:-}" ]; then echo "set(X $CI_SOURCE_DIR/src)" > "$t/lib64/cmake/pkg/x.cmake"; fi
+            ;;
+          *) exit 3 ;;
+        esac
+        """
+    ),
+    # No zstd here: a "compressed" archive is the plain tar.
+    "zstd": textwrap.dedent(
+        """\
+        out=""; dc=0; file=""
+        while [ $# -gt 0 ]; do
+          case "$1" in -o) out="$2"; shift ;; -dc) dc=1 ;; -T0|-q) ;; *) file="$1" ;; esac
+          shift
+        done
+        if [ "$dc" = 1 ]; then cat "$file"; else cat > "$out"; fi
+        """
+    ),
+}
+
+
+def _run_hpc_stubbed(tmp_path: Path, release_extra: str = EXCLUDE, **env: str) -> subprocess.CompletedProcess[str]:
+    from ci_infrastructure.render_job import wrap
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in _HPC_STUBS.items():
+        stub = bin_dir / name
+        stub.write_text("#!/bin/bash\n" + body)
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    leg = _hpc_leg(tmp_path, release_extra=release_extra)
+    script = tmp_path / "job.sh"
+    script.write_text(wrap(_render(leg, execution="hpc-atos"), leg=leg, execution="hpc-atos"))
+    scratch = tmp_path / "scratch"
+    (tmp_path / "tmp").mkdir(exist_ok=True)
+    run_env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "SCRATCH": str(scratch),
+        "STUB_PREFIX": f"{scratch}/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5",
+        "TMPDIR": str(tmp_path / "tmp"),
+        "SLURM_JOB_ID": "42",
+        "CI_SOURCE_DIR": str(tmp_path / "tmp" / "ci-src-1"),
+        "CI_INSTALL_PREFIX": str(tmp_path / "work" / "install" / "key"),
+        "LD_LIBRARY_PATH": "/from/the/job/env",
+        **env,
+    }
+    return subprocess.run(["bash", str(script)], cwd=tmp_path, env=run_env, capture_output=True, text=True)
+
+
+def test_the_hpc_script_archives_the_prefix_and_tests_it(tmp_path: Path) -> None:
+    result = _run_hpc_stubbed(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    archive = tmp_path / "work" / "install" / "key.install.tar.zst"
+    names = subprocess.run(["tar", "-tf", str(archive)], capture_output=True, text=True, check=True).stdout.split()
+    # Relative to the prefix, and without the excluded file.
+    assert "./bin/pkg-version" in names and "./lib64/pkgconfig/pkg.pc" in names
+    assert not [n for n in names if "pkg_test_" in n]
+    assert "removing" in result.stdout and "pkg_test_custom.pc" in result.stdout
+    digest = subprocess.run(["sha256sum", str(archive)], capture_output=True, text=True).stdout.split()[0]
+    assert Path(f"{archive}.sha256").read_text().strip() == digest
+    itest = json.loads(Path(f"{archive}.itest.json").read_text())
+    assert itest["result"] == "passed" and itest["sha256"] == digest
+    assert (itest["job_key"], itest["sha"]) == ("pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567", SHA)
+    assert itest["prefix"] == f"{tmp_path}/scratch/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5"
+    meta = json.loads(Path(f"{archive}.build-meta.json").read_text())
+    assert meta["release"]["job_key"] == itest["job_key"] and meta["sha256"] == digest
+    assert "gcc/8.5.0" in Path(f"{archive}.modules").read_text()
+    # The smoke command ran in the unpacked prefix; the build and staging trees are gone.
+    assert "pkg 2.5.0 in " in result.stdout and "/ci-itest-42" in result.stdout
+    assert not (tmp_path / "work" / "install" / "key").exists()
+    assert not (tmp_path / "tmp" / "ci-itest-42").exists()
+
+
+def test_the_hpc_script_starts_from_a_clean_install_dir(tmp_path: Path) -> None:
+    stale = tmp_path / "work" / "install" / "key" / "scratch" / "old"
+    stale.mkdir(parents=True)
+    (tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").write_text("{}")
+    result = _run_hpc_stubbed(tmp_path)
+    assert result.returncode == 0, result.stderr
+    names = subprocess.run(
+        ["tar", "-tf", str(tmp_path / "work" / "install" / "key.install.tar.zst")], capture_output=True, text=True
+    ).stdout
+    assert "old" not in names
+    assert json.loads((tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").read_text())["result"]
+
+
+@pytest.mark.parametrize(
+    ("env", "release_extra", "message"),
+    [
+        ({"STUB_SMOKE_FAIL": "1"}, EXCLUDE, ""),
+        ({"STUB_LEAK": "1"}, EXCLUDE, "build paths leaked"),
+        ({}, 'exclude = ["lib/none_*.pc"]\n', "matched nothing"),
+        ({"SCCACHE_BUCKET": "b"}, EXCLUDE, "SCCACHE_BUCKET is set"),
+    ],
+    ids=["smoke", "leak", "stale-exclude", "sccache"],
+)
+def test_the_hpc_script_fails_without_an_install_test_receipt(
+    tmp_path: Path, env: dict[str, str], release_extra: str, message: str
+) -> None:
+    result = _run_hpc_stubbed(tmp_path, release_extra=release_extra, **env)
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert not (tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").exists()
 
 
 def test_a_leg_field_named_release_is_refused() -> None:
@@ -210,10 +404,10 @@ def test_a_leg_field_named_release_is_refused() -> None:
 
 
 def test_release_must_be_a_table() -> None:
+    # Every release leg sets install-test-command, which the overlay of each lane reads.
+    leg = {**_CI_LEG, "install-test-command": "bin/x", "_release": "x"}
     with pytest.raises(jobscript.JobTemplateError, match="must be a table"):
-        jobscript.render_job_template(
-            template_source=_CI_RECIPE, template_name="b.sh.j2", leg={**_CI_LEG, "_release": "x"}, execution="runner"
-        )
+        jobscript.render_job_template(template_source=_CI_RECIPE, template_name="b.sh.j2", leg=leg, execution="runner")
 
 
 def test_static_check_follows_the_overlay(tmp_path: Path) -> None:

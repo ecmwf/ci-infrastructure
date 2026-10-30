@@ -118,7 +118,7 @@ def _head_sha(repo_root: Path) -> str:
 
 
 def _release_from_manifest(
-    manifest: Path, leg_title: str, mode: str, tag: str | None, sha: str | None
+    manifest: Path, leg_title: str, mode: str, tag: str | None, sha: str | None, hpc_root: str = legs.DEFAULT_HPC_ROOT
 ) -> tuple[Path, dict[str, Any], Execution, str]:
     """The leg as the release gate hands it to run-job-script: with ``_release``, without ``_resolved``."""
     try:
@@ -140,7 +140,9 @@ def _release_from_manifest(
                 raise CIError(f"tag {tag!r} is a {v.mode}, not a {mode}")
             version.check_tag_matches_version(v, project_version)
         commit = sha or _head_sha(rm.m.repo_root)
-        ctx = legs.release_context(rm, kind, leg, ReleaseEvent(version=v, sha=commit, head_sha=commit))
+        ctx = legs.release_context(
+            rm, kind, leg, ReleaseEvent(version=v, sha=commit, head_sha=commit), hpc_root=hpc_root
+        )
     except ReleaseError as exc:
         raise CIError(str(exc)) from exc
     spec = str(leg.get("job-script") or "")
@@ -179,6 +181,11 @@ def _list_titles(manifest: Path) -> Sequence[str]:
 )
 @click.option("--tag", help="The release tag, with --release prerelease|release, e.g. 2.5.0-rc1.")
 @click.option("--sha", help="The commit, with --release; default: HEAD of the manifest's repo.")
+@click.option(
+    "--hpc-root",
+    default=None,
+    help=f"With --release, where an hpc-module leg installs (the gate's hpc-root) [default: {legs.DEFAULT_HPC_ROOT}].",
+)
 @click.option("-o", "--output", type=click.Path(path_type=Path), help="Write here (executable) instead of stdout.")
 def main(
     manifest: Path,
@@ -191,6 +198,7 @@ def main(
     release_mode: str | None,
     tag: str | None,
     sha: str | None,
+    hpc_root: str | None,
     output: Path | None,
 ) -> None:
     if list_legs:
@@ -199,9 +207,11 @@ def main(
     if release_mode is not None:
         if leg_title is None or matrix_leg is not None:
             raise click.UsageError("--release takes --leg (a [matrix.release-*] leg of --manifest)")
-        job_script, leg, execution, title = _release_from_manifest(manifest, leg_title, release_mode, tag, sha)
-    elif tag is not None or sha is not None:
-        raise click.UsageError("--tag and --sha go with --release")
+        job_script, leg, execution, title = _release_from_manifest(
+            manifest, leg_title, release_mode, tag, sha, hpc_root or legs.DEFAULT_HPC_ROOT
+        )
+    elif tag is not None or sha is not None or hpc_root is not None:
+        raise click.UsageError("--tag, --sha and --hpc-root go with --release")
     elif matrix_leg is not None:
         if job_script is None:
             raise click.UsageError("--matrix-leg needs --job-script")
