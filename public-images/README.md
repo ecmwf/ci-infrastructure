@@ -19,6 +19,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
 - The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, `openmpi` a working `mpicc`/`mpirun`, and `rust<X.Y>` that Rust toolchain with `clippy` and `rustfmt`, linking with the named gcc. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
+- `release` promises what release builds link and package with; see [Release images](#release-images).
 
 [`verify-environment.sh`](verify-environment.sh) checks this contract.
 
@@ -36,6 +37,22 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 | `fedora43` | 15 | 6 | 1.83 | 3.31 | 3.14 |
 | `fedora44` | 16 | 6 | 1.90 | 4.3 | 3.14 |
 | `rolling-arch` | newest | 6 | newest | newest | newest |
+
+## Release images
+
+`<platform>/gcc<N>-gfortran<N>-release` is the platform's gcc variant plus what a release build
+(CD v3, `[matrix.release-*]`) links and packages with, so the package it builds has every optional
+feature its project offers and nothing is installed at build time. Release builds pin the tag.
+
+- It holds the platform's packager (`rpm-build`) and these libraries with headers, from the
+  distribution and its add-on repositories (EPEL, CRB/PowerTools): libaec, bzip2, lz4, BLAS/LAPACK
+  and Eigen. A project that needs another library adds it to every release image in one change.
+- Only distribution versions that are still supported get one: today rocky8, rocky9, rocky10,
+  fedora43 and fedora44. debian12 and debian13 follow when releases build .deb packages.
+- The list is a promise across platforms, but the versions are the distribution's: rocky8's libaec
+  is 1.0.2, below eckit's 1.1.4.
+
+`verify-environment.sh` builds, links and runs a program against each library with the image's gcc.
 
 ## Tags and rebuilds
 
