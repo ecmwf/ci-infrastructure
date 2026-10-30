@@ -6,13 +6,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
+import socket
 import subprocess
+import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, Protocol
 
@@ -89,35 +93,169 @@ def _ship_lock_path(staging_dir: str) -> str:
 #: filesystem refused (quota, permissions), and waiting would only time out.
 _LOCK_UNCREATABLE: Final = 2
 
+#: The file in a lock directory naming who holds it (one line of JSON).
+LOCK_OWNER_FILE: Final = "owner"
 
-def _try_acquire_lock(conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int) -> bool:
-    """One atomic ``mkdir`` (no ``-p``) claim, breaking a lock older than ``stale_minutes``."""
+
+def lock_owner(run_id: str, *, env: Mapping[str, str] | None = None) -> str:
+    """Who claims a lock, as one line of JSON: the run, its repo and job, this host and process, and when.
+
+    Unique per claim (host, pid, time), so a run's later attempt never mistakes an earlier claim for its own.
+    """
+    e = os.environ if env is None else env
+    server, repo, gh_run = e.get("GITHUB_SERVER_URL", ""), e.get("GITHUB_REPOSITORY", ""), e.get("GITHUB_RUN_ID", "")
+    owner = {
+        "run_id": run_id,
+        "repository": repo,
+        "run_url": f"{server}/{repo}/actions/runs/{gh_run}" if server and repo and gh_run else "",
+        "job": e.get("GITHUB_JOB", ""),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "acquired_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+    }
+    return json.dumps(owner, sort_keys=True, separators=(",", ":"))
+
+
+def _owner_is(lock_dir: str, owner: str) -> str:
+    """A bash test: the lock's owner file says exactly ``owner``."""
+    return f'[ "$(cat {shlex.quote(f"{lock_dir}/{LOCK_OWNER_FILE}")} 2>/dev/null)" = {shlex.quote(owner)} ]'
+
+
+def _decode(data: Any) -> str:
+    return data.decode(errors="replace").strip() if isinstance(data, bytes) else str(data or "").strip()
+
+
+#: The sub-lock that lets one waiter at a time break a stale lock: ``<lock><suffix>``.
+LOCK_BREAKING_SUFFIX: Final = ".breaking"
+#: No-op lines of the acquire script where another waiter may act meanwhile; tests inject there.
+LOCK_SEAM_SEEN: Final = ": lock-seam seen-stale"
+LOCK_SEAM_RECHECKED: Final = ": lock-seam rechecked"
+LOCK_SEAM_RENAMED: Final = ": lock-seam renamed"
+
+
+def _try_acquire_lock(
+    conn: Connection, *, lock_dir: str, run_id: str, stale_minutes: int, owner: str | None = None
+) -> bool:
+    """One atomic ``mkdir`` (no ``-p``) claim, then the owner file.
+
+    A lock unchanged for over ``stale_minutes`` (a holder with a heartbeat keeps refreshing it, see
+    ``remote_lock``) is broken, one waiter at a time: the breaker first takes the sub-lock
+    ``<lock>.breaking`` (``mkdir``; a waiter that finds it held tries again on its next poll; one
+    left by a dead breaker is cleared by the same stale rule), then looks again at the lock *as it
+    is now* and renames it aside only while it is still stale. The renamed dir is removed only when
+    its owner file is the one read before the rename and it is still stale; anything else is
+    renamed back with ``mv -T -n`` (never over a lock claimed meanwhile) or, failing that, left
+    where it is with a warning, never deleted. What is broken, and whose it was, is printed.
+
+    Residual race: two waiters that both find a dead breaker's ``.breaking`` stale may each clear
+    it and break at once. That needs a breaker to die inside the break and two waiters to pause for
+    minutes inside a few lines of shell; even then the owner and staleness check after the rename
+    keeps a re-claimed lock from ever being deleted (at worst it is left aside, with a warning).
+    """
+    owner = owner if owner is not None else lock_owner(run_id)
     q_lock = shlex.quote(lock_dir)
-    q_owner = shlex.quote(f"{lock_dir}/owner")
+    q_owner_file = shlex.quote(f"{lock_dir}/{LOCK_OWNER_FILE}")
+    q_breaking = shlex.quote(f"{lock_dir}{LOCK_BREAKING_SUFFIX}")
     q_parent = shlex.quote(str(PurePosixPath(lock_dir).parent))
-    owner = f"{{ echo {shlex.quote(run_id)} > {q_owner} 2>/dev/null || true; }}"
+    claim = f"{{ printf '%s\\n' {shlex.quote(owner)} > {q_owner_file} 2>/dev/null || true; }}"
+    stale_test = f"-maxdepth 0 -mmin +{int(stale_minutes)} 2>/dev/null"
     # Newline-joined: `then; rm ...` is a bash syntax error.
     script = "\n".join(
         [
             f"mkdir -p {q_parent} 2>/dev/null || true",
-            f"if err=$(mkdir {q_lock} 2>&1); then {owner}; exit 0; fi",
+            f"if err=$(mkdir {q_lock} 2>&1); then {claim}; exit 0; fi",
             f'if [ ! -d {q_lock} ]; then echo "$err" >&2; exit {_LOCK_UNCREATABLE}; fi',
-            f'if [ -n "$(find {q_lock} -maxdepth 0 -mmin +{stale_minutes} 2>/dev/null)" ]; then',
-            f"  rm -rf {q_lock} 2>/dev/null || true",
-            f"  if mkdir {q_lock} 2>/dev/null; then {owner}; exit 0; fi",
+            f'if [ -z "$(find {q_lock} {stale_test})" ]; then exit 1; fi',
+            LOCK_SEAM_SEEN,
+            # A breaker that died inside the break: its sub-lock goes stale like any lock.
+            f'if [ -n "$(find {q_breaking} {stale_test})" ]; then rmdir {q_breaking} 2>/dev/null || true; fi',
+            f"if ! mkdir {q_breaking} 2>/dev/null; then exit 1; fi",
+            f"trap 'rmdir {q_breaking} 2>/dev/null || true' EXIT",
+            # Under the sub-lock: the lock as it is now, not as it was when we looked.
+            f"before=$(cat {q_owner_file} 2>/dev/null || echo '(no owner file)')",
+            f'if [ -z "$(find {q_lock} {stale_test})" ]; then exit 1; fi',
+            LOCK_SEAM_RECHECKED,
+            f"stale={q_lock}.stale.$$.$RANDOM",
+            f'if mv -T {q_lock} "$stale" 2>/dev/null; then',
+            f"  {LOCK_SEAM_RENAMED}",
+            f"  now=$(cat \"$stale/{LOCK_OWNER_FILE}\" 2>/dev/null || echo '(no owner file)')",
+            f'  if [ "$now" != "$before" ] || [ -z "$(find "$stale" {stale_test})" ]; then',
+            # Claimed or refreshed between our look and the rename: give it back, never over a new claim.
+            f'    mv -T -n "$stale" {q_lock} 2>/dev/null || true',
+            '    if [ -e "$stale" ]; then',
+            f'      echo "lock: left $stale aside, not deleted: not the stale lock of {lock_dir} we looked at" >&2',
+            "    fi",
+            "    exit 1",
+            "  fi",
+            f'  echo "lock: broke the stale lock {lock_dir} (unchanged for over {int(stale_minutes)} min),'
+            ' held by: $now"',
+            '  rm -rf "$stale" 2>/dev/null || true',
             "fi",
+            f"if mkdir {q_lock} 2>/dev/null; then {claim}; exit 0; fi",
             "exit 1",
         ]
     )
     proc = conn.execute(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    _stdout, stderr = proc.communicate()
+    stdout, stderr = proc.communicate()
     if proc.returncode == _LOCK_UNCREATABLE:
-        detail = stderr.decode(errors="replace").strip() if isinstance(stderr, bytes) else str(stderr).strip()
         raise CIError(
-            f"Cannot create the lock {lock_dir}: {detail}. No other run holds it; "
+            f"Cannot create the lock {lock_dir}: {_decode(stderr)}. No other run holds it; "
             "check the filesystem (quota, permissions) on the cluster."
         )
+    for line in _decode(stdout).splitlines():
+        if line.startswith("lock: broke"):
+            print(f"::warning::{line}")
+    for line in _decode(stderr).splitlines():
+        if line.startswith("lock: left"):
+            print(f"::warning::{line}")
     return int(proc.returncode) == 0
+
+
+def lock_holder(conn: Connection, *, lock_dir: str) -> str:
+    """The owner file of ``lock_dir`` (one line of JSON), or a note that there is none."""
+    proc = conn.execute(
+        ["bash", "-c", f"cat {shlex.quote(f'{lock_dir}/{LOCK_OWNER_FILE}')} 2>/dev/null"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdout, _stderr = proc.communicate()
+    return _decode(stdout) or "(no owner file)"
+
+
+def _release_lock(conn: Connection, *, lock_dir: str, owner: str, what: str) -> None:
+    """Remove ``lock_dir`` only while its owner file is still ``owner``: a lock broken as stale and
+    claimed by another run stays theirs. Always exits 0, so a propagating exception is not replaced."""
+    q_lock = shlex.quote(lock_dir)
+    q_owner_file = shlex.quote(f"{lock_dir}/{LOCK_OWNER_FILE}")
+    script = "\n".join(
+        [
+            f"if {_owner_is(lock_dir, owner)}; then rm -rf {q_lock} 2>/dev/null || true",
+            f"elif [ -d {q_lock} ]; then",
+            f'  echo "::warning::not releasing the {what} lock {lock_dir}: it is no longer ours; held by:'
+            f' $(cat {q_owner_file} 2>/dev/null || echo "(no owner file)")"',
+            "fi",
+            "exit 0",
+        ]
+    )
+    proc = conn.execute(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, _stderr = proc.communicate()
+    if out := _decode(stdout):
+        print(out)
+
+
+#: How often a holder with a heartbeat refreshes its lock; well under any stale threshold.
+LOCK_HEARTBEAT_SECONDS: Final = 60
+
+
+def _heartbeat(conn: Connection, *, lock_dir: str, owner: str, every: float, stop: threading.Event) -> None:
+    """Refresh the lock's mtime while it is still ours, so a long hold never looks stale."""
+    touch = f"if {_owner_is(lock_dir, owner)}; then touch {shlex.quote(lock_dir)}; fi"
+    while not stop.wait(every):
+        try:
+            conn.execute(["bash", "-c", touch], stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+            # A missed beat must not kill the holder; the next one retries.
+            print(f"lock: heartbeat of {lock_dir} failed: {exc}")
 
 
 @contextmanager
@@ -157,32 +295,50 @@ def remote_lock(
     poll: int = SHIP_LOCK_POLL_SECONDS,
     stale_minutes: int = SHIP_LOCK_STALE_MINUTES,
     dryrun: bool = False,
+    heartbeat: float = 0,
 ) -> Iterator[None]:
-    """Exclusive lock on the shared cluster filesystem; ``what`` and ``subject`` only label logs."""
+    """Exclusive lock on the shared cluster filesystem; ``what`` and ``subject`` only label logs.
+
+    ``mkdir`` claims it and an owner file (:func:`lock_owner`) says whose it is; a lock unchanged for
+    ``stale_minutes`` is broken. With ``heartbeat`` (seconds) a thread refreshes it while held, so
+    only a dead holder's lock goes stale. Released only while the owner file is still ours.
+    """
     if dryrun:
         yield
         return
+    owner = lock_owner(run_id)
     deadline = time.monotonic() + timeout
     waited = False
-    while not _try_acquire_lock(conn, lock_dir=lock_dir, run_id=run_id, stale_minutes=stale_minutes):
+    while not _try_acquire_lock(conn, lock_dir=lock_dir, run_id=run_id, stale_minutes=stale_minutes, owner=owner):
         if time.monotonic() >= deadline:
             raise CIError(
-                f"Timed out after {timeout}s waiting for the {what} lock {lock_dir}. "
-                "Another run holds it for this artifact; remove the lock directory if its runner is gone."
+                f"Timed out after {timeout}s waiting for the {what} lock {lock_dir}, held by: "
+                f"{lock_holder(conn, lock_dir=lock_dir)}. Remove the lock directory if that run is gone; "
+                f"it is broken by itself once unchanged for {stale_minutes} min."
             )
         if not waited:
             waited = True
-            print(f"{what}: '{subject}' is locked by another run; waiting up to {timeout}s.")
+            print(
+                f"{what}: '{subject}' is locked by another run; waiting up to {timeout}s. "
+                f"Held by: {lock_holder(conn, lock_dir=lock_dir)}"
+            )
         time.sleep(poll)
+    stop = threading.Event()
+    beat = None
+    if heartbeat > 0:
+        beat = threading.Thread(
+            target=_heartbeat,
+            kwargs={"conn": conn, "lock_dir": lock_dir, "owner": owner, "every": heartbeat, "stop": stop},
+            daemon=True,
+        )
+        beat.start()
     try:
         yield
     finally:
-        # Always exit 0: a failed release must not replace a propagating exception.
-        _run_remote(
-            conn,
-            ["bash", "-c", f"rm -rf {shlex.quote(lock_dir)} 2>/dev/null || true"],
-            what=f"Release of {what} lock {lock_dir}",
-        )
+        stop.set()
+        if beat is not None:
+            beat.join(timeout=30)
+        _release_lock(conn, lock_dir=lock_dir, owner=owner, what=what)
 
 
 def _tree_stats(path: str | Path) -> tuple[int, int]:

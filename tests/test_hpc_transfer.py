@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -265,6 +266,100 @@ def test_ship_lock_releases_when_the_ship_fails(tmp_path: Path) -> None:
     assert not Path(transfer._ship_lock_path(str(staging))).exists()
 
 
+class CapturingShellConnection(FakeConnection):
+    """Runs remote commands locally and hands back their stdout, stderr and exit code."""
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        argv = [str(c) for c in command]
+        self.executed.append(argv)
+        proc = subprocess.run(argv, capture_output=True)
+        return FakeProc(stdout=proc.stdout, returncode=proc.returncode, stderr=proc.stderr)
+
+
+def _hand_made_lock(lock: Path, owner: str, *, age_minutes: float) -> None:
+    """A lock as a run that died while holding it left it: an owner file and an old mtime."""
+    lock.mkdir(parents=True)
+    (lock / transfer.LOCK_OWNER_FILE).write_text(owner + "\n")
+    old = time.time() - age_minutes * 60
+    os.utime(lock / transfer.LOCK_OWNER_FILE, (old, old))
+    os.utime(lock, (old, old))
+
+
+def test_the_owner_file_names_the_claim_as_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for k, v in {"GITHUB_SERVER_URL": "https://gh", "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "7"}.items():
+        monkeypatch.setenv(k, v)
+    lock = tmp_path / "locks" / "promote" / "pkg"
+    with transfer.remote_lock(
+        CapturingShellConnection(), lock_dir=str(lock), run_id="7-1", what="promote", subject="x"
+    ):
+        owner = json.loads((lock / transfer.LOCK_OWNER_FILE).read_text())
+    assert owner["run_id"] == "7-1"
+    assert owner["run_url"] == "https://gh/o/r/actions/runs/7"
+    assert {"host", "pid", "acquired_at", "repository", "job"} <= set(owner)
+    assert not lock.exists()
+
+
+def test_two_claims_of_one_run_have_different_owners() -> None:
+    """A re-run attempt must never take an earlier claim of the same run id for its own."""
+    assert transfer.lock_owner("7-1") != transfer.lock_owner("7-1")
+
+
+def test_a_lock_that_is_no_longer_ours_is_not_released(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    lock = tmp_path / "locks" / "modulemgr"
+    other = '{"run_id":"9-1","host":"elsewhere"}'
+    with transfer.remote_lock(CapturingShellConnection(), lock_dir=str(lock), run_id="7-1", what="sync", subject="x"):
+        # Broken as stale and claimed by another run meanwhile.
+        (lock / transfer.LOCK_OWNER_FILE).write_text(other + "\n")
+    assert (lock / transfer.LOCK_OWNER_FILE).read_text() == other + "\n"
+    assert "not releasing the sync lock" in capsys.readouterr().out
+
+
+def test_a_stale_lock_of_a_finished_run_is_broken_and_its_owner_printed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S3(b): a lock left by a run that is gone, made by hand with an old mtime, as on the cluster."""
+    lock = tmp_path / "locks" / "promote" / "pkg"
+    dead = '{"run_id":"1-1","run_url":"https://github.com/o/r/actions/runs/1"}'
+    _hand_made_lock(lock, dead, age_minutes=10)
+    conn = CapturingShellConnection()
+    with transfer.remote_lock(conn, lock_dir=str(lock), run_id="2-1", what="promote", subject="x", stale_minutes=5):
+        assert json.loads((lock / transfer.LOCK_OWNER_FILE).read_text())["run_id"] == "2-1"
+    out = capsys.readouterr().out
+    assert "broke the stale lock" in out and "actions/runs/1" in out
+    assert not lock.exists()
+    assert not list(lock.parent.glob("pkg.stale.*"))
+
+
+def test_a_fresh_lock_is_waited_for_and_the_timeout_names_its_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S3(a): a lock held by a live run (fresh mtime) is never broken; the waiter times out."""
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    lock = tmp_path / "locks" / "promote" / "pkg"
+    holder = '{"run_id":"1-1","run_url":"https://github.com/o/r/actions/runs/1"}'
+    _hand_made_lock(lock, holder, age_minutes=0)
+    with pytest.raises(CIError, match=r"Timed out after 0s waiting for the promote lock .*actions/runs/1"):
+        with transfer.remote_lock(
+            CapturingShellConnection(), lock_dir=str(lock), run_id="2-1", what="promote", subject="x", timeout=0
+        ):
+            raise AssertionError("body must not run without the lock")
+    assert (lock / transfer.LOCK_OWNER_FILE).read_text() == holder + "\n"
+
+
+def test_the_heartbeat_keeps_a_held_lock_fresh(tmp_path: Path) -> None:
+    lock = tmp_path / "locks" / "modulemgr"
+    with transfer.remote_lock(
+        CapturingShellConnection(), lock_dir=str(lock), run_id="7-1", what="sync", subject="x", heartbeat=0.05
+    ):
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+        deadline = time.time() + 10
+        while lock.stat().st_mtime < time.time() - 60 and time.time() < deadline:
+            time.sleep(0.05)
+        assert lock.stat().st_mtime > time.time() - 60
+    assert not lock.exists()
+
+
 def test_dryrun_transfers_nothing_and_writes_no_local_tarball(tmp_path: Path) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
     stage = str(tmp_path / "stage")
@@ -354,3 +449,92 @@ def test_packaged_config_rejects_direct_site_for_builds(site_name: str) -> None:
 def test_packaged_config_rejects_an_unknown_site() -> None:
     with pytest.raises(Exception, match="Unknown site"):
         load_site("no-such-cluster")
+
+
+class InterleavingShellConnection(CapturingShellConnection):
+    """Runs the acquire script with another waiter's moves spliced in at one of its seams."""
+
+    def __init__(self, at: dict[str, str]) -> None:
+        super().__init__()
+        self.at = at
+
+    def execute(self, command: Any, stdout: Any = None, stderr: Any = None, dryrun: bool = False) -> FakeProc:
+        argv = [str(c) for c in command]
+        if argv[:2] == ["bash", "-c"]:
+            script = argv[2]
+            for seam, moves in self.at.items():
+                script = script.replace(seam, moves)
+            argv = [*argv[:2], script]
+        return super().execute(argv, stdout, stderr, dryrun)
+
+
+def _reclaim(lock: Path, owner: str) -> str:
+    """Shell: another waiter breaks the lock and claims it afresh."""
+    return f"rm -rf '{lock}'; mkdir '{lock}'; printf '%s\\n' '{owner}' > '{lock}/{transfer.LOCK_OWNER_FILE}'"
+
+
+def _owner(lock: Path) -> str:
+    return (lock / transfer.LOCK_OWNER_FILE).read_text().strip()
+
+
+DEAD: Final = '{"run_id":"1-1"}'
+FRESH: Final = '{"run_id":"2-1"}'
+
+
+def test_a_waiter_paused_after_its_stale_look_leaves_a_fresh_reclaim_alone(tmp_path: Path) -> None:
+    """Waiter A saw the lock stale, then B broke and re-claimed it before A went on."""
+    lock = tmp_path / "locks" / "pkg"
+    _hand_made_lock(lock, DEAD, age_minutes=10)
+    conn = InterleavingShellConnection({transfer.LOCK_SEAM_SEEN: _reclaim(lock, FRESH)})
+    assert not transfer._try_acquire_lock(conn, lock_dir=str(lock), run_id="3-1", stale_minutes=5)
+    assert _owner(lock) == FRESH
+    assert sorted(p.name for p in lock.parent.iterdir()) == ["pkg"]  # no .stale, no .breaking left
+
+
+def test_a_reclaim_between_recheck_and_rename_is_given_back(tmp_path: Path) -> None:
+    lock = tmp_path / "locks" / "pkg"
+    _hand_made_lock(lock, DEAD, age_minutes=10)
+    conn = InterleavingShellConnection({transfer.LOCK_SEAM_RECHECKED: _reclaim(lock, FRESH)})
+    assert not transfer._try_acquire_lock(conn, lock_dir=str(lock), run_id="3-1", stale_minutes=5)
+    assert _owner(lock) == FRESH
+    assert sorted(p.name for p in lock.parent.iterdir()) == ["pkg"]
+
+
+def test_a_renamed_fresh_lock_is_never_deleted_when_the_path_is_claimed_again(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex 2's three waiters: B re-claims, A renames B's lock aside, C claims the vacant path."""
+    lock = tmp_path / "locks" / "pkg"
+    third = '{"run_id":"4-1"}'
+    _hand_made_lock(lock, DEAD, age_minutes=10)
+    conn = InterleavingShellConnection(
+        {
+            transfer.LOCK_SEAM_RECHECKED: _reclaim(lock, FRESH),
+            transfer.LOCK_SEAM_RENAMED: f"mkdir '{lock}'; echo '{third}' > '{lock}/{transfer.LOCK_OWNER_FILE}'",
+        }
+    )
+    assert not transfer._try_acquire_lock(conn, lock_dir=str(lock), run_id="3-1", stale_minutes=5)
+    assert _owner(lock) == third
+    [aside] = lock.parent.glob("pkg.stale.*")
+    assert _owner(aside) == FRESH  # B's lock kept, not rm -rf'd
+    assert "left" in capsys.readouterr().out and not (lock.parent / "pkg.breaking").exists()
+
+
+def test_a_held_break_sublock_makes_the_waiter_retry(tmp_path: Path) -> None:
+    lock = tmp_path / "locks" / "pkg"
+    _hand_made_lock(lock, DEAD, age_minutes=10)
+    (lock.parent / "pkg.breaking").mkdir()
+    assert not transfer._try_acquire_lock(CapturingShellConnection(), lock_dir=str(lock), run_id="3-1", stale_minutes=5)
+    assert _owner(lock) == DEAD and (lock.parent / "pkg.breaking").is_dir()
+
+
+def test_a_dead_breakers_sublock_is_cleared_by_the_stale_rule(tmp_path: Path) -> None:
+    lock = tmp_path / "locks" / "pkg"
+    _hand_made_lock(lock, DEAD, age_minutes=10)
+    breaking = lock.parent / "pkg.breaking"
+    breaking.mkdir()
+    old = time.time() - 600
+    os.utime(breaking, (old, old))
+    assert transfer._try_acquire_lock(CapturingShellConnection(), lock_dir=str(lock), run_id="3-1", stale_minutes=5)
+    assert json.loads(_owner(lock))["run_id"] == "3-1"
+    assert sorted(p.name for p in lock.parent.iterdir()) == ["pkg"]
