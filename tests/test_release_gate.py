@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
-from release_fixtures import SAMPLE_WORKFLOW, write_release_repo
+from release_fixtures import HPC_LEG, RPM_LEG, SAMPLE_WORKFLOW, write_release_repo
 
 from ci_infrastructure.release import ReleaseError, gate, nexus
 
@@ -167,6 +167,32 @@ def test_a_published_leg_is_marked_never_dropped(root: Path) -> None:
 
 def test_an_unknown_probe_builds(root: Path) -> None:
     assert _gate(root, probe=lambda t, f: "unknown").legs["release-rpm"][0]["_release"]["state"] == "build"
+
+
+def test_hpc_legs_install_under_the_hpc_root_and_are_not_probed(tmp_path: Path) -> None:
+    """The gate cannot reach the cluster: the HPC build job looks at the prefix itself."""
+    write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG)
+    probed: list[str] = []
+
+    def probe(target: str, filename: str) -> str:
+        probed.append(filename)
+        return "absent"
+
+    result = _gate(tmp_path, probe=probe, kinds=["release-rpm", "release-hpc"], hpc_root="$SCRATCH/cd-v3-x")
+    [leg] = result.legs["release-hpc"]
+    assert leg["_release"]["prefix"] == "$SCRATCH/cd-v3-x/pkg/2.5.0-rc1/GNU/8.5"
+    assert leg["_release"]["state"] == "build"
+    assert probed == ["pkg-2.5.0~rc1-1.x86_64.rpm"]
+    prov = json.loads(result.outputs()["provenance"])
+    assert prov["hpc_root"] == "$SCRATCH/cd-v3-x"
+    assert "None" not in prov["containers"]
+    assert "eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest" in prov["containers"]
+
+
+def test_an_hpc_root_in_production_is_refused(tmp_path: Path) -> None:
+    write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG)
+    with pytest.raises(ReleaseError, match="allow-production"):
+        _gate(tmp_path, kinds=["release-hpc"], hpc_root="/usr/local/apps")
 
 
 # --- refusals ------------------------------------------------------------------------------------------------

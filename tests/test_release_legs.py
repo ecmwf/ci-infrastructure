@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
-from release_fixtures import RPM_LEG, write_release_repo
+from release_fixtures import HPC_LEG, RPM_LEG, write_release_repo
 
 from ci_infrastructure.release import ReleaseError, legs
 from ci_infrastructure.release.detect import ReleaseEvent
@@ -65,7 +66,8 @@ def test_package_name_comes_from_release_table(tmp_path: Path) -> None:
     [
         (('options = "release"\n', ""), "needs 'options'"),
         (('options = "release"\n', 'options = "release"\ntests = false\n'), "runs its tests"),
-        (('channel = "rpm"', 'channel = "hpc-module"'), "builds \\['rpm'\\] only"),
+        (('channel = "rpm"', 'channel = "deb"'), "builds \\['hpc-module', 'rpm'\\] only"),
+        (('channel = "rpm"', 'channel = "hpc-module"'), "builds on 'hpc-atos'"),
         (("eccr.ecmwf.int/public-ci-images/rocky9", "docker.io/rocky9"), "is not from eccr.ecmwf.int/"),
         (("eccr.ecmwf.int/docker-hub-proxy", "docker.io"), "install-test-image"),
         (('install-prefix = "/opt/ecmwf"', 'install-prefix = "/usr/local/apps/pkg"'), "allow-production"),
@@ -83,13 +85,113 @@ def test_release_leg_validation(tmp_path: Path, change: tuple[str, str], match: 
         legs.expand(rm, ["release-rpm"], _event())
 
 
-def test_hpc_lane_is_not_a_release_lane_yet(tmp_path: Path) -> None:
+def test_an_rpm_leg_builds_on_a_runner(tmp_path: Path) -> None:
     manifest = write_release_repo(tmp_path)
     manifest.write_text(
         manifest.read_text().replace("publishes = false\n", 'publishes = false\nexecution = "hpc-atos"\n')
     )
-    with pytest.raises(ReleaseError, match="builds on a runner"):
+    with pytest.raises(ReleaseError, match="builds on 'runner'"):
         legs.expand(legs.load(manifest), ["release-rpm"], _event())
+
+
+# --- hpc-module legs ------------------------------------------------------------------------------------
+
+
+def _hpc(tmp_path: Path, tag: str | None = "2.5.0-rc1", leg: str = HPC_LEG, **kw: Any) -> dict[str, Any]:
+    rm = legs.load(write_release_repo(tmp_path, leg=RPM_LEG + leg))
+    [out] = legs.expand(rm, ["release-rpm", "release-hpc"], _event(tag), **kw)["release-hpc"]
+    return out
+
+
+def test_an_hpc_leg_installs_under_the_dry_run_root(tmp_path: Path) -> None:
+    leg = _hpc(tmp_path)
+    ctx = leg["_release"]
+    assert ctx["channel"] == "hpc-module" and ctx["cpack_generator"] == ""
+    assert ctx["prefix"] == "$SCRATCH/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5"
+    # One shell word that expands $SCRATCH and nothing else.
+    assert ctx["prefix_sh"] == '"$SCRATCH"/cd-v3-dry-run/pkg/2.5.0-rc1/GNU/8.5'
+    assert ctx["leg_id"] == "hpc-hpc-atos-gnu-gxx-8"
+    # Package, tag, leg and commit: also the SLURM job name (ci-<job_key>), so rc2 never reattaches to rc1.
+    assert ctx["job_key"] == "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567"
+    assert ctx["filename"] == "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8.tar.zst"
+    assert ctx["module"] == {"name": "pkg", "version": "2.5.0-rc1", "tag": ""}
+    meta = json.loads(ctx["build_meta"])
+    assert meta["site"] == "hpc-batch" and meta["modules"][2] == "load gcc/old"
+    assert "_resolved" not in leg
+
+
+def test_the_hpc_version_dir_is_the_tag_as_pushed(tmp_path: Path) -> None:
+    ctx = _hpc(tmp_path, "2.5.0-RC1")["_release"]
+    assert ctx["prefix"].endswith("/pkg/2.5.0-RC1/GNU/8.5")
+    assert ctx["job_key"] == "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567"
+
+
+def test_a_release_is_tagged_new_and_a_rehearsal_has_the_project_version(tmp_path: Path) -> None:
+    assert _hpc(tmp_path, "2.5.0", allow_production=True)["_release"]["module"]["tag"] == "new"
+    ctx = _hpc(tmp_path, None)["_release"]
+    assert ctx["prefix"] == "$SCRATCH/cd-v3-dry-run/pkg/2.5.0/GNU/8.5"
+    assert ctx["job_key"] == "pkg-rehearsal-hpc-hpc-atos-gnu-gxx-8-01234567"
+
+
+@pytest.mark.parametrize("root", ["/ec/res4/scratch/me/cd", "$HOME/cd-v3", "$HPCPERM/x/y"])
+def test_another_hpc_root(tmp_path: Path, root: str) -> None:
+    assert _hpc(tmp_path, hpc_root=root)["_release"]["prefix"] == f"{root}/pkg/2.5.0-rc1/GNU/8.5"
+
+
+@pytest.mark.parametrize(
+    ("root", "match"),
+    [
+        ("/usr/local/apps", "allow-production"),
+        ("$SCRATCH/github-ci/x", "CI work tree"),
+        ("$SCRATCH", "must be"),
+        ("$FOO/x", "must be"),
+        ("cd-v3", "must be"),
+        ("$SCRATCH/../x", "normalised"),
+        ("$SCRATCH/a b", "must be"),
+        ('$SCRATCH/x";rm', "must be"),
+    ],
+)
+def test_a_bad_hpc_root_is_refused(tmp_path: Path, root: str, match: str) -> None:
+    with pytest.raises(ReleaseError, match=match):
+        _hpc(tmp_path, hpc_root=root)
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (('install-prefix = "{root}/{package}/{version}/GNU/8.5"', 'install-prefix = "/opt/x"'), "starts with"),
+        (('/{version}/GNU/8.5"', '/{version}/../8.5"'), "only /<component>"),
+        (('/{version}/GNU/8.5"', '/{version}GNU"'), "only /<component>"),
+        (('install-test-command = "bin/pkg-version"', 'install-test-command = "/opt/bin/x"'), "relative"),
+        (('"load cmake"]', '"load cmake; rm -rf /"]'), "modules"),
+        (('site = "hpc-batch"\n', ""), "needs 'site'"),
+        (('options = "release"\n', ""), "needs 'options'"),
+        (('container = "eccr.ecmwf.int/', 'container = "docker.io/'), "not from eccr"),
+        (('channel = "hpc-module"', 'channel = "rpm"'), "builds on 'runner'"),
+    ],
+)
+def test_hpc_leg_validation(tmp_path: Path, change: tuple[str, str], match: str) -> None:
+    with pytest.raises(ReleaseError, match=match):
+        _hpc(tmp_path, leg=HPC_LEG.replace(*change))
+
+
+def test_two_hpc_legs_installing_one_prefix_are_refused(tmp_path: Path) -> None:
+    twin = HPC_LEG.split("\n\n", 1)[1].replace('cxx-compiler = "g++-8"', 'cxx-compiler = "g++-9"')
+    rm = legs.load(write_release_repo(tmp_path, leg=RPM_LEG + HPC_LEG + twin))
+    with pytest.raises(ReleaseError, match="both publish the HPC prefix"):
+        legs.expand(rm, ["release-hpc"], _event())
+
+
+@pytest.mark.parametrize(
+    ("prefix", "word"),
+    [
+        ("$SCRATCH/a/b", '"$SCRATCH"/a/b'),
+        ("/opt/ecmwf", "/opt/ecmwf"),
+        ("/opt/a+b", "/opt/a+b"),
+    ],
+)
+def test_prefix_shell_word(prefix: str, word: str) -> None:
+    assert legs.prefix_shell_word(prefix) == word
 
 
 def test_only_release_kinds_expand(tmp_path: Path) -> None:
