@@ -30,6 +30,8 @@ When the runner has an sccache bucket (``SCCACHE_BUCKET``),
 the sccache that :action:`setup-sccache` installs and a file with its configuration and credentials go into the staging directory too,
 which only its owner can read.
 The job reads and deletes that file, starts sccache and sets ``CMAKE_<LANG>_COMPILER_LAUNCHER``;
+``SCCACHE_BASEDIRS`` strips the per-job source and build paths and the per-commit staging directory from the cache keys,
+so that another job can hit the cache;
 if sccache cannot reach its bucket, the job builds without it.
 A leg with ``sccache = false`` builds without it.
 Every ``ssh`` and ``scp`` that fails because the host name does not resolve is tried twice more,
@@ -124,7 +126,7 @@ and consists of these blocks:
    * - block
      - content
    * - ``sbatch``
-     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task`` and ``--gpus-per-task`` if set, ``--mem``, ``--gres=ssdtmp:`` unless empty, ``--time``
+     - ``--qos``, ``--nodes``, ``--ntasks``, ``--cpus-per-task``, ``--gpus-per-task`` if set, ``--mem``, ``--gres=ssdtmp:`` unless empty, ``--time``
    * - ``set_environment``
      - empty; for venvs, ``export`` and ``source``, before anything is printed or configured
    * - ``preflight``
@@ -136,13 +138,14 @@ and consists of these blocks:
    * - ``build``
      - ``cmake --build "$build" --parallel "$jobs"``
    * - ``test``
-     - ``ctest`` with ``ctest_args``, else ``-j "$jobs"``; skipped if ``tests`` is false
+     - ``ctest`` with ``ctest_args``, else ``-j "$test_jobs"``; skipped if ``tests`` is false
    * - ``install``
      - ``cmake --install "$build"``
 
 Afterwards the template archives ``$install_root``.
 The blocks share the shell variables ``build`` (the build directory on node-local disk),
-``jobs`` (``$SLURM_CPUS_PER_TASK``, else ``$SLURM_NTASKS``),
+``jobs`` (``$SLURM_CPUS_ON_NODE``, every CPU of the job),
+``test_jobs`` (``$SLURM_CPUS_PER_TASK``, so that tests with ``ntasks`` MPI ranks each fit the job),
 ``install_root`` (``$CI_INSTALL_PREFIX``, or the staged tree after a ``DESTDIR`` install)
 and ``gen_flag`` (``-GNinja`` if ninja is available).
 In a child template, text outside a block is dropped;
@@ -163,7 +166,9 @@ A leg may omit these fields:
      - ``01:00:00``
    * - ``ntasks``
      - ``8``
-   * - ``cpus-per-task``, ``gpus-per-task``
+   * - ``cpus-per-task``
+     - 64 divided by ``ntasks``: 64 CPUs, as in the previous downstream CI
+   * - ``gpus-per-task``
      - unset
    * - ``mem``
      - ``64GB``
@@ -205,9 +210,10 @@ Presets need CMake 3.21.
    }
 
 Every package loads the template from ``ci-infrastructure`` ``@main``.
-A changed template must therefore rebuild every HPC artifact,
+A change to what the template builds must therefore rebuild every HPC artifact,
 which is why the artifact names carry ``-hpcv<N>``, with ``N`` = ``HPC_TEMPLATE_VERSION`` (no segment for 0).
-A test fails until a changed template comes with a new version.
+A test pins the template's hash, so that every change is checked for this;
+resources and parallelism change no artifact and keep the version.
 
 Cluster configuration
 ---------------------

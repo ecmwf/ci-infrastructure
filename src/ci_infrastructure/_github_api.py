@@ -31,6 +31,7 @@ EXECUTION_HPC_ATOS: Final[Execution] = "hpc-atos"
 
 #: Version of templates/cmake-atos.sh.j2, in every hpc artifact name: consumers load
 #: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
+#: Bumped only when what gets built changes, not for resources or parallelism.
 HPC_TEMPLATE_VERSION: Final = 2
 
 
