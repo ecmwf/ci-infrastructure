@@ -88,6 +88,30 @@ The resolver records beside every artifact it resolves which dependencies it was
 (``<artifact-name>.deps.json`` in the artifact store);
 an artifact without this record is never used in place of another.
 
+Nightly builds
+--------------
+
+A repository that nobody pushes to keeps its artifacts built against old upstreams,
+so its consumers' pull requests fall back to them, or wait for a rebuild.
+A ``schedule`` among the triggers of its ``ci.yml`` builds the default branch every night against the current upstreams:
+
+.. code:: yaml
+
+   on:
+     # ... the existing triggers ...
+     schedule:
+       - cron: "37 0 * * *"
+
+Schedule upstreams first, so that a consumer finds their builds already in the store;
+the ECMWF stack starts with ``ecbuild`` at 00:07 UTC and takes 15 minutes per level of the graph.
+A scheduled run does not fan out to the consumers, which have nightly builds of their own.
+The generated ``retry-nightly.yml`` re-runs the failed jobs of a scheduled run up to twice,
+unless the branch has moved on since, see :action:`retry-scheduled-run`.
+GitHub runs a ``schedule`` only from the default branch,
+may start it late or drop it under load,
+and disables it in a public repository after 60 days without activity
+(`schedule <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule>`__).
+
 The generated workflows
 -----------------------
 

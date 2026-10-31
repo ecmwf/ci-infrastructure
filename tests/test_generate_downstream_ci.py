@@ -2410,11 +2410,30 @@ def test_hpc_legs_come_with_the_hpc_label_workflow(tmp_path: Path, monkeypatch: 
     assert doc["permissions"] == {"statuses": "write", "actions": "read", "pull-requests": "read"}
     gate = doc["jobs"]["gate"]
     assert "github.event.workflow_run.event != 'push'" in gate["if"]
+    assert "github.event.workflow_run.event != 'schedule'" in gate["if"]
     assert "run-hpc-ci" in gate["if"] and "hpc-ci-not-needed" in gate["if"]
     (step,) = gate["steps"]
     assert step["uses"] == "ecmwf/ci-infrastructure/actions/hpc-label-decision@main"
     assert set(step["with"]) == {"client-id", "app-private-key"}
     assert check_ci_approval.check(path) == []
+
+
+def test_every_repo_retries_its_failed_nightly_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path)
+    _render_all(tmp_path, monkeypatch)
+
+    for repo in ("a", "b"):
+        path = tmp_path / repo / ".github" / "workflows" / "retry-nightly.yml"
+        doc = yaml.safe_load(path.read_text())
+        assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
+        retry = doc["jobs"]["retry"]
+        assert retry["if"] == (
+            "github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure' "
+            "&& github.event.workflow_run.run_attempt <= 2"
+        )
+        (step,) = retry["steps"]
+        assert step["uses"] == "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main"
+        assert check_ci_approval.check(path) == []
 
 
 def test_no_hpc_legs_no_hpc_label_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

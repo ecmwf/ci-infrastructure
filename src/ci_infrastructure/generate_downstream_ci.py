@@ -70,6 +70,9 @@ FORK_CI_WORKFLOW: Final = "ci-fork.yml"
 LABEL_GATE_WORKFLOW: Final = "pr-label-downstream-ci.yml"
 HPC_LABEL_WORKFLOW: Final = "pr-label-hpc-ci.yml"
 SYNC_BRANCH_WORKFLOW: Final = "pr-sync-branch.yml"
+RETRY_NIGHTLY_WORKFLOW: Final = "retry-nightly.yml"
+# Re-runs of a failed scheduled CI run, beyond its first attempt.
+NIGHTLY_RETRIES: Final = 2
 FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
@@ -1857,6 +1860,7 @@ def _render_one_repo(
     rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, lanes)))
     rendered.append((HPC_LABEL_WORKFLOW, render_hpc_label_workflow(m)))
     rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
+    rendered.append((RETRY_NIGHTLY_WORKFLOW, render_retry_nightly_workflow(m)))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()
@@ -1957,7 +1961,8 @@ def render_hpc_label_workflow(m: Manifest) -> str | None:
         "jobs": {
             "gate": {
                 "if": (
-                    f"github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push' "
+                    "github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push' "
+                    "&& github.event.workflow_run.event != 'schedule' "
                     f"|| contains({hpc_labels}, github.event.label.name)"
                 ),
                 "runs-on": SLIM_RUNNER,
@@ -1983,6 +1988,35 @@ def render_sync_branch_workflow(m: Manifest) -> str:
                 "steps": [
                     {
                         "uses": "ecmwf/ci-infrastructure/actions/sync-branch-prs@main",
+                        "with": {
+                            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+                            "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    return _render_doc(m, doc)
+
+
+def render_retry_nightly_workflow(m: Manifest) -> str:
+    """Re-run the failed jobs of a scheduled CI run, up to NIGHTLY_RETRIES times."""
+    doc: dict[str, Any] = {
+        "name": "[Nightly] Retry failed CI",
+        "on": {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}},
+        "permissions": {},
+        "jobs": {
+            "retry": {
+                "if": (
+                    "github.event.workflow_run.event == 'schedule' "
+                    "&& github.event.workflow_run.conclusion == 'failure' "
+                    f"&& github.event.workflow_run.run_attempt <= {NIGHTLY_RETRIES}"
+                ),
+                "runs-on": SLIM_RUNNER,
+                "steps": [
+                    {
+                        "uses": "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main",
                         "with": {
                             "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
                             "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
