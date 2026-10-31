@@ -6,6 +6,9 @@
 
 """Artifact store: one ``s3://<bucket>/<key-prefix><artifact-name>.tar.gz`` object per package.
 
+Beside it, ``<artifact-name>.deps.json`` records the dep tree the artifact was built against,
+for consumers that accept an artifact built against older upstreams.
+
 Configured from the environment only (no default location); boto3 reads
 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
 
@@ -21,10 +24,11 @@ AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -39,6 +43,8 @@ class _S3Client(Protocol):
     def head_object(self, *, Bucket: str, Key: str) -> Any: ...
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None: ...
     def download_file(self, Bucket: str, Key: str, Filename: str) -> None: ...
+    def get_object(self, *, Bucket: str, Key: str) -> Any: ...
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> Any: ...
     def list_objects_v2(self, *, Bucket: str, Prefix: str, ContinuationToken: str = ...) -> Any: ...
     def delete_object(self, *, Bucket: str, Key: str) -> Any: ...
     def get_bucket_versioning(self, *, Bucket: str) -> Any: ...
@@ -91,8 +97,16 @@ def _ca_bundle() -> Path:
     )
 
 
+_TAR: Final = ".tar.gz"
+_SIDECAR: Final = ".deps.json"
+
+
 def artifact_key(name: str) -> str:
-    return f"{_key_prefix()}{name}.tar.gz"
+    return f"{_key_prefix()}{name}{_TAR}"
+
+
+def sidecar_key(name: str) -> str:
+    return f"{_key_prefix()}{name}{_SIDECAR}"
 
 
 def _client(client: _S3Client | None = None) -> _S3Client:
@@ -168,20 +182,55 @@ class ArtifactIndex:
 
     client: _S3Client | None = None
     listings: int = 0
-    _names: dict[str, frozenset[str]] = field(default_factory=dict)
+    _tars: dict[str, dict[str, datetime]] = field(default_factory=dict)
+    _sidecars: dict[str, frozenset[str]] = field(default_factory=dict)
+    _pending: dict[str, tuple[str, Mapping[str, Any]]] = field(default_factory=dict)
+
+    def _list(self, prefix: str) -> None:
+        if prefix in self._tars:
+            return
+        self.client = _client(self.client)
+        base = len(_key_prefix())
+        objects = list_objects(self.client, prefix=prefix)
+        self._tars[prefix] = {o.key[base : -len(_TAR)]: o.last_modified for o in objects if o.key.endswith(_TAR)}
+        self._sidecars[prefix] = frozenset(o.key[base : -len(_SIDECAR)] for o in objects if o.key.endswith(_SIDECAR))
+        self.listings += 1
 
     def exists(self, name: str, prefix: str) -> bool:
         """``prefix`` must be a prefix of ``name``; each distinct one is listed once."""
-        if prefix not in self._names:
-            self.client = _client(self.client)
-            base = len(_key_prefix())
-            objects = list_objects(self.client, prefix=prefix)
-            self._names[prefix] = frozenset(o.key[base:].removesuffix(".tar.gz") for o in objects)
-            self.listings += 1
-        return name in self._names[prefix]
+        self._list(prefix)
+        return name in self._tars[prefix]
+
+    def with_sidecar(self, prefix: str) -> list[str]:
+        """The stored artifacts under ``prefix`` that record their dep tree, newest first."""
+        self._list(prefix)
+        tars = self._tars[prefix]
+        return sorted((n for n in tars if n in self._sidecars[prefix]), key=lambda n: tars[n], reverse=True)
+
+    def read_sidecar(self, name: str) -> Any:
+        self.client = _client(self.client)
+        body = self.client.get_object(Bucket=_bucket(), Key=sidecar_key(name))["Body"].read()
+        return json.loads(body)
+
+    def record_sidecar(self, name: str, prefix: str, payload: Mapping[str, Any]) -> None:
+        """Queue ``payload`` as ``name``'s sidecar; :meth:`flush_sidecars` writes the ones not yet stored."""
+        self._pending.setdefault(name, (prefix, payload))
+
+    def flush_sidecars(self) -> int:
+        written = 0
+        for name, (prefix, payload) in self._pending.items():
+            self._list(prefix)
+            if name in self._sidecars[prefix]:
+                continue
+            assert self.client is not None
+            body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            self.client.put_object(Bucket=_bucket(), Key=sidecar_key(name), Body=body)
+            written += 1
+        self._pending.clear()
+        return written
 
 
-def eviction_plan(objects: Sequence[StoredObject], *, target: float, suffix: str = ".tar.gz") -> list[StoredObject]:
+def eviction_plan(objects: Sequence[StoredObject], *, target: float, suffix: str = _TAR) -> list[StoredObject]:
     """The oldest-written ``suffix`` objects to delete until usage is at most ``target`` bytes."""
     used = sum(o.size for o in objects)
     plan: list[StoredObject] = []
@@ -197,10 +246,25 @@ def _gb(size: float) -> str:
     return f"{size / 1e9:.1f} GB"
 
 
-def gc(
-    *, percent: float, quota: int | None, dryrun: bool, suffix: str = ".tar.gz", client: _S3Client | None = None
+def stale_sidecars(
+    objects: Sequence[StoredObject], evicted: Sequence[StoredObject], now: datetime
 ) -> list[StoredObject]:
-    """Delete down to ``percent`` of ``quota``, or of current usage without one."""
+    """The sidecars of ``evicted`` artifacts, and those over a day old whose artifact never arrived."""
+    gone = {o.key.removesuffix(_TAR) for o in evicted}
+    tars = {o.key.removesuffix(_TAR) for o in objects if o.key.endswith(_TAR)} - gone
+    return [
+        o
+        for o in objects
+        if o.key.endswith(_SIDECAR)
+        and (stem := o.key.removesuffix(_SIDECAR)) not in tars
+        and (stem in gone or now - o.last_modified >= timedelta(days=1))
+    ]
+
+
+def gc(
+    *, percent: float, quota: int | None, dryrun: bool, suffix: str = _TAR, client: _S3Client | None = None
+) -> list[StoredObject]:
+    """Delete down to ``percent`` of ``quota``, or of current usage without one, and the sidecars left behind."""
     s3 = _client(client)
     versioning = s3.get_bucket_versioning(Bucket=_bucket()).get("Status", "never enabled")
     objects = list_objects(s3)
@@ -210,6 +274,7 @@ def gc(
     if versioning != "never enabled":
         print("::warning::bucket versioning is on: a delete leaves the old version behind and frees nothing")
     plan = eviction_plan(objects, target=(quota if quota else used) * percent / 100, suffix=suffix)
+    plan += [o for o in stale_sidecars(objects, plan, datetime.now(UTC)) if o not in plan]
     if not plan:
         print("Nothing to delete.")
         return plan

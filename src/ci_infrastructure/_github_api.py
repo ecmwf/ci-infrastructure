@@ -189,6 +189,14 @@ def compute_platform_slug(platform: str) -> str:
     return slug
 
 
+def is_ancestor(repo: str, older: str, head: str, token: str | None) -> bool:
+    """Whether commit `older` is `head` or in its history; False when GitHub cannot tell."""
+    if older == head:
+        return True
+    data = gh_api_rest(f"repos/{repo}/compare/{older}...{head}", token)
+    return isinstance(data, dict) and data.get("status") == "ahead"
+
+
 def resolve_ref_to_sha(repo: str, ref: str, token: str | None) -> str:
     """Resolve a branch / tag / short or full SHA to a 40-char commit SHA (annotated tags dereferenced)."""
     if _SHA_RE.fullmatch(ref):
