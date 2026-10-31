@@ -568,3 +568,45 @@ def test_declared_path_dirs_follow_their_dep_onto_the_cluster(monkeypatch: pytes
     on_cluster = {"/r/install/eccodes": "/s/deps/eccodes", "/r/install/eckit": "/s/deps/eckit"}
     assert orch.deps_path_dirs(leg, on_cluster) == ["/s/deps/eccodes/bin"]
     assert orch.deps_path_dirs("", on_cluster) == []
+
+
+def test_stop_local_submitters_signals_only_this_artifacts_submit_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def proc(pid: int, *argv: str) -> None:
+        (tmp_path / str(pid)).mkdir()
+        (tmp_path / str(pid) / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+
+    proc(101, "python", "-m", "ci_infrastructure.hpc", "submit-wait", "--artifact-name", "art")
+    proc(102, "python", "-m", "ci_infrastructure.hpc", "submit-wait", "--artifact-name", "art-other")
+    proc(103, "python", "-m", "ci_infrastructure.hpc", "cancel", "--artifact-name", "art")
+    killed: list[int] = []
+
+    def kill(pid: int, _sig: int) -> None:
+        killed.append(pid)
+        (tmp_path / str(pid) / "cmdline").unlink()
+        (tmp_path / str(pid)).rmdir()
+
+    monkeypatch.setattr(os, "kill", kill)
+    orch.stop_local_submitters("art", proc_root=tmp_path, timeout=1)
+    assert killed == [101]
+
+
+def test_cancel_stops_the_submitter_then_cancels_the_job_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(orch, "stop_local_submitters", lambda name: calls.append(("stop", name)))
+    monkeypatch.setattr(orch, "load_site", lambda *_a, **_k: type("Site", (), {"_connection": None})())
+    monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, path: path.replace("$SCRATCH", "/scratch"))
+    monkeypatch.setattr(orch, "find_active_job_by_name", lambda _conn, job_name, user: 42)
+
+    def cancel_job(**kw: Any) -> tuple[int, None]:
+        calls.append(("cancel", kw["jid"], kw["output"]))
+        return 0, None
+
+    monkeypatch.setattr(orch, "cancel_job", cancel_job)
+
+    result = CliRunner().invoke(
+        orch.main, ["cancel", "--site", "hpc-batch", "--artifact-name", "art", "--remote-work-dir", "$SCRATCH/ci"]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [("stop", "art"), ("cancel", 42, "/scratch/ci/hpc-jobs/art.out")]
