@@ -17,6 +17,16 @@ inputs:
     description: 'GitHub token (App token preferred for higher rate limits)'
     required: false
     default: ''
+  client-id:
+    description: >-
+      GitHub App client ID. With app-private-key, a new token replaces the given one once it has
+      expired, an hour after it was minted.
+    required: false
+    default: ''
+  app-private-key:
+    description: 'GitHub App private key (PEM). See client-id.'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -27,6 +37,8 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
+        CI_APP_CLIENT_ID: ${{ inputs.client-id }}
+        CI_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
         MATRIX_JSON: ${{ inputs.matrix }}
       run: |
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.wait_for_deps --matrix-json "$MATRIX_JSON"
