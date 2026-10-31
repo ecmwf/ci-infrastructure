@@ -264,7 +264,7 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
     assert "$(date +%s) + 1200" in script
     assert f'echo "{jobscript.SENTINEL_FAILURE} {jobscript.SENTINEL_JOB_ID}"' in script
     assert 'export CI_SOURCE_DIR="${TMPDIR:-/tmp}/ci-src-99-1"' in script
-    assert 'tar -xzf "/scratch/staging/art/source.tgz" -C "$CI_SOURCE_DIR"' in script
+    assert 'zstd -dc "/scratch/staging/art/source.tar.zst" | tar -xf - -C "$CI_SOURCE_DIR"' in script
     cd_i = next(i for i, ln in enumerate(lines) if ln == 'cd "$CI_SOURCE_DIR"')
     first_cmd = next(i for i, ln in enumerate(lines) if ln.startswith("cmake "))
     assert cd_i < first_cmd
@@ -393,7 +393,7 @@ def test_gc_fails_when_find_fails(tmp_path: Path) -> None:
 def test_drop_staging_removes_the_tree_and_releases_the_lock(tmp_path: Path) -> None:
     paths = RemotePaths.derive(str(tmp_path), "art")
     (Path(paths.staging) / "deps").mkdir(parents=True)
-    Path(f"{paths.staging}.push.tgz").write_text("x")
+    Path(f"{paths.staging}.push.tar.zst").write_text("x")
     drop_staging(_LocalConn(), paths, run_id="1-1")
     assert sorted(p.name for p in tmp_path.rglob("*")) == ["locks", "staging"]
 

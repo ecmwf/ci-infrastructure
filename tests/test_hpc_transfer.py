@@ -59,7 +59,7 @@ class CopyingConnection(FakeConnection):
         proc = super().execute(command, stdout, stderr, dryrun)
         argv = [str(c) for c in command]
         if argv[:2] == ["bash", "-c"]:
-            subprocess.run(argv[2], shell=True, check=True)
+            subprocess.run(["bash", "-c", argv[2]], check=True)
         else:
             subprocess.run(argv, check=True)
         return proc
@@ -189,7 +189,7 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert not (staging / "TRANSFER_COMPLETED_00-0").exists()
     assert not (staging / "deps").exists()
     assert not (staging.parent / "art.trash.42-1").exists()
-    assert (staging / "source.tgz").is_file()
+    assert (staging / "source.tar.zst").is_file()
     assert (staging / "TRANSFER_COMPLETED").is_file()
 
 
@@ -334,8 +334,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     assert not any((tmp_path / "stage").iterdir())
     unpacked = tmp_path / "unpacked"
     unpacked.mkdir()
-    with tarfile.open(staging / "source.tgz") as tar:
-        tar.extractall(unpacked, filter="data")
+    transfer._unzstd_into(staging / "source.tar.zst", unpacked)
     assert (unpacked / "hello.txt").read_text() == "content-xyz"
 
     _write_zstd_tar(Path(jobscript.install_archive_path(str(unpacked))), unpacked)

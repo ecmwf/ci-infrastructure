@@ -10,6 +10,9 @@ sites:
     type: slurm
     connection: ssh
     host: hpc-batch
+    # A silently dropped connection otherwise hangs ssh/scp until the job timeout.
+    ssh_options: ["-oServerAliveInterval=30", "-oServerAliveCountMax=4"]
+    ssh_connect_timeout: 20
     copy_script: true
     at_startup: ["check_connection"]
     pre_submit: ["create_output_dir"]
