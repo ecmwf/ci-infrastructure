@@ -59,7 +59,6 @@ from ._github_api import (
     lane_suffix,
     latest_ci_run,
     probe_workflow_runs,
-    resolve_reuse_matrix,
     select_token,
     template_version_for_lane,
     write_outputs,
@@ -297,15 +296,9 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
     if not repo:
         raise ValueError("manifest [package] must define 'repo' (or pass --self-repo)")
 
-    blocks = {
-        k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw.matrix.items()
-    }
     matrix: dict[str, list[dict[str, Any]]] = {}
-    for kind, body in raw.matrix.items():
-        try:
-            matrix[kind] = list(resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks))
-        except ManifestSchemaError as e:
-            raise ValueError(str(e)) from e
+    for kind in raw.matrix:
+        matrix[kind] = list(raw.legs(kind))
         if any(not isinstance(leg.get("ctest-args", ""), str) for leg in matrix[kind]):
             raise ValueError(f"[matrix.{kind}] ctest-args must be a string")
 

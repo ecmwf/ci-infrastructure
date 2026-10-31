@@ -774,8 +774,10 @@ def test_a_dep_resolves_its_deps_against_the_producer_leg_not_the_consumers() ->
 
 @pytest.mark.usefixtures("offline")
 def test_legs_naming_one_variant_must_agree_on_what_the_deps_read() -> None:
+    """Across kinds: within one, the manifest schema already rejects legs with one artifact name."""
     second = (
-        '\n[[matrix.build.include]]\ncxx-compiler = "clang++-18"\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n'
+        "\n[[matrix.build-other.include]]\n"
+        'cxx-compiler = "clang++-18"\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n'
     )
     cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_FORTRAN_WHEN_MANIFEST + second)}
     with pytest.raises(ResolveError, match=r"2 legs publishing middle .* differ in \['fortran-compiler'\]"):
