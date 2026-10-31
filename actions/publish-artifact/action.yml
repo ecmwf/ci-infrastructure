@@ -93,8 +93,8 @@ runs:
         INSTALL_PATH_INPUT: ${{ inputs.install-path }}
       run: |
         set -euo pipefail
-        tar -czf "$RUNNER_TEMP/$ARTIFACT_NAME_INPUT.tar.gz" \
-          -C "$INSTALL_PATH_INPUT" .
+        # gzip's default level took ~100s for ecflow's install tree; -1 is several times faster.
+        tar -cf - -C "$INSTALL_PATH_INPUT" . | gzip -1 > "$RUNNER_TEMP/$ARTIFACT_NAME_INPUT.tar.gz"
 
     - name: Upload artifact to S3 store
       if: inputs.found != 'true'
