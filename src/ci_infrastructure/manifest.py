@@ -116,6 +116,12 @@ class PackageTable(_Table):
         description="Run CI for pull requests from forks once a maintainer re-runs their failed run; "
         'needs `visibility = "public"`, see :doc:`/configuring/fork-pull-requests`.',
     )
+    allow_stale_deps: bool = Field(
+        strict=True,
+        default=False,
+        alias="allow-stale-deps",
+        description="The default of `[[deps]].allow-stale` for every dep of this manifest.",
+    )
 
     @field_validator("repo")
     @classmethod
@@ -213,6 +219,14 @@ class DepTable(_Table):
         description="Rust crates of the upstream repo that the package's Cargo.toml depends on. Rust-bindings "
         "legs patch them to the commit the upstream's artifact was built from, and fail where Cargo.toml disagrees.",
     )
+    allow_stale: bool | None = Field(
+        default=None,
+        strict=True,
+        alias="allow-stale",
+        description="In pull requests, use an artifact of the upstream's commit built against older upstreams of "
+        "its own instead of waiting for its rebuild. Defaults to `[package].allow-stale-deps`, see "
+        ":doc:`/configuring/downstream`.",
+    )
 
     @field_validator("repo")
     @classmethod
@@ -240,6 +254,8 @@ class DepTable(_Table):
             raise ValueError("needs a 'ref' with its 'repo'")
         if self.repo is None and self.ref is not None:
             raise ValueError("'ref' without 'repo': a package of this repo is built from the same commit")
+        if self.repo is None and self.allow_stale:
+            raise ValueError("'allow-stale' without 'repo': a package of this repo is built from the same commit")
         return self
 
     @property

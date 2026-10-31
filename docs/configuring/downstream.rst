@@ -51,6 +51,43 @@ but not every dependency has to trigger its consumers.
 The graph is transitive as well, so a change in ``ecbuild`` also reaches ``eccodes`` through ``eckit``.
 :doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>` checks these rules; see :doc:`../reference/manifest`.
 
+Artifacts built against older upstreams
+---------------------------------------
+
+An artifact's name contains the hash of its dependencies' artifact names,
+so when ``eckit`` moves, ``eccodes``' artifact for the same ``eccodes`` commit no longer matches,
+and every consumer of ``eccodes`` waits for its rebuild, which in turn waits for that of its own upstreams.
+A consumer can accept the previous build in its pull requests instead:
+
+.. code:: toml
+
+   [package]
+   allow-stale-deps = true   # the default for every [[deps]]
+
+   [[deps]]
+   repo = "ecmwf/eccodes"
+   package = "eccodes"
+   ref = "develop"
+   allow-stale = true        # or per dependency
+
+Where the artifact of the dependency is missing or still being built,
+the resolver then takes the newest stored build of the same commit and variant
+together with the upstreams it was built against, for example ``eckit`` one commit behind.
+It does so only if that tree has the same packages, at commits in the history of the current ones,
+all still in the store, and if no other dependency, nor a direct one without ``allow-stale``, needs the current builds of them;
+otherwise the dependency is rebuilt as before.
+The leg's dependency table shows such a dependency with source ``stale artifact``,
+and the resolve job notes against which commits it was built.
+
+This applies to the ``pull_request`` and ``pull_request_target`` events only,
+never to downstream CI, which tests a commit under test, nor on a sync branch.
+After the merge, the build of the default branch resolves the current upstreams again,
+so the default branch is always built and tested against them.
+
+The resolver records beside every artifact it resolves which dependencies it was built against
+(``<artifact-name>.deps.json`` in the artifact store);
+an artifact without this record is never used in place of another.
+
 The generated workflows
 -----------------------
 

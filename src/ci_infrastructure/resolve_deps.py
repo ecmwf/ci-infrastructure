@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, NewType
 
 import click
+from botocore.exceptions import BotoCoreError, ClientError
 
 from . import failure_reasons, job_names, s3_store
 from ._errors import CIError, escape_command_data
@@ -56,6 +57,7 @@ from ._github_api import (
     compute_deps_hash8,
     compute_platform_slug,
     fetch_manifests_layer,
+    is_ancestor,
     lane_suffix,
     latest_ci_run,
     probe_workflow_runs,
@@ -144,6 +146,7 @@ class DepSpec:
     # A package of the declaring repo, built from the declaring package's commit; `ref` is unused.
     sibling: bool = False
     crates: tuple[str, ...] = ()
+    allow_stale: bool = False
 
     def applies_to(self, leg: Mapping[str, Any], lane: Execution) -> bool:
         """Compared as str; a missing field never matches. `execution` is the lane."""
@@ -205,7 +208,8 @@ class ResolvedDep:
     # "artifact": in the store, or a producer run in flight will upload it.
     # "triggered rebuild": timing skew; _run dispatches the producer before exiting.
     # "local": built earlier in the same job; never fetched.
-    source: Literal["artifact", "triggered rebuild", "local"]
+    # "stale artifact": built against older upstreams, which replace the current ones beneath it.
+    source: Literal["artifact", "triggered rebuild", "local", "stale artifact"]
     install_path: Path
     # The fields artifact_name is built from; the name alone is ambiguous to parse.
     platform: str
@@ -236,6 +240,27 @@ class ResolvedDep:
             "add-to-path": list(self.add_to_path),
         }
 
+    @classmethod
+    def from_json(cls, d: Mapping[str, Any], source: Literal["artifact", "stale artifact"]) -> ResolvedDep:
+        """A stored dep, as `to_json` wrote it; it is in the store."""
+        return cls(
+            name=PackageName(d["name"]),
+            repo=Repo(d["repo"]),
+            ref=Ref(d["ref"]),
+            sha=Sha(d["sha"]),
+            artifact_name=ArtifactName(d["artifact-name"]),
+            cached=True,
+            source=source,
+            install_path=_install_base() / d["name"],
+            platform=d["platform"],
+            compiler=d["compiler"] or None,
+            build_type=d["build-type"],
+            python_version=d["python-version"] or None,
+            option=d["option"],
+            deps_hash=d["deps-hash"] or None,
+            add_to_path=tuple(d["add-to-path"]),
+        )
+
 
 @dataclass(frozen=True)
 class ResolvedOwn:
@@ -264,12 +289,12 @@ class DispatchPlan:
     rerun_id: int | None = None
 
 
-def _to_dep_specs(t: DepTable, own_repo: str) -> list[DepSpec]:
-    """One spec per package of a list-valued `package`."""
-    return [_to_dep_spec(t, p, own_repo) for p in t.packages]
+def _to_dep_specs(t: DepTable, own_repo: str, allow_stale: bool = False) -> list[DepSpec]:
+    """One spec per package of a list-valued `package`; `allow_stale` is the manifest's default."""
+    return [_to_dep_spec(t, p, own_repo, allow_stale) for p in t.packages]
 
 
-def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
+def _to_dep_spec(t: DepTable, package: str, own_repo: str, allow_stale: bool = False) -> DepSpec:
     return DepSpec(
         repo=Repo(t.repo or own_repo),
         package=PackageName(package),
@@ -284,6 +309,7 @@ def _to_dep_spec(t: DepTable, package: str, own_repo: str) -> DepSpec:
         unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
         sibling=t.repo is None,
         crates=t.crates,
+        allow_stale=t.repo is not None and (allow_stale if t.allow_stale is None else t.allow_stale),
     )
 
 
@@ -302,7 +328,8 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         if any(not isinstance(leg.get("ctest-args", ""), str) for leg in matrix[kind]):
             raise ValueError(f"[matrix.{kind}] ctest-args must be a string")
 
-    own_deps = [s for d in raw.deps for s in _to_dep_specs(d, repo)]
+    stale = raw.package.allow_stale_deps
+    own_deps = [s for d in raw.deps for s in _to_dep_specs(d, repo, stale)]
     own = PackageInfo(
         prefix=PackageName(raw.package.prefix),
         compiler_inputs=list(raw.package.compiler_inputs),
@@ -315,7 +342,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         packages[PackageName(prefix)] = PackageInfo(
             prefix=PackageName(prefix),
             compiler_inputs=list(entry.compiler_inputs),
-            deps=[s for d in entry.deps for s in _to_dep_specs(d, repo)],
+            deps=[s for d in entry.deps for s in _to_dep_specs(d, repo, stale)],
             add_to_path=entry.add_to_path,
         )
     # An artifact-prefix is [package] under another name: same compilers, same deps.
@@ -661,6 +688,148 @@ def _classify_orphan_pin(
     return "triggered rebuild"
 
 
+_PULL_REQUEST_EVENTS: Final = frozenset({"pull_request", "pull_request_target"})
+# A stale fallback reads at most this many sidecars per dep, newest first.
+_STALE_CANDIDATES: Final = 5
+
+
+def _sidecar_payload(
+    artifact_name: ArtifactName, direct: Sequence[ArtifactName], deps: Sequence[ResolvedDep]
+) -> dict[str, Any]:
+    """What `artifact_name` was built against: its direct deps and their whole tree, leaves first."""
+    entries = [{k: v for k, v in d.to_json().items() if k not in ("cached", "source", "install-path")} for d in deps]
+    return {"artifact-name": artifact_name, "direct": list(direct), "deps": entries}
+
+
+@dataclass(frozen=True)
+class _DepTree:
+    """A leg's deps as resolved against the current upstreams, with the edges between them."""
+
+    nodes: Mapping[PackageName, ResolvedDep]
+    direct_of: Mapping[PackageName, Sequence[ArtifactName]]
+
+    def package_of(self, artifact_name: ArtifactName) -> PackageName | None:
+        return next((n for n, d in self.nodes.items() if d.artifact_name == artifact_name), None)
+
+    def below(self, root: PackageName) -> set[PackageName]:
+        out: set[PackageName] = set()
+        stack = [root]
+        while stack:
+            for artifact_name in self.direct_of.get(stack.pop(), ()):
+                p = self.package_of(artifact_name)
+                if p is not None and p not in out:
+                    out.add(p)
+                    stack.append(p)
+        return out
+
+    def sidecar(self, name: PackageName) -> tuple[ArtifactName, str, dict[str, Any]]:
+        node = self.nodes[name]
+        below = self.below(name)
+        deps = [d for n, d in self.nodes.items() if n in below]
+        payload = _sidecar_payload(node.artifact_name, self.direct_of[name], deps)
+        return node.artifact_name, f"{name}-{node.sha}-", payload
+
+
+@dataclass
+class StaleFallback:
+    """One resolve's `allow-stale` fallbacks: the notices they leave, and which commits are older than which."""
+
+    token: str | None
+    notes: set[str] = field(default_factory=set)
+    ancestry: dict[tuple[Repo, Sha, Sha], bool] = field(default_factory=dict)
+
+    def is_older(self, repo: Repo, older: Sha, head: Sha) -> bool:
+        key = (repo, older, head)
+        if key not in self.ancestry:
+            self.ancestry[key] = is_ancestor(repo, older, head, self.token)
+        return self.ancestry[key]
+
+
+def _stale_fallback(
+    dep: ResolvedDep,
+    current: Mapping[PackageName, ResolvedDep],
+    tree: _DepTree,
+    replaced: set[PackageName],
+    keep: set[PackageName],
+    index: s3_store.ArtifactIndex,
+    lane: Execution,
+    stale: StaleFallback,
+) -> tuple[dict[PackageName, ResolvedDep], set[PackageName]] | None:
+    """`current` with `dep` and its tree swapped for a stored build of `dep`'s commit against older upstreams.
+
+    The stored tree must hold the same packages, at commits in the history of the current ones and still in
+    the store, leave `keep` alone and agree with every package outside it; else None, and `dep` is rebuilt.
+    """
+    below = tree.below(dep.name)
+    for candidate in index.with_sidecar(f"{dep.name}-{dep.sha}-")[:_STALE_CANDIDATES]:
+        name = ArtifactName(candidate)
+        if name == dep.artifact_name:
+            continue
+        try:
+            sidecar = index.read_sidecar(name)
+            direct = [ArtifactName(n) for n in sidecar["direct"]]
+            stored = {d.name: d for d in (ResolvedDep.from_json(e, "stale artifact") for e in sidecar["deps"])}
+        except (ClientError, ValueError, KeyError, TypeError) as e:
+            print(f"::warning::Unreadable dep tree of {name}, not used: {escape_command_data(str(e))}")
+            continue
+        deps_hash = compute_deps_hash8(direct)
+        same_variant = name == make_artifact_name(
+            prefix=dep.name,
+            sha=dep.sha,
+            deps_hash8=deps_hash,
+            platform_slug=dep.platform,
+            compiler=dep.compiler,
+            build_type=dep.build_type,
+            python_version=dep.python_version,
+            option=dep.option,
+            template_version=template_version_for_lane(lane),
+        )
+        if not same_variant or set(stored) != below or any(d.repo != tree.nodes[n].repo for n, d in stored.items()):
+            continue
+        swapped = {n: d for n, d in stored.items() if d.artifact_name != tree.nodes[n].artifact_name}
+        if keep & set(swapped):
+            continue
+        if any(n in replaced and current[n].artifact_name != d.artifact_name for n, d in stored.items()):
+            continue
+        if not all(index.exists(d.artifact_name, prefix=f"{n}-{d.sha}-") for n, d in swapped.items()):
+            continue
+        if not all(stale.is_older(d.repo, d.sha, tree.nodes[n].sha) for n, d in swapped.items()):
+            continue
+        trial = {
+            **current,
+            **swapped,
+            dep.name: replace(dep, artifact_name=name, deps_hash=deps_hash, cached=True, source="stale artifact"),
+        }
+        subtree = below | {dep.name}
+        outside = [n for n in trial if n not in replaced | subtree]
+        if all(
+            trial[p].artifact_name == a
+            for n in outside
+            for a in tree.direct_of.get(n, ())
+            if (p := tree.package_of(a)) is not None
+        ):
+            return trial, subtree
+    return None
+
+
+def _stale_note(
+    dep: ResolvedDep,
+    final: Mapping[PackageName, ResolvedDep],
+    current: Mapping[PackageName, ResolvedDep],
+    subtree: set[PackageName],
+) -> str:
+    older = [
+        f"{final[n].repo}@{final[n].sha[:8]} ({current[n].ref} is at {current[n].sha[:8]})"
+        for n in sorted(subtree)
+        if final[n].sha != current[n].sha
+    ]
+    return (
+        f"dep '{dep.name}' ({dep.repo}@{dep.sha[:8]}) is an artifact built against "
+        f"{', '.join(older) if older else 'older builds of its upstreams'}; "
+        "the default branch rebuilds it against the current ones after merge."
+    )
+
+
 def resolve_leg(
     own: PackageSpec,
     own_deps: Sequence[DepSpec],
@@ -682,14 +851,20 @@ def resolve_leg(
     own_compiler_inputs: Sequence[str] | None = None,
     local: Mapping[PackageName, ResolvedDep] | None = None,
     published_in_run: frozenset[PackageName] = frozenset(),
+    stale: StaleFallback | None = None,
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry.
 
     `own_ref` is the commit's ref, for deps on packages of the own repo (siblings);
     `local` are siblings built earlier in the same job, `published_in_run` those another job of this run uploads.
+    With `stale`, a missing `allow-stale` dep falls back to `_stale_fallback`.
     """
     local = local or {}
     pins = pins or {}
+    # Rebuilds a stale fallback makes unnecessary are not dispatched.
+    plans: dict[tuple[Repo, Ref, Execution], DispatchPlan] = {} if stale else dispatch_plans
+    plan_key_of: dict[PackageName, tuple[Repo, Ref, Execution]] = {}
+    direct_of: dict[PackageName, list[ArtifactName]] = {}
     visited: dict[PackageName, ResolvedDep] = {}
     expanded: dict[PackageName, list[ResolvedDep]] = {}
     requests: dict[PackageName, tuple[str, dict[str, Any]]] = {}
@@ -864,10 +1039,11 @@ def resolve_leg(
                     sync_exists_by_repo=sync_exists_by_repo,
                     can_dispatch=can_dispatch,
                     lane=lane,
-                    dispatch_plans=dispatch_plans,
+                    dispatch_plans=plans,
                     pins=pins,
                     ci_run=ci_run,
                 )
+                plan_key_of[spec.package] = (spec.repo, ref, lane)
 
         resolved = ResolvedDep(
             name=spec.package,
@@ -888,16 +1064,45 @@ def resolve_leg(
         )
         visited[spec.package] = resolved
         expanded[spec.package] = [resolved]
+        direct_of[spec.package] = [d.artifact_name for d in _unique(sub_deps)]
         order.append(spec.package)
         return [resolved]
 
     direct: list[ResolvedDep] = []
+    stale_ok: dict[PackageName, None] = {}
+    keep: set[PackageName] = set()  # direct deps without allow-stale
     for spec in own_deps:
         if spec.applies_to(matrix_entry, lane):
-            direct += visit(spec, matrix_entry, declared_by=own.name, parent_ref=own_ref)
+            got = visit(spec, matrix_entry, declared_by=own.name, parent_ref=own_ref)
+            direct += got
+            names = [d.name for d in got if d.source != "local"]
+            if spec.allow_stale:
+                stale_ok.update(dict.fromkeys(names))
+            else:
+                keep.update(names)
     direct = _unique(direct)
 
-    deps_resolved = [visited[name] for name in order]
+    tree = _DepTree(visited, direct_of)
+    for name in direct_of:
+        artifact_index.record_sidecar(*tree.sidecar(name))
+
+    final = dict(visited)
+    if stale:
+        replaced: set[PackageName] = set()
+        for name in stale_ok:
+            if visited[name].cached or name in replaced or name in keep:
+                continue
+            hit = _stale_fallback(visited[name], final, tree, replaced, keep, artifact_index, lane, stale)
+            if hit is not None:
+                final, subtree = hit
+                replaced |= subtree
+                stale.notes.add(_stale_note(final[name], final, visited, subtree))
+        for name, key in plan_key_of.items():
+            if final[name].source == "triggered rebuild":
+                dispatch_plans.setdefault(key, plans[key])
+
+    deps_resolved = [final[name] for name in order]
+    direct = [final[d.name] for d in direct]
 
     direct_dep_artifact_names = [d.artifact_name for d in direct]
     own_compiler = _join_compilers(
@@ -922,6 +1127,11 @@ def resolve_leg(
         python_version=own_python,
         option=own_option,
         template_version=template_version_for_lane(lane),
+    )
+
+    own_name = PackageName(own_prefix_override) if own_prefix_override else own.prefix
+    artifact_index.record_sidecar(
+        own_artifact, f"{own_name}-{own_sha}-", _sidecar_payload(own_artifact, direct_dep_artifact_names, deps_resolved)
     )
 
     return deps_resolved, ResolvedOwn(
@@ -972,41 +1182,54 @@ def resolve_packages(
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan],
     pins: Mapping[Repo, Ref] | None = None,
     published_in_run: frozenset[PackageName] = frozenset(),
+    stale: StaleFallback | None = None,
 ) -> tuple[list[ResolvedDep], dict[PackageName, ResolvedOwn]]:
-    """One leg of a kind publishing `prefixes` in build order: the deps to fetch, and each package's artifact."""
-    built: dict[PackageName, ResolvedDep] = {}
-    per_package: dict[PackageName, ResolvedOwn] = {}
-    to_fetch: dict[PackageName, ResolvedDep] = {}
-    primary = manifest.packages[manifest.package.prefix]
-    for prefix in prefixes:
-        info = manifest.packages.get(prefix, primary)
-        deps, own = resolve_leg(
-            own=manifest.package,
-            own_deps=info.deps,
-            own_sha=own_sha,
-            matrix_entry=matrix_entry,
-            manifest_cache=manifest_cache,
-            sync_branch=sync_branch,
-            sync_exists_by_repo=sync_exists_by_repo,
-            sha_cache=sha_cache,
-            artifact_index=artifact_index,
-            run_state_cache=run_state_cache,
-            token=token,
-            can_dispatch=can_dispatch,
-            lane=lane,
-            dispatch_plans=dispatch_plans,
-            own_prefix_override=None if prefix == manifest.package.prefix else prefix,
-            pins=pins,
-            own_ref=own_ref,
-            own_compiler_inputs=info.compiler_inputs,
-            local=built,
-            published_in_run=published_in_run,
-        )
-        for d in deps:
-            if d.source != "local":
-                to_fetch.setdefault(d.name, d)
-        per_package[prefix] = own
-        built[prefix] = _as_local(prefix, manifest.package.repo, own_ref, own_sha, own)
+    """One leg of a kind publishing `prefixes` in build order: the deps to fetch, and each package's artifact.
+
+    The packages share one install tree: where stale fallbacks would put two builds of one dep in it,
+    the leg resolves without them.
+    """
+    attempts = [replace(stale, notes=set()), None] if stale else [None]
+    for attempt in attempts:
+        built: dict[PackageName, ResolvedDep] = {}
+        per_package: dict[PackageName, ResolvedOwn] = {}
+        to_fetch: dict[PackageName, ResolvedDep] = {}
+        clash = False
+        primary = manifest.packages[manifest.package.prefix]
+        for prefix in prefixes:
+            info = manifest.packages.get(prefix, primary)
+            deps, own = resolve_leg(
+                own=manifest.package,
+                own_deps=info.deps,
+                own_sha=own_sha,
+                matrix_entry=matrix_entry,
+                manifest_cache=manifest_cache,
+                sync_branch=sync_branch,
+                sync_exists_by_repo=sync_exists_by_repo,
+                sha_cache=sha_cache,
+                artifact_index=artifact_index,
+                run_state_cache=run_state_cache,
+                token=token,
+                can_dispatch=can_dispatch,
+                lane=lane,
+                dispatch_plans=dispatch_plans,
+                own_prefix_override=None if prefix == manifest.package.prefix else prefix,
+                pins=pins,
+                own_ref=own_ref,
+                own_compiler_inputs=info.compiler_inputs,
+                local=built,
+                published_in_run=published_in_run,
+                stale=attempt,
+            )
+            for d in deps:
+                if d.source != "local":
+                    clash |= to_fetch.setdefault(d.name, d).artifact_name != d.artifact_name
+            per_package[prefix] = own
+            built[prefix] = _as_local(prefix, manifest.package.repo, own_ref, own_sha, own)
+        if not clash:
+            break
+    if stale and attempt:
+        stale.notes |= attempt.notes
     return list(to_fetch.values()), per_package
 
 
@@ -1210,6 +1433,13 @@ def _run(
     manifest_cache[(own_repo, own_ref)] = local_manifest
     sha_cache: dict[tuple[Repo, Ref], Sha] = {(own_repo, own_ref): own_sha}
     artifact_index = s3_store.ArtifactIndex()
+    # Pull requests only, never downstream CI (a pin) or a sync branch: those test exactly one tree.
+    allow_stale = (
+        os.environ.get("GITHUB_EVENT_NAME") in _PULL_REQUEST_EVENTS
+        and sync_branch is None
+        and all(r == own_repo for r in pins)
+    )
+    stale = StaleFallback(token) if allow_stale else None
     run_state_cache: dict[tuple[Repo, Sha], bool] = {}
     matrices_out: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
@@ -1260,6 +1490,7 @@ def _run(
                     dispatch_plans=dispatch_plans,
                     pins=pins,
                     published_in_run=published_in_run,
+                    stale=stale,
                 )
             except LegError as e:
                 print(f"::warning::[{mname}] {job_name}: {escape_command_data(str(e))}", file=sys.stderr)
@@ -1303,6 +1534,14 @@ def _run(
         matrices_out[mname] = {"include": out_include}
 
     t_legs = time.monotonic()
+    for note in sorted(stale.notes if stale else ()):
+        print(f"::notice::{escape_command_data(note)}")
+    try:
+        written = artifact_index.flush_sidecars()
+    except (CIError, ClientError, BotoCoreError) as e:
+        print(f"Dep trees not recorded beside the artifacts: {e}")
+    else:
+        print(f"Recorded the dep trees of {written} artifact(s) beside them.")
     # After all legs, so a producer flagged by several legs is dispatched once.
     if dispatch_plans:
         dispatcher_repo = os.environ.get("GITHUB_REPOSITORY", "")
