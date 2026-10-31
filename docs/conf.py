@@ -89,6 +89,7 @@ ghactions_groups = [
             "validate-generated-workflows",
             "regenerate-workflows-pr",
             "sync-branch-prs",
+            "retry-scheduled-run",
         ],
     ),
     (

@@ -6,7 +6,8 @@ name: Should downstream CI run for this commit
 description: >
   For workflow_run orchestrators (no PR or labels in the payload): read the
   level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
-  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run.
+  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run,
+  nor does a scheduled CI run.
   Fails unless the PR carries at most one, valid level label. A dispatch passes
   `level` instead; a fork's PR, which `sha` does not find, comes as `pull-request`.
   With `require-label`, a pull request without that label does not run either,
@@ -76,6 +77,15 @@ runs:
             echo "::error title=Label gate::level must be 'all' or a level from 1, got '$LEVEL_INPUT'" >&2
             exit 1
           fi
+        fi
+
+        # Every repository has its own nightly; a fan-out would build each consumer again.
+        if [ "${GITHUB_EVENT_NAME:-}" = workflow_run ] &&
+           [ "$(jq -r '.workflow_run.event // ""' "${GITHUB_EVENT_PATH:-/dev/null}")" = schedule ]; then
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "depth=" >> "$GITHUB_OUTPUT"
+          echo "Label gate: a scheduled CI run; skipping"
+          exit 0
         fi
 
         pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"

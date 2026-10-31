@@ -132,3 +132,16 @@ def test_a_dispatched_level_still_needs_the_required_label(tmp_path: Path, label
     pr = {"state": "open", "labels": [{"name": n} for n in labels]}
     code, out, _ = _run_gate(tmp_path, pr, LEVEL_INPUT="all", PULL_REQUEST_INPUT="7", REQUIRE_LABEL_INPUT="run-hpc-ci")
     assert (code, out["run"]) == (0, run)
+
+
+@pytest.mark.parametrize(("event", "run"), [("schedule", "false"), ("pull_request", "true")])
+def test_a_scheduled_ci_run_fans_out_to_nobody(tmp_path: Path, event: str, run: str) -> None:
+    payload = tmp_path / "event.json"
+    payload.write_text(json.dumps({"workflow_run": {"event": event}}))
+    code, out, _ = _run_gate(
+        tmp_path,
+        [_pull("abc123", [f"{LABEL}:all"])],
+        GITHUB_EVENT_NAME="workflow_run",
+        GITHUB_EVENT_PATH=str(payload),
+    )
+    assert (code, out["run"]) == (0, run)
