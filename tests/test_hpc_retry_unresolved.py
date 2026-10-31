@@ -52,6 +52,25 @@ def test_other_failures_are_not_retried(tmp_path: Path, capfd: pytest.CaptureFix
     assert capfd.readouterr().err == "Permission denied (publickey).\n"
 
 
+def test_a_stalled_command_is_killed_and_retried(tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    count = tmp_path / "count"
+    script = tmp_path / "stall.sh"
+    script.write_text(
+        f"n=$(cat {count} 2>/dev/null || echo 0); echo $((n + 1)) > {count}\n"
+        f'if [ "$n" -lt 1 ]; then exec sleep 60; fi\necho ok\n'
+    )
+    assert run(["sh", str(script)], delays=(0,), timeout=0.5) == 0
+    assert _calls(tmp_path) == 2
+    out, err = capfd.readouterr()
+    assert out == "ok\n"
+    assert "no result after 0.5s; retrying in 0s" in err
+
+
+def test_a_command_that_keeps_stalling_fails(tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    assert run(["sleep", "60"], delays=(0,), timeout=0.2) != 0
+    assert capfd.readouterr().err.endswith("sleep: no result after 0.2s; giving up\n")
+
+
 def test_the_connection_uses_the_wrappers_beside_this_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "ci-infrastructure-ssh").touch()
     monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
