@@ -42,7 +42,6 @@ import yaml
 
 ALLOWLIST_NAME = "ci-approval-allowlist.yml"
 MANIFEST_PATH = (".ci", "manifest.toml")
-# Remote (consumers) and local (ci-infrastructure itself) spellings.
 GATE_ACTIONS = (
     "ecmwf/ci-infrastructure/actions/require-ci-approval",
     "./actions/require-ci-approval",
@@ -283,10 +282,9 @@ def _check(workflow: Path) -> list[str]:
     if not isinstance(doc, dict):
         return []
 
-    jobs = doc.get("jobs")
-    if not isinstance(jobs, dict) or not jobs:
+    jobs = _jobs_of(doc)
+    if not jobs:
         return []
-    jobs = {str(k): (v if isinstance(v, dict) else {}) for k, v in jobs.items()}
 
     if not _open_to_outsiders(workflow):
         return []

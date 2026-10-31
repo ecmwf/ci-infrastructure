@@ -141,8 +141,7 @@ jobs:
   hpc-submit:
     needs: lanes
     name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
-    # Submit, wait for the marker, run the recipe, read the sentinel back. The
-    # artifact name is unique per run+attempt, so a re-run never reattaches.
+    # The artifact name is unique per run+attempt, so a re-run never reattaches.
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
     container: *hpc-container

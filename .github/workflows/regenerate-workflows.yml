@@ -76,7 +76,6 @@ jobs:
           client-id: ${{ secrets.REGENERATE_WORKFLOWS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REGENERATE_WORKFLOWS_APP_PRIVATE_KEY }}
 
-      # @main: a relative `uses` in a reusable workflow resolves in the caller's repo.
       - if: steps.manifest.outputs.present == 'true'
         uses: ecmwf/ci-infrastructure/actions/regenerate-workflows-pr@main
         with:

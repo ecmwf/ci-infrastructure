@@ -62,7 +62,7 @@ def test_prefix_defaults_to_name() -> None:
     assert validate({"package": {**package, "prefix": "c"}}).package.prefix == "c"
 
 
-def test_hpc_is_no_longer_an_execution() -> None:
+def test_hpc_is_not_an_execution() -> None:
     with pytest.raises(ValidationError):
         MatrixKindTable.model_validate({"execution": "hpc"})
 

@@ -245,10 +245,7 @@ _FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "a
 
 
 class WorkflowRuns(NamedTuple):
-    """detail: first in-progress run; url: that run, or for 'completed' the run that should have published.
-
-    conclusion: only for 'completed'.
-    """
+    """url: the in-progress run (whose status is `detail`), or for 'completed' the run that should have published."""
 
     state: Literal["running", "completed", "none"]
     detail: str | None = None
@@ -352,10 +349,7 @@ class ManifestSchemaError(Exception):
 def resolve_reuse_matrix(
     kind: str, include: Sequence[Any] | None, reuse: object, blocks: Mapping[str, Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
-    """The legs of `[matrix.<kind>]`, over `defaults`, after `reuse-matrix = "X"` (no chaining).
-
-    A reusing kind's own `defaults` go under X's.
-    """
+    """The legs of `[matrix.<kind>]` over `defaults`, after `reuse-matrix = "X"`; its own `defaults` go under X's."""
     if reuse is not None and include:
         raise ManifestSchemaError(f"[matrix.{kind}] sets both 'reuse-matrix' and 'include'; pick one")
     if reuse is None:

@@ -113,6 +113,13 @@ def _project(root: Path, name: str, version: str, deps: list[str]) -> Path:
     return root
 
 
+def _job_script(tmp_path: Path, leg: dict[str, Any]) -> Path:
+    script = tmp_path / "job.sh"
+    rendered = jobscript.render_job_template(template_source=RUNNER, template_name="t", leg=leg, execution="runner")
+    script.write_text(wrap(rendered, leg=leg, execution="runner"))
+    return script
+
+
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
 def test_a_dep_wheel_on_the_prefix_path_satisfies_the_requirement(tmp_path: Path) -> None:
     """The upstream's dev wheel is installed, though the index does not have the package."""
@@ -123,14 +130,7 @@ def test_a_dep_wheel_on_the_prefix_path_satisfies_the_requirement(tmp_path: Path
     (project / "tests" / "test_import.py").write_text("def test_import():\n    import ci_infra_test_upstream\n")
     # No python-version: the venv takes a Python uv finds, so the test needs no download.
     leg = {"platform": "x"}
-    script = tmp_path / "job.sh"
-    script.write_text(
-        wrap(
-            jobscript.render_job_template(template_source=RUNNER, template_name="t", leg=leg, execution="runner"),
-            leg=leg,
-            execution="runner",
-        )
-    )
+    script = _job_script(tmp_path, leg)
     env = {
         **os.environ,
         "TMPDIR": str(tmp_path),
@@ -168,14 +168,7 @@ def test_a_shallow_checkout_gets_its_version_from_the_tags(tmp_path: Path) -> No
     checkout = tmp_path / "checkout"
     subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{origin}", checkout], check=True)
     leg = {"platform": "x", "tests": False}
-    script = tmp_path / "job.sh"
-    script.write_text(
-        wrap(
-            jobscript.render_job_template(template_source=RUNNER, template_name="t", leg=leg, execution="runner"),
-            leg=leg,
-            execution="runner",
-        )
-    )
+    script = _job_script(tmp_path, leg)
     env = {
         **os.environ,
         "TMPDIR": str(tmp_path),

@@ -86,7 +86,6 @@ _CONTEXT_EXTRAS: Final = ("leg", "artifact_name", "execution", "ci_packages", "c
 #: E.g. ``{% extends "ci-infrastructure/cmake-atos.sh.j2" %}``.
 BASE_TEMPLATE_PREFIX: Final = "ci-infrastructure"
 
-#: Runner legs name their compilers in the compiler-input fields; the recipes read these.
 #: The binary a recipe calls: the leg's `*-compiler-binary`, else the compiler that identifies the
 #: build, which is the same binary wherever no module renames it.
 _COMPILER_BINARIES: Final[Mapping[str, str]] = MappingProxyType(
@@ -183,9 +182,9 @@ def build_template_context(leg: Mapping[str, Any], *, execution: Execution, arti
     context["leg"] = dict(leg)
     context["artifact_name"] = artifact_name
     context["execution"] = execution
-    # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
-    context["ci_packages"] = list((leg.get("_resolved") or {}).get("packages") or {})
     resolved = leg.get("_resolved") or {}
+    # The packages the leg's kind publishes, in build order; each installs to $CI_INSTALL_ROOT/<name>.
+    context["ci_packages"] = list(resolved.get("packages") or {})
     # The commit resolve-deps built each dep's repo from, and the crates the manifest takes from it.
     context["ci_dep_shas"] = {d["repo"]: d["sha"] for d in resolved.get("deps") or []}
     context["ci_crates"] = dict(resolved.get("crates") or {})
@@ -227,10 +226,7 @@ def undeclared_template_names(
     template_name: str,
     search_path: Path | None = None,
 ) -> set[str]:
-    """Names the template (or what it extends/includes) reads that neither the leg nor a ``| default`` provides.
-
-    Static, so misses ``leg['x']``.
-    """
+    """Names the template (or what it extends/includes) reads that neither the leg nor a ``| default`` provides."""
     env = job_template_environment(search_path)
     assert env.loader is not None
     names: set[str] = set()
@@ -433,7 +429,6 @@ def render_job_script(
         out.append(f'export CI_INSTALL_ROOT="{install_path}"')
     for key, value in (env or {}).items():
         out.append(f'export {key}="{value}"')
-    # Armed before the marker wait and body.
     out.append(f"_ci_on_err() {{ {sentinel_echo(SENTINEL_FAILURE)}; }}")
     out.append("trap _ci_on_err ERR")
     out.append("")

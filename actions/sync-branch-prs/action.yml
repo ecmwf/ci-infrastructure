@@ -28,7 +28,6 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.app-private-key }}
-        # Org-wide (the graph is dynamic); permissions narrowed instead.
         owner: ${{ github.repository_owner }}
         permission-contents: read
         permission-pull-requests: write

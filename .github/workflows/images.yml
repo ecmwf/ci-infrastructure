@@ -10,10 +10,8 @@ name: Images
 # requests push nothing.
 on:
   workflow_call:
-    # Named explicitly rather than taking `secrets: inherit` from the caller:
-    # this is the one workflow that executes pull-request-authored Dockerfiles,
-    # and it has no business seeing the AWS keys, the HPC SSH user or the
-    # artifact-store credentials that inherit would also hand it.
+    # Named, not `secrets: inherit`: this workflow runs PR-authored Dockerfiles
+    # and must not see the other credentials.
     secrets:
       PUBLIC_ECCR_ROBOT_NAME:
         required: false
@@ -32,16 +30,9 @@ on:
         description: 'On a pull request, also build the images whose base it rebuilds.'
         type: boolean
         default: false
-  # Nightly, for the rolling platform only -- in effect, not by configuration.
-  # A scheduled run discovers every image exactly as a push does; the pinned
-  # platforms' tags are already in the registry and are skipped, while
-  # a `rolling-*` platform carries a UTC date in its tag (build-image.sh), so
-  # each night's tag is new and gets built. Nothing here names the rolling
-  # images: that would be a second answer to "what needs rebuilding", which is
-  # the one thing this workflow is built to avoid.
-  #
-  # 03:17 UTC: after the Arch mirrors' nightly churn has settled, and off the
-  # hour, where scheduled workloads pile up on GitHub's runners.
+  # Nightly rebuilds only `rolling-*` in effect: their tag carries the UTC date,
+  # every other tag is already in the registry. 03:17: after the Arch mirrors
+  # settle, and off the hour.
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -56,13 +47,11 @@ on:
         required: false
 
 concurrency:
-  # Never cancel a run mid-push to the registry. A pull request pushes nothing and
-  # has its own ref, so its newer commit cancels the older run instead of queueing.
+  # Never cancel a run mid-push; a pull request pushes nothing.
   group: images-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Push for pushes to main; never for pull_request validation.
   PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
   DOCKER_BUILDKIT: "1"
 
@@ -128,8 +117,7 @@ jobs:
       - name: Push ${{ matrix.name }}
         if: ${{ env.PUSH == 'true' }}
         env:
-          # Only the publishing leg gets the push credentials, and only for this
-          # step: nothing the image or the tests run can see them.
+          # Step-scoped so nothing the image or tests run can see them.
           PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
         # The tag is a function of committed content, so publish only a clean tree.

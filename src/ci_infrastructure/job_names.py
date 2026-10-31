@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-# python-version renders as py<ver>, and not at all where a leg has none; empty options as "default".
 _PYTHON_FIELD = "python-version"
 # Shown where a leg has it: in a package with Rust bindings it is not a compiler-input.
 _RUST_FIELD = "rust-compiler"
@@ -21,10 +20,7 @@ def _leg_values(legs: Sequence[Mapping[str, Any]], key: str) -> set[Any]:
 
 
 def _compiler_fields(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[str]) -> list[str]:
-    """Toolchain fields for the title, shown even when constant.
-
-    `compiler-inputs` (else `cxx-compiler-binary`/`c-compiler-binary`); the varying ones if any vary.
-    """
+    """Toolchain fields for the title, shown even when constant; the varying ones if any vary."""
     fields = [f for f in sorted(compiler_inputs) if any(f in leg for leg in legs)]
     if not fields:
         fields = [f for f in ("cxx-compiler-binary", "c-compiler-binary") if any(f in leg for leg in legs)][:1]
@@ -33,10 +29,7 @@ def _compiler_fields(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequenc
 
 
 def first_distinguishing_field(legs: Sequence[Mapping[str, Any]], compiler_inputs: Sequence[str] = ()) -> str | None:
-    """The first field that varies across legs, ranked: artifact-name fields, then platform, then the rest.
-
-    Ranking is an allowlist, so a repo-invented key (e.g. a job-script path) never outranks identity.
-    """
+    """The first field that varies across legs: artifact-name fields, then platform, then the rest."""
     if not legs:
         return None
     keys = set(legs[0].keys())

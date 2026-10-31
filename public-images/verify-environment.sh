@@ -72,7 +72,6 @@ expect_compiler() {
   echo "compiler: $(command -v "$binary") -> $("$binary" --version | head -1)"
 }
 
-# gcc and clang both come as a C/C++ pair; Fortran stands alone.
 expect_pair() {
   expect_compiler "$1" "$3"
   expect_compiler "$2" "$3"

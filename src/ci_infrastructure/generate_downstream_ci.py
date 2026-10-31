@@ -438,7 +438,7 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
 
     _check_subset_invariant(manifests, by_repo)
     _check_trigger_cycles(manifests, by_repo)
-    _check_needs(manifests, by_pkg, by_repo)
+    _check_needs(manifests, by_pkg)
     _check_kinds_have_legs(manifests)
 
 
@@ -506,12 +506,8 @@ def _check_trigger_cycles(manifests: Sequence[Manifest], by_repo: Mapping[str, M
     _require_acyclic(graph, [m.repo for m in manifests], label="trigger-downstream cycle", render=str)
 
 
-def _check_needs(
-    manifests: Sequence[Manifest],
-    by_pkg: Mapping[str, Manifest],
-    by_repo: Mapping[str, Manifest],
-) -> None:
-    cross_edges: list[tuple[Manifest, str, JobRef]] = []
+def _check_needs(manifests: Sequence[Manifest], by_pkg: Mapping[str, Manifest]) -> None:
+    out_edges: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
 
     for m in manifests:
         for kind, mk in m.matrices.items():
@@ -549,19 +545,8 @@ def _check_needs(
                         f"{upstream.path} has no [[trigger-downstream]] back to {m.repo} - "
                         f"the orchestrator will never call us"
                     )
-                cross_edges.append((m, kind, JobRef(pkg, target_kind)))
+                out_edges[(m.package_name, kind)].append((pkg, target_kind))
 
-    _check_cross_repo_job_cycles(manifests, by_pkg, cross_edges)
-
-
-def _check_cross_repo_job_cycles(
-    manifests: Sequence[Manifest],
-    by_pkg: Mapping[str, Manifest],
-    cross_edges: Sequence[tuple[Manifest, str, JobRef]],
-) -> None:
-    out_edges: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-    for downstream_m, downstream_kind, upstream_ref in cross_edges:
-        out_edges[(downstream_m.package_name, downstream_kind)].append((upstream_ref.package, upstream_ref.kind))
     _require_acyclic(
         out_edges,
         list(out_edges),

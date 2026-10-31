@@ -67,7 +67,7 @@ from ._github_api import (
 )
 from ._github_api import make_artifact_name as _make_artifact_name
 from ._github_api import resolve_ref_to_sha as _resolve_ref_to_sha
-from .manifest import DepTable
+from .manifest import DepTable, _check_repo
 from .manifest import validate as validate_manifest
 from .sync_branch import is_sync_branch
 
@@ -98,9 +98,7 @@ ArtifactName = NewType("ArtifactName", str)
 
 
 def as_repo(s: str) -> Repo:
-    if "/" not in s or s.count("/") != 1 or not all(s.split("/", 1)):
-        raise ValueError(f"repo must be 'owner/name', got {s!r}")
-    return Repo(s)
+    return Repo(_check_repo(s))
 
 
 def parse_pin(pin: str) -> dict[Repo, Ref]:
@@ -1019,7 +1017,7 @@ def resolve_leg(
             if run_key not in run_state_cache:
                 run_state_cache[run_key] = probe_workflow_runs(spec.repo, sha, token).in_flight
             if run_state_cache[run_key]:
-                source = "artifact"  # fetch_deps polls for the in-flight upload
+                source = "artifact"
             else:
                 ci_run = latest_ci_run(spec.repo, sha, token)
                 if ci_run is not None and ci_run.conclusion == "failure":
@@ -1559,7 +1557,6 @@ def _run(
                     rerun.add(plan.rerun_id)
                     rerun_producer_ci(plan=plan, token=dispatch_token)
                 continue
-            # fallback-ref: the producer's pinned ref, not a hardcoded "main".
             dispatch_producer_workflow(
                 plan=plan,
                 dispatcher_repo=dispatcher_repo,

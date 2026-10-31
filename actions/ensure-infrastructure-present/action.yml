@@ -221,9 +221,7 @@ runs:
 
               echo "  using bootstrap interpreter: $bootstrap_py ($("$bootstrap_py" --version 2>&1))"
               "$bootstrap_py" -m venv "$venv"
-              # Not --quiet, so a stall is visible; timeouts make blocked egress fail fast.
               echo "  pip install ci-infrastructure from $repo_root ..."
-              # [runtime]: the base install is only what the pre-commit hook needs.
               "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[runtime]"
             fi
             echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"

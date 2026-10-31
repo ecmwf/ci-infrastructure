@@ -29,7 +29,6 @@ JOB_NAME = "collect results"
 HPC_JOB = "collect-result-hpc"
 HPC_JOB_NAME = "collect HPC results"
 HPC_CONTEXT = "ci-result/hpc-atos"
-# Remote (consumers) and local (ci-infrastructure itself) spellings.
 ACTIONS = ("ecmwf/ci-infrastructure/actions/ci-result@", "./actions/ci-result")
 NEEDS_INPUT = "${{ toJSON(needs) }}"
 _SQUASHED_INPUT = "".join(NEEDS_INPUT.split())
