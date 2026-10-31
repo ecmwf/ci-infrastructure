@@ -670,7 +670,7 @@ def resolve_leg(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
-    artifact_cache: dict[ArtifactName, bool],
+    artifact_index: s3_store.ArtifactIndex,
     run_state_cache: dict[tuple[Repo, Sha], bool],
     token: str | None,
     can_dispatch: bool,
@@ -832,9 +832,7 @@ def resolve_leg(
             template_version=template_version_for_lane(lane),
         )
 
-        if artifact_name not in artifact_cache:
-            artifact_cache[artifact_name] = s3_store.object_exists(artifact_name)
-        cached = artifact_cache[artifact_name]
+        cached = artifact_index.exists(artifact_name, prefix=f"{spec.package}-{sha}-")
 
         if cached:
             source: Literal["artifact", "triggered rebuild"] = "artifact"
@@ -966,7 +964,7 @@ def resolve_packages(
     sync_branch: Ref | None,
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
-    artifact_cache: dict[ArtifactName, bool],
+    artifact_index: s3_store.ArtifactIndex,
     run_state_cache: dict[tuple[Repo, Sha], bool],
     token: str | None,
     can_dispatch: bool,
@@ -991,7 +989,7 @@ def resolve_packages(
             sync_branch=sync_branch,
             sync_exists_by_repo=sync_exists_by_repo,
             sha_cache=sha_cache,
-            artifact_cache=artifact_cache,
+            artifact_index=artifact_index,
             run_state_cache=run_state_cache,
             token=token,
             can_dispatch=can_dispatch,
@@ -1192,6 +1190,7 @@ def _run(
     pins = parse_pin(pin)
     token = select_token()
 
+    t_start = time.monotonic()
     own_pin = pins.get(Repo(str(local_manifest.package.repo)))
     # A fork's branch lives in the fork, never in this repo: it names nothing here.
     own_sha = Sha(own_pin) if own_pin else _resolve_own_sha(str(local_manifest.package.repo), current_branch, token)
@@ -1204,12 +1203,13 @@ def _run(
         pins=pins,
     )
 
+    t_manifests = time.monotonic()
     own_ref = Ref(current_branch)
     own_repo = local_manifest.package.repo
     # Packages of this repo resolve against this commit.
     manifest_cache[(own_repo, own_ref)] = local_manifest
     sha_cache: dict[tuple[Repo, Ref], Sha] = {(own_repo, own_ref): own_sha}
-    artifact_cache: dict[ArtifactName, bool] = {}
+    artifact_index = s3_store.ArtifactIndex()
     run_state_cache: dict[tuple[Repo, Sha], bool] = {}
     matrices_out: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
@@ -1252,7 +1252,7 @@ def _run(
                     sync_branch=sync_branch,
                     sync_exists_by_repo=sync_exists,
                     sha_cache=sha_cache,
-                    artifact_cache=artifact_cache,
+                    artifact_index=artifact_index,
                     run_state_cache=run_state_cache,
                     token=token,
                     can_dispatch=can_dispatch,
@@ -1302,6 +1302,7 @@ def _run(
 
         matrices_out[mname] = {"include": out_include}
 
+    t_legs = time.monotonic()
     # After all legs, so a producer flagged by several legs is dispatched once.
     if dispatch_plans:
         dispatcher_repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -1328,6 +1329,13 @@ def _run(
                 fallback_ref=str(plan.ref),
                 token=dispatch_token,
             )
+
+    t_dispatch = time.monotonic()
+    print(
+        f"Timing: manifests {t_manifests - t_start:.1f}s ({len(manifest_cache) - 1} upstream), "
+        f"legs {t_legs - t_manifests:.1f}s ({artifact_index.listings} S3 listings, "
+        f"{len(run_state_cache)} run probes), dispatch {t_dispatch - t_legs:.1f}s ({len(dispatch_plans)} plans)"
+    )
 
     outputs: dict[str, str] = {
         f"matrix-{mname}": json.dumps(mdata, separators=(",", ":")) for mname, mdata in matrices_out.items()

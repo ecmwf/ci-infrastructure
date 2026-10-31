@@ -14,7 +14,7 @@ from typing import Any, Final
 import pytest
 from conftest import parse_all, write_repo
 
-from ci_infrastructure import resolve_deps
+from ci_infrastructure import resolve_deps, s3_store
 from ci_infrastructure._github_api import EXECUTION_RUNNER, ManifestSchemaError
 from ci_infrastructure.generate_downstream_ci import derive_cross_repo_needs, validate_graph
 from ci_infrastructure.manifest import validate
@@ -129,7 +129,7 @@ def test_a_meta_package_cannot_be_published() -> None:
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
 
 
 def _consumer_dep(package: str, compiler_inputs: list[str] | None = None) -> DepSpec:
@@ -155,7 +155,7 @@ def _resolve(deps: list[DepSpec], cache: dict[tuple[Repo, Ref], Manifest]) -> tu
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=False,
@@ -333,7 +333,7 @@ def test_a_batch_kind_publishes_what_outside_consumers_resolve() -> None:
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={(Repo("org/stack"), Ref("master")): sha},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=False,
@@ -484,7 +484,7 @@ def test_a_kind_that_publishes_nothing_resolves_the_deps_of_its_packages() -> No
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={(Repo("org/cxxmath"), Ref("main")): sha},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=False,
@@ -521,7 +521,7 @@ def _resolve_fork_sibling(published_in_run: frozenset[str]) -> tuple[list[Any], 
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={(Repo("org/cxxmath"), Ref("develop")): sha},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=True,
@@ -535,7 +535,7 @@ def _resolve_fork_sibling(published_in_run: frozenset[str]) -> tuple[list[Any], 
 
 def test_a_sibling_another_kind_of_this_run_publishes_is_awaited(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fork's run carries the base branch's commit, so no probe sees it in flight; the pin must not fail it."""
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: pytest.fail("probed"))
     to_fetch, plans = _resolve_fork_sibling(frozenset({"cxxmath"}))
     assert [(d.name, d.source, d.sha) for d in to_fetch] == [("cxxmath", "artifact", "f" * 40)]
@@ -546,7 +546,7 @@ def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkey
     class _NotInFlight:
         in_flight = False
 
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: _NotInFlight())
     with pytest.raises(ResolveError, match="the commit under test"):
         _resolve_fork_sibling(frozenset())

@@ -158,6 +158,19 @@ def test_list_objects_follows_pagination() -> None:
     assert [o.key for o in s3_store.list_objects(client=fake)] == [f"a{i}.tar.gz" for i in range(5)]
 
 
+def test_artifact_index_lists_each_prefix_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARTIFACT_S3_KEY_PREFIX", "ci/")
+    fake = FakeS3(page_size=1)
+    for name in ("eckit-abc-x-ubuntu", "eckit-abc-x-rocky", "eckit-geo-abc-x-ubuntu"):
+        fake.put(f"ci/{name}.tar.gz", b"x", NOW)
+    index = s3_store.ArtifactIndex(client=fake)
+    assert index.exists("eckit-abc-x-ubuntu", prefix="eckit-abc-")
+    assert index.exists("eckit-abc-x-rocky", prefix="eckit-abc-")
+    assert not index.exists("eckit-abc-y-rocky", prefix="eckit-abc-")
+    assert not index.exists("eckit-geo-abc-x-rocky", prefix="eckit-geo-abc-")
+    assert index.listings == 2
+
+
 def _obj(key: str, size: int, days_ago: float) -> s3_store.StoredObject:
     return s3_store.StoredObject(key, size, NOW - timedelta(days=days_ago))
 
