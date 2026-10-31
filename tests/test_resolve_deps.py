@@ -13,7 +13,7 @@ from typing import Any, Final
 
 import pytest
 
-from ci_infrastructure import failure_reasons, resolve_deps
+from ci_infrastructure import failure_reasons, resolve_deps, s3_store
 from ci_infrastructure._github_api import (
     EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
@@ -194,7 +194,7 @@ def _resolve(
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=False,
@@ -207,7 +207,7 @@ def _resolve(
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
 
 
 @pytest.mark.usefixtures("offline")
@@ -412,7 +412,7 @@ def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_packag
 
 
 def _missing_artifact(monkeypatch: pytest.MonkeyPatch, ci_run: CiRun | None) -> None:
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
     monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: ci_run)
 
@@ -617,7 +617,7 @@ python-version = "3.11"
 
 def _in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
 
 
@@ -729,7 +729,7 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
     """Declarations compare refs, not SHAs, so a push between lookups is not a conflict."""
     commits = iter("abcdef")
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha(next(commits) * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
     base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
     deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
     assert [d.name for d in deps] == ["base", "middle"]

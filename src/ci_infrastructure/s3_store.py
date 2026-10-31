@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -149,17 +149,36 @@ class StoredObject:
     last_modified: datetime
 
 
-def list_objects(client: _S3Client | None = None) -> list[StoredObject]:
-    """Every object under the key prefix, across all listing pages."""
+def list_objects(client: _S3Client | None = None, *, prefix: str = "") -> list[StoredObject]:
+    """Every object under the key prefix plus ``prefix``, across all listing pages."""
     s3 = _client(client)
     page: dict[str, str] = {}
     out: list[StoredObject] = []
     while True:
-        resp = s3.list_objects_v2(Bucket=_bucket(), Prefix=_key_prefix(), **page)
+        resp = s3.list_objects_v2(Bucket=_bucket(), Prefix=_key_prefix() + prefix, **page)
         out += [StoredObject(o["Key"], int(o["Size"]), o["LastModified"]) for o in resp.get("Contents", [])]
         if not resp.get("IsTruncated"):
             return out
         page = {"ContinuationToken": resp["NextContinuationToken"]}
+
+
+@dataclass
+class ArtifactIndex:
+    """Which artifacts are stored, from one listing per name prefix instead of one HEAD per artifact."""
+
+    client: _S3Client | None = None
+    listings: int = 0
+    _names: dict[str, frozenset[str]] = field(default_factory=dict)
+
+    def exists(self, name: str, prefix: str) -> bool:
+        """``prefix`` must be a prefix of ``name``; each distinct one is listed once."""
+        if prefix not in self._names:
+            self.client = _client(self.client)
+            base = len(_key_prefix())
+            objects = list_objects(self.client, prefix=prefix)
+            self._names[prefix] = frozenset(o.key[base:].removesuffix(".tar.gz") for o in objects)
+            self.listings += 1
+        return name in self._names[prefix]
 
 
 def eviction_plan(objects: Sequence[StoredObject], *, target: float, suffix: str = ".tar.gz") -> list[StoredObject]:
