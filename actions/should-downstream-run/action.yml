@@ -6,9 +6,12 @@ name: Should downstream CI run for this commit
 description: >
   For workflow_run orchestrators (no PR or labels in the payload): read the
   level label of the open PR for `sha`, `<label>:all` or `<label>:<n>`, into
-  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run.
+  `run` and `depth`; a commit with no open PR (a push, e.g. a merge) does not run,
+  nor does a scheduled CI run.
   Fails unless the PR carries at most one, valid level label. A dispatch passes
   `level` instead; a fork's PR, which `sha` does not find, comes as `pull-request`.
+  With `require-label`, a pull request without that label does not run either,
+  e.g. the HPC lane without run-hpc-ci, whose CI built no HPC artifacts.
 
 inputs:
   label:
@@ -24,6 +27,10 @@ inputs:
     default: ''
   level:
     description: "'all' or a level from 1, e.g. a dispatch input; replaces the label."
+    required: false
+    default: ''
+  require-label:
+    description: 'Label the pull request must also carry for the lane to run; empty requires none.'
     required: false
     default: ''
   token:
@@ -50,6 +57,7 @@ runs:
         SHA_INPUT: ${{ inputs.sha }}
         PULL_REQUEST_INPUT: ${{ inputs.pull-request }}
         LEVEL_INPUT: ${{ inputs.level }}
+        REQUIRE_LABEL_INPUT: ${{ inputs.require-label }}
       run: |
         set -euo pipefail
 
@@ -69,19 +77,41 @@ runs:
             echo "::error title=Label gate::level must be 'all' or a level from 1, got '$LEVEL_INPUT'" >&2
             exit 1
           fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "depth=$LEVEL_INPUT" >> "$GITHUB_OUTPUT"
-          echo "Label gate: level '$LEVEL_INPUT' requested"
+        fi
+
+        # Every repository has its own nightly; a fan-out would build each consumer again.
+        if [ "${GITHUB_EVENT_NAME:-}" = workflow_run ] &&
+           [ "$(jq -r '.workflow_run.event // ""' "${GITHUB_EVENT_PATH:-/dev/null}")" = schedule ]; then
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "depth=" >> "$GITHUB_OUTPUT"
+          echo "Label gate: a scheduled CI run; skipping"
           exit 0
         fi
 
         pulls="${RUNNER_TEMP:-/tmp}/label-gate-pulls.json"
-        if [ -n "${PULL_REQUEST_INPUT:-}" ]; then
-          gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_INPUT}" | jq '[.]' > "$pulls"
-        else
-          # The lookup also returns PRs stacked on this commit; only the PR it heads counts.
-          gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" |
-            jq --arg sha "$SHA_INPUT" '[.[] | select(.head.sha == $sha)]' > "$pulls"
+        if [ -z "${LEVEL_INPUT:-}" ] || [ -n "${REQUIRE_LABEL_INPUT:-}" ]; then
+          if [ -n "${PULL_REQUEST_INPUT:-}" ]; then
+            gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_INPUT}" | jq '[.]' > "$pulls"
+          else
+            # The lookup also returns PRs stacked on this commit; only the PR it heads counts.
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA_INPUT}/pulls" |
+              jq --arg sha "$SHA_INPUT" '[.[] | select(.head.sha == $sha)]' > "$pulls"
+          fi
+        fi
+
+        if [ -n "${REQUIRE_LABEL_INPUT:-}" ] &&
+           ! jq -e --arg l "$REQUIRE_LABEL_INPUT" '[.[] | select(.state == "open") | .labels[].name] | index($l)' "$pulls" >/dev/null; then
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "depth=" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Label gate::the pull request lacks '$REQUIRE_LABEL_INPUT'; adding it runs CI's HPC legs, and this lane after them."
+          exit 0
+        fi
+
+        if [ -n "${LEVEL_INPUT:-}" ]; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "depth=$LEVEL_INPUT" >> "$GITHUB_OUTPUT"
+          echo "Label gate: level '$LEVEL_INPUT' requested"
+          exit 0
         fi
 
         depth=""

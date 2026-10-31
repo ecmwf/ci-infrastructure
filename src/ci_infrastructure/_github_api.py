@@ -31,6 +31,7 @@ EXECUTION_HPC_ATOS: Final[Execution] = "hpc-atos"
 
 #: Version of templates/cmake-atos.sh.j2, in every hpc artifact name: consumers load
 #: ci-infrastructure @main, so a template change moves no sha and would be served from cache.
+#: Bumped only when what gets built changes, not for resources or parallelism.
 HPC_TEMPLATE_VERSION: Final = 2
 
 
@@ -186,6 +187,14 @@ def compute_platform_slug(platform: str) -> str:
             "collide with the deps-hash8 segment in artifact names."
         )
     return slug
+
+
+def is_ancestor(repo: str, older: str, head: str, token: str | None) -> bool:
+    """Whether commit `older` is `head` or in its history; False when GitHub cannot tell."""
+    if older == head:
+        return True
+    data = gh_api_rest(f"repos/{repo}/compare/{older}...{head}", token)
+    return isinstance(data, dict) and data.get("status") == "ahead"
 
 
 def resolve_ref_to_sha(repo: str, ref: str, token: str | None) -> str:

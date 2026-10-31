@@ -117,6 +117,14 @@ runs:
         if [ -n "$S3_CA_BUNDLE_INPUT" ]; then echo "ARTIFACT_S3_CA_BUNDLE=$S3_CA_BUNDLE_INPUT" >> "$GITHUB_ENV"; fi
         echo "S3 artifact bucket: ${ARTIFACT_S3_BUCKET:-<unset>}"
 
+    # Installs sccache on the runner and resolves its config; the job gets both shipped.
+    - name: Set up sccache
+      id: sccache
+      if: env.SCCACHE_BUCKET != '' && toJSON(fromJSON(inputs.matrix-leg || '{}').sccache) != 'false'
+      uses: ecmwf/ci-infrastructure/actions/setup-sccache@main
+      with:
+        cache-key-suffix: ${{ fromJSON(inputs.matrix-leg || '{}').platform }}-${{ fromJSON(inputs.matrix-leg || '{}').cxx-compiler }}-${{ fromJSON(inputs.matrix-leg || '{}').build-type }}${{ fromJSON(inputs.matrix-leg || '{}').options && format('-{0}', fromJSON(inputs.matrix-leg || '{}').options) || '' }}
+
     - name: Submit build job and wait
       id: submit
       shell: bash
@@ -133,6 +141,7 @@ runs:
         TROIKA_CONFIG: ${{ inputs.troika-config }}
         TROIKA_USER: ${{ inputs.troika-user }}
         PUBLISH: ${{ inputs.publish }}
+        SCCACHE_OUTCOME: ${{ steps.sccache.outcome }}
       run: |
         set -euo pipefail
         if [ -z "$REMOTE_WORK_DIR_INPUT" ]; then
@@ -163,7 +172,25 @@ runs:
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ "$PUBLISH" = "false" ]; then args+=(--no-publish); fi
+        if [ "$SCCACHE_OUTCOME" = success ]; then args+=(--sccache-binary "$(command -v sccache)"); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
+
+    # A cancelled step's process gets no signal through the container hook, so its SLURM job would run on.
+    - name: Cancel the SLURM job
+      if: cancelled()
+      shell: bash
+      env:
+        SITE: ${{ inputs.site }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        REMOTE_WORK_DIR_INPUT: ${{ inputs.remote-work-dir }}
+        TROIKA_CONFIG: ${{ inputs.troika-config }}
+        TROIKA_USER: ${{ inputs.troika-user }}
+      run: |
+        set -euo pipefail
+        args=(--site "$SITE" --artifact-name "$ARTIFACT_NAME" --remote-work-dir "$REMOTE_WORK_DIR_INPUT")
+        if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc cancel "${args[@]}"
 
     - name: Publish
       if: ${{ inputs.publish != 'false' && steps.submit.outputs.batch != 'true' }}

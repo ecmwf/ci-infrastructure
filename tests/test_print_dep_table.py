@@ -36,6 +36,7 @@ def _dep(**overrides: str) -> dict[str, str]:
         "compiler": "",
         "build-type": "Release",
         "python-version": "",
+        "option": "",
         "deps-hash": "",
         "source": "artifact",
     }
@@ -81,6 +82,7 @@ def _resolved(deps: Sequence[Mapping[str, Any]], **own: object) -> str:
         "own-compiler": "g++-13",
         "own-build-type": "Release",
         "own-python": "",
+        "own-option": "",
         "own-deps-hash": "abcd1234",
         "deps": deps,
     }
@@ -109,6 +111,22 @@ def test_own_row_is_projected_out_of_the_resolved_block() -> None:
     assert "01234567" in own_line
     for value in ("abcd1234", "ubuntu-24.04", "g++-13", "Release", "built"):
         assert value in own_line, value
+
+
+def test_options_column_shows_each_option_and_blank_for_the_plain_build() -> None:
+    deps = [_dep(name="eccodes", option="eckit-geo"), _dep(name="eckit")]
+    result = CliRunner().invoke(
+        print_dep_table.main, ["--resolved", _resolved(deps, **{"own-name": "metkit", "own-option": "eckit-geo"})]
+    )
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    column = [c.strip() for c in lines[2].strip("|").split("|")].index("Options")
+
+    def option_of(name: str) -> str:
+        line = next(line for line in lines if f"[{name}]" in line or f"| {name} " in line)
+        return [c.strip() for c in line.strip("|").split("|")][column]
+
+    assert (option_of("metkit"), option_of("eccodes"), option_of("eckit")) == ("eckit-geo", "eckit-geo", "")
 
 
 def test_main_orders_own_first_then_deps_downstream_to_upstream() -> None:

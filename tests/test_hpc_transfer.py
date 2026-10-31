@@ -59,7 +59,7 @@ class CopyingConnection(FakeConnection):
         proc = super().execute(command, stdout, stderr, dryrun)
         argv = [str(c) for c in command]
         if argv[:2] == ["bash", "-c"]:
-            subprocess.run(argv[2], shell=True, check=True)
+            subprocess.run(["bash", "-c", argv[2]], check=True)
         else:
             subprocess.run(argv, check=True)
         return proc
@@ -172,8 +172,30 @@ def test_ship_source_reset_clears_prepopulated_staging(tmp_path: Path) -> None:
     assert not (staging / "TRANSFER_COMPLETED_00-0").exists()
     assert not (staging / "deps").exists()
     assert not (staging.parent / "art.trash.42-1").exists()
-    assert (staging / "source.tgz").is_file()
+    assert (staging / "source.tar.zst").is_file()
     assert (staging / "TRANSFER_COMPLETED").is_file()
+
+
+def test_ship_source_ships_files_privately_before_the_marker(tmp_path: Path) -> None:
+    src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
+    tool = _make_tree(tmp_path / "bin", "sccache", "#!/bin/sh\n") / "sccache"
+    secret = _make_tree(tmp_path / "env", "sccache.env", "export AWS_SECRET_ACCESS_KEY=x\n") / "sccache.env"
+    staging = tmp_path / "remote" / "staging" / "art"
+    conn = CopyingConnection()
+
+    transfer.ship_source(
+        conn,
+        local_source_dir=str(src),
+        staging_dir=str(staging),
+        run_id="42-1",
+        tar_dir=str(tmp_path / "stage"),
+        extra_files=[(str(tool), "tools/sccache", 0o755), (str(secret), "sccache.env", 0o600)],
+    )
+
+    assert staging.stat().st_mode & 0o777 == 0o700
+    assert (staging / "tools" / "sccache").stat().st_mode & 0o777 == 0o755
+    assert (staging / "sccache.env").stat().st_mode & 0o777 == 0o600
+    assert conn.executed[-1] == ["touch", str(staging / "TRANSFER_COMPLETED")]
 
 
 def test_truncate_remote_file_empties_a_previous_attempts_output(tmp_path: Path) -> None:
@@ -295,8 +317,7 @@ def test_ship_then_fetch_roundtrip_preserves_tree(tmp_path: Path) -> None:
     assert not any((tmp_path / "stage").iterdir())
     unpacked = tmp_path / "unpacked"
     unpacked.mkdir()
-    with tarfile.open(staging / "source.tgz") as tar:
-        tar.extractall(unpacked, filter="data")
+    transfer._unzstd_into(staging / "source.tar.zst", unpacked)
     assert (unpacked / "hello.txt").read_text() == "content-xyz"
 
     _write_zstd_tar(Path(jobscript.install_archive_path(str(unpacked))), unpacked)

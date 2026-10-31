@@ -215,7 +215,9 @@ def _reset_staging_dir(conn: Connection, *, staging_dir: str, run_id: str) -> No
             f"mkdir -p {q_parent}",
             f"if [ -e {q_staging} ]; then mv {q_staging} {q_trash} 2>/dev/null || true; fi",
             f"rm -rf {q_trash} 2>/dev/null || true",
+            # Private: it may hold the sccache credentials.
             f"mkdir -p {q_staging}",
+            f"chmod 700 {q_staging}",
         ]
     )
     _run_remote(conn, ["bash", "-c", reset], what="Staging reset")
@@ -230,28 +232,31 @@ def ship_source(
     tar_dir: str,
     local_prefixes: Sequence[str] = (),
     remote_deps_dir: str | None = None,
+    extra_files: Sequence[tuple[str, str, int]] = (),
     dryrun: bool = False,
 ) -> None:
-    """Reset ``staging_dir``, ship the checkout and dep prefixes, then the marker, so the job sees no partial copy."""
+    """Reset ``staging_dir``, ship the checkout, dep prefixes (to ``<remote_deps_dir>/<i>``) and ``extra_files``
+    (local path, path under staging, mode), then the marker, so the job sees no partial copy.
+    """
     if dryrun:
         return
-    remote_tgz = str(PurePosixPath(staging_dir) / jobscript.SOURCE_TARBALL_NAME)
-    local_tgz = Path(tar_dir) / f"{run_id}.src.tgz"
+    remote_archive = str(PurePosixPath(staging_dir) / jobscript.SOURCE_TARBALL_NAME)
+    local_archive = Path(tar_dir) / f"{run_id}.src.tar.zst"
 
     start = time.monotonic()
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
     files, size = _tree_stats(local_source_dir)
-    subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_source_dir), "."], check=True)
+    _zstd_tar(Path(local_source_dir), local_archive)
     tarred = time.monotonic()
     _reset_staging_dir(conn, staging_dir=staging_dir, run_id=run_id)
     reset = time.monotonic()
-    conn.sendfile(local_tgz, remote_tgz)
+    conn.sendfile(local_archive, remote_archive)
     sent = time.monotonic()
     print(
-        f"ship: source ({files} files, {_mib(size)}, {_mib(local_tgz.stat().st_size)} gzipped): "
+        f"ship: source ({files} files, {_mib(size)}, {_mib(local_archive.stat().st_size)} compressed): "
         f"tar {tarred - start:.0f}s, staging reset {reset - tarred:.0f}s, send {sent - reset:.0f}s"
     )
-    local_tgz.unlink()
+    local_archive.unlink()
     if remote_deps_dir is not None:
         for index, (prefix, name) in enumerate(zip(local_prefixes, remote_dep_names(local_prefixes), strict=True)):
             push_tree(
@@ -260,8 +265,13 @@ def ship_source(
                 remote_dir=f"{remote_deps_dir.rstrip('/')}/{name}",
                 tar_dir=tar_dir,
                 tarball_suffix="",
-                local_tar_name=f"{run_id}.dep{index}.tgz",
+                local_tar_name=f"{run_id}.dep{index}.tar.zst",
             )
+    for local, rel, mode in extra_files:
+        remote = str(PurePosixPath(staging_dir) / rel)
+        _run_remote(conn, ["mkdir", "-p", str(PurePosixPath(remote).parent)], what=f"Remote mkdir for {rel}")
+        conn.sendfile(local, remote)
+        _run_remote(conn, ["chmod", f"{mode:o}", remote], what=f"Remote chmod of {rel}")
     _run_remote(conn, ["touch", _marker_path(staging_dir)], what="Transfer-complete marker")
     print(f"ship: done in {time.monotonic() - start:.0f}s")
 
@@ -278,19 +288,24 @@ def fetch_tree(
     if dryrun:
         return
     remote = PurePosixPath(remote_dir)
-    remote_tgz = str(remote.parent / f"{remote.name}.{tarball_suffix}.tgz")
-    local_tgz = Path(tar_dir) / f"{remote.name}.{tarball_suffix}.tgz"
+    remote_archive = str(remote.parent / f"{remote.name}.{tarball_suffix}.tar.zst")
+    local_archive = Path(tar_dir) / f"{remote.name}.{tarball_suffix}.tar.zst"
 
     _run_remote(
         conn,
-        ["bash", "-c", f"tar -czf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)} ."],
+        [
+            "bash",
+            "-c",
+            f"set -o pipefail; tar -cf - -C {shlex.quote(remote_dir)} . "
+            f"| zstd -T0 -1 -q -f -o {shlex.quote(remote_archive)}",
+        ],
         what="Remote tree tar",
     )
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
-    conn.getfile(remote_tgz, local_tgz)
+    conn.getfile(remote_archive, local_archive)
     Path(local_dir).mkdir(parents=True, exist_ok=True)
-    subprocess.run(["tar", "-xzf", str(local_tgz), "-C", str(local_dir)], check=True)
-    local_tgz.unlink()
+    _unzstd_into(local_archive, Path(local_dir))
+    local_archive.unlink()
 
 
 def push_tree(
@@ -303,31 +318,35 @@ def push_tree(
     local_tar_name: str | None = None,
     dryrun: bool = False,
 ) -> None:
-    """An empty ``tarball_suffix`` gives ``<dir>.tgz``."""
+    """An empty ``tarball_suffix`` gives ``<dir>.tar.zst``."""
     if dryrun:
         return
     name = PurePosixPath(remote_dir).name
-    ext = f".{tarball_suffix}.tgz" if tarball_suffix else ".tgz"
-    local_tgz = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
-    remote_tgz = f"{remote_dir.rstrip('/')}{ext}"
+    ext = f".{tarball_suffix}.tar.zst" if tarball_suffix else ".tar.zst"
+    local_archive = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
+    remote_archive = f"{remote_dir.rstrip('/')}{ext}"
 
     start = time.monotonic()
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
     files, size = _tree_stats(local_dir)
-    subprocess.run(["tar", "-czf", str(local_tgz), "-C", str(local_dir), "."], check=True)
+    _zstd_tar(Path(local_dir), local_archive)
     tarred = time.monotonic()
     _run_remote(conn, ["mkdir", "-p", remote_dir], what=f"Remote mkdir of {remote_dir}")
-    conn.sendfile(local_tgz, remote_tgz)
+    conn.sendfile(local_archive, remote_archive)
     sent = time.monotonic()
-    gzipped = local_tgz.stat().st_size
-    local_tgz.unlink()
+    compressed = local_archive.stat().st_size
+    local_archive.unlink()
     _run_remote(
         conn,
-        ["bash", "-c", f"tar -xzf {shlex.quote(remote_tgz)} -C {shlex.quote(remote_dir)}"],
+        [
+            "bash",
+            "-c",
+            f"set -o pipefail; zstd -dc {shlex.quote(remote_archive)} | tar -xf - -C {shlex.quote(remote_dir)}",
+        ],
         what="Remote tree unpack",
     )
     print(
-        f"ship: {Path(local_dir).name} ({files} files, {_mib(size)}, {_mib(gzipped)} gzipped): "
+        f"ship: {Path(local_dir).name} ({files} files, {_mib(size)}, {_mib(compressed)} compressed): "
         f"tar {tarred - start:.0f}s, send {sent - tarred:.0f}s, unpack {time.monotonic() - sent:.0f}s"
     )
 
@@ -339,9 +358,22 @@ def remove_tree(conn: Connection, *, remote_dir: str, dryrun: bool = False) -> N
     base = remote_dir.rstrip("/")
     _run_remote(
         conn,
-        ["rm", "-rf", base, f"{base}.push.tgz", f"{base}.fetch.tgz"],
+        ["rm", "-rf", base, f"{base}.push.tar.zst", f"{base}.fetch.tar.zst"],
         what=f"Remote remove of {remote_dir}",
     )
+
+
+def _zstd_tar(src: Path, archive: Path) -> None:
+    """Multithreaded at the fastest level: a single-threaded gzip took minutes on large checkouts."""
+    tar = subprocess.Popen(["tar", "-cf", "-", "-C", str(src), "."], stdout=subprocess.PIPE)
+    try:
+        enc = subprocess.run(["zstd", "-T0", "-1", "-q", "-f", "-o", str(archive)], stdin=tar.stdout)
+    finally:
+        if tar.stdout is not None:
+            tar.stdout.close()
+        tar_rc = tar.wait()
+    if tar_rc != 0 or enc.returncode != 0:
+        raise CIError(f"Packing {src} failed (tar exit {tar_rc}, zstd exit {enc.returncode})")
 
 
 def _unzstd_into(archive: Path, dest: Path) -> None:
@@ -368,11 +400,11 @@ def fetch_install(
     """Fetch and unpack the archive the job wrote at ``CI_INSTALL_ARCHIVE``."""
     if dryrun:
         return
-    remote_tgz = jobscript.install_archive_path(remote_install_dir)
-    local_tgz = Path(tar_dir) / PurePosixPath(remote_tgz).name
+    remote_archive = jobscript.install_archive_path(remote_install_dir)
+    local_archive = Path(tar_dir) / PurePosixPath(remote_archive).name
 
     Path(tar_dir).mkdir(parents=True, exist_ok=True)
-    conn.getfile(remote_tgz, local_tgz)
+    conn.getfile(remote_archive, local_archive)
     Path(local_install_dir).mkdir(parents=True, exist_ok=True)
-    _unzstd_into(local_tgz, Path(local_install_dir))
-    local_tgz.unlink()
+    _unzstd_into(local_archive, Path(local_install_dir))
+    local_archive.unlink()

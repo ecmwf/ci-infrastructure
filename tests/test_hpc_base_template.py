@@ -51,26 +51,35 @@ def test_bare_extends_is_a_complete_recipe() -> None:
     out = _render()
     lines = out.splitlines()
     assert lines[0] == "#!/bin/bash"
-    assert lines[1:7] == [
+    assert lines[1:8] == [
         "#SBATCH --qos=nf",
         "#SBATCH --nodes=1",
         "#SBATCH --ntasks=8",
+        "#SBATCH --cpus-per-task=8",
         "#SBATCH --mem=64GB",
         "#SBATCH --gres=ssdtmp:30G",
         "#SBATCH --time=01:00:00",
     ]
-    assert 'jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-8}}"' in lines
+    assert 'jobs="${SLURM_CPUS_ON_NODE:-64}"' in lines
+    assert 'test_jobs="${SLURM_CPUS_PER_TASK:-8}"' in lines
     assert "module load prgenv/gnu" in lines
     assert 'cmake --preset ci -S "$CI_SOURCE_DIR" -B "$build" $gen_flag \\' in lines
     assert "  -DCMAKE_BUILD_TYPE=RelWithDebInfo \\" in lines
     assert "Fortran" not in out
-    assert 'ctest --test-dir "$build" --output-on-failure -j "$jobs"' in lines
+    assert 'ctest --test-dir "$build" --output-on-failure -j "$test_jobs"' in lines
     assert 'tar -cf - -C "$install_root" . | zstd -T0 -q -o "$CI_INSTALL_ARCHIVE.part"' in lines
 
 
-def test_cpus_gpus_per_task_render_only_when_set_and_mem_ssdtmp_can_be_overridden() -> None:
+@pytest.mark.parametrize(("ntasks", "cpus_per_task"), [(1, 64), (16, 4), (32, 2), (128, 1)])
+def test_ntasks_splits_64_cpus_into_ranks(ntasks: int, cpus_per_task: int) -> None:
+    lines = _render(leg={"ntasks": ntasks}).splitlines()
+    assert f"#SBATCH --cpus-per-task={cpus_per_task}" in lines
+    assert f'test_jobs="${{SLURM_CPUS_PER_TASK:-{cpus_per_task}}}"' in lines
+
+
+def test_gpus_per_task_renders_only_when_set_and_cpus_mem_ssdtmp_can_be_overridden() -> None:
     bare = _render().splitlines()
-    assert not [line for line in bare if line.startswith(("#SBATCH --cpus-per-task", "#SBATCH --gpus-per-task"))]
+    assert not [line for line in bare if line.startswith("#SBATCH --gpus-per-task")]
     lines = _render(leg={"cpus-per-task": 64, "gpus-per-task": 1, "mem": "128GB", "ssdtmp": "50G"}).splitlines()
     assert lines[lines.index("#SBATCH --ntasks=8") + 1 : lines.index("#SBATCH --gres=ssdtmp:50G")] == [
         "#SBATCH --cpus-per-task=64",
@@ -110,7 +119,7 @@ def test_leg_values_beat_the_defaults() -> None:
         "#SBATCH --time=00:40:00",
         "#SBATCH --gres=ssdtmp:10G",
     } <= set(lines)
-    assert 'jobs="${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-2}}"' in lines
+    assert 'jobs="${SLURM_CPUS_ON_NODE:-64}"' in lines
 
 
 def test_a_repo_block_sees_the_defaulted_ntasks() -> None:
@@ -273,16 +282,17 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "0b62df2cfeb9a2c8c0d7c2d6be273d69741200d9343112cec0045404cb233b92"
+TEMPLATE_SHA256: Final = "9e09bb02b215ffaaeeae2866ad0416836405f211e294cd77af1b054ef9687c17"
 TEMPLATE_VERSION: Final = 2
 
 
 def test_base_template_change_bumps_the_template_version() -> None:
-    """Consumers load the base from @main: only the version in the artifact name makes them rebuild."""
+    """Consumers load the base from @main: only the version in the artifact name makes them rebuild.
+    Resources and parallelism change no artifact: update the hash alone."""
     assert (hashlib.sha256(_base_source()).hexdigest(), _github_api.HPC_TEMPLATE_VERSION) == (
         TEMPLATE_SHA256,
         TEMPLATE_VERSION,
-    ), "a shared CMake template changed: bump _github_api.HPC_TEMPLATE_VERSION and update both pins"
+    ), "a shared CMake template changed: update the hash, and bump HPC_TEMPLATE_VERSION if what gets built changed"
 
 
 ALL_LANES: Final = '{% extends "ci-infrastructure/cmake-all-lanes.sh.j2" %}\n'

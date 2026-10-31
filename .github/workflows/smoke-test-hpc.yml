@@ -22,7 +22,7 @@ jobs:
   # JSON, since a YAML alias cannot be conditional. The reduced matrix drops the
   # `hpc` include too: an unmatched include would ADD a row with no site.
   lanes:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     steps:

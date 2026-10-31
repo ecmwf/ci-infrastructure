@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Final
 
+import pytest
 from conftest import action_run_body, stub_gh
 
 REPO: Final = "ecmwf/eccodes"
@@ -45,13 +46,16 @@ def _ctx(
     approval: str = "success",
     fork_ci: str = FORK_CI,
     pull_request: str = "",
+    jobs: list[dict[str, Any]] | None = None,
+    previous: str = "success",
 ) -> tuple[int, dict[str, str], str]:
     files = {
         "pr": pr or {},
         "runs": {"workflow_runs": runs or []},
         "fork-runs": {"workflow_runs": fork_runs or []},
         "jobs": {
-            "jobs": [
+            "jobs": jobs
+            or [
                 {"name": "ci / pre-commit", "conclusion": "success"},
                 {"name": "ci / ci-approval", "conclusion": approval},
             ]
@@ -63,6 +67,7 @@ def _ctx(
     gh = (
         'case "$*" in\n'
         f"  */jobs*) cat {tmp_path}/jobs.json ;;\n"
+        f"  */attempts/*) echo {previous} ;;\n"
         f"  */actions/workflows/*) cat {tmp_path}/fork-runs.json ;;\n"
         f"  */actions/runs*) cat {tmp_path}/runs.json ;;\n"
         f"  */pulls/*) cat {tmp_path}/pr.json ;;\n"
@@ -94,10 +99,12 @@ def _ctx(
 
 
 def _workflow_run(
-    *, path: str, head_repo: str, head_sha: str, title: str = "x", conclusion: str = "success"
+    *, path: str, head_repo: str, head_sha: str, title: str = "x", conclusion: str = "success", attempt: int = 1
 ) -> dict[str, Any]:
     return {
         "workflow_run": {
+            "id": 1,
+            "run_attempt": attempt,
             "path": f".github/workflows/{path}",
             "head_sha": head_sha,
             "head_branch": "develop",
@@ -185,3 +192,33 @@ def test_a_dispatch_without_a_pr_number_fails(tmp_path: Path) -> None:
     code, _, log = _ctx(tmp_path, "workflow_dispatch", {}, pull_request="develop")
     assert code == 1
     assert "needs the pull request number" in log
+
+
+def _attempts(resolve: int, gate: int) -> list[dict[str, Any]]:
+    return [{"name": "resolve", "run_attempt": resolve}, {"name": "hpc-gate", "run_attempt": gate}]
+
+
+@pytest.mark.parametrize(
+    ("attempt", "jobs", "previous", "hpc_only"),
+    [
+        (2, _attempts(1, 2), "success", "true"),
+        # The runner lane never ran after a failed attempt.
+        (2, _attempts(1, 2), "failure", "false"),
+        # Re-run all jobs.
+        (2, _attempts(2, 2), "success", "false"),
+        # Re-run failed jobs: the gate had passed.
+        (3, _attempts(1, 2), "success", "false"),
+        (1, _attempts(1, 1), "success", "false"),
+    ],
+)
+def test_an_attempt_re_run_from_hpc_gate_alone_is_hpc_only(
+    tmp_path: Path, attempt: int, jobs: list[dict[str, Any]], previous: str, hpc_only: str
+) -> None:
+    event = _workflow_run(path="ci.yml", head_repo=REPO, head_sha=SHA, attempt=attempt)
+    code, out, log = _ctx(tmp_path, "workflow_run", event, jobs=jobs, previous=previous)
+    assert (code, out["hpc-only"]) == (0, hpc_only), log
+
+
+def test_a_dispatch_is_never_hpc_only(tmp_path: Path) -> None:
+    code, out, _ = _ctx(tmp_path, "workflow_dispatch", {}, pr=_pr(head_repo=REPO), pull_request="7")
+    assert (code, out["hpc-only"]) == (0, "false")

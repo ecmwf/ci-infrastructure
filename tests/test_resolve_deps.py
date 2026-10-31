@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
 
-from ci_infrastructure import resolve_deps
+from ci_infrastructure import failure_reasons, resolve_deps, s3_store
 from ci_infrastructure._github_api import (
     EXECUTION_HPC_ATOS,
     EXECUTION_RUNNER,
@@ -25,6 +26,7 @@ from ci_infrastructure.manifest import DepTable
 from ci_infrastructure.resolve_deps import (
     ArtifactName,
     DepSpec,
+    LegError,
     Manifest,
     PackageName,
     PackageSpec,
@@ -75,6 +77,7 @@ def _dep(**overrides: Any) -> ResolvedDep:
         compiler="clang++-18",
         build_type="Release",
         python_version="3.11",
+        option="eckit-geo",
         deps_hash="abc12345",
     )
     return replace(base, **overrides)
@@ -88,10 +91,10 @@ def test_to_json_carries_structured_fields_and_blanks_absent_optionals() -> None
         "Release",
         "main",
     )
-    assert (j["python-version"], j["deps-hash"]) == ("3.11", "abc12345")
+    assert (j["python-version"], j["option"], j["deps-hash"]) == ("3.11", "eckit-geo", "abc12345")
 
-    j = _dep(compiler=None, python_version=None, deps_hash=None).to_json()
-    assert (j["compiler"], j["python-version"], j["deps-hash"]) == ("", "", "")
+    j = _dep(compiler=None, python_version=None, option="", deps_hash=None).to_json()
+    assert (j["compiler"], j["python-version"], j["option"], j["deps-hash"]) == ("", "", "", "")
     assert (j["platform"], j["build-type"]) == ("ubuntu-24.04", "Release")
 
 
@@ -191,7 +194,7 @@ def _resolve(
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
-        artifact_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
         run_state_cache={},
         token=None,
         can_dispatch=False,
@@ -204,7 +207,7 @@ def _resolve(
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
 
 
 @pytest.mark.usefixtures("offline")
@@ -415,7 +418,7 @@ def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_packag
 
 
 def _missing_artifact(monkeypatch: pytest.MonkeyPatch, ci_run: CiRun | None) -> None:
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: False)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
     monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: ci_run)
 
@@ -427,10 +430,53 @@ def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.usefixtures("offline")
-def test_a_red_commit_is_not_rebuilt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_red_commit_is_not_rebuilt_and_fails_only_its_leg_with_the_reasons(monkeypatch: pytest.MonkeyPatch) -> None:
     _missing_artifact(monkeypatch, CiRun(7, "failure", "o/base", "https://run/7"))
-    with pytest.raises(ResolveError, match=r"CI was red.*https://run/7"):
+    monkeypatch.setattr(failure_reasons, "explain", lambda url, token: f"\n  o/base › build: red because of {url}")
+    with pytest.raises(LegError, match=r"CI was red.*https://run/7\n  o/base › build: red because") as e:
         _resolve(_own("top"), [_dep_spec("base")], dict(_LEG))
+    assert e.value.package == "base"
+
+
+def test_a_leg_without_its_dep_is_emitted_to_fail_while_the_others_resolve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(_PY_LEGS_PRODUCER)
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.delenv("DISPATCH_TOKEN", raising=False)
+    monkeypatch.setattr(resolve_deps, "select_token", lambda: None)
+    monkeypatch.setattr(resolve_deps, "bfs_load_manifests", lambda **kw: ({}, {}))
+    real = resolve_deps.resolve_packages
+
+    def resolve_packages(*args: Any, **kwargs: Any) -> Any:
+        if kwargs["matrix_entry"]["python-version"] == "3.12":
+            raise LegError("base", "dep 'base' has no artifact: https://run/7")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(resolve_deps, "resolve_packages", resolve_packages)
+    resolve_deps._run(str(manifest), "main", "build", "", ".ci/manifest.toml", pin=f"o/up@{_PINNED}")
+
+    legs = json.loads(next(line for line in out.read_text().splitlines() if line.startswith("matrix-build="))[13:])[
+        "include"
+    ]
+    assert [leg["python-version"] for leg in legs] == ["3.11", "3.12"]
+    assert "error" not in legs[0]["_resolved"]
+    assert legs[1]["_resolved"]["error"] == "dep 'base' has no artifact: https://run/7"
+    assert legs[1]["_resolved"]["job-name"]
+    assert [(d["name"], d["source"], d["cached"]) for d in legs[1]["_resolved"]["deps"]] == [
+        ("base", "unresolved", True)
+    ]
+
+
+def test_a_manifest_mismatch_still_fails_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A variant no producer leg publishes can never be built: no leg is worth starting."""
+    _in_flight(monkeypatch)
+    cache = {(Repo("o/up"), Ref("main")): parse_manifest(_PY_LEG_PRODUCER)}
+    with pytest.raises(ResolveError) as e:
+        _resolve(_own("top"), [_dep_spec("up")], {**_LEG, "python-version": "3.11"}, manifest_cache=cache)
+    assert not isinstance(e.value, LegError)
 
 
 def _classify_pinned(ci_run: CiRun | None) -> Plans:
@@ -562,7 +608,7 @@ python-version = "3.11"
 
 def _in_flight(monkeypatch: pytest.MonkeyPatch, stored: bool = False) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: stored)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: stored)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
 
 
@@ -676,7 +722,7 @@ def test_one_branch_agrees_while_its_commit_moves(monkeypatch: pytest.MonkeyPatc
     """Declarations compare refs, not SHAs, so a push between lookups is not a conflict."""
     commits = iter("abcdef")
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha(next(commits) * 40))
-    monkeypatch.setattr("ci_infrastructure.s3_store.object_exists", lambda name: True)
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
     base, middle = _dep_spec("base", compiler_inputs=[]), _dep_spec("middle")
     deps, _ = _resolve(_own("top"), [base, middle], dict(_LEG), manifest_cache=_middle_declaring_base())
     assert [d.name for d in deps] == ["base", "middle"]
@@ -721,8 +767,10 @@ def test_a_dep_resolves_its_deps_against_the_producer_leg_not_the_consumers() ->
 
 @pytest.mark.usefixtures("offline")
 def test_legs_naming_one_variant_must_agree_on_what_the_deps_read() -> None:
+    """Across kinds: within one, the manifest schema already rejects legs with one artifact name."""
     second = (
-        '\n[[matrix.build.include]]\ncxx-compiler = "clang++-18"\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n'
+        "\n[[matrix.build-other.include]]\n"
+        'cxx-compiler = "clang++-18"\nbuild-type = "Release"\nplatform = "ubuntu-24.04"\n'
     )
     cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_FORTRAN_WHEN_MANIFEST + second)}
     with pytest.raises(ResolveError, match=r"2 legs publishing middle .* differ in \['fortran-compiler'\]"):

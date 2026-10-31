@@ -19,9 +19,7 @@ concurrency:
 
 jobs:
   pre-commit:
-    runs-on: ubuntu-slim
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: ./actions/pre-commit
@@ -52,7 +50,7 @@ jobs:
   # pr-label-images.yml keeps the decision pending. Read live, so a re-run after labelling picks it up.
   image-label:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     outputs:
@@ -87,7 +85,7 @@ jobs:
     name: collect results
     if: always()
     needs: [images]
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       statuses: write

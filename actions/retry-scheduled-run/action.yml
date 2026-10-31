@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Retry a failed scheduled run
+description: >
+  For a workflow_run on a failed scheduled run: re-run its failed jobs, unless
+  its branch has moved on since. The calling workflow limits the attempts. The
+  re-run is started with an App token, so its completion triggers workflow_run
+  again, unlike one started with the job's own token.
+
+inputs:
+  client-id:
+    description: 'GitHub App client ID.'
+    required: true
+  app-private-key:
+    description: 'GitHub App private key (PEM).'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        permission-actions: write
+        permission-contents: read
+
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+      run: |
+        set -euo pipefail
+        event="${GITHUB_EVENT_PATH:?}"
+        run_id="$(jq -r '.workflow_run.id' "$event")"
+        attempt="$(jq -r '.workflow_run.run_attempt' "$event")"
+        sha="$(jq -r '.workflow_run.head_sha' "$event")"
+        branch="$(jq -r '.workflow_run.head_branch' "$event")"
+        head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${branch}" --jq .sha)"
+        if [ "$head" != "$sha" ]; then
+          echo "${branch} moved on from ${sha:0:8} to ${head:0:8}; its own CI covers that, so no retry"
+          exit 0
+        fi
+        gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/rerun-failed-jobs" >/dev/null
+        echo "::notice title=Retry::re-running the failed jobs of run ${run_id} (attempt ${attempt} failed)"

@@ -89,6 +89,7 @@ ghactions_groups = [
             "validate-generated-workflows",
             "regenerate-workflows-pr",
             "sync-branch-prs",
+            "retry-scheduled-run",
         ],
     ),
     (
@@ -96,6 +97,8 @@ ghactions_groups = [
         "Decide whether a pull request may run CI or downstream CI, and whether it may merge.",
         [
             "ci-result",
+            "hpc-gate",
+            "hpc-label-decision",
             "require-ci-approval",
             "require-label-decision",
             "post-downstream-decision",

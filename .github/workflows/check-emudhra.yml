@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   list:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.l.outputs.matrix }}
     steps:

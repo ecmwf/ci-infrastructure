@@ -23,6 +23,7 @@ from ci_infrastructure.generate_downstream_ci import (
     BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
+    PUBLIC_RUNNER,
     SLIM_RUNNER,
     SchemaError,
     _cross_package_deps,
@@ -34,11 +35,13 @@ from ci_infrastructure.generate_downstream_ci import (
     derive_cross_repo_needs,
     parse_manifest_text,
     render_orchestrator_workflow,
+    render_sync_branch_workflow,
     render_workflow,
     resolve_consumer_refs,
     transitive_cross_repo_needs,
     validate_graph,
 )
+from ci_infrastructure.resolve_deps import parse_manifest as resolve_parse_manifest
 
 
 def _render_orch(tmp_path: Path, lane: Execution = EXECUTION_RUNNER, pkg: str = "a") -> str | None:
@@ -957,6 +960,15 @@ def test_git_read_mints_a_read_only_token_for_the_runner_script(tmp_path: Path, 
     assert scripts and all(s["with"]["git-token"] == "${{ steps.git-read.outputs.token }}" for s in scripts)
 
 
+@pytest.mark.parametrize(("lane", "required"), [(EXECUTION_RUNNER, None), (EXECUTION_HPC_ATOS, "run-hpc-ci")])
+def test_the_hpc_lane_also_needs_run_hpc_ci(tmp_path: Path, lane: Execution, required: str | None) -> None:
+    """Without it, the commit's CI built no HPC artifacts for the consumers to build against."""
+    _make_chain_ab(tmp_path, hpc=True)
+    doc = yaml.safe_load(_orch(tmp_path, lane))
+    gate = next(s for s in doc["jobs"]["label-gate"]["steps"] if s.get("id") == "gate")
+    assert gate["with"].get("require-label") == required
+
+
 def test_public_upstream_dispatches_private_consumer(tmp_path: Path) -> None:
     """`uses:` would render the private repo's jobs into the public run."""
     _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
@@ -1161,6 +1173,25 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
     ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/test"]
     assert doc["jobs"]["b"]["name"] == "b"
+
+
+@pytest.mark.parametrize(("visibility", "runner"), [("public", PUBLIC_RUNNER), ("private", SLIM_RUNNER)])
+def test_public_repos_run_api_jobs_on_ubuntu_latest(tmp_path: Path, visibility: str, runner: str) -> None:
+    write_repo(
+        tmp_path,
+        "a",
+        f"""
+        [package]
+        visibility = "{visibility}"
+        name = "a"
+        prefix = "a"
+        repo = "org/a"
+        compiler-inputs = []
+        """,
+    )
+    [m] = parse_all(tmp_path)
+    jobs = yaml.safe_load(render_sync_branch_workflow(m))["jobs"]
+    assert {job["runs-on"] for job in jobs.values()} == {runner}
 
 
 def test_job_runners(tmp_path: Path) -> None:
@@ -1795,7 +1826,9 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
         "run": "${{ steps.gate.outputs.run }}",
         "depth": "${{ steps.gate.outputs.depth }}",
     }
-    assert "if" not in doc["jobs"]["label-gate"], "report-ci-failure needs the gate on the failure path"
+    assert doc["jobs"]["label-gate"]["if"] == "needs.context.outputs.hpc-only != 'true'", (
+        "no CI-success condition: report-ci-failure needs the gate on the failure path"
+    )
     assert "if" not in doc["jobs"]["context"]
     for jid, job in doc["jobs"].items():
         # context runs first: the gate looks its PR up by the commit context resolves.
@@ -1911,6 +1944,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
         "ci-url",
         "head-branch",
         "head-sha",
+        "hpc-only",
         "pull-request",
     ]
     resolve = next(s for s in ctx["steps"] if s.get("id") == "ctx")
@@ -2062,12 +2096,15 @@ _SCHEDULING_ONLY_LEGS: Final = """
     ],
 )
 def test_leg_artifact_identity(tmp_path: Path, manifest: str, match: str | None) -> None:
+    """Checked by the shared schema, so resolve-deps rejects such a manifest as the generator does."""
     write_repo(tmp_path, "a", manifest)
     if match is None:
         validate_graph(parse_all(tmp_path))
     else:
         with pytest.raises(SchemaError, match=match):
-            validate_graph(parse_all(tmp_path))
+            parse_all(tmp_path)
+        with pytest.raises(ValueError, match=match):
+            resolve_parse_manifest((tmp_path / "a" / ".ci" / "manifest.toml").read_text())
 
 
 _PRODUCER: Final = """
@@ -2307,3 +2344,72 @@ def test_a_repo_without_consumers_passes_every_lane(tmp_path: Path, monkeypatch:
     (decision,) = doc["jobs"]["gate"]["steps"]
     assert decision["with"] == {"no-consumers": "downstream/runner downstream/hpc-atos"}
     assert check_ci_approval.check(gate) == []
+
+
+def _render_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repos: tuple[str, ...] = ("a", "b")) -> None:
+    for repo in repos:
+        monkeypatch.chdir(tmp_path / repo)
+        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+
+def test_hpc_legs_come_with_the_hpc_label_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Label changes and CI completions; the CI of a push has no labels to act on."""
+    _make_chain_ab(tmp_path, hpc=True)
+    _render_all(tmp_path, monkeypatch)
+
+    path = tmp_path / "a" / ".github" / "workflows" / "pr-label-hpc-ci.yml"
+    doc = yaml.safe_load(path.read_text())
+    assert doc[True] == {
+        "pull_request_target": {"types": ["labeled", "unlabeled"]},
+        "workflow_run": {"workflows": ["CI"], "types": ["completed"]},
+    }
+    assert doc["permissions"] == {"statuses": "write", "actions": "read", "pull-requests": "read"}
+    gate = doc["jobs"]["gate"]
+    assert "github.event.workflow_run.event != 'push'" in gate["if"]
+    assert "github.event.workflow_run.event != 'schedule'" in gate["if"]
+    assert "run-hpc-ci" in gate["if"] and "hpc-ci-not-needed" in gate["if"]
+    (step,) = gate["steps"]
+    assert step["uses"] == "ecmwf/ci-infrastructure/actions/hpc-label-decision@main"
+    assert set(step["with"]) == {"client-id", "app-private-key"}
+    assert check_ci_approval.check(path) == []
+
+
+def test_every_repo_retries_its_failed_nightly_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path)
+    _render_all(tmp_path, monkeypatch)
+
+    for repo in ("a", "b"):
+        path = tmp_path / repo / ".github" / "workflows" / "retry-nightly.yml"
+        doc = yaml.safe_load(path.read_text())
+        assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
+        retry = doc["jobs"]["retry"]
+        assert retry["if"] == (
+            "github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure' "
+            "&& github.event.workflow_run.run_attempt <= 2"
+        )
+        (step,) = retry["steps"]
+        assert step["uses"] == "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main"
+        assert check_ci_approval.check(path) == []
+
+
+def test_no_hpc_legs_no_hpc_label_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path)
+    _render_all(tmp_path, monkeypatch)
+    assert not (tmp_path / "a" / ".github" / "workflows" / "pr-label-hpc-ci.yml").exists()
+
+
+def test_the_hpc_lane_decision_follows_the_hpc_labels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path, hpc=True)
+    _render_all(tmp_path, monkeypatch)
+
+    doc = yaml.safe_load((tmp_path / "a" / ".github" / "workflows" / "pr-label-downstream-ci.yml").read_text())
+    decision = doc["jobs"]["gate"]["steps"][0]
+    assert decision["with"] == {"contexts": "downstream/runner", "hpc-contexts": "downstream/hpc-atos"}
+
+
+@pytest.mark.parametrize(("lane", "skips"), [(EXECUTION_RUNNER, True), (EXECUTION_HPC_ATOS, False)])
+def test_only_the_runner_lane_skips_an_hpc_only_rerun(tmp_path: Path, lane: Execution, skips: bool) -> None:
+    """The HPC lane is what the re-run is for; the runner lane's result is the earlier attempt's."""
+    _make_chain_ab(tmp_path, hpc=True)
+    gate = yaml.safe_load(_orch(tmp_path, lane))["jobs"]["label-gate"]
+    assert (gate.get("if") == "needs.context.outputs.hpc-only != 'true'") is skips

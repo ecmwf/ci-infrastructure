@@ -66,6 +66,11 @@ runs:
         S3_ENDPOINT_INPUT: ${{ inputs.s3-endpoint }}
         S3_USE_SSL_INPUT: ${{ inputs.s3-use-ssl }}
       run: |
+        # SCCACHE_PATH is <tool cache>/sccache/<version>/<arch>/sccache; drop the other versions.
+        if [ -n "${SCCACHE_PATH:-}" ]; then
+          version_dir="$(dirname "$(dirname "$SCCACHE_PATH")")"
+          find "$(dirname "$version_dir")" -mindepth 1 -maxdepth 1 ! -path "$version_dir" -exec rm -rf {} + 2>/dev/null || true
+        fi
         backend="$BACKEND_INPUT"
         echo "Using sccache backend: $backend"
         {

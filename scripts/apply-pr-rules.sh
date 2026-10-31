@@ -6,7 +6,7 @@
 
 # Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
 # one approval (from a code owner where CODEOWNERS covers a changed file), and the required CI checks;
-# creates the downstream-CI labels where missing.
+# creates the downstream-CI and HPC-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
 #   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
@@ -54,6 +54,9 @@ current_ruleset() {
       if $k == null or .parameters == null then . else .parameters |= with_entries(select(.key | IN($k[]))) end]}'
 }
 
+# A file on the default branch, empty if missing.
+raw() { gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$1" 2>/dev/null || true; }
+
 # RepositoryRole ids: 2 = maintain, 5 = admin.
 roles() { jq -n --arg m "$1" '[2, 5] | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m})'; }
 # The roles, plus the bot App. Exempt, not pull_request: auto-merge never takes a bypass, it waits for the review.
@@ -82,6 +85,8 @@ run-downstream-ci:1	CAB5CA	Run downstream CI up to level 1 (direct consumers)
 run-downstream-ci:2	CE8CA0	Run downstream CI up to level 2
 run-downstream-ci:3	D36375	Run downstream CI up to level 3
 run-downstream-ci:all	D73A4A	Run the whole downstream fan-out for this PR
+run-hpc-ci	1D76DB	Run the HPC legs of CI
+hpc-ci-not-needed	BFD4F2	Deliberately skip the HPC legs of CI
 EOF
 )
 
@@ -100,9 +105,7 @@ for repo in "$@"; do
   show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
   call api -X PATCH "repos/$repo" --input - <<< "$settings"
 
-  checks='["ci-result", "downstream/runner", "downstream/hpc-atos"]'
-  echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
-
+  # Before the checks: a repo not yet ready for them still gets its labels.
   have=$(gh label list -R "$repo" -L 1000 --json name --jq '.[].name')
   while IFS=$'\t' read -r name color description; do
     if ! grep -qxF "$name" <<< "$have"; then
@@ -111,9 +114,26 @@ for repo in "$@"; do
     fi
   done <<< "$labels"
 
+  checks='["ci-result", "downstream/runner", "downstream/hpc-atos"]'
+  # HPC legs report their own status, run with run-hpc-ci or waived with hpc-ci-not-needed (actions/hpc-gate).
+  if grep -Eq "^[[:space:]]*execution[[:space:]]*=[[:space:]]*[\"']hpc-atos[\"']" <<< "$(raw .ci/manifest.toml)"; then
+    if ! grep -qF "ci-result/hpc-atos" <<< "$(raw .github/workflows/ci.yml)"; then
+      echo "  error: the manifest has HPC legs, but ci.yml posts no ci-result/hpc-atos; add hpc-gate and collect-result-hpc first" >&2
+      failed=true
+      continue
+    fi
+    if ! gh api "repos/$repo/contents/.github/workflows/pr-label-hpc-ci.yml" --silent 2>/dev/null; then
+      echo "  error: no pr-label-hpc-ci.yml, so run-hpc-ci would not start the HPC legs; merge the regenerate bot's PR first" >&2
+      failed=true
+      continue
+    fi
+    checks=$(jq -c '. + ["ci-result/hpc-atos"]' <<< "$checks")
+  fi
+  echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
+
   # 15368 = GitHub Actions, which posts all of them.
   status_checks=$(jq -n --argjson c "$checks" '{type: "required_status_checks", parameters: {
-    strict_required_status_checks_policy: true, do_not_enforce_on_create: true,
+    strict_required_status_checks_policy: false, do_not_enforce_on_create: true,
     required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
 
   bodies=(

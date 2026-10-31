@@ -101,3 +101,55 @@ def test_main_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert main([str(good)]) == 0
     assert main([str(good), str(bad)]) == 1
     assert "no job 'ci-result'" in capsys.readouterr().err
+
+
+def _hpc_result(
+    cond: str = "always() && needs.hpc-gate.outputs.run == 'true'",
+    context: str = "ci-result/hpc-atos",
+    name: str = "collect HPC results",
+    needs: str = "[hpc-gate, build]",
+    statuses: str = "write",
+) -> str:
+    return f"""
+  collect-result-hpc:
+    name: {name}
+    if: {cond}
+    needs: {needs}
+    runs-on: ubuntu-slim
+    permissions:
+      statuses: {statuses}
+    steps:
+      - uses: ecmwf/ci-infrastructure/actions/ci-result@main
+        with:
+          needs: ${{{{ toJSON(needs) }}}}
+          context: {context}
+"""
+
+
+def test_hpc_collector_passes(tmp_path: Path) -> None:
+    assert check(write_ci(tmp_path, JOBS + _result() + _hpc_result())) == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "needle"),
+    [
+        ({"cond": "needs.hpc-gate.outputs.run == 'true'"}, "if: always() && ..."),
+        ({"context": "ci-result"}, "context: ci-result/hpc-atos"),
+        ({"name": "collect results"}, "needs `name: collect HPC results`"),
+        ({"needs": "[]"}, "needs no job"),
+        ({"statuses": "read"}, "statuses: write"),
+    ],
+)
+def test_hpc_collector_problems(tmp_path: Path, kwargs: dict[str, str], needle: str) -> None:
+    [problem] = check(write_ci(tmp_path, JOBS + _result() + _hpc_result(**kwargs)))
+    assert "'collect-result-hpc'" in problem
+    assert needle in problem
+
+
+def test_ci_result_must_post_ci_result(tmp_path: Path) -> None:
+    [problem] = check(write_ci(tmp_path, JOBS + _result() + "          context: ci-result/hpc-atos\n"))
+    assert "job 'ci-result' must use" in problem
+
+
+def test_explicit_default_context_passes(tmp_path: Path) -> None:
+    assert check(write_ci(tmp_path, JOBS + _result() + "          context: ci-result\n")) == []

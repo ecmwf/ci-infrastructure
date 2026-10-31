@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,14 @@ class FakeS3:
         if Key not in self.objects:
             raise self._missing("GetObject")
         Path(Filename).write_bytes(self.objects[Key])
+
+    def get_object(self, Bucket: str, Key: str) -> dict[str, object]:  # noqa: N803
+        if Key not in self.objects:
+            raise self._missing("GetObject")
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+    def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:  # noqa: N803
+        self.put(Key, Body, NOW)
 
     def list_objects_v2(self, **kwargs: Any) -> dict[str, object]:
         keys = [k for k in sorted(self.objects) if k.startswith(kwargs["Prefix"])]
@@ -158,6 +168,19 @@ def test_list_objects_follows_pagination() -> None:
     assert [o.key for o in s3_store.list_objects(client=fake)] == [f"a{i}.tar.gz" for i in range(5)]
 
 
+def test_artifact_index_lists_each_prefix_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARTIFACT_S3_KEY_PREFIX", "ci/")
+    fake = FakeS3(page_size=1)
+    for name in ("eckit-abc-x-ubuntu", "eckit-abc-x-rocky", "eckit-geo-abc-x-ubuntu"):
+        fake.put(f"ci/{name}.tar.gz", b"x", NOW)
+    index = s3_store.ArtifactIndex(client=fake)
+    assert index.exists("eckit-abc-x-ubuntu", prefix="eckit-abc-")
+    assert index.exists("eckit-abc-x-rocky", prefix="eckit-abc-")
+    assert not index.exists("eckit-abc-y-rocky", prefix="eckit-abc-")
+    assert not index.exists("eckit-geo-abc-x-rocky", prefix="eckit-geo-abc-")
+    assert index.listings == 2
+
+
 def _obj(key: str, size: int, days_ago: float) -> s3_store.StoredObject:
     return s3_store.StoredObject(key, size, NOW - timedelta(days=days_ago))
 
@@ -206,3 +229,36 @@ def test_gc_warns_when_versioning_is_on(fake: FakeS3, capsys: pytest.CaptureFixt
     fake.versioning = {"Status": "Enabled"}
     s3_store.gc(percent=50, quota=None, dryrun=True, client=fake)
     assert "frees nothing" in capsys.readouterr().out
+
+
+def test_gc_deletes_the_sidecars_left_without_their_artifact(fake: FakeS3) -> None:
+    _fill(fake)
+    for stem in ("a0", "a3", "orphan"):
+        fake.put(f"{stem}.deps.json", b"", NOW - timedelta(days=2))
+    s3_store.gc(percent=50, quota=None, dryrun=False, client=fake)
+    assert sorted(fake.objects) == ["a2.tar.gz", "a3.deps.json", "a3.tar.gz"]
+
+
+def test_a_fresh_sidecar_waits_for_its_artifact() -> None:
+    objects = [_obj("building.deps.json", 2, 0.5), _obj("abandoned.deps.json", 2, 3)]
+    assert [o.key for o in s3_store.stale_sidecars(objects, [], NOW)] == ["abandoned.deps.json"]
+
+
+def test_artifact_index_offers_the_recorded_builds_newest_first(fake: FakeS3) -> None:
+    for name, days in (("eckit-abc-old", 3), ("eckit-abc-new", 1), ("eckit-abc-bare", 0)):
+        fake.put(f"{name}.tar.gz", b"x", NOW - timedelta(days=days))
+    for name in ("eckit-abc-old", "eckit-abc-new", "eckit-abc-gone"):
+        fake.put(f"{name}.deps.json", b'{"direct": []}', NOW)
+    index = s3_store.ArtifactIndex(client=fake)
+    assert index.with_sidecar("eckit-abc-") == ["eckit-abc-new", "eckit-abc-old"]
+    assert index.read_sidecar("eckit-abc-new") == {"direct": []}
+
+
+def test_artifact_index_writes_only_the_missing_sidecars(fake: FakeS3) -> None:
+    fake.put("eckit-abc-x.deps.json", b"kept", NOW)
+    index = s3_store.ArtifactIndex(client=fake)
+    index.record_sidecar("eckit-abc-x", "eckit-abc-", {"direct": ["new"]})
+    index.record_sidecar("eckit-abc-y", "eckit-abc-", {"direct": []})
+    assert index.flush_sidecars() == 1
+    assert fake.objects["eckit-abc-x.deps.json"] == b"kept"
+    assert json.loads(fake.objects["eckit-abc-y.deps.json"]) == {"direct": []}

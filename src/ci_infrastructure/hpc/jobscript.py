@@ -41,10 +41,31 @@ def sentinel_regex(jid: int | str) -> str:
 DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
 #: Fixed names (not per run), so a reattaching runner can check and re-drop them.
-SOURCE_TARBALL_NAME: Final = "source.tgz"
+SOURCE_TARBALL_NAME: Final = "source.tar.zst"
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 INSTALL_ARCHIVE_SUFFIX: Final = "install.tar.zst"
+
+#: Shipped into staging when the runner has an sccache bucket. The job reads and deletes the env file.
+SCCACHE_ENV_NAME: Final = "sccache.env"
+SCCACHE_BIN_DIR: Final = "tools"
+
+#: What actions/setup-sccache and the workflow env give the runner.
+SCCACHE_ENV_VARS: Final = (
+    "SCCACHE_BUCKET",
+    "SCCACHE_ENDPOINT",
+    "SCCACHE_REGION",
+    "AWS_REGION",
+    "SCCACHE_S3_USE_SSL",
+    "SCCACHE_S3_KEY_PREFIX",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+)
+
+
+def sccache_env_file(environ: Mapping[str, str]) -> str:
+    """Sourced by the job: the credentials stay out of the job script, which is logged and kept on scratch."""
+    return "".join(f"export {k}={shlex.quote(environ[k])}\n" for k in SCCACHE_ENV_VARS if environ.get(k))
 
 
 def install_archive_path(install_path: str) -> str:
@@ -338,8 +359,29 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
         "done",
         f'export CI_SOURCE_DIR="${{TMPDIR:-/tmp}}/ci-src-{run_id}"',
         'mkdir -p "$CI_SOURCE_DIR"',
-        f'tar -xzf "{tarball}" -C "$CI_SOURCE_DIR"',
+        f'zstd -dc "{tarball}" | tar -xf - -C "$CI_SOURCE_DIR"',
         'cd "$CI_SOURCE_DIR"',
+    ]
+
+
+def _sccache_block(staging_dir: str) -> list[str]:
+    env_file = f"{staging_dir}/{SCCACHE_ENV_NAME}"
+    return [
+        f'if [ -f "{env_file}" ]; then',
+        f'  . "{env_file}"',
+        f'  rm -f "{env_file}"',
+        f'  export PATH="{staging_dir}/{SCCACHE_BIN_DIR}:$PATH"',
+        "  # Per job: jobs share nodes, and a client would otherwise join another job's server.",
+        '  export SCCACHE_SERVER_UDS="${TMPDIR:-/tmp}/sccache.sock"',
+        "  # Source, build tree and deps sit under per-job and per-commit paths; strip them from the keys.",
+        f'  export SCCACHE_BASEDIRS="$CI_SOURCE_DIR:${{TMPDIR:-/tmp}}:{staging_dir}"',
+        "  # sccache does not start when its storage fails; build uncached then.",
+        "  if sccache --start-server; then",
+        "    export CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache",
+        "  else",
+        '    echo "ci: sccache did not start; building without it"',
+        "  fi",
+        "fi",
     ]
 
 
@@ -356,9 +398,11 @@ def render_job_script(
     env: Mapping[str, str] | None = None,
     packages: Sequence[str] = (),
     path_dirs: Sequence[str] = (),
+    sccache: bool = False,
 ) -> str:
     """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here.
-    `path_dirs`: what the deps declare in add-to-path, on the cluster."""
+    `path_dirs`: what the deps declare in add-to-path, on the cluster.
+    `sccache`: the staging dir holds sccache and its env file; needs `staging_dir`."""
     shebang, header, body = _split_header(repo_script)
 
     out: list[str] = [shebang or "#!/bin/bash"]
@@ -391,6 +435,9 @@ def render_job_script(
     if staging_dir is not None and run_id is not None:
         out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout))
         out.append("")
+        if sccache:
+            out.extend(_sccache_block(staging_dir))
+            out.append("")
     out.extend(body)
     out.append("")
     for name in packages:
@@ -398,5 +445,7 @@ def render_job_script(
         # .part + mv, so the fetcher only ever sees a complete archive.
         out.append(f'tar -cf - -C "$CI_INSTALL_ROOT/{name}" . | zstd -T0 -q -o "{archive}.part"')
         out.append(f'mv "{archive}.part" "{archive}"')
+    if sccache and staging_dir is not None:
+        out.append('if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then sccache --show-stats || true; fi')
     out.append(sentinel_echo(SENTINEL_SUCCESS))
     return "\n".join(out) + "\n"

@@ -56,7 +56,7 @@ class Commit:
     url: str
     headline: str
     author: str
-    pr: tuple[int, str] | None  # (number, url) of the merged PR that brought it in
+    pr: tuple[int, str, str] | None  # (number, url, base) of the merged PR that brought it in
     run: Run | None
     date: datetime
 
@@ -92,6 +92,9 @@ class Status:
     ok: bool
 
 
+_PR_FIELDS: Final = "number url merged baseRefName mergeCommit { oid }"
+
+
 def _query(repos: Sequence[str]) -> str:
     parts = []
     for repo in repos:
@@ -102,9 +105,11 @@ def _query(repos: Sequence[str]) -> str:
             "  defaultBranchRef { name target { ... on Commit {\n"
             f"    history(first: {_HISTORY}) {{ nodes {{\n"
             "      oid url messageHeadline committedDate\n"
-            "      parents(first: 1) { nodes { oid } }\n"
+            "      parents(first: 2) { nodes { oid\n"
+            f"        associatedPullRequests(first: 10) {{ nodes {{ {_PR_FIELDS} }} }}\n"
+            "      } }\n"
             "      author { name user { login } }\n"
-            "      associatedPullRequests(first: 10) { nodes { number url merged baseRefName } }\n"
+            f"      associatedPullRequests(first: 10) {{ nodes {{ {_PR_FIELDS} }} }}\n"
             "    } }\n"
             "  } } }\n"
             "}"
@@ -142,11 +147,20 @@ def first_parent(nodes: Sequence[Mapping[str, Any]], limit: int | None = _TIMELI
     return chain
 
 
-def _merged_pr(node: Mapping[str, Any], branch: str) -> tuple[int, str] | None:
-    """The merged PR into `branch` that brought the commit in, whichever way it was merged."""
-    for pr in node["associatedPullRequests"]["nodes"]:
-        if pr["merged"] and pr["baseRefName"] == branch:
-            return int(pr["number"]), str(pr["url"])
+def _merged_pr(node: Mapping[str, Any], branch: str) -> tuple[int, str, str] | None:
+    """(number, url, base) of the merged PR that brought the commit in, whichever way it was merged.
+
+    Also a PR into another branch that this very commit merged (that branch then fast-forwarded here),
+    and a PR into `branch` merged by hand: its head is then a later parent of this merge commit.
+    """
+    prs = [pr for pr in node["associatedPullRequests"]["nodes"] if pr["merged"]]
+    for pr in prs:
+        if pr["baseRefName"] == branch or (pr.get("mergeCommit") or {}).get("oid") == node["oid"]:
+            return int(pr["number"]), str(pr["url"]), str(pr["baseRefName"])
+    for parent in node["parents"]["nodes"][1:]:
+        for pr in (parent.get("associatedPullRequests") or {}).get("nodes", []):
+            if pr["merged"] and pr["baseRefName"] == branch:
+                return int(pr["number"]), str(pr["url"]), branch
     return None
 
 
@@ -366,7 +380,7 @@ def render_summary(
         ]
         for c in s.commits[:_TIMELINE]:
             if c.pr:
-                via = f"[#{c.pr[0]}]({c.pr[1]})"
+                via = f"[#{c.pr[0]}]({c.pr[1]})" + (f" into `{c.pr[2]}`" if c.pr[2] != s.branch else "")
             else:
                 pusher = f" by {_user(c.run.pusher)}" if c.run and c.run.pusher else ""
                 via = f"❗ direct push{pusher}"

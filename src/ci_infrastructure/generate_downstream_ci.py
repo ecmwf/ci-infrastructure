@@ -13,6 +13,8 @@
   - ci-fork.yml (with `fork-pull-requests` only): runs ci.yml for an approved fork pull request.
   - pr-label-downstream-ci.yml: the run-downstream-ci decision on the lanes' required
     `downstream/<lane>` statuses; a lane without consumers is success at once.
+  - pr-label-hpc-ci.yml (with HPC legs only): on run-hpc-ci, re-runs a finished CI's skipped HPC legs;
+    sets ci-result/hpc-atos for hpc-ci-not-needed.
   - pr-sync-branch.yml: lists a sync branch's pull requests in each of them.
 
 Sibling manifests are fetched over the GitHub GraphQL API (GH_TOKEN, or gh's own auth).
@@ -43,7 +45,6 @@ from ._github_api import (
     ManifestSchemaError,
     fetch_manifests_layer,
     lane_suffix,
-    resolve_reuse_matrix,
     select_token,
 )
 from .hpc import jobscript
@@ -67,7 +68,11 @@ GENERATED_HEADER: Final = (
 
 FORK_CI_WORKFLOW: Final = "ci-fork.yml"
 LABEL_GATE_WORKFLOW: Final = "pr-label-downstream-ci.yml"
+HPC_LABEL_WORKFLOW: Final = "pr-label-hpc-ci.yml"
 SYNC_BRANCH_WORKFLOW: Final = "pr-sync-branch.yml"
+RETRY_NIGHTLY_WORKFLOW: Final = "retry-nightly.yml"
+# Re-runs of a failed scheduled CI run, beyond its first attempt.
+NIGHTLY_RETRIES: Final = 2
 FORK_CI_NAME: Final = "CI (fork)"
 FORK_CI_RUN_NAME: Final = (
     "CI (fork) #${{ github.event.pull_request.number }} @ ${{ github.event.pull_request.head.sha }}"
@@ -81,6 +86,8 @@ def _normalise_header(header: str) -> str:
 
 # 1-CPU, unprivileged, cheap: only for jobs that talk to APIs and shuffle YAML.
 SLIM_RUNNER: Final = "ubuntu-slim"
+# Free for public repositories, with 4 CPUs: replaces SLIM_RUNNER there.
+PUBLIC_RUNNER: Final = "ubuntu-latest"
 # For short jobs that run the ci_infrastructure package: baked in, so no pip install from PyPI.
 BASE_IMAGE_RUNNER: Final = "arc-runner-normal"
 BASE_IMAGE: Final = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
@@ -140,6 +147,14 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
         allow_unicode=True,
     )
     return out
+
+
+def _render_doc(m: Manifest, doc: Mapping[str, Any]) -> str:
+    if m.visibility == VISIBILITY_PUBLIC:
+        for job in doc.get("jobs", {}).values():
+            if job.get("runs-on") == SLIM_RUNNER:
+                job["runs-on"] = PUBLIC_RUNNER
+    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
 
 
 def _lane_label(lane: Execution) -> str:
@@ -283,16 +298,9 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
 
 def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
     raw_matrix = raw.matrix
-    blocks = {
-        k: {"reuse-matrix": b.reuse_matrix, "include": b.include, "defaults": b.defaults} for k, b in raw_matrix.items()
-    }
-
     resolved: dict[str, MatrixKind] = {}
     for kind, body in raw_matrix.items():
-        try:
-            legs = resolve_reuse_matrix(kind, body.include, body.reuse_matrix, blocks)
-        except ManifestSchemaError as e:
-            raise SchemaError(f"{path}: {e}") from e
+        legs = raw.legs(kind)
 
         scripted = [bool(leg.get("job-script")) for leg in legs]
         if any(scripted) and not all(scripted):
@@ -432,48 +440,6 @@ def validate_graph(manifests: Sequence[Manifest]) -> None:
     _check_trigger_cycles(manifests, by_repo)
     _check_needs(manifests, by_pkg)
     _check_kinds_have_legs(manifests)
-    _check_leg_identity_uniqueness(manifests)
-
-
-# Leg fields make_artifact_name reads (plus [package].compiler-inputs).
-_FIXED_NAME_FIELDS: Final = ("build-type", "platform", "python-version", "options")
-
-
-def _artifact_identity(leg: Mapping[str, Any], compiler_inputs: Sequence[str]) -> tuple[str, ...]:
-    """The leg fields the artifact name depends on, with resolve_deps' defaults."""
-    parts = [str(leg.get(f, "Release" if f == "build-type" else "")).strip() for f in _FIXED_NAME_FIELDS]
-    parts.extend(str(leg.get(f, "")).strip() for f in sorted(compiler_inputs))
-    return tuple(parts)
-
-
-def _check_leg_identity_uniqueness(manifests: Sequence[Manifest]) -> None:
-    for m in manifests:
-        for kind, mk in m.matrices.items():
-            if not mk.publishes:
-                continue
-            for prefix in mk.packages or (m.prefix,):
-                _check_leg_identities(m, kind, mk, m.packages[prefix].compiler_inputs)
-
-
-def _check_leg_identities(m: Manifest, kind: str, mk: MatrixKind, compiler_inputs: Sequence[str]) -> None:
-    seen: dict[tuple[str, ...], dict[str, Any]] = {}
-    for leg in mk.legs:
-        identity = _artifact_identity(leg, compiler_inputs)
-        twin = seen.get(identity)
-        if twin is not None:
-            shared = dict(zip((*_FIXED_NAME_FIELDS, *sorted(compiler_inputs)), identity))
-            differ = sorted(k for k in set(leg) | set(twin) if str(leg.get(k)) != str(twin.get(k)))
-            raise SchemaError(
-                f"{m.path}: [matrix.{kind}] has two legs with the same artifact identity "
-                f"{shared} — they differ only in {differ or 'nothing'}, which is not part of "
-                f"the artifact name, so they would publish different builds under one name. "
-                f"The name is built from platform + "
-                f"{sorted(compiler_inputs) or '(no compiler fields)'} + build-type + "
-                f"python-version + options; give them distinct values there. For a different "
-                f"module set or compiler that means a distinct `platform` slug (e.g. "
-                f"'hpc-atos-gnu-r2'), which is also what invalidates the cache. Or drop one."
-            )
-        seen[identity] = leg
 
 
 def validate_job_templates(m: Manifest) -> None:
@@ -685,7 +651,7 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
         },
         "jobs": jobs,
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
@@ -1223,7 +1189,7 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers})
+    jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers}, lane=lane)
     jobs = _require_approval(_require_context(jobs, fork_pull_requests=m.fork_pull_requests))
 
     # No pull_request trigger: its runs, all jobs skipped for any other label, would list on the pull request.
@@ -1253,7 +1219,7 @@ def render_orchestrator_workflow(
         },
         "jobs": jobs,
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 _CONTEXT_JOB_ID: Final = "context"
@@ -1410,6 +1376,8 @@ def _consumer_levels(consumer_deps: Mapping[str, set[str]]) -> dict[str, int]:
 
 
 _GATE_JOB_ID: Final = "label-gate"
+HPC_LABEL: Final = "run-hpc-ci"
+HPC_OPT_OUT_LABEL: Final = "hpc-ci-not-needed"
 # Index syntax, not `needs.label-gate`: a hyphen in a context path parses as minus.
 _GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
 _GATE_DEPTH: Final = f"needs['{_GATE_JOB_ID}'].outputs.depth"
@@ -1420,9 +1388,9 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
     job["needs"] = [jid, *(needs if isinstance(needs, list) else [needs])]
 
 
-def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int]) -> dict[str, Any]:
+def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int], *, lane: Execution) -> dict[str, Any]:
     """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes."""
-    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job()}
+    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(lane)}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)
         cond = job.get("if")
@@ -1491,6 +1459,7 @@ def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
             "ci-url": "${{ steps.ctx.outputs.ci-url }}",
             "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
             "pull-request": "${{ steps.ctx.outputs.pull-request }}",
+            "hpc-only": "${{ steps.ctx.outputs.hpc-only }}",
         },
         "steps": [
             {
@@ -1503,12 +1472,24 @@ def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
     }
 
 
-def _label_gate_job() -> dict[str, Any]:
+def _label_gate_job(lane: Execution) -> dict[str, Any]:
     """Not gated on CI success: report-ci-failure needs it too.
 
     Uses github.token with explicit `permissions`; an App token 403s on non-public repos.
+    The HPC lane also needs run-hpc-ci: without it, the commit's CI built no HPC artifacts.
+    The runner lane skips a CI attempt that re-ran only the HPC legs: its result is the earlier one's.
     """
-    return {
+    with_ = {
+        "sha": _HEAD_SHA,
+        "pull-request": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.pull-request }}}}",
+        "level": "${{ inputs.level }}",
+    }
+    job: dict[str, Any] = {}
+    if lane == EXECUTION_HPC_ATOS:
+        with_["require-label"] = HPC_LABEL
+    else:
+        job["if"] = f"needs.{_CONTEXT_JOB_ID}.outputs.hpc-only != 'true'"
+    return job | {
         "runs-on": SLIM_RUNNER,
         "permissions": {"pull-requests": "read"},
         "outputs": {"run": "${{ steps.gate.outputs.run }}", "depth": "${{ steps.gate.outputs.depth }}"},
@@ -1517,11 +1498,7 @@ def _label_gate_job() -> dict[str, Any]:
                 "name": "Check the downstream-CI label",
                 "id": "gate",
                 "uses": "ecmwf/ci-infrastructure/actions/should-downstream-run@main",
-                "with": {
-                    "sha": _HEAD_SHA,
-                    "pull-request": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.pull-request }}}}",
-                    "level": "${{ inputs.level }}",
-                },
+                "with": with_,
             },
         ],
     }
@@ -1866,7 +1843,9 @@ def _render_one_repo(
         if orchestrator is not None:
             lanes[lane] = f"trigger-downstream{suffix}.yml"
     rendered.append((LABEL_GATE_WORKFLOW, render_label_gate_workflow(m, lanes)))
+    rendered.append((HPC_LABEL_WORKFLOW, render_hpc_label_workflow(m)))
     rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
+    rendered.append((RETRY_NIGHTLY_WORKFLOW, render_retry_nightly_workflow(m)))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()
@@ -1901,7 +1880,7 @@ def render_fork_workflow(m: Manifest) -> str | None:
             }
         },
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
 
 
 def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> str:
@@ -1910,8 +1889,10 @@ def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> s
     Every lane's status is posted, so the required checks are the same whatever the repo's consumers.
     """
     decision: Step = {"uses": "ecmwf/ci-infrastructure/actions/post-downstream-decision@main", "with": {}}
-    if lanes:
-        decision["with"]["contexts"] = " ".join(_status_context(lane) for lane in lanes)
+    if runner_lanes := [lane for lane in lanes if lane != EXECUTION_HPC_ATOS]:
+        decision["with"]["contexts"] = " ".join(_status_context(lane) for lane in runner_lanes)
+    if EXECUTION_HPC_ATOS in lanes:
+        decision["with"]["hpc-contexts"] = _status_context(EXECUTION_HPC_ATOS)
     if idle := [lane for lane in (EXECUTION_RUNNER, EXECUTION_HPC_ATOS) if lane not in lanes]:
         decision["with"]["no-consumers"] = " ".join(_status_context(lane) for lane in idle)
     steps = [decision]
@@ -1931,7 +1912,50 @@ def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> s
         "permissions": {"statuses": "write", **({"actions": "write"} if lanes else {})},
         "jobs": {"gate": {"runs-on": SLIM_RUNNER, "steps": steps}},
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
+
+
+def render_hpc_label_workflow(m: Manifest) -> str | None:
+    """Re-run CI's skipped HPC legs once run-hpc-ci is set, and keep ci-result/hpc-atos in line with the labels.
+
+    A label set while CI runs is acted on at its completion. None without HPC legs.
+    """
+    if not any(mk.execution == EXECUTION_HPC_ATOS for mk in m.matrices.values()):
+        return None
+    with_: dict[str, str] = {
+        "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+        "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+    }
+    if m.fork_pull_requests:
+        with_["fork-ci-workflow"] = FORK_CI_WORKFLOW
+    hpc_labels = f'fromJSON(\'["{HPC_LABEL}", "{HPC_OPT_OUT_LABEL}"]\')'
+    doc: dict[str, Any] = {
+        "name": "[PR] HPC-CI label gate",
+        # Payload and API only, so pull_request_target is safe.
+        "on": {
+            "pull_request_target": {"types": ["labeled", "unlabeled"]},
+            "workflow_run": {
+                "workflows": ["CI", FORK_CI_NAME] if m.fork_pull_requests else ["CI"],
+                "types": ["completed"],
+            },
+        },
+        "permissions": {"statuses": "write", "actions": "read", "pull-requests": "read"},
+        "concurrency": {
+            "group": "pr-label-hpc-ci-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}",
+        },
+        "jobs": {
+            "gate": {
+                "if": (
+                    "github.event_name == 'workflow_run' && github.event.workflow_run.event != 'push' "
+                    "&& github.event.workflow_run.event != 'schedule' "
+                    f"|| contains({hpc_labels}, github.event.label.name)"
+                ),
+                "runs-on": SLIM_RUNNER,
+                "steps": [{"uses": "ecmwf/ci-infrastructure/actions/hpc-label-decision@main", "with": with_}],
+            }
+        },
+    }
+    return _render_doc(m, doc)
 
 
 def render_sync_branch_workflow(m: Manifest) -> str:
@@ -1958,7 +1982,36 @@ def render_sync_branch_workflow(m: Manifest) -> str:
             }
         },
     }
-    return m.generated_header + GENERATED_HEADER + _dump_workflow(doc)
+    return _render_doc(m, doc)
+
+
+def render_retry_nightly_workflow(m: Manifest) -> str:
+    """Re-run the failed jobs of a scheduled CI run, up to NIGHTLY_RETRIES times."""
+    doc: dict[str, Any] = {
+        "name": "[Nightly] Retry failed CI",
+        "on": {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}},
+        "permissions": {},
+        "jobs": {
+            "retry": {
+                "if": (
+                    "github.event.workflow_run.event == 'schedule' "
+                    "&& github.event.workflow_run.conclusion == 'failure' "
+                    f"&& github.event.workflow_run.run_attempt <= {NIGHTLY_RETRIES}"
+                ),
+                "runs-on": SLIM_RUNNER,
+                "steps": [
+                    {
+                        "uses": "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main",
+                        "with": {
+                            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+                            "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    return _render_doc(m, doc)
 
 
 def _regen_command(manifest_path: str) -> str:

@@ -29,6 +29,7 @@ class Row(TypedDict, total=False):
     platform: str
     compiler: str
     python: str
+    option: str
     build_type: str
     source: str
 
@@ -52,14 +53,15 @@ def _row_from_dep(dep: Mapping[str, Any]) -> Row:
         platform=str(dep.get("platform", "")),
         compiler=str(dep.get("compiler", "")),
         python=str(dep.get("python-version", "")),
+        option=str(dep.get("option", "")),
         build_type=str(dep.get("build-type", "")),
         source=str(dep.get("source", "")),
     )
 
 
 def _md_table(rows: Sequence[Row], show_source: bool) -> str:
-    headers = ["Package", "Ref", "SHA", "Deps hash", "Platform", "Compiler", "Python", "Build type"]
-    keys: list[str] = ["package", "ref", "sha", "deps_hash", "platform", "compiler", "python", "build_type"]
+    headers = ["Package", "Ref", "SHA", "Deps hash", "Platform", "Compiler", "Python", "Options", "Build type"]
+    keys: list[str] = ["package", "ref", "sha", "deps_hash", "platform", "compiler", "python", "option", "build_type"]
     if show_source:
         headers.append("Source")
         keys.append("source")
@@ -88,6 +90,7 @@ _OWN_COLUMNS: Final = {
     "own-compiler": "compiler",
     "own-build-type": "build-type",
     "own-python": "python-version",
+    "own-option": "option",
     "own-deps-hash": "deps-hash",
 }
 

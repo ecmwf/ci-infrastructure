@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Sequence
@@ -260,13 +261,51 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
     assert "$(date +%s) + 1200" in script
     assert f'echo "{jobscript.SENTINEL_FAILURE} {jobscript.SENTINEL_JOB_ID}"' in script
     assert 'export CI_SOURCE_DIR="${TMPDIR:-/tmp}/ci-src-99-1"' in script
-    assert 'tar -xzf "/scratch/staging/art/source.tgz" -C "$CI_SOURCE_DIR"' in script
+    assert 'zstd -dc "/scratch/staging/art/source.tar.zst" | tar -xf - -C "$CI_SOURCE_DIR"' in script
     cd_i = next(i for i, ln in enumerate(lines) if ln == 'cd "$CI_SOURCE_DIR"')
     first_cmd = next(i for i, ln in enumerate(lines) if ln.startswith("cmake "))
     assert cd_i < first_cmd
     trap_i = next(i for i, ln in enumerate(lines) if ln == "trap _ci_on_err ERR")
     marker_i = next(i for i, ln in enumerate(lines) if ln.startswith("_ci_marker="))
     assert trap_i < marker_i
+
+
+def test_render_starts_sccache_after_the_marker_and_reports_it_last() -> None:
+    script = _script(staging_dir="/scratch/staging/art", run_id="99-1", sccache=True)
+    lines = script.splitlines()
+    unpack_i = next(i for i, ln in enumerate(lines) if ln == 'cd "$CI_SOURCE_DIR"')
+    env_i = lines.index('  . "/scratch/staging/art/sccache.env"')
+    first_cmd = next(i for i, ln in enumerate(lines) if ln.startswith("cmake "))
+    assert unpack_i < env_i < first_cmd
+    assert '  export PATH="/scratch/staging/art/tools:$PATH"' in lines
+    assert "sccache --show-stats" in lines[-2]
+    assert "sccache" not in _script(staging_dir="/scratch/staging/art", run_id="99-1")
+    assert "sccache" not in _script(sccache=True)
+
+
+@pytest.mark.parametrize(("starts", "launcher"), [(True, "sccache"), (False, "")])
+def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Path, starts: bool, launcher: str) -> None:
+    staging = tmp_path / "staging"
+    (staging / "tools").mkdir(parents=True)
+    fake = staging / "tools" / "sccache"
+    fake.write_text(f"#!/bin/sh\nexit {0 if starts else 2}\n")
+    fake.chmod(0o755)
+    (staging / "sccache.env").write_text(jobscript.sccache_env_file({"SCCACHE_BUCKET": "b"}))
+    block = "\n".join(jobscript._sccache_block(str(staging)))
+    out = subprocess.run(
+        ["bash", "-euc", f'{block}\necho "$SCCACHE_BUCKET|${{CMAKE_CXX_COMPILER_LAUNCHER:-}}|$SCCACHE_BASEDIRS"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1"},
+    ).stdout
+    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{tmp_path}:{staging}"
+    assert not (staging / "sccache.env").exists()
+
+
+def test_sccache_env_file_quotes_values_and_skips_the_unset() -> None:
+    env = {"SCCACHE_BUCKET": "b", "AWS_SECRET_ACCESS_KEY": "a'b $c", "SCCACHE_REGION": "", "HOME": "/h"}
+    assert jobscript.sccache_env_file(env) == ("export SCCACHE_BUCKET=b\nexport AWS_SECRET_ACCESS_KEY='a'\"'\"'b $c'\n")
 
 
 def test_render_omits_marker_wait_without_staging() -> None:
@@ -351,7 +390,7 @@ def test_gc_fails_when_find_fails(tmp_path: Path) -> None:
 def test_drop_staging_removes_the_tree_and_releases_the_lock(tmp_path: Path) -> None:
     paths = RemotePaths.derive(str(tmp_path), "art")
     (Path(paths.staging) / "deps").mkdir(parents=True)
-    Path(f"{paths.staging}.push.tgz").write_text("x")
+    Path(f"{paths.staging}.push.tar.zst").write_text("x")
     drop_staging(_LocalConn(), paths, run_id="1-1")
     assert sorted(p.name for p in tmp_path.rglob("*")) == ["locks", "staging"]
 
@@ -380,6 +419,19 @@ def test_echo_remote_output_swallows_read_errors(capsys: pytest.CaptureFixture[s
 
     _echo_remote_output(_Boom(), "/scratch/ci/hpc-jobs/pkg.out")
     assert "could not read job output" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("leg", "wanted"),
+    [
+        ({"cxx-compiler": "nvc++", "sccache": False}, False),
+        ({"sccache": True}, True),
+        ({"cxx-compiler": "g++-8"}, True),
+        ({}, True),
+    ],
+)
+def test_a_leg_opts_out_of_sccache(leg: dict[str, Any], wanted: bool) -> None:
+    assert orch.sccache_wanted(json.dumps(leg) if leg else "") is wanted
 
 
 @pytest.mark.parametrize("bad", ["a/b", "run;Gres=gres/ssdtmp:20G;", "a b", "x$(id)"])
@@ -510,3 +562,45 @@ def test_declared_path_dirs_follow_their_dep_onto_the_cluster(monkeypatch: pytes
     on_cluster = {"/r/install/eccodes": "/s/deps/eccodes", "/r/install/eckit": "/s/deps/eckit"}
     assert orch.deps_path_dirs(leg, on_cluster) == ["/s/deps/eccodes/bin"]
     assert orch.deps_path_dirs("", on_cluster) == []
+
+
+def test_stop_local_submitters_signals_only_this_artifacts_submit_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def proc(pid: int, *argv: str) -> None:
+        (tmp_path / str(pid)).mkdir()
+        (tmp_path / str(pid) / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+
+    proc(101, "python", "-m", "ci_infrastructure.hpc", "submit-wait", "--artifact-name", "art")
+    proc(102, "python", "-m", "ci_infrastructure.hpc", "submit-wait", "--artifact-name", "art-other")
+    proc(103, "python", "-m", "ci_infrastructure.hpc", "cancel", "--artifact-name", "art")
+    killed: list[int] = []
+
+    def kill(pid: int, _sig: int) -> None:
+        killed.append(pid)
+        (tmp_path / str(pid) / "cmdline").unlink()
+        (tmp_path / str(pid)).rmdir()
+
+    monkeypatch.setattr(os, "kill", kill)
+    orch.stop_local_submitters("art", proc_root=tmp_path, timeout=1)
+    assert killed == [101]
+
+
+def test_cancel_stops_the_submitter_then_cancels_the_job_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(orch, "stop_local_submitters", lambda name: calls.append(("stop", name)))
+    monkeypatch.setattr(orch, "load_site", lambda *_a, **_k: type("Site", (), {"_connection": None})())
+    monkeypatch.setattr(orch, "resolve_remote_path", lambda _conn, path: path.replace("$SCRATCH", "/scratch"))
+    monkeypatch.setattr(orch, "find_active_job_by_name", lambda _conn, job_name, user: 42)
+
+    def cancel_job(**kw: Any) -> tuple[int, None]:
+        calls.append(("cancel", kw["jid"], kw["output"]))
+        return 0, None
+
+    monkeypatch.setattr(orch, "cancel_job", cancel_job)
+
+    result = CliRunner().invoke(
+        orch.main, ["cancel", "--site", "hpc-batch", "--artifact-name", "art", "--remote-work-dir", "$SCRATCH/ci"]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [("stop", "art"), ("cancel", 42, "/scratch/ci/hpc-jobs/art.out")]

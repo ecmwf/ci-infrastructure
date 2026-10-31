@@ -4,7 +4,7 @@
 
    Configure, build, test and install a CMake project on a GitHub runner.
 
-   Also the base of cmake-atos.sh.j2. Any change here must bump
+   Also the base of cmake-atos.sh.j2. A change to what gets built must bump
    _github_api.HPC_TEMPLATE_VERSION. #}
 {% block header %}
 {% endblock %}
@@ -12,6 +12,7 @@
 {% block setup %}
 build="${CI_BUILD_DIR:-${TMPDIR:-/tmp}/build}"
 jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+test_jobs="$jobs"
 # CMake's default generator, as cmake-build used: some images ship a ninja too old for every project.
 gen_flag=""
 {% endblock %}
@@ -50,7 +51,7 @@ cmake --build "$build" --parallel "$jobs"
 {% if ctest_args %}
 ctest --test-dir "$build" --output-on-failure {{ ctest_args }}
 {% else %}
-ctest --test-dir "$build" --output-on-failure -j "$jobs"
+ctest --test-dir "$build" --output-on-failure -j "$test_jobs"
 {% endif %}
 {% endblock %}
 
