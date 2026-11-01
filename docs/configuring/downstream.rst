@@ -137,7 +137,7 @@ The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 - ``auto-commit``: the bot pushes to the default branch instead;
   this needs the bot App on the bypass list of the branch protection, otherwise it falls back to the pull request.
 - ``pr-auto-merge``: the bot enables `auto-merge <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request>`__ on the pull request,
-  so it is squash-merged once the required checks pass.
+  so it is merged once the required checks pass: squashed, or with the method the repository allows instead.
   This needs "Allow auto-merge" in the repository settings and required status checks on the default branch.
   If the default branch also requires a review, put the bot App on the bypass list of that ruleset in the mode "pull requests only"
   and keep the required status checks in a separate ruleset that it does not bypass.
