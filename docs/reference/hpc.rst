@@ -23,6 +23,10 @@ It submits the job first, which claims the place in the queue,
 and then copies the source and the dependencies into a staging directory on the cluster.
 A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
+The dependencies travel in one archive, which the job unpacks into ``$CI_DEPS_DIR``:
+creating their files on the shared filesystem took the runner up to half a minute for ``eckit`` alone.
+A job whose ranks run on several nodes sets ``shared-deps = true`` in its leg,
+and the job unpacks them into the staging directory instead, where every node sees them.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
 and ``PATH`` at the directories each declares in ``add-to-path``.
 The cluster therefore needs no GitHub token.
@@ -54,7 +58,7 @@ The build script
 ----------------
 
 ``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
-the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
+the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_DEPS_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
 the shared template does this, a hand-written script does it itself:

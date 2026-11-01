@@ -42,6 +42,7 @@ DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
 #: Fixed names (not per run), so a reattaching runner can check and re-drop them.
 SOURCE_TARBALL_NAME: Final = "source.tar.zst"
+DEPS_TARBALL_NAME: Final = "deps.tar.zst"
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 INSTALL_ARCHIVE_SUFFIX: Final = "install.tar.zst"
@@ -341,10 +342,12 @@ def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:
     return shebang, header, lines[body_start:]
 
 
-def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) -> list[str]:
-    """Bounded wait for the transfer marker, then unpack into node-local ``$CI_SOURCE_DIR``."""
+def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int, deps: bool = False) -> list[str]:
+    """Bounded wait for the transfer marker, then unpack into node-local ``$CI_SOURCE_DIR``,
+    and with `deps` the shipped deps into ``$CI_DEPS_DIR``."""
     marker = f"{staging_dir}/{TRANSFER_MARKER_NAME}"
     tarball = f"{staging_dir}/{SOURCE_TARBALL_NAME}"
+    deps_tarball = f"{staging_dir}/{DEPS_TARBALL_NAME}"
     return [
         'echo "ci: waiting for source-transfer marker..."',
         f'_ci_marker="{marker}"',
@@ -360,6 +363,7 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
         f'export CI_SOURCE_DIR="${{TMPDIR:-/tmp}}/ci-src-{run_id}"',
         'mkdir -p "$CI_SOURCE_DIR"',
         f'zstd -dc "{tarball}" | tar -xf - -C "$CI_SOURCE_DIR"',
+        *(['mkdir -p "$CI_DEPS_DIR"', f'zstd -dc "{deps_tarball}" | tar -xf - -C "$CI_DEPS_DIR"'] if deps else []),
         'cd "$CI_SOURCE_DIR"',
     ]
 
@@ -399,9 +403,11 @@ def render_job_script(
     packages: Sequence[str] = (),
     path_dirs: Sequence[str] = (),
     sccache: bool = False,
+    deps_dir: str | None = None,
 ) -> str:
     """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here.
     `path_dirs`: what the deps declare in add-to-path, on the cluster.
+    `deps_dir`: where the job unpacks the shipped deps, as `$CI_DEPS_DIR`, which the other paths may name.
     `sccache`: the staging dir holds sccache and its env file; needs `staging_dir`."""
     shebang, header, body = _split_header(repo_script)
 
@@ -416,6 +422,8 @@ def render_job_script(
         out.append(f"#SBATCH --comment={run_id}")
     out.append("")
     out.append("set -euo pipefail")
+    if deps_dir is not None:
+        out.append(f'export CI_DEPS_DIR="{deps_dir}"')
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
     # For dlopen (findlibs); linked code finds its deps by RPATH. Missing dirs are harmless.
     lib_dirs = ":".join(f"{p}/lib64:{p}/lib" for p in cmake_prefix_path.split(":") if p)
@@ -433,7 +441,7 @@ def render_job_script(
     out.append("trap _ci_on_err ERR")
     out.append("")
     if staging_dir is not None and run_id is not None:
-        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout))
+        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout, deps=deps_dir is not None))
         out.append("")
         if sccache:
             out.extend(_sccache_block(staging_dir))
