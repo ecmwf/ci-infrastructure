@@ -34,18 +34,24 @@ _ENV_DEFAULTS: Final[Mapping[str, str]] = {
 }
 
 
-def job_title(m: Manifest, kind: str, leg: Mapping[str, Any]) -> str:
-    """As in the Actions UI, e.g. ``cxxmath/build (clang++-18, Release)``."""
+def _generated_title(m: Manifest, kind: str, leg: Mapping[str, Any]) -> str:
     suffix = job_names.name_suffix(leg, m.matrices[kind].legs, m.compiler_inputs)
     return f"{m.package_name}/{kind} ({suffix})"
 
 
+def job_title(m: Manifest, kind: str, leg: Mapping[str, Any]) -> str:
+    """As in the Actions UI: the leg's ``name`` if it has one, else e.g. ``cxxmath/build (clang++-18, Release)``."""
+    return str(leg.get("name") or _generated_title(m, kind, leg))
+
+
 def select_leg(m: Manifest, wanted: str) -> tuple[str, dict[str, Any]]:
-    """By full title, or without the ``<package>/`` prefix."""
-    titles = {job_title(m, kind, leg): (kind, leg) for kind, mk in m.matrices.items() for leg in mk.legs}
-    for title, hit in titles.items():
-        if wanted in (title, title.removeprefix(f"{m.package_name}/")):
-            return hit
+    """By ``name``, by generated title, or by generated title without the ``<package>/`` prefix."""
+    legs = [(kind, leg) for kind, mk in m.matrices.items() for leg in mk.legs]
+    for kind, leg in legs:
+        generated = _generated_title(m, kind, leg)
+        if wanted in (leg.get("name"), generated, generated.removeprefix(f"{m.package_name}/")):
+            return kind, leg
+    titles = [job_title(m, kind, leg) for kind, leg in legs]
     raise CIError(f"no leg titled {wanted!r} in {m.path}; one of:\n  " + "\n  ".join(titles))
 
 
