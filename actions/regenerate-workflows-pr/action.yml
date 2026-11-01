@@ -41,8 +41,8 @@ inputs:
     default: ''
   mode:
     description: >
-      'pr' opens a PR; 'pr-auto-merge' also enables squash auto-merge on it (needs "Allow auto-merge"
-      and required status checks on base); 'auto-commit' pushes to base (the App must be allowed to bypass its protection).
+      'pr' opens a PR; 'pr-auto-merge' also enables auto-merge on it, squash where the repo allows it
+      (needs "Allow auto-merge" and required status checks on base); 'auto-commit' pushes to base (the App must be allowed to bypass its protection).
     required: false
     default: 'pr'
   direct-push:
@@ -175,8 +175,16 @@ runs:
           echo "::notice title=Regenerate workflows::$open_pr"
         fi
 
+        # Squash where allowed, else the method the repo does allow (eckit: merge commits only).
         # Not fatal: the PR stays open for a human when the repo does not allow auto-merge.
-        if [ "$MODE" = pr-auto-merge ] && ! gh pr merge "$open_pr" --auto --squash; then
-          echo "::warning title=Regenerate workflows::Could not enable auto-merge on $open_pr; is \"Allow auto-merge\" on?"
+        if [ "$MODE" = pr-auto-merge ]; then
+          errors=""
+          for method in squash merge rebase; do
+            if err=$(gh pr merge "$open_pr" --auto "--$method" 2>&1); then errors=""; break; fi
+            errors+="$method: $err; "
+          done
+          if [ -n "$errors" ]; then
+            echo "::warning title=Regenerate workflows::Could not enable auto-merge on $open_pr; is \"Allow auto-merge\" on? ${errors}"
+          fi
         fi
         { echo "status=$status"; echo "pr-url=$open_pr"; } >> "$GITHUB_OUTPUT"
