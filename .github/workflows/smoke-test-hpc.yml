@@ -161,6 +161,8 @@ jobs:
           src="$RUNNER_TEMP/hpc-submit/src"
           mkdir -p "$src/.ci/hpc"
           echo "$GITHUB_RUN_ID" > "$src/shipped.txt"
+          mkdir -p "$RUNNER_TEMP/hpc-submit/deps/smokedep/lib"
+          echo "$GITHUB_RUN_ID" > "$RUNNER_TEMP/hpc-submit/deps/smokedep/lib/shipped.txt"
           # Smallest QoS atos schedules promptly. No sentinel echo: ci-infrastructure
           # appends it, and printing it here would defeat the check.
           cat > "$src/.ci/hpc/smoke.sh" <<'RECIPE'
@@ -173,6 +175,9 @@ jobs:
           echo "ci-smoke: on $(hostname)"
           # Fails a silent no-op transfer.
           test -f shipped.txt
+          # The deps arrive node-local, under their names on the CMAKE_PREFIX_PATH.
+          test -f "$CI_DEPS_DIR/smokedep/lib/shipped.txt"
+          case "$CMAKE_PREFIX_PATH" in "$CI_DEPS_DIR/smokedep"*) ;; *) exit 1 ;; esac
           test -n "$CI_INSTALL_PREFIX"
           mkdir -p "$CI_INSTALL_PREFIX"
           echo ok > "$CI_INSTALL_PREFIX/smoke.txt"
@@ -193,6 +198,7 @@ jobs:
             --remote-work-dir "$HPC_CI_REMOTE_WORK_DIR" \
             --local-install-path "$RUNNER_TEMP/hpc-submit/install" \
             --source-dir "$RUNNER_TEMP/hpc-submit/src" \
+            --cmake-prefix-path "$RUNNER_TEMP/hpc-submit/deps/smokedep" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --tar-dir "$RUNNER_TEMP/hpc-submit/tars" \
             --no-publish
