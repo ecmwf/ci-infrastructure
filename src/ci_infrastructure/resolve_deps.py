@@ -1068,17 +1068,15 @@ def resolve_leg(
 
     direct: list[ResolvedDep] = []
     stale_ok: dict[PackageName, None] = {}
-    keep: set[PackageName] = set()  # direct deps without allow-stale
     for spec in own_deps:
         if spec.applies_to(matrix_entry, lane):
             got = visit(spec, matrix_entry, declared_by=own.name, parent_ref=own_ref)
             direct += got
-            names = [d.name for d in got if d.source != "local"]
             if spec.allow_stale:
-                stale_ok.update(dict.fromkeys(names))
-            else:
-                keep.update(names)
+                stale_ok.update(dict.fromkeys(d.name for d in got if d.source != "local"))
     direct = _unique(direct)
+    # A listed dep is always the current build; only the upstreams beneath it may be older.
+    keep = {d.name for d in direct}
 
     tree = _DepTree(visited, direct_of)
     for name in direct_of:
@@ -1088,7 +1086,7 @@ def resolve_leg(
     if stale:
         replaced: set[PackageName] = set()
         for name in stale_ok:
-            if visited[name].cached or name in replaced or name in keep:
+            if visited[name].cached or name in replaced:
                 continue
             hit = _stale_fallback(visited[name], final, tree, replaced, keep, artifact_index, lane, stale)
             if hit is not None:

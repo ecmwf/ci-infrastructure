@@ -176,23 +176,15 @@ def test_a_dep_without_allow_stale_is_rebuilt(base_sha: list[Sha]) -> None:
     assert _resolve(store, deps, allow_stale=True)["middle"].source == "triggered rebuild"
 
 
-def test_no_fallback_that_would_age_a_direct_dep_without_allow_stale(base_sha: list[Sha]) -> None:
-    """top also uses base directly: the old base under middle would replace it."""
+@pytest.mark.parametrize("base_allow_stale", [False, True])
+def test_a_listed_dep_is_never_aged(base_sha: list[Sha], base_allow_stale: bool) -> None:
+    """top also lists base: the old base under middle would replace it, so middle is rebuilt."""
     store = _Store()
-    deps = [_spec("middle", allow_stale=True), _spec("base")]
+    deps = [_spec("middle", allow_stale=True), _spec("base", allow_stale=base_allow_stale)]
     _published_then_base_moves(base_sha, store, deps)
 
     got = _resolve(store, deps, allow_stale=True)
     assert (got["middle"].source, got["base"].sha) == ("triggered rebuild", _NEW)
-
-
-def test_a_direct_dep_with_allow_stale_ages_along(base_sha: list[Sha]) -> None:
-    store = _Store()
-    deps = [_spec("middle", allow_stale=True), _spec("base", allow_stale=True)]
-    _published_then_base_moves(base_sha, store, deps)
-
-    got = _resolve(store, deps, allow_stale=True)
-    assert (got["middle"].source, got["base"].sha) == ("stale artifact", _OLD)
 
 
 def test_no_fallback_once_the_older_upstream_is_evicted(base_sha: list[Sha]) -> None:

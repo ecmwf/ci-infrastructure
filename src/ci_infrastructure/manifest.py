@@ -224,7 +224,8 @@ class DepTable(_Table):
         strict=True,
         alias="allow-stale",
         description="In pull requests, use an artifact of the upstream's commit built against older upstreams of "
-        "its own instead of waiting for its rebuild. Defaults to `[package].allow-stale-deps`, see "
+        "its own, unless this manifest lists them too, instead of waiting for its rebuild. "
+        "Defaults to `[package].allow-stale-deps`, see "
         ":doc:`/configuring/downstream`.",
     )
 

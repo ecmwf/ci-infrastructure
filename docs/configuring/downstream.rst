@@ -74,8 +74,11 @@ Where the artifact of the dependency is missing or still being built,
 the resolver then takes the newest stored build of the same commit and variant
 together with the upstreams it was built against, for example ``eckit`` one commit behind.
 It does so only if that tree has the same packages, at commits in the history of the current ones,
-all still in the store, and if no other dependency, nor a direct one without ``allow-stale``, needs the current builds of them;
+all still in the store, and if no other dependency needs the current builds of them;
 otherwise the dependency is rebuilt as before.
+A dependency listed in ``[[deps]]`` is always the current build:
+only upstreams that are not listed may be older.
+So a consumer that also lists ``eckit`` waits for ``eccodes``' rebuild when ``eckit`` moves.
 The leg's dependency table shows such a dependency with source ``stale artifact``,
 and the resolve job notes against which commits it was built.
 
