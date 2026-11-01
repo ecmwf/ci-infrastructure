@@ -68,14 +68,14 @@ class LocalShell:
     ("spec", "remote", "locals_"),
     [
         ("", "", []),
-        ("/run/a:/run/b;/run/c", "/s/art/deps/a:/s/art/deps/b:/s/art/deps/c", ["/run/a", "/run/b", "/run/c"]),
+        ("/run/a:/run/b;/run/c", "$CI_DEPS_DIR/a:$CI_DEPS_DIR/b:$CI_DEPS_DIR/c", ["/run/a", "/run/b", "/run/c"]),
         # a collision or an unsafe name falls back to the index
-        ("/x/a:/y/a", "/s/art/deps/0:/s/art/deps/1", ["/x/a", "/y/a"]),
-        ("/x/a b:/y/c", "/s/art/deps/0:/s/art/deps/1", ["/x/a b", "/y/c"]),
+        ("/x/a:/y/a", "$CI_DEPS_DIR/0:$CI_DEPS_DIR/1", ["/x/a", "/y/a"]),
+        ("/x/a b:/y/c", "$CI_DEPS_DIR/0:$CI_DEPS_DIR/1", ["/x/a b", "/y/c"]),
     ],
 )
 def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps(spec: str, remote: str, locals_: list[str]) -> None:
-    assert plan_remote_prefixes(spec, "/s/art") == (remote, locals_, "/s/art/deps")
+    assert plan_remote_prefixes(spec) == (remote, locals_)
 
 
 def test_remote_paths_derive_layout_under_the_work_dir() -> None:
@@ -270,6 +270,22 @@ def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:
     assert trap_i < marker_i
 
 
+def test_render_points_the_dep_paths_at_where_the_job_unpacks_them() -> None:
+    script = _script(
+        staging_dir="/s/staging/art",
+        run_id="9-1",
+        cmake_prefix_path="$CI_DEPS_DIR/eckit",
+        ships_deps=True,
+    )
+    lines = script.splitlines()
+    deps_i = lines.index('export CI_DEPS_DIR="${TMPDIR:-/tmp}/ci-deps-9-1"')
+    assert deps_i < lines.index(
+        'export CMAKE_PREFIX_PATH="$CI_DEPS_DIR/eckit${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"'
+    )
+    assert 'zstd -dc "/s/staging/art/deps.tar.zst" | tar -xf - -C "$CI_DEPS_DIR"' in lines
+    assert "CI_DEPS_DIR" not in _script(staging_dir="/s/staging/art", run_id="9-1")
+
+
 def test_render_starts_sccache_after_the_marker_and_reports_it_last() -> None:
     script = _script(staging_dir="/scratch/staging/art", run_id="99-1", sccache=True)
     lines = script.splitlines()
@@ -284,7 +300,10 @@ def test_render_starts_sccache_after_the_marker_and_reports_it_last() -> None:
 
 
 @pytest.mark.parametrize(("starts", "launcher"), [(True, "sccache"), (False, "")])
-def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Path, starts: bool, launcher: str) -> None:
+@pytest.mark.parametrize("deps", [False, True])
+def test_sccache_block_builds_uncached_when_sccache_does_not_start(
+    tmp_path: Path, starts: bool, launcher: str, deps: bool
+) -> None:
     staging = tmp_path / "staging"
     (staging / "tools").mkdir(parents=True)
     fake = staging / "tools" / "sccache"
@@ -297,9 +316,15 @@ def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Pat
         capture_output=True,
         text=True,
         check=True,
-        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1"},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(tmp_path),
+            "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1",
+            **({"CI_DEPS_DIR": f"{tmp_path}/ci-deps-9-1"} if deps else {}),
+        },
     ).stdout
-    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{tmp_path}:{staging}"
+    deps_dir = f"{tmp_path}/ci-deps-9-1:" if deps else ""
+    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{deps_dir}{tmp_path}:{staging}"
     assert not (staging / "sccache.env").exists()
 
 

@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import subprocess
+import tarfile
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -231,12 +232,13 @@ def ship_source(
     run_id: str,
     tar_dir: str,
     local_prefixes: Sequence[str] = (),
-    remote_deps_dir: str | None = None,
     extra_files: Sequence[tuple[str, str, int]] = (),
     dryrun: bool = False,
 ) -> None:
-    """Reset ``staging_dir``, ship the checkout, dep prefixes (to ``<remote_deps_dir>/<i>``) and ``extra_files``
-    (local path, path under staging, mode), then the marker, so the job sees no partial copy.
+    """Reset ``staging_dir``, ship the checkout, the dep prefixes and ``extra_files`` (local path, path under
+    staging, mode), then the marker, so the job sees no partial copy.
+
+    The deps go in one archive, each under its name from `remote_dep_names`; the job unpacks it.
     """
     if dryrun:
         return
@@ -257,16 +259,20 @@ def ship_source(
         f"tar {tarred - start:.0f}s, staging reset {reset - tarred:.0f}s, send {sent - reset:.0f}s"
     )
     local_archive.unlink()
-    if remote_deps_dir is not None:
-        for index, (prefix, name) in enumerate(zip(local_prefixes, remote_dep_names(local_prefixes), strict=True)):
-            push_tree(
-                conn,
-                local_dir=prefix,
-                remote_dir=f"{remote_deps_dir.rstrip('/')}/{name}",
-                tar_dir=tar_dir,
-                tarball_suffix="",
-                local_tar_name=f"{run_id}.dep{index}.tar.zst",
-            )
+    if local_prefixes:
+        deps_start = time.monotonic()
+        deps_archive = Path(tar_dir) / f"{run_id}.deps.tar.zst"
+        trees = list(zip(local_prefixes, remote_dep_names(local_prefixes), strict=True))
+        _zstd_tar_trees(trees, deps_archive)
+        deps_tarred = time.monotonic()
+        conn.sendfile(deps_archive, str(PurePosixPath(staging_dir) / jobscript.DEPS_TARBALL_NAME))
+        stats = [_tree_stats(prefix) for prefix in local_prefixes]
+        print(
+            f"ship: {len(trees)} deps ({sum(f for f, _ in stats)} files, {_mib(sum(b for _, b in stats))}, "
+            f"{_mib(deps_archive.stat().st_size)} compressed): "
+            f"tar {deps_tarred - deps_start:.0f}s, send {time.monotonic() - deps_tarred:.0f}s"
+        )
+        deps_archive.unlink()
     for local, rel, mode in extra_files:
         remote = str(PurePosixPath(staging_dir) / rel)
         _run_remote(conn, ["mkdir", "-p", str(PurePosixPath(remote).parent)], what=f"Remote mkdir for {rel}")
@@ -315,7 +321,6 @@ def push_tree(
     remote_dir: str,
     tar_dir: str,
     tarball_suffix: str = "push",
-    local_tar_name: str | None = None,
     dryrun: bool = False,
 ) -> None:
     """An empty ``tarball_suffix`` gives ``<dir>.tar.zst``."""
@@ -323,7 +328,7 @@ def push_tree(
         return
     name = PurePosixPath(remote_dir).name
     ext = f".{tarball_suffix}.tar.zst" if tarball_suffix else ".tar.zst"
-    local_archive = Path(tar_dir) / (local_tar_name or f"{name}{ext}")
+    local_archive = Path(tar_dir) / f"{name}{ext}"
     remote_archive = f"{remote_dir.rstrip('/')}{ext}"
 
     start = time.monotonic()
@@ -374,6 +379,21 @@ def _zstd_tar(src: Path, archive: Path) -> None:
         tar_rc = tar.wait()
     if tar_rc != 0 or enc.returncode != 0:
         raise CIError(f"Packing {src} failed (tar exit {tar_rc}, zstd exit {enc.returncode})")
+
+
+def _zstd_tar_trees(trees: Sequence[tuple[str, str]], archive: Path) -> None:
+    """One archive holding each (directory, name) under ``name/``, symlinks kept."""
+    enc = subprocess.Popen(["zstd", "-T0", "-1", "-q", "-f", "-o", str(archive)], stdin=subprocess.PIPE)
+    assert enc.stdin is not None
+    try:
+        with tarfile.open(fileobj=enc.stdin, mode="w|") as tar:
+            for src, name in trees:
+                tar.add(src, arcname=name)
+    finally:
+        enc.stdin.close()
+        rc = enc.wait()
+    if rc != 0:
+        raise CIError(f"Packing the deps into {archive} failed (zstd exit {rc})")
 
 
 def _unzstd_into(archive: Path, dest: Path) -> None:

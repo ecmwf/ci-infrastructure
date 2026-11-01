@@ -42,6 +42,7 @@ DEFAULT_MARKER_WAIT_TIMEOUT: Final = 1800
 
 #: Fixed names (not per run), so a reattaching runner can check and re-drop them.
 SOURCE_TARBALL_NAME: Final = "source.tar.zst"
+DEPS_TARBALL_NAME: Final = "deps.tar.zst"
 TRANSFER_MARKER_NAME: Final = "TRANSFER_COMPLETED"
 
 INSTALL_ARCHIVE_SUFFIX: Final = "install.tar.zst"
@@ -341,10 +342,12 @@ def _split_header(repo_script: str) -> tuple[str, list[str], list[str]]:
     return shebang, header, lines[body_start:]
 
 
-def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) -> list[str]:
-    """Bounded wait for the transfer marker, then unpack into node-local ``$CI_SOURCE_DIR``."""
+def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int, deps: bool = False) -> list[str]:
+    """Bounded wait for the transfer marker, then unpack into node-local ``$CI_SOURCE_DIR``,
+    and with `deps` the shipped deps into ``$CI_DEPS_DIR``."""
     marker = f"{staging_dir}/{TRANSFER_MARKER_NAME}"
     tarball = f"{staging_dir}/{SOURCE_TARBALL_NAME}"
+    deps_tarball = f"{staging_dir}/{DEPS_TARBALL_NAME}"
     return [
         'echo "ci: waiting for source-transfer marker..."',
         f'_ci_marker="{marker}"',
@@ -360,6 +363,7 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int) 
         f'export CI_SOURCE_DIR="${{TMPDIR:-/tmp}}/ci-src-{run_id}"',
         'mkdir -p "$CI_SOURCE_DIR"',
         f'zstd -dc "{tarball}" | tar -xf - -C "$CI_SOURCE_DIR"',
+        *(['mkdir -p "$CI_DEPS_DIR"', f'zstd -dc "{deps_tarball}" | tar -xf - -C "$CI_DEPS_DIR"'] if deps else []),
         'cd "$CI_SOURCE_DIR"',
     ]
 
@@ -374,7 +378,7 @@ def _sccache_block(staging_dir: str) -> list[str]:
         "  # Per job: jobs share nodes, and a client would otherwise join another job's server.",
         '  export SCCACHE_SERVER_UDS="${TMPDIR:-/tmp}/sccache.sock"',
         "  # Source, build tree and deps sit under per-job and per-commit paths; strip them from the keys.",
-        f'  export SCCACHE_BASEDIRS="$CI_SOURCE_DIR:${{TMPDIR:-/tmp}}:{staging_dir}"',
+        f'  export SCCACHE_BASEDIRS="$CI_SOURCE_DIR:${{CI_DEPS_DIR:+$CI_DEPS_DIR:}}${{TMPDIR:-/tmp}}:{staging_dir}"',
         "  # sccache does not start when its storage fails; build uncached then.",
         "  if sccache --start-server; then",
         "    export CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache",
@@ -399,9 +403,11 @@ def render_job_script(
     packages: Sequence[str] = (),
     path_dirs: Sequence[str] = (),
     sccache: bool = False,
+    ships_deps: bool = False,
 ) -> str:
     """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here.
     `path_dirs`: what the deps declare in add-to-path, on the cluster.
+    `ships_deps`: the job unpacks the shipped deps into node-local `$CI_DEPS_DIR`, which the paths may name.
     `sccache`: the staging dir holds sccache and its env file; needs `staging_dir`."""
     shebang, header, body = _split_header(repo_script)
 
@@ -416,6 +422,8 @@ def render_job_script(
         out.append(f"#SBATCH --comment={run_id}")
     out.append("")
     out.append("set -euo pipefail")
+    if ships_deps and run_id is not None:
+        out.append(f'export CI_DEPS_DIR="${{TMPDIR:-/tmp}}/ci-deps-{run_id}"')
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
     # For dlopen (findlibs); linked code finds its deps by RPATH. Missing dirs are harmless.
     lib_dirs = ":".join(f"{p}/lib64:{p}/lib" for p in cmake_prefix_path.split(":") if p)
@@ -433,7 +441,7 @@ def render_job_script(
     out.append("trap _ci_on_err ERR")
     out.append("")
     if staging_dir is not None and run_id is not None:
-        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout))
+        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout, deps=ships_deps))
         out.append("")
         if sccache:
             out.extend(_sccache_block(staging_dir))

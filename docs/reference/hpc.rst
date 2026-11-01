@@ -23,6 +23,8 @@ It submits the job first, which claims the place in the queue,
 and then copies the source and the dependencies into a staging directory on the cluster.
 A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
+The dependencies travel in one archive, which the job unpacks into ``$CI_DEPS_DIR``:
+creating their files on the shared filesystem took the runner up to half a minute for ``eckit`` alone.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
 and ``PATH`` at the directories each declares in ``add-to-path``.
 The cluster therefore needs no GitHub token.
@@ -30,7 +32,7 @@ When the runner has an sccache bucket (``SCCACHE_BUCKET``),
 the sccache that :action:`setup-sccache` installs and a file with its configuration and credentials go into the staging directory too,
 which only its owner can read.
 The job reads and deletes that file, starts sccache and sets ``CMAKE_<LANG>_COMPILER_LAUNCHER``;
-``SCCACHE_BASEDIRS`` strips the per-job source and build paths and the per-commit staging directory from the cache keys,
+``SCCACHE_BASEDIRS`` strips the per-job source, deps and build paths and the per-commit staging directory from the cache keys,
 so that another job can hit the cache;
 if sccache cannot reach its bucket, the job builds without it.
 A leg with ``sccache = false`` builds without it.
@@ -54,7 +56,7 @@ The build script
 ----------------
 
 ``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
-the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
+the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_DEPS_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
 the shared template does this, a hand-written script does it itself:

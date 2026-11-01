@@ -116,29 +116,44 @@ def _make_tree(root: Path, name: str, body: str) -> Path:
     return root
 
 
-def test_ship_source_ships_and_unpacks_dep_prefixes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_ship_source_sends_the_deps_in_one_archive_the_job_unpacks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     src = _make_tree(tmp_path / "checkout", "file.txt", "hello")
-    dep0 = _make_tree(tmp_path / "dep0", "libfoo.a", "x")
+    dep0 = _make_tree(tmp_path / "dep0", "libfoo.so.1", "x")
+    (dep0 / "libfoo.so").symlink_to("libfoo.so.1")
     dep1 = _make_tree(tmp_path / "dep1", "libbar.a", "y")
     staging = tmp_path / "remote" / "staging" / "art"
+    conn = CopyingConnection()
 
     transfer.ship_source(
-        CopyingConnection(),
+        conn,
         local_source_dir=str(src),
         staging_dir=str(staging),
         run_id="42-1",
         tar_dir=str(tmp_path / "stage"),
         local_prefixes=[str(dep0), str(dep1)],
-        remote_deps_dir=str(staging / "deps"),
     )
 
-    assert (staging / "deps" / "dep0" / "libfoo.a").read_text() == "x"
-    assert (staging / "deps" / "dep1" / "libbar.a").read_text() == "y"
+    assert [dst for _, dst in conn.sent] == [str(staging / "source.tar.zst"), str(staging / "deps.tar.zst")]
     assert (staging / "TRANSFER_COMPLETED").is_file()
+    assert not any((tmp_path / "stage").iterdir())
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("ship: source (1 files, ") and "staging reset" in out[0] and "send" in out[0]
-    assert out[1].startswith("ship: dep0 (1 files, ") and out[1].endswith("s") and "unpack" in out[1]
-    assert out[3].startswith("ship: done in ")
+    assert out[0].startswith("ship: source (1 files, ")
+    assert out[1].startswith("ship: 2 deps (3 files, ") and "send" in out[1]
+    assert out[2].startswith("ship: done in ")
+
+    # As the job does it, after the marker.
+    deps_dir = tmp_path / "node" / "ci-deps-42-1"
+    block = "\n".join(jobscript._marker_wait_block(str(staging), "42-1", 5, deps=True))
+    subprocess.run(
+        ["bash", "-euc", block],
+        check=True,
+        env={**os.environ, "TMPDIR": str(tmp_path / "node"), "CI_DEPS_DIR": str(deps_dir)},
+    )
+    assert (deps_dir / "dep0" / "libfoo.so.1").read_text() == "x"
+    assert os.readlink(deps_dir / "dep0" / "libfoo.so") == "libfoo.so.1"
+    assert (deps_dir / "dep1" / "libbar.a").read_text() == "y"
 
 
 def test_ship_source_raises_on_remote_failure(tmp_path: Path) -> None:
