@@ -300,7 +300,10 @@ def test_render_starts_sccache_after_the_marker_and_reports_it_last() -> None:
 
 
 @pytest.mark.parametrize(("starts", "launcher"), [(True, "sccache"), (False, "")])
-def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Path, starts: bool, launcher: str) -> None:
+@pytest.mark.parametrize("deps", [False, True])
+def test_sccache_block_builds_uncached_when_sccache_does_not_start(
+    tmp_path: Path, starts: bool, launcher: str, deps: bool
+) -> None:
     staging = tmp_path / "staging"
     (staging / "tools").mkdir(parents=True)
     fake = staging / "tools" / "sccache"
@@ -313,9 +316,15 @@ def test_sccache_block_builds_uncached_when_sccache_does_not_start(tmp_path: Pat
         capture_output=True,
         text=True,
         check=True,
-        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1"},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(tmp_path),
+            "CI_SOURCE_DIR": f"{tmp_path}/ci-src-9-1",
+            **({"CI_DEPS_DIR": f"{tmp_path}/ci-deps-9-1"} if deps else {}),
+        },
     ).stdout
-    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{tmp_path}:{staging}"
+    deps_dir = f"{tmp_path}/ci-deps-9-1:" if deps else ""
+    assert out.splitlines()[-1] == f"b|{launcher}|{tmp_path}/ci-src-9-1:{deps_dir}{tmp_path}:{staging}"
     assert not (staging / "sccache.env").exists()
 
 

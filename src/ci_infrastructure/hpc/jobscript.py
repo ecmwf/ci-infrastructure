@@ -378,7 +378,7 @@ def _sccache_block(staging_dir: str) -> list[str]:
         "  # Per job: jobs share nodes, and a client would otherwise join another job's server.",
         '  export SCCACHE_SERVER_UDS="${TMPDIR:-/tmp}/sccache.sock"',
         "  # Source, build tree and deps sit under per-job and per-commit paths; strip them from the keys.",
-        f'  export SCCACHE_BASEDIRS="$CI_SOURCE_DIR:${{TMPDIR:-/tmp}}:{staging_dir}"',
+        f'  export SCCACHE_BASEDIRS="$CI_SOURCE_DIR:${{CI_DEPS_DIR:+$CI_DEPS_DIR:}}${{TMPDIR:-/tmp}}:{staging_dir}"',
         "  # sccache does not start when its storage fails; build uncached then.",
         "  if sccache --start-server; then",
         "    export CMAKE_C_COMPILER_LAUNCHER=sccache CMAKE_CXX_COMPILER_LAUNCHER=sccache",

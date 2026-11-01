@@ -32,7 +32,7 @@ When the runner has an sccache bucket (``SCCACHE_BUCKET``),
 the sccache that :action:`setup-sccache` installs and a file with its configuration and credentials go into the staging directory too,
 which only its owner can read.
 The job reads and deletes that file, starts sccache and sets ``CMAKE_<LANG>_COMPILER_LAUNCHER``;
-``SCCACHE_BASEDIRS`` strips the per-job source and build paths and the per-commit staging directory from the cache keys,
+``SCCACHE_BASEDIRS`` strips the per-job source, deps and build paths and the per-commit staging directory from the cache keys,
 so that another job can hit the cache;
 if sccache cannot reach its bucket, the job builds without it.
 A leg with ``sccache = false`` builds without it.
