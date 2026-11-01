@@ -325,6 +325,18 @@ and the legs start only after it:
 A job per kind keeps the runner legs from waiting for an upstream's slower HPC legs.
 :action:`fetch-deps` still waits for anything that is missing after all.
 
+A GitHub App token expires after an hour, and a wait can take up to ``ARTIFACT_WAIT_TIMEOUT``.
+Given the App's credentials as well, both actions mint a new token once the given one has expired:
+
+.. code:: yaml
+
+   - uses: ecmwf/ci-infrastructure/actions/wait-for-deps@main
+     with:
+       matrix: ${{ needs.resolve.outputs.build-matrix }}
+       token: ${{ steps.mint.outputs.token }}
+       client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
+       app-private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
+
 Repositories the build fetches over git
 ---------------------------------------
 

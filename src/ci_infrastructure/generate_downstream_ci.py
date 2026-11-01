@@ -976,6 +976,8 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     fetch_with = {
         "deps-json": "${{ steps.m.outputs.deps-json }}",
         "token": "${{ steps.mint.outputs.token }}",
+        "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+        "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
     }
     if is_hpc:
         # Built for the cluster: only staged here, the job script sets them up on the node.
