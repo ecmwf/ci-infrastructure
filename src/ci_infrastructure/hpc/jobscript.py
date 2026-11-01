@@ -403,11 +403,11 @@ def render_job_script(
     packages: Sequence[str] = (),
     path_dirs: Sequence[str] = (),
     sccache: bool = False,
-    deps_dir: str | None = None,
+    ships_deps: bool = False,
 ) -> str:
     """`packages`: a kind that publishes several; each installs to `$CI_INSTALL_ROOT/<name>` and is archived here.
     `path_dirs`: what the deps declare in add-to-path, on the cluster.
-    `deps_dir`: where the job unpacks the shipped deps, as `$CI_DEPS_DIR`, which the other paths may name.
+    `ships_deps`: the job unpacks the shipped deps into node-local `$CI_DEPS_DIR`, which the paths may name.
     `sccache`: the staging dir holds sccache and its env file; needs `staging_dir`."""
     shebang, header, body = _split_header(repo_script)
 
@@ -422,8 +422,8 @@ def render_job_script(
         out.append(f"#SBATCH --comment={run_id}")
     out.append("")
     out.append("set -euo pipefail")
-    if deps_dir is not None:
-        out.append(f'export CI_DEPS_DIR="{deps_dir}"')
+    if ships_deps and run_id is not None:
+        out.append(f'export CI_DEPS_DIR="${{TMPDIR:-/tmp}}/ci-deps-{run_id}"')
     out.append(f'export CMAKE_PREFIX_PATH="{cmake_prefix_path}${{CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}}"')
     # For dlopen (findlibs); linked code finds its deps by RPATH. Missing dirs are harmless.
     lib_dirs = ":".join(f"{p}/lib64:{p}/lib" for p in cmake_prefix_path.split(":") if p)
@@ -441,7 +441,7 @@ def render_job_script(
     out.append("trap _ci_on_err ERR")
     out.append("")
     if staging_dir is not None and run_id is not None:
-        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout, deps=deps_dir is not None))
+        out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout, deps=ships_deps))
         out.append("")
         if sccache:
             out.extend(_sccache_block(staging_dir))

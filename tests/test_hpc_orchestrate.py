@@ -78,18 +78,6 @@ def test_plan_remote_prefixes_maps_local_dirs_to_cluster_deps(spec: str, remote:
     assert plan_remote_prefixes(spec) == (remote, locals_)
 
 
-@pytest.mark.parametrize(
-    ("leg", "expected"),
-    [
-        ("", "${TMPDIR:-/tmp}/ci-deps-9-1"),
-        ('{"shared-deps": false}', "${TMPDIR:-/tmp}/ci-deps-9-1"),
-        ('{"shared-deps": true}', "/s/staging/art/deps"),
-    ],
-)
-def test_deps_are_node_local_unless_the_leg_wants_them_shared(leg: str, expected: str) -> None:
-    assert orch.deps_dir_for(leg, "/s/staging/art/", "9-1") == expected
-
-
 def test_remote_paths_derive_layout_under_the_work_dir() -> None:
     paths = RemotePaths.derive("/ec/res4/scratch/me/ci", "art-abc-Release")
     assert paths.output == "/ec/res4/scratch/me/ci/hpc-jobs/art-abc-Release.out"
@@ -287,7 +275,7 @@ def test_render_points_the_dep_paths_at_where_the_job_unpacks_them() -> None:
         staging_dir="/s/staging/art",
         run_id="9-1",
         cmake_prefix_path="$CI_DEPS_DIR/eckit",
-        deps_dir="${TMPDIR:-/tmp}/ci-deps-9-1",
+        ships_deps=True,
     )
     lines = script.splitlines()
     deps_i = lines.index('export CI_DEPS_DIR="${TMPDIR:-/tmp}/ci-deps-9-1"')

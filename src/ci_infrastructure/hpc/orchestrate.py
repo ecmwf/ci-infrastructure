@@ -121,23 +121,11 @@ class RemotePaths(NamedTuple):
         )
 
 
-#: Where the job unpacks the deps: node-local by default, fastest to create files in.
-NODE_LOCAL_DEPS_DIR: Final = "${TMPDIR:-/tmp}/ci-deps-"
-
-
 def plan_remote_prefixes(cmake_prefix_path: str) -> tuple[str, list[str]]:
     """(cluster prefix path, local prefixes), each dep prefix at ``$CI_DEPS_DIR/<name>`` in the job."""
     local_prefixes = [p for p in re.split(r"[;:]", cmake_prefix_path) if p]
     remote_prefixes = [f"$CI_DEPS_DIR/{name}" for name in transfer.remote_dep_names(local_prefixes)]
     return ":".join(remote_prefixes), local_prefixes
-
-
-def deps_dir_for(matrix_leg: str, staging_dir: str, run_id: str) -> str:
-    """Node-local, unless the leg sets `shared-deps = true`: a job on several nodes needs them on the shared
-    filesystem, in the staging dir, so that every node sees them."""
-    if _parse_matrix_leg(matrix_leg).get("shared-deps") is True:
-        return f"{staging_dir.rstrip('/')}/deps"
-    return f"{NODE_LOCAL_DEPS_DIR}{run_id}"
 
 
 def deps_path_dirs(matrix_leg: str, on_cluster: Mapping[str, str]) -> list[str]:
@@ -636,7 +624,7 @@ def submit_wait(
         packages=list(packages),
         path_dirs=path_dirs,
         sccache=sccache,
-        deps_dir=deps_dir_for(matrix_leg, paths.staging, run_id) if local_prefixes else None,
+        ships_deps=bool(local_prefixes),
     )
     print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
     print(rendered)

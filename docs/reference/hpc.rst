@@ -25,8 +25,6 @@ A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
 The dependencies travel in one archive, which the job unpacks into ``$CI_DEPS_DIR``:
 creating their files on the shared filesystem took the runner up to half a minute for ``eckit`` alone.
-A job whose ranks run on several nodes sets ``shared-deps = true`` in its leg,
-and the job unpacks them into the staging directory instead, where every node sees them.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
 and ``PATH`` at the directories each declares in ``add-to-path``.
 The cluster therefore needs no GitHub token.
