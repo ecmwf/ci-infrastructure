@@ -120,7 +120,8 @@ class PackageTable(_Table):
         strict=True,
         default=False,
         alias="allow-stale-deps",
-        description="The default of `[[deps]].allow-stale` for every dep of this manifest.",
+        description="The default of `[[deps]].allow-stale` for the deps of `[package]`. "
+        "Once set here or in any `[packages.<prefix>]`, every one of them sets it too, to the same value.",
     )
 
     @field_validator("repo")
@@ -315,6 +316,12 @@ class PackageEntry(_Table):
     deps: tuple[DepTable, ...] = Field(default=(), description="As `[[deps]]`, for this package.")
     add_to_path: tuple[str, ...] = Field(
         default=(), alias="add-to-path", description="As `[package].add-to-path`, for this package."
+    )
+    allow_stale_deps: bool | None = Field(
+        default=None,
+        strict=True,
+        alias="allow-stale-deps",
+        description="As `[package].allow-stale-deps`, for this package, and equal to it.",
     )
 
     @field_validator("compiler_inputs")
@@ -590,6 +597,21 @@ class ManifestFile(_Table):
 
         for node in edges:
             walk(node, [node])
+
+    @model_validator(mode="after")
+    def _allow_stale_deps_agree(self) -> ManifestFile:
+        tables = {
+            "[package]": self.package.allow_stale_deps if "allow_stale_deps" in self.package.model_fields_set else None
+        }
+        tables |= {f"[packages.{k}]": e.allow_stale_deps for k, e in self.packages.items()}
+        if all(v is None for v in tables.values()):
+            return self
+        missing = [t for t, v in tables.items() if v is None]
+        if missing:
+            raise ValueError(f"allow-stale-deps is set in some tables only; set it in {', '.join(missing)} too")
+        if len(set(tables.values())) > 1:
+            raise ValueError(f"allow-stale-deps differs between {', '.join(tables)}; one value for all")
+        return self
 
     @model_validator(mode="after")
     def _no_duplicate_triggers(self) -> ManifestFile:

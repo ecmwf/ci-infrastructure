@@ -64,6 +64,9 @@ A consumer can accept the previous build in its pull requests instead:
    [package]
    allow-stale-deps = true   # the default for every [[deps]]
 
+   [packages.pyconsumer]     # every further package says so too, with the same value
+   allow-stale-deps = true
+
    [[deps]]
    repo = "ecmwf/eccodes"
    package = "eccodes"

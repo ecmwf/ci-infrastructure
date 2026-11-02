@@ -340,7 +340,7 @@ def parse_manifest(text: str, default_repo: str | None = None) -> Manifest:
         packages[PackageName(prefix)] = PackageInfo(
             prefix=PackageName(prefix),
             compiler_inputs=list(entry.compiler_inputs),
-            deps=[s for d in entry.deps for s in _to_dep_specs(d, repo, stale)],
+            deps=[s for d in entry.deps for s in _to_dep_specs(d, repo, bool(entry.allow_stale_deps))],
             add_to_path=entry.add_to_path,
         )
     # An artifact-prefix is [package] under another name: same compilers, same deps.

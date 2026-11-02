@@ -265,6 +265,7 @@ package = "top-extra"
 
 [packages.top-extra]
 compiler-inputs = []
+{package_extra}
 """
 
 
@@ -387,10 +388,12 @@ allow-stale-deps = {stale}
 [packages.p1]
 compiler-inputs = ["cxx-compiler"]
 deps = [{{ repo = "o/middle", package = "middle", ref = "main" }}]
+allow-stale-deps = {stale}
 
 [packages.py]
 compiler-inputs = ["cxx-compiler"]
 deps = [{{ package = "p1" }}]
+allow-stale-deps = {stale}
 """
 
 
@@ -431,3 +434,29 @@ def test_a_package_on_a_sibling_gets_the_build_this_run_publishes(base_sha: list
     assert built["middle"].source == ("stale artifact" if stale else "triggered rebuild")
     assert (got["p1"].artifact_name, got["middle"].artifact_name) == (p1, built["middle"].artifact_name)
     assert not got["p1"].cached
+
+
+@pytest.mark.parametrize(
+    ("package", "entry", "error"),
+    [
+        ("allow-stale-deps = true", "", "set it in \\[packages.p1\\] too"),
+        ("", "allow-stale-deps = true", "set it in \\[package\\] too"),
+        ("allow-stale-deps = true", "allow-stale-deps = false", "differs"),
+    ],
+)
+def test_allow_stale_deps_is_set_everywhere_and_agrees(package: str, entry: str, error: str) -> None:
+    text = f"""
+[package]
+visibility = "private"
+name = "top"
+repo = "o/top"
+compiler-inputs = []
+meta = true
+{package}
+
+[packages.p1]
+compiler-inputs = []
+{entry}
+"""
+    with pytest.raises(ValueError, match=error):
+        parse_manifest(text)
