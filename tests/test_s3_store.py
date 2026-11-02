@@ -254,6 +254,16 @@ def test_artifact_index_offers_the_recorded_builds_newest_first(fake: FakeS3) ->
     assert index.read_sidecar("eckit-abc-new") == {"direct": []}
 
 
+def test_artifact_index_offers_this_runs_builds_first(fake: FakeS3) -> None:
+    fake.put("eckit-abc-old.tar.gz", b"x", NOW)
+    fake.put("eckit-abc-old.deps.json", b'{"direct": []}', NOW)
+    index = s3_store.ArtifactIndex(client=fake)
+    index.publish_in_run("eckit-abc-run", {"direct": ["x"]})
+    assert index.with_sidecar("eckit-abc-") == ["eckit-abc-run", "eckit-abc-old"]
+    assert index.read_sidecar("eckit-abc-run") == {"direct": ["x"]}
+    assert not index.exists("eckit-abc-run", "eckit-abc-")
+
+
 def test_artifact_index_writes_only_the_missing_sidecars(fake: FakeS3) -> None:
     fake.put("eckit-abc-x.deps.json", b"kept", NOW)
     index = s3_store.ArtifactIndex(client=fake)

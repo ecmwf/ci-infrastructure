@@ -71,8 +71,10 @@ A consumer can accept the previous build in its pull requests instead:
    allow-stale = true        # or per dependency
 
 Where the artifact of the dependency is missing or still being built,
-the resolver then takes the newest stored build of the same commit and variant
+the resolver then takes the newest build of the same commit and variant
 together with the upstreams it was built against, for example ``eckit`` one commit behind.
+A package of the same repository counts too:
+where the build job publishes ``eccodes`` built against older upstreams, a Python leg depending on it takes that build.
 It does so only if that tree has the same packages, at commits in the history of the current ones,
 all still in the store, and if no other dependency, nor a direct one without ``allow-stale``, needs the current builds of them;
 otherwise the dependency is rebuilt as before.

@@ -307,7 +307,7 @@ def _to_dep_spec(t: DepTable, package: str, own_repo: str, allow_stale: bool = F
         unless=None if t.unless is None else {k: frozenset(v) for k, v in t.unless.items()},
         sibling=t.repo is None,
         crates=t.crates,
-        allow_stale=t.repo is not None and (allow_stale if t.allow_stale is None else t.allow_stale),
+        allow_stale=allow_stale if t.allow_stale is None else t.allow_stale,
     )
 
 
@@ -810,7 +810,13 @@ def _stale_fallback(
         trial = {
             **current,
             **swapped,
-            dep.name: replace(dep, artifact_name=name, deps_hash=deps_hash, cached=True, source="stale artifact"),
+            dep.name: replace(
+                dep,
+                artifact_name=name,
+                deps_hash=deps_hash,
+                cached=index.exists(name, prefix=prefix),
+                source="stale artifact",
+            ),
         }
         subtree = below | {dep.name}
         outside = [n for n in trial if n not in replaced | subtree]
@@ -1142,9 +1148,10 @@ def resolve_leg(
     )
 
     own_name = PackageName(own_prefix_override) if own_prefix_override else own.prefix
-    artifact_index.record_sidecar(
-        own_artifact, f"{own_name}-{own_sha}-", _sidecar_payload(own_artifact, direct_dep_artifact_names, deps_resolved)
-    )
+    own_tree = _sidecar_payload(own_artifact, direct_dep_artifact_names, deps_resolved)
+    artifact_index.record_sidecar(own_artifact, f"{own_name}-{own_sha}-", own_tree)
+    if own_name in published_in_run:
+        artifact_index.publish_in_run(own_artifact, own_tree)
 
     return deps_resolved, ResolvedOwn(
         artifact_name=own_artifact,

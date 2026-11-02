@@ -223,7 +223,7 @@ class DepTable(_Table):
         default=None,
         strict=True,
         alias="allow-stale",
-        description="In pull requests, use an artifact of the upstream's commit built against older upstreams of "
+        description="In pull requests, use an artifact of the dep's commit built against older upstreams of "
         "its own instead of waiting for its rebuild. Defaults to `[package].allow-stale-deps`, see "
         ":doc:`/configuring/downstream`.",
     )
@@ -254,8 +254,6 @@ class DepTable(_Table):
             raise ValueError("needs a 'ref' with its 'repo'")
         if self.repo is None and self.ref is not None:
             raise ValueError("'ref' without 'repo': a package of this repo is built from the same commit")
-        if self.repo is None and self.allow_stale:
-            raise ValueError("'allow-stale' without 'repo': a package of this repo is built from the same commit")
         return self
 
     @property

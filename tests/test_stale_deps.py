@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from pydantic import ValidationError
 
 from ci_infrastructure import resolve_deps, s3_store
 from ci_infrastructure._github_api import EXECUTION_RUNNER, WorkflowRuns
@@ -65,10 +64,11 @@ class _Store(s3_store.ArtifactIndex):
         return name in self.tars
 
     def with_sidecar(self, prefix: str) -> list[str]:
-        return [n for n in reversed(self.tars) if n.startswith(prefix) and n in self.sidecars]
+        stored = [n for n in reversed(self.tars) if n.startswith(prefix) and n in self.sidecars]
+        return [n for n in self._in_run if n.startswith(prefix)] + stored
 
     def read_sidecar(self, name: str) -> Any:
-        return json.loads(json.dumps(self.sidecars[name]))
+        return json.loads(json.dumps(self._in_run.get(name) or self.sidecars[name]))
 
     def record_sidecar(self, name: str, prefix: str, payload: Mapping[str, Any]) -> None:
         self.sidecars.setdefault(name, payload)
@@ -274,12 +274,11 @@ compiler-inputs = []
 def test_allow_stale_defaults_to_the_package_setting(package_extra: str, expected: tuple[bool, bool]) -> None:
     m = parse_manifest(_MANIFEST.format(package_extra=package_extra))
     assert tuple(d.allow_stale for d in m.deps if not d.sibling) == expected
-    assert not next(d for d in m.deps if d.sibling).allow_stale
+    assert next(d for d in m.deps if d.sibling).allow_stale == expected[0]
 
 
-def test_allow_stale_on_a_package_of_this_repo_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="'allow-stale' without 'repo'"):
-        DepTable.model_validate({"package": "x", "allow-stale": True})
+def test_allow_stale_on_a_package_of_this_repo_is_accepted() -> None:
+    assert DepTable.model_validate({"package": "x", "allow-stale": True}).allow_stale
 
 
 _TOP_MANIFEST: Final = """
@@ -374,3 +373,61 @@ def test_packages_of_one_job_never_get_two_builds_of_a_dep(base_sha: list[Sha]) 
 
     assert resolve(["p1"])["middle"].source == "stale artifact"
     assert resolve(["p1", "p2"])["middle"].source == "triggered rebuild"
+
+
+_PY_ON_SIBLING: Final = """
+[package]
+visibility = "private"
+name = "top"
+repo = "o/top"
+compiler-inputs = ["cxx-compiler"]
+meta = true
+allow-stale-deps = {stale}
+
+[packages.p1]
+compiler-inputs = ["cxx-compiler"]
+deps = [{{ repo = "o/middle", package = "middle", ref = "main" }}]
+
+[packages.py]
+compiler-inputs = ["cxx-compiler"]
+deps = [{{ package = "p1" }}]
+"""
+
+
+@pytest.mark.parametrize("stale", [True, False])
+def test_a_package_on_a_sibling_gets_the_build_this_run_publishes(base_sha: list[Sha], stale: bool) -> None:
+    store = _Store()
+    _published_then_base_moves(base_sha, store, [_spec("middle", allow_stale=True)])
+    manifest = parse_manifest(_PY_ON_SIBLING.format(stale=str(stale).lower()))
+    fallback = StaleFallback(token=None)
+
+    def resolve(prefix: str) -> tuple[dict[str, ResolvedDep], str]:
+        deps, own = resolve_deps.resolve_packages(
+            manifest,
+            [PackageName(prefix)],
+            own_sha=Sha("d" * 40),
+            own_ref=Ref("feature"),
+            matrix_entry=dict(_LEG),
+            manifest_cache={
+                (Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST),
+                (Repo("o/top"), Ref("feature")): manifest,
+            },
+            sync_branch=None,
+            sync_exists_by_repo={},
+            sha_cache={(Repo("o/top"), Ref("feature")): Sha("d" * 40)},
+            artifact_index=store,
+            run_state_cache={},
+            token=None,
+            can_dispatch=True,
+            lane=EXECUTION_RUNNER,
+            dispatch_plans={},
+            published_in_run=frozenset({PackageName("p1"), PackageName("py")}),
+            stale=fallback,
+        )
+        return {str(d.name): d for d in deps}, own[PackageName(prefix)].artifact_name
+
+    built, p1 = resolve("p1")
+    got, _ = resolve("py")
+    assert built["middle"].source == ("stale artifact" if stale else "triggered rebuild")
+    assert (got["p1"].artifact_name, got["middle"].artifact_name) == (p1, built["middle"].artifact_name)
+    assert not got["p1"].cached
