@@ -304,25 +304,37 @@ A dep that is not in the store yet, because its upstream is still building it,
 is waited for by :action:`fetch-deps`, on the leg's own runner.
 When several repositories of a :doc:`sync branch <../using/feature-branches>` run at once,
 those waiting legs can hold the runners the upstream needs to build at all.
-One ``wait-<kind>`` job per kind therefore waits in a small pod with :action:`wait-for-deps`,
-and the legs start only after it:
+The waiting therefore happens before the legs start, with :action:`wait-for-deps` on a GitHub-hosted runner.
+The runner legs' wait is the last step of ``resolve``,
+so it costs no extra job start-up:
 
 .. code:: yaml
 
-   wait-build:
+   resolve:
+     name: resolve + wait-build
+     runs-on: ubuntu-latest
+     steps:
+       # ... resolve-deps with id: r
+       - uses: ecmwf/ci-infrastructure/actions/wait-for-deps@main
+         with:
+           matrix: ${{ steps.r.outputs.matrix-build }}
+
+   wait-build-hpc:
      needs: resolve
-     runs-on: arc-runner-normal
-     container:
-       image: eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest
+     runs-on: ubuntu-latest
      steps:
        - uses: ecmwf/ci-infrastructure/actions/wait-for-deps@main
          with:
-           matrix: ${{ needs.resolve.outputs.build-matrix }}
+           matrix: ${{ needs.resolve.outputs.build-hpc-matrix }}
 
    build:
-     needs: [resolve, wait-build]
+     needs: resolve
 
-A job per kind keeps the runner legs from waiting for an upstream's slower HPC legs.
+   build-hpc:
+     needs: [resolve, wait-build-hpc]
+
+Every other kind waits in a job of its own,
+so the runner legs never wait for an upstream's slower HPC legs.
 :action:`fetch-deps` still waits for anything that is missing after all.
 
 Repositories the build fetches over git
