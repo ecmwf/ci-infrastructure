@@ -185,6 +185,7 @@ class ArtifactIndex:
     _tars: dict[str, dict[str, datetime]] = field(default_factory=dict)
     _sidecars: dict[str, frozenset[str]] = field(default_factory=dict)
     _pending: dict[str, tuple[str, Mapping[str, Any]]] = field(default_factory=dict)
+    _in_run: dict[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def _list(self, prefix: str) -> None:
         if prefix in self._tars:
@@ -202,12 +203,19 @@ class ArtifactIndex:
         return name in self._tars[prefix]
 
     def with_sidecar(self, prefix: str) -> list[str]:
-        """The stored artifacts under ``prefix`` that record their dep tree, newest first."""
+        """The artifacts under ``prefix`` that record their dep tree, newest first: this run's, then the stored."""
         self._list(prefix)
         tars = self._tars[prefix]
-        return sorted((n for n in tars if n in self._sidecars[prefix]), key=lambda n: tars[n], reverse=True)
+        stored = sorted((n for n in tars if n in self._sidecars[prefix]), key=lambda n: tars[n], reverse=True)
+        return [n for n in self._in_run if n.startswith(prefix)] + [n for n in stored if n not in self._in_run]
+
+    def publish_in_run(self, name: str, payload: Mapping[str, Any]) -> None:
+        """``name`` with dep tree ``payload`` is uploaded by a job of this run."""
+        self._in_run[name] = payload
 
     def read_sidecar(self, name: str) -> Any:
+        if name in self._in_run:
+            return json.loads(json.dumps(self._in_run[name]))
         self.client = _client(self.client)
         body = self.client.get_object(Bucket=_bucket(), Key=sidecar_key(name))["Body"].read()
         return json.loads(body)
