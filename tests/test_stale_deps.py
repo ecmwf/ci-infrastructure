@@ -157,6 +157,19 @@ def test_a_missing_dep_falls_back_to_its_build_against_the_older_upstream(base_s
     assert "o/base@00000000 (main is at 11111111)" in note
 
 
+def test_other_legs_builds_do_not_crowd_out_this_legs(base_sha: list[Sha]) -> None:
+    store = _Store()
+    deps = [_spec("middle", allow_stale=True)]
+    old = _published_then_base_moves(base_sha, store, deps)
+    mine = old["middle"].artifact_name
+    for i in range(resolve_deps._STALE_CANDIDATES + 1):
+        other = mine.replace("ubuntu-24.04", f"rocky-{i}")
+        store.tars.append(other)
+        store.sidecars[other] = store.sidecars[mine]
+
+    assert _resolve(store, deps, allow_stale=True)["middle"].artifact_name == mine
+
+
 def test_without_the_fallback_the_dep_is_rebuilt(base_sha: list[Sha]) -> None:
     store = _Store()
     deps = [_spec("middle", allow_stale=True)]
