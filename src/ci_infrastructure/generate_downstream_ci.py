@@ -29,7 +29,7 @@ import shlex
 import sys
 import tomllib
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, TypeAlias, TypeVar
@@ -1146,7 +1146,8 @@ def render_orchestrator_workflow(
         if m.matrices[okind].execution != lane:
             continue
         for r in self_closure[orig_key]["consumers"]:
-            origins.setdefault(by_repo[r].package_name, set()).add(orig_key)
+            if _in_lane_kinds(by_repo[r], {orig_key}, by_pkg, lane=lane):
+                origins.setdefault(by_repo[r].package_name, set()).add(orig_key)
 
     fanout = {by_repo[r].package_name for c in self_closure.values() for r in c["consumers"]}
     if unknown := sorted(set(m.downstream_exclude) - fanout):
@@ -1592,6 +1593,19 @@ def _orchestrator_dispatch_job(
     }
 
 
+def _in_lane_kinds(
+    consumer: Manifest, orig_keys: Collection[str], by_pkg: Mapping[str, Manifest], *, lane: Execution
+) -> list[str]:
+    """The consumer's `lane` kinds an upstream change to any of `orig_keys` rebuilds."""
+    return [
+        kind
+        for kind, mk in consumer.matrices.items()
+        if TRIGGER_UPSTREAM_CHANGE in mk.triggers
+        and mk.execution == lane
+        and any(f"{r.package}/{r.kind}" in orig_keys for r in transitive_cross_repo_needs(consumer, kind, by_pkg))
+    ]
+
+
 def _check_orchestrator_caps(
     m: Manifest,
     origins: Mapping[str, set[str]],
@@ -1604,12 +1618,8 @@ def _check_orchestrator_caps(
     for cpkg, orig_keys in origins.items():
         cmanifest = by_pkg[cpkg]
         estimated_jobs += 2  # caller job + resolve
-        for ckind, mk in cmanifest.matrices.items():
-            if TRIGGER_UPSTREAM_CHANGE not in mk.triggers or mk.execution != lane:
-                continue
-            refs = transitive_cross_repo_needs(cmanifest, ckind, by_pkg)
-            if any(f"{r.package}/{r.kind}" in orig_keys for r in refs):
-                estimated_jobs += max(1, len(mk.legs))
+        for ckind in _in_lane_kinds(cmanifest, orig_keys, by_pkg, lane=lane):
+            estimated_jobs += max(1, len(cmanifest.matrices[ckind].legs))
 
     if estimated_jobs > ORCHESTRATOR_MAX_TOTAL_JOBS:
         raise SchemaError(
