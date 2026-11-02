@@ -759,7 +759,21 @@ def _stale_fallback(
     the store, leave `keep` alone and agree with every package outside it; else None, and `dep` is rebuilt.
     """
     below = tree.below(dep.name)
-    for candidate in index.with_sidecar(f"{dep.name}-{dep.sha}-")[:_STALE_CANDIDATES]:
+    prefix = f"{dep.name}-{dep.sha}-"
+    variant = make_artifact_name(
+        prefix=dep.name,
+        sha=dep.sha,
+        deps_hash8=None,
+        platform_slug=dep.platform,
+        compiler=dep.compiler,
+        build_type=dep.build_type,
+        python_version=dep.python_version,
+        option=dep.option,
+        template_version=template_version_for_lane(lane),
+    )[len(prefix) - 1 :]
+    # The listing holds every leg's builds of this commit; the cap applies to this leg's.
+    own_leg = [n for n in index.with_sidecar(prefix) if n[len(prefix) + 8 :] == variant]
+    for candidate in own_leg[:_STALE_CANDIDATES]:
         name = ArtifactName(candidate)
         if name == dep.artifact_name:
             continue
