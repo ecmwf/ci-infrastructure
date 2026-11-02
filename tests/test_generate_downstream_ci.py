@@ -1475,6 +1475,35 @@ def test_hpc_orchestrator_targets_hpc_files(tmp_path: Path) -> None:
     assert hpc_with["workflow-file"] == "cross-repo-trigger-hpc-atos.yml"
 
 
+def test_hpc_orchestrator_skips_consumers_without_hpc_kinds(tmp_path: Path) -> None:
+    _make_chain_ab(tmp_path, hpc=True)
+    b = (tmp_path / "b" / ".ci" / "manifest.toml").read_text()
+    (tmp_path / "b" / ".ci" / "manifest.toml").write_text(
+        b.replace("[[deps]]", '[[trigger-downstream]]\nrepo = "org/c"\nref = "main"\n[[deps]]', 1)
+    )
+    write_repo(
+        tmp_path,
+        "c",
+        """
+        [[deps]]
+        repo = "org/b"
+        package = "b"
+        ref = "main"
+        compiler-inputs = []
+        [matrix.build]
+        triggers = ["upstream-change"]
+        defaults.job-script = "./.ci/build.sh"
+        needs = ["b/build"]
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    assert set(yaml.safe_load(_orch(tmp_path))["jobs"]) >= {"b", "c"}
+    hpc_jobs = yaml.safe_load(_orch(tmp_path, EXECUTION_HPC_ATOS))["jobs"]
+    assert "b" in hpc_jobs
+    assert "c" not in hpc_jobs
+
+
 def _make_fanout(tmp_path: Path, n: int, legs: int) -> None:
     """a triggers c0..c<n-1>, each with `legs` distinct-platform legs."""
     triggers = "\n".join(
