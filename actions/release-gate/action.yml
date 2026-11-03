@@ -5,7 +5,8 @@
 name: Release gate (CD v3, experimental)
 description: >
   Decide whether this run may release, and what: the kill switch, the event (a release tag
-  push, or a same-repo pull request labelled approved-for-cd for a rehearsal), tag against
+  push; for a rehearsal, a same-repo pull request labelled approved-for-cd or a push of a
+  cd-rehearsal/<name> branch; never a push deleting its ref), tag against
   VERSION, CI passed on exactly this commit (waiting while it runs), the tag not moved, each
   source dep's release-ref a tag or SHA, the workflow passing check-cd-workflow, and which
   rpm legs are on Nexus already (an HPC leg's build job looks at its prefix itself). Run it in a job that checked out github.sha.
@@ -60,7 +61,7 @@ outputs:
     description: 'The commit to build.'
     value: ${{ steps.gate.outputs.sha }}
   head-sha:
-    description: 'The pull request head of a rehearsal; the commit otherwise.'
+    description: 'The pull request head of a PR rehearsal; the commit otherwise.'
     value: ${{ steps.gate.outputs.head-sha }}
   tag:
     description: 'The release tag; empty for a rehearsal.'

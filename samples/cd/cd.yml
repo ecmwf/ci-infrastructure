@@ -8,7 +8,10 @@
 # that kind from the gate's kinds and every needs:), and keep its shape: check-cd-workflow (a
 # pre-commit hook, and the release gate) enforces it.
 #
-# A pull request labelled approved-for-cd rehearses: everything but the publish jobs.
+# A pull request labelled approved-for-cd rehearses: everything but the publish jobs. So does a
+# push of a cd-rehearsal/<name> branch, with no pull request: it builds the pushed commit, once
+# ci.yml has passed on it (dispatch ci.yml on the branch if it does not run on push there:
+# gh workflow run ci.yml --ref cd-rehearsal/<name>). Rehearsals never publish.
 # A pushed X.Y.Z-rcN tag publishes:
 # - the rpm to test Nexus from publish-nexus, with the org secrets v2 uses:
 #   NEXUS_TEST_REPO_UPLOAD_TOKEN (user:token; in the publish job, and in the release-gate step,
@@ -30,6 +33,7 @@ name: cd-v3
 on:
   push:
     tags: ['[0-9]+.[0-9]+.[0-9]+-[rR][cC][0-9]+']
+    branches: ['cd-rehearsal/**']
   pull_request:
     types: [labeled]
 
@@ -42,7 +46,8 @@ concurrency:
 
 jobs:
   ci-approval:
-    if: github.event_name != 'pull_request' || github.event.label.name == 'approved-for-cd'
+    # A push deleting a branch or tag is skipped here (the gate would refuse it anyway).
+    if: (github.event_name != 'pull_request' || github.event.label.name == 'approved-for-cd') && !github.event.deleted
     runs-on: ubuntu-slim
     permissions:
       pull-requests: write
@@ -66,7 +71,7 @@ jobs:
       source-deps: ${{ steps.gate.outputs.source-deps }}
       provenance: ${{ steps.gate.outputs.provenance }}
     steps:
-      # The tagged commit, or the pull request's merge commit.
+      # The tagged commit, the rehearsal branch's commit, or the pull request's merge commit.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
@@ -76,8 +81,9 @@ jobs:
         env:
           CD_KILL_SWITCH: ${{ vars.CD_KILL_SWITCH }}
           CD_KILL_SWITCH_REASON: ${{ vars.CD_KILL_SWITCH_REASON }}
-          # Authenticates the Nexus probe; only this step of the gate job may name it.
-          NEXUS_AUTH: ${{ github.event_name == 'push' && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}
+          # Authenticates the Nexus probe; only this step of the gate job may name it, and only a
+          # tag push (a release) gets it: a rehearsal does not probe.
+          NEXUS_AUTH: ${{ startsWith(github.ref, 'refs/tags/') && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}
         with:
           kinds: release-rpm,release-hpc
           nexus-read-urls: '{"rocky-9": "${{ secrets.NEXUS_TEST_REPO_URL_ROCKY_9 }}"}'
