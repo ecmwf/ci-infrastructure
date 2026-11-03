@@ -5,7 +5,7 @@
 name: Install-test a release package (CD v3, experimental)
 description: >
   In a clean image of the target distribution (the leg's install-test-image, as the job's
-  container): verify SHA256SUMS, install the rpm with dnf (EPEL enabled, as v2), run the
+  container): verify SHA256SUMS, install the rpm with dnf (EPEL enabled on Rocky/RHEL, as v2), run the
   leg's smoke command, and check the installed tree: every file under the prefix, RUNPATHs
   $ORIGIN-relative or under the prefix, every ELF loading without LD_LIBRARY_PATH, no
   build-machine path in CMake, pkg-config or share/ files. Writes itest-<leg-id>.json with the
@@ -100,7 +100,14 @@ runs:
           exit 1
         fi
 
-        dnf -y install epel-release
+        # EPEL, as v2, on Rocky and RHEL, where the package's dependencies may come from it
+        # (libaec); Fedora has none and its own repositories carry them. OS_RELEASE: for the tests.
+        os_release="${OS_RELEASE:-/etc/os-release}"
+        # shellcheck source=/dev/null
+        os_family="$(. "$os_release" 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}" || true)"
+        case " $os_family " in
+          *" rhel "*|*" centos "*) dnf -y install epel-release ;;
+        esac
         # binutils: readelf, for the RUNPATH check.
         dnf -y install binutils "./$FILENAME"
 
@@ -122,7 +129,7 @@ runs:
 
         receipt="$out_dir/itest-$LEG_ID.json"
         # shellcheck source=/dev/null
-        os="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
+        os="$(. "$os_release" 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")"
         {
           printf '{\n  "leg_id": %s,\n' "$(ci_release_json "$LEG_ID")"
           printf '  "filename": %s,\n' "$(ci_release_json "$FILENAME")"

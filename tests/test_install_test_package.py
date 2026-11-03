@@ -20,6 +20,8 @@ ACTION = REPO_ROOT / "actions" / "install-test-package"
 FILENAME = "pkg-2.5.0~rc1-1.x86_64.rpm"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 JOB_KEY = "pkg-2.5.0-rc1-rpm-rocky-9-gxx-11-01234567"
+ROCKY_9 = 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nPRETTY_NAME="Rocky Linux 9.6 (Blue Onyx)"\n'
+FEDORA_43 = 'NAME="Fedora Linux"\nID=fedora\nPRETTY_NAME="Fedora Linux 43 (Container Image)"\n'
 
 
 def _build_meta(**release: Any) -> str:
@@ -49,6 +51,8 @@ def _setup(tmp_path: Path, *, listed: str = "", sums: str | None = None) -> dict
     digest = hashlib.sha256(b"rpm-bytes").hexdigest()
     (package / "SHA256SUMS").write_text(sums if sums is not None else f"{digest}  {FILENAME}\n")
     (package / "build-meta.json").write_text(_build_meta())
+    os_release = tmp_path / "os-release"
+    os_release.write_text(ROCKY_9)
     prefix = tmp_path / "opt" / "ecmwf"
     (prefix / "lib" / "cmake").mkdir(parents=True)
     (prefix / "lib" / "cmake" / "pkg-config.cmake").write_text(listed)
@@ -65,6 +69,7 @@ def _setup(tmp_path: Path, *, listed: str = "", sums: str | None = None) -> dict
         "LEG_ID": "rpm-rocky-9-gxx-11",
         "IMAGE": "eccr.ecmwf.int/docker-hub-proxy/rockylinux/rockylinux:9",
         "OUTPUT_DIR": str(tmp_path / "itest"),
+        "OS_RELEASE": str(os_release),
     }
 
 
@@ -86,6 +91,16 @@ def test_a_clean_package_passes_and_records_its_digest(tmp_path: Path) -> None:
         f"dnf -y install binutils ./{FILENAME}",
     ]
     assert (tmp_path / "out").read_text() == f"receipt={tmp_path}/itest/itest-rpm-rocky-9-gxx-11.json\n"
+
+
+def test_fedora_installs_without_epel(tmp_path: Path) -> None:
+    env = _setup(tmp_path)
+    (tmp_path / "os-release").write_text(FEDORA_43)
+    result = _run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "dnf.log").read_text().splitlines() == [f"dnf -y install binutils ./{FILENAME}"]
+    receipt: dict[str, Any] = json.loads((tmp_path / "itest" / "itest-rpm-rocky-9-gxx-11.json").read_text())
+    assert receipt["os"] == "Fedora Linux 43 (Container Image)"
 
 
 def test_a_digest_mismatch_fails_before_installing(tmp_path: Path) -> None:
