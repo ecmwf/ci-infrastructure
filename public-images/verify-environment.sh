@@ -218,6 +218,14 @@ EOF
   if command -v dnf >/dev/null; then
     command -v rpmbuild >/dev/null || fail "rpmbuild is not on PATH"
     echo "packager: $(rpmbuild --version | head -1)"
+  elif command -v apt-get >/dev/null; then
+    # CPack's DEB generator: dpkg-shlibdeps works out the dependencies, with file.
+    for t in dpkg-deb dpkg-shlibdeps file; do
+      command -v "$t" >/dev/null || fail "$t is not on PATH"
+    done
+    echo "packager: $(dpkg-deb --version | head -1)"
+  else
+    fail "no packager check for this platform"
   fi
 }
 
