@@ -32,6 +32,9 @@ and the recent commits with their CI result, their author and the pull request t
 a commit pushed without a pull request is marked ❗ with the name of the person who pushed it.
 A pull request merged by hand (``git merge`` and push) counts as its pull request,
 and so does one merged into another branch that the default branch then fast-forwarded to.
+Two tables list, for the last 14 days, the direct pushes
+and the pull requests merged without their required status checks green, as GitHub's rule insights record them;
+both show the ``ci-result`` of what landed at the moment it landed (*CI before*).
 
 A repository whose own CI is green but whose upstream is red, as the ``[[deps]]`` of its manifest declare,
 is shown as ⛔ *blocked by* that upstream.

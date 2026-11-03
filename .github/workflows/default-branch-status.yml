@@ -42,6 +42,7 @@ jobs:
           permission-contents: read
           permission-actions: read
           permission-pull-requests: read
+          permission-administration: read  # rule insights: who merged past a failing required check
 
       - uses: ./actions/ensure-infrastructure-present
 

@@ -215,14 +215,15 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
         "o/atlas": _state("o/atlas", commits=(older,)),
     }
     out = dbs.render_summary(states, NOW)
-    section = out[out.index("## ❗ Direct pushes from 2026-09-30 to 2026-10-14") : out.index("<details")]
+    section = out[out.index("## ❗ Direct pushes from 2026-09-30 to 2026-10-14") : out.index("## ⚠️")]
     ci = f"[❌](https://ci/{'b' * 40})"
     assert (
-        f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | {ci} | [@bob](https://github.com/bob) | hotfix |"
+        f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | · | {ci} | [@bob](https://github.com/bob) | hotfix |"
         in section
     )
     assert (
-        "| 2026-10-12 06:17 | atlas [`dddddddd`](https://c/d) | · | [@erin](https://github.com/erin) | fix |" in section
+        "| 2026-10-12 06:17 | atlas [`dddddddd`](https://c/d) | · | · | [@erin](https://github.com/erin) | fix |"
+        in section
     )
     assert section.index("bbbbbbbb") < section.index("dddddddd")
     assert "cccccccc" not in section and "aaaaaaaa" not in section
