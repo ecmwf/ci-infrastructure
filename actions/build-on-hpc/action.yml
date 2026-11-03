@@ -64,6 +64,12 @@ inputs:
       A publishing release whose prefix on the cluster holds it already is not rebuilt.
     required: false
     default: 'true'
+  allow-production:
+    description: >
+      "true" allows a release prefix under /usr/local/apps (publish: archive only); set it only
+      where the release gate ran with allow-production. Anything else refuses that prefix.
+    required: false
+    default: 'false'
   s3-bucket:
     description: 'Artifact S3 bucket name. Empty leaves ARTIFACT_S3_BUCKET from the job environment in place.'
     required: false
@@ -159,6 +165,7 @@ runs:
         TROIKA_USER: ${{ inputs.troika-user }}
         PUBLISH: ${{ inputs.publish }}
         SCCACHE_OUTCOME: ${{ steps.sccache.outcome }}
+        ALLOW_PRODUCTION: ${{ inputs.allow-production }}
       run: |
         set -euo pipefail
         if [ -z "$REMOTE_WORK_DIR_INPUT" ]; then
@@ -195,6 +202,7 @@ runs:
           *) echo "::error::publish must be true, false or archive, got '$PUBLISH'" >&2; exit 1 ;;
         esac
         if [ "$SCCACHE_OUTCOME" = success ]; then args+=(--sccache-binary "$(command -v sccache)"); fi
+        if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc submit-wait "${args[@]}"
 
     # A cancelled step's process gets no signal through the container hook, so its SLURM job would run on.

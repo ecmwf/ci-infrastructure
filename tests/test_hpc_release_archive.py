@@ -316,3 +316,39 @@ def test_archive_mode_refuses_a_batch_kind(cli: dict[str, Any]) -> None:
     result = CliRunner().invoke(orchestrate.main, args)
     assert result.exit_code != 0
     assert "publishes several is refused" in result.output
+
+
+def _production_args(cli: dict[str, Any], tmp_path: Path) -> list[str]:
+    """cli's args with the leg installing under /usr/local/apps, as a gate run with allow-production hands it over."""
+    rm = legs.load(write_release_repo(tmp_path / "prod-repo", leg=RPM_LEG + HPC_LEG))
+    event = ReleaseEvent(version=parse_tag("2.5.0-rc1"), sha=SHA, head_sha=SHA)
+    [leg] = legs.expand(rm, ["release-hpc"], event, hpc_root="/usr/local/apps", allow_production=True)["release-hpc"]
+    assert leg["_release"]["prefix"].startswith("/usr/local/apps/")
+    cli["leg"]["_release"] = leg["_release"]
+    args = list(cli["args"])
+    args[args.index("--matrix-leg") + 1] = json.dumps(leg)
+    return args
+
+
+def test_a_production_prefix_is_refused_without_allow_production(cli: dict[str, Any], tmp_path: Path) -> None:
+    result = CliRunner().invoke(orchestrate.main, _production_args(cli, tmp_path))
+    assert result.exit_code != 0
+    assert "refused without allow-production" in result.output
+    assert cli["calls"]["submitted"] == 0
+
+
+def test_allow_production_builds_for_a_production_prefix(cli: dict[str, Any], tmp_path: Path) -> None:
+    result = CliRunner().invoke(orchestrate.main, [*_production_args(cli, tmp_path), "--allow-production"])
+    assert result.exit_code == 0, result.output
+    assert cli["calls"]["submitted"] == 1
+    [recipe] = cli["calls"]["rendered"]
+    assert f"release_prefix={cli['leg']['_release']['prefix']}" in recipe.splitlines()
+
+
+def test_allow_production_needs_a_release(cli: dict[str, Any]) -> None:
+    args = list(cli["args"])
+    i = args.index("--fetch-archive")
+    del args[i : i + 2]
+    result = CliRunner().invoke(orchestrate.main, [*args, "--allow-production"])
+    assert result.exit_code != 0
+    assert "applies to a release only" in result.output
