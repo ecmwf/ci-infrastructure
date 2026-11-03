@@ -19,7 +19,7 @@ Every step is idempotent, so "Re-run failed jobs" redoes what an interrupted pro
 4. A receipt (``receipt-<leg_id>.json``) says what was done.
 
 A build skipped as already published (``state.json``) is only checked against the prefix.
-Milestone 1 installs under a dry-run root; ``/usr/local/apps`` is refused.
+A prefix under ``/usr/local/apps`` is refused unless allow-production (the gate allowed production).
 """
 
 from __future__ import annotations
@@ -314,6 +314,7 @@ def run_promote(
     stale_minutes: int = DEFAULT_LOCK_STALE_MINUTES,
     poll: int = transfer.SHIP_LOCK_POLL_SECONDS,
     env: Mapping[str, str] | None = None,
+    allow_production: bool = False,
 ) -> dict[str, Any]:
     """The CLI's work: check the build on the runner, resolve the paths on the cluster, promote, write the receipt."""
     e = os.environ if env is None else env
@@ -330,7 +331,7 @@ def run_promote(
     prefix = resolve_remote_path(conn, str(ctx["prefix"]))
     root = resolve_remote_path(conn, check_lock_root(lock_root))
     try:
-        check_install_prefix(prefix)
+        check_install_prefix(prefix, allow_production=allow_production)
     except ReleaseError as exc:
         raise CIError(f"the release prefix {ctx['prefix']} is {prefix} on the cluster: {exc}") from exc
     server, repo = e.get("GITHUB_SERVER_URL", ""), e.get("GITHUB_REPOSITORY", "")

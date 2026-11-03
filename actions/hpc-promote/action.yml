@@ -11,8 +11,8 @@ description: >
   The same release with the same bytes is a no-op; other bytes or another release at the
   prefix fail (an installed tree is never replaced). A build skipped as already installed is
   only checked. <lock-root>/DISABLED on the cluster stops it. Writes receipt-<leg_id>.json.
-  Milestone 1 installs under the dry-run root the gate gave the leg; /usr/local/apps is
-  refused. See docs/configuring/releases.rst.
+  Installs under the root the gate gave the leg; /usr/local/apps only with allow-production.
+  See docs/configuring/releases.rst.
 
 inputs:
   site:
@@ -47,6 +47,12 @@ inputs:
     description: 'A lock unchanged this long (its holder''s heartbeat stopped) is broken, its owner printed.'
     required: false
     default: '120'
+  allow-production:
+    description: >
+      "true" allows a prefix under /usr/local/apps; set it only where the release gate ran
+      with allow-production. Anything else refuses that prefix.
+    required: false
+    default: 'false'
 
 outputs:
   receipt:
@@ -70,6 +76,7 @@ runs:
         LOCK_ROOT: ${{ inputs.lock-root }}
         LOCK_TIMEOUT: ${{ inputs.lock-timeout }}
         LOCK_STALE_MINUTES: ${{ inputs.lock-stale-minutes }}
+        ALLOW_PRODUCTION: ${{ inputs.allow-production }}
       run: |
         set -euo pipefail
         # Verbatim: '$HOME/...' is expanded on the cluster, not here.
@@ -77,4 +84,5 @@ runs:
               --lock-root "$LOCK_ROOT" --lock-timeout "$LOCK_TIMEOUT" --lock-stale-minutes "$LOCK_STALE_MINUTES")
         if [ -n "$TROIKA_USER" ]; then args+=(--troika-user "$TROIKA_USER"); fi
         if [ -n "$TROIKA_CONFIG" ]; then args+=(--troika-config "$TROIKA_CONFIG"); fi
+        if [ "$ALLOW_PRODUCTION" = "true" ]; then args+=(--allow-production); fi
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.hpc promote "${args[@]}"

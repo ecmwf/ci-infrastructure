@@ -990,6 +990,13 @@ def _lock_options(command: Callable[..., Any]) -> Callable[..., Any]:
 @click.option("--matrix-leg", "matrix_leg", required=True, help="The hpc-module release leg as JSON (with _release).")
 @click.option("--archive-dir", "archive_dir", required=True, help="The build's release-<job_key> artifact, downloaded.")
 @click.option("--receipt-dir", "receipt_dir", required=True, help="Where to write receipt-<leg_id>.json.")
+@click.option(
+    "--allow-production",
+    "allow_production",
+    is_flag=True,
+    default=False,
+    help="Allow a prefix under /usr/local/apps (the gate allowed production).",
+)
 @_lock_options
 def promote_cmd(
     site_name: str,
@@ -998,6 +1005,7 @@ def promote_cmd(
     matrix_leg: str,
     archive_dir: str,
     receipt_dir: str,
+    allow_production: bool,
     lock_root: str,
     lock_timeout: int,
     lock_stale_minutes: int,
@@ -1011,6 +1019,7 @@ def promote_cmd(
         receipt_dir=Path(receipt_dir),
         timeout=lock_timeout,
         stale_minutes=lock_stale_minutes,
+        allow_production=allow_production,
     )
 
 

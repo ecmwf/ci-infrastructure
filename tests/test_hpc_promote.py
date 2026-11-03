@@ -279,6 +279,24 @@ def test_the_production_tree_is_refused(setup: dict[str, Any]) -> None:
         _promote(setup)
 
 
+def test_allow_production_promotes_into_the_production_tree(
+    setup: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = "/usr/local/apps/pkg/2.5.0-rc1/GNU/8.5"
+    setup["leg"]["_release"] = {**setup["ctx"], "prefix": prefix}
+    build_dir(setup["build"], setup["leg"]["_release"])
+    seen: list[str] = []
+
+    def fake_promote(conn: Any, **kw: Any) -> dict[str, Any]:
+        # Never this machine's /usr/local/apps: only where promote would go.
+        seen.append(kw["prefix"])
+        return promote.receipt(kw["ctx"], prefix=kw["prefix"], sha256=kw["build"].sha256, action="promoted")
+
+    monkeypatch.setattr(promote, "promote", fake_promote)
+    _promote(setup, allow_production=True)
+    assert seen == [prefix]
+
+
 def test_the_default_lock_root_is_in_home(
     setup: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
