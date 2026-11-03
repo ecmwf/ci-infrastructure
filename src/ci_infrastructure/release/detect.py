@@ -7,6 +7,8 @@
 - A push of a release tag: ``release``, or ``prerelease`` for ``-rcN``.
 - A same-repo pull request labelled ``approved-for-cd``: ``rehearsal``. It builds ``github.sha``
   (the merge commit) and records the PR head, which is what PR CI is matched on.
+- A push of a ``cd-rehearsal/<name>`` branch, not the default branch: ``rehearsal`` with no pull
+  request. It builds the pushed commit, which is also what CI is matched on.
 - A push that deletes its ref is refused: GitHub runs it on the default branch's commit.
 - Anything else is refused.
 """
@@ -21,18 +23,23 @@ from . import ReleaseError
 from .version import ReleaseVersion, parse_tag, rehearsal_version
 
 REHEARSAL_LABEL: Final = "approved-for-cd"
+#: The branches whose push starts a rehearsal; the gate and check-cd-workflow both hold to it.
+REHEARSAL_BRANCH_PREFIX: Final = "cd-rehearsal/"
 _TAG_REF_PREFIX: Final = "refs/tags/"
+_BRANCH_REF_PREFIX: Final = "refs/heads/"
 
 
 @dataclass(frozen=True)
 class ReleaseEvent:
     version: ReleaseVersion
-    #: The commit to build: the tagged commit, or the PR merge commit.
+    #: The commit to build: the tagged commit, the rehearsal branch's commit, or the PR merge commit.
     sha: str
-    #: The PR head for a rehearsal; the tagged commit otherwise.
+    #: The PR head for a PR rehearsal; the commit to build otherwise.
     head_sha: str
     pr_number: int | None = None
     head_ref: str | None = None
+    #: The pushed branch of a branch rehearsal.
+    branch: str | None = None
 
     @property
     def mode(self) -> str:
@@ -53,10 +60,24 @@ def classify(
     if event_name == "push":
         if payload.get("deleted"):
             raise ReleaseError(f"a push deleting {ref!r} is not a release")
-        if not ref.startswith(_TAG_REF_PREFIX):
-            raise ReleaseError(f"a push of {ref!r} is not a release: releases run from tag pushes")
-        tag = ref.removeprefix(_TAG_REF_PREFIX)
-        return ReleaseEvent(version=parse_tag(tag, prefix=tag_prefix, parts=version_parts), sha=sha, head_sha=sha)
+        if ref.startswith(_TAG_REF_PREFIX):
+            tag = ref.removeprefix(_TAG_REF_PREFIX)
+            return ReleaseEvent(version=parse_tag(tag, prefix=tag_prefix, parts=version_parts), sha=sha, head_sha=sha)
+        if ref.startswith(_BRANCH_REF_PREFIX):
+            branch = ref.removeprefix(_BRANCH_REF_PREFIX)
+            if branch == (payload.get("repository") or {}).get("default_branch"):
+                raise ReleaseError(f"a push of {ref!r} is not a release: it is the default branch")
+            if branch.startswith(REHEARSAL_BRANCH_PREFIX) and branch != REHEARSAL_BRANCH_PREFIX:
+                return ReleaseEvent(
+                    version=rehearsal_version(project_version, parts=version_parts),
+                    sha=sha,
+                    head_sha=sha,
+                    branch=branch,
+                )
+        raise ReleaseError(
+            f"a push of {ref!r} is not a release: releases run from tag pushes, "
+            f"rehearsals also from a push of a {REHEARSAL_BRANCH_PREFIX}<name> branch"
+        )
     if event_name == "pull_request":
         if payload.get("action") != "labeled":
             raise ReleaseError(f"pull_request action {payload.get('action')!r}: a rehearsal runs on 'labeled' only")
@@ -79,4 +100,7 @@ def classify(
             pr_number=number if isinstance(number, int) else None,
             head_ref=head.get("ref") if isinstance(head.get("ref"), str) else None,
         )
-    raise ReleaseError(f"event {event_name!r} does not start a release: push a release tag or label a pull request")
+    raise ReleaseError(
+        f"event {event_name!r} does not start a release: push a release tag, push a "
+        f"{REHEARSAL_BRANCH_PREFIX}<name> branch or label a pull request"
+    )

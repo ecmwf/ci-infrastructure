@@ -422,6 +422,102 @@ def test_a_fork_pr_is_refused(root: Path) -> None:
         _gate(root, event_name="pull_request", ref="refs/pull/7/merge", payload=_labelled(head_repo="fork/pkg"))
 
 
+# --- rehearsal from a cd-rehearsal/ branch push ------------------------------------------------------------
+
+
+BRANCH = "cd-rehearsal/x"
+
+
+def _no_probe(target: str, filename: str) -> str:
+    raise AssertionError("a rehearsal never probes Nexus")
+
+
+def _branch_rehearsal(root: Path, api: Api, **over: Any) -> gate.GateResult:
+    over.setdefault("probe", _no_probe)
+    return _gate(
+        root,
+        api=api,
+        event_name="push",
+        ref=f"refs/heads/{BRANCH}",
+        payload={"ref": f"refs/heads/{BRANCH}", "repository": {"default_branch": "develop"}},
+        workflow_ref=f"{REPO}/.github/workflows/cd-v3.yml@refs/heads/{BRANCH}",
+        **over,
+    )
+
+
+def test_a_branch_rehearsal_accepts_a_dispatched_ci_run_on_its_commit(root: Path) -> None:
+    api = Api([[_run(event="workflow_dispatch", head_branch=BRANCH)]])
+    result = _branch_rehearsal(root, api)
+    out = result.outputs()
+    assert (out["mode"], out["publish"], out["sha"], out["head-sha"], out["tag"]) == (
+        "rehearsal",
+        "false",
+        SHA,
+        SHA,
+        "",
+    )
+    assert "rehearsal" in result.legs["release-rpm"][0]["_release"]["job_key"]
+    prov = json.loads(out["provenance"])
+    assert (prov["ref"], prov["pr_number"], prov["tag"], prov["ci_run"]["event"]) == (
+        f"refs/heads/{BRANCH}",
+        None,
+        None,
+        "workflow_dispatch",
+    )
+    # No tag-moved check.
+    assert not [c for c in api.calls if "cd-v3.yml" in c]
+
+
+def test_a_branch_rehearsal_accepts_a_push_ci_run(root: Path) -> None:
+    _branch_rehearsal(root, Api([[_run(head_branch=BRANCH)]]))
+
+
+@pytest.mark.parametrize("prs", [[], [{"number": 7}]])
+def test_a_branch_rehearsal_refuses_a_pull_request_ci_run(root: Path, prs: list[dict[str, Any]]) -> None:
+    pr_run = _run(event="pull_request", head_branch=BRANCH, pull_requests=prs)
+    with pytest.raises(ReleaseError, match="within"):
+        _branch_rehearsal(root, Api([[pr_run]]), ci_wait_seconds=0)
+
+
+def test_a_branch_rehearsal_waits_for_the_dispatched_run(root: Path) -> None:
+    queued = _run(event="workflow_dispatch", status="queued", conclusion=None)
+    clock = Clock()
+    _branch_rehearsal(root, Api([[queued], [_run(event="workflow_dispatch")]]), clock=clock)
+    assert clock.sleeps == [60]
+
+
+def test_a_branch_rehearsal_without_ci_says_how_to_dispatch_it(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(ReleaseError, match="within 600s \\(none\\)"):
+        _branch_rehearsal(root, Api([[]]))
+    out = capsys.readouterr().out
+    assert f"branch {BRANCH}" in out
+    assert f"gh workflow run ci.yml --ref {BRANCH}" in out
+
+
+def test_a_branch_rehearsal_refuses_a_fork_ci_run(root: Path) -> None:
+    fork_run = _run(event="workflow_dispatch", head_repository={"full_name": "fork/pkg"})
+    with pytest.raises(ReleaseError, match="within"):
+        _branch_rehearsal(root, Api([[fork_run]]), ci_wait_seconds=0)
+
+
+@pytest.mark.parametrize(
+    ("ref", "match"), [("refs/heads/develop", "the default branch"), ("refs/heads/feature/x", "tag pushes")]
+)
+def test_a_push_of_another_branch_is_refused_before_ci(root: Path, ref: str, match: str) -> None:
+    api = Api()
+    with pytest.raises(ReleaseError, match=match):
+        _gate(root, api=api, ref=ref, payload={"repository": {"default_branch": "develop"}})
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("ref", [f"refs/heads/{BRANCH}", "refs/tags/2.5.0-rc1"])
+def test_a_push_deleting_its_ref_is_refused_before_ci(root: Path, ref: str) -> None:
+    api = Api()
+    with pytest.raises(ReleaseError, match="deleting"):
+        _gate(root, api=api, ref=ref, payload={"deleted": True})
+    assert api.calls == []
+
+
 # --- the CLI ------------------------------------------------------------------------------------------------
 
 
@@ -453,5 +549,7 @@ def test_cli_reads_the_github_environment(root: Path, monkeypatch: pytest.Monkey
 
 def test_workflow_path_from_the_ref() -> None:
     assert gate._workflow_path(WORKFLOW_REF, REPO) == ".github/workflows/cd-v3.yml"
+    branch_ref = f"{REPO}/.github/workflows/cd-v3.yml@refs/heads/cd-rehearsal/x"
+    assert gate._workflow_path(branch_ref, REPO) == ".github/workflows/cd-v3.yml"
     with pytest.raises(ReleaseError):
         gate._workflow_path(f"{REPO}/../x@refs/tags/1", REPO)
