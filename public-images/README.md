@@ -46,13 +46,14 @@ feature its project offers and nothing is installed at build time. Release build
 and record the tag they ran in (`CI_IMAGE_TAG`): registry cleanup keeps only the two newest
 versions, so a pinned tag would disappear.
 
-- It holds the platform's packager (`rpm-build`) and these libraries with headers, from the
+- It holds the platform's packager (`rpm-build`; `dpkg-dev` and `file` on Debian and Ubuntu) and these libraries with headers, from the
   distribution and its add-on repositories (EPEL, CRB/PowerTools): libaec, bzip2, lz4, BLAS/LAPACK
   and Eigen. A project that needs another library adds it to every release image in one change.
 - Only distribution versions that are still supported get one: today rocky8, rocky9, rocky10,
-  fedora43 and fedora44. debian12 and debian13 follow when releases build .deb packages.
-- The list is a promise across platforms, but the versions are the distribution's: rocky8's libaec
-  is 1.0.2, below eckit's 1.1.4.
+  fedora43, fedora44, debian12, debian13, ubuntu22.04, ubuntu24.04 and ubuntu26.04.
+- The list is a promise across platforms, but the versions are the distribution's. libaec is below
+  eckit's 1.1.4 on rocky8 (1.0.2), debian12 and ubuntu22.04 (1.0.6), ubuntu24.04 (1.1.2) and
+  debian13 (1.1.3).
 
 `verify-environment.sh` builds, links and runs a program against each library with the image's gcc.
 
