@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
-or merged one past a failing required check.
+or merged one without green CI.
 
 The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
@@ -59,7 +59,7 @@ class Merge:
 
     merger: str
     title: str
-    bypassed: bool  # merged past a failing required status check
+    bypassed: bool  # merged without its required status checks green
 
 
 @dataclass(frozen=True)
@@ -282,7 +282,7 @@ _TIME_PERIODS: Final = (("hour", timedelta(hours=1)), ("day", timedelta(days=1))
 
 
 def _ci_bypasses(repo: str, branch: str, start: datetime, now: datetime, token: str | None) -> dict[str, str] | None:
-    """Per pushed sha from `start` on, who pushed or merged it past a failing required status check.
+    """Per pushed sha from `start` on, who pushed or merged it without its required status checks green.
 
     From the rule insights (Administration: read), which reach back one month; None when unreadable.
     """
@@ -307,7 +307,13 @@ def _ci_bypasses(repo: str, branch: str, start: datetime, now: datetime, token: 
             continue
         detail = gh_api_rest(f"repos/{repo}/rulesets/rule-suites/{suite['id']}", token)
         evaluations = detail.get("rule_evaluations", []) if isinstance(detail, dict) else []
-        if any(e["rule_type"] == "required_status_checks" and e["result"] == "fail" for e in evaluations):
+        failed = [e for e in evaluations if e.get("result") == "fail"]
+        rules = ", ".join(
+            f"{(e.get('rule_source') or {}).get('name')}/{e['rule_type']} ({e.get('enforcement')})" for e in failed
+        )
+        print(f"{repo} {suite['after_sha'][:8]} bypassed by {suite['actor_name']}: {rules}", file=sys.stderr)
+        # a rule in evaluate mode fails without blocking anything
+        if any(e["rule_type"] == "required_status_checks" and e.get("enforcement") == "active" for e in failed):
             out[suite["after_sha"]] = suite["actor_name"]
     return out
 
@@ -332,7 +338,7 @@ def with_ci_before(
     state: RepoState, start: datetime, end: datetime, token: str | None, now: datetime | None = None
 ) -> RepoState:
     """`state` with what its commits from `start` to `end` had passed before they landed,
-    and which PRs among them were merged past a failing required status check."""
+    and which PRs among them were merged without their required status checks green."""
     landed = [c for c in state.commits if start <= c.date < end and (c.pr is None or c.pr[2] == state.branch)]
     prs: dict[int, Mapping[str, Any]] = {}
     bypasses: dict[str, str] | None = {}
@@ -488,7 +494,7 @@ def render_summary(
         "",
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
         " · · no run of its own, part of a later push · ❗ pushed without a pull request"
-        " · ⚠️ merged past a failing required check",
+        " · ⚠️ merged without green CI",
     ]
     start, end = window(now, since, until)
     pushes = sorted(
@@ -522,10 +528,10 @@ def render_summary(
     }
     merges = sorted(by_pr.values(), key=lambda sc: sc[1].date, reverse=True)
     unknown = [states[r].name for r in order if not states[r].bypasses_known]
-    lines += ["", f"## ⚠️ Merged past a failing required check from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
+    lines += ["", f"## ⚠️ Merged without green CI from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
     lines += [
-        "Pull requests merged with a bypass of the default branch's required status checks, as GitHub's rule"
-        f" insights record it. CI before is their head's `{CI_RESULT}` then.",
+        "Pull requests merged while the status checks that the default branch's rules require were not all green,"
+        f" as GitHub's rule insights record it. CI before is their head's `{CI_RESULT}` then.",
         "",
         *leaving_out,
         *([f"Could not read the rule insights of {', '.join(unknown)}.", ""] if unknown else []),
