@@ -10,7 +10,8 @@ workflow file of the commit it releases, so the rules hold in CI, not only in pr
 A publish job is one that runs a publish action (upload-nexus, hpc-promote, hpc-sync-tag); only
 it holds a publish credential. It needs no GitHub environment.
 
-- I1: runs on tag pushes, `pull_request: [labeled]`, `workflow_dispatch` or `schedule` only.
+- I1: runs on tag pushes, pushes of `cd-rehearsal/` branches (rehearsals), `pull_request: [labeled]`,
+  `workflow_dispatch` or `schedule` only.
 - I2: workflow permissions at most `contents: read`.
 - I3: a `concurrency` group on the ref, never cancelled in progress.
 - I4: no `secrets: inherit`, no workflow `env`, nothing of the CI caches (AWS_*, ARTIFACT_S3_*, SCCACHE_*);
@@ -39,7 +40,7 @@ it holds a publish credential. It needs no GitHub environment.
   Builds and tests stay in other jobs, which never see the credential.
 - Every `actions/upload-artifact` sets `overwrite: true`, so re-running a job can replace its upload.
 
-Imports only click and yaml, so the pre-commit hook needs nothing else.
+Imports only click and yaml (and the stdlib-only release.detect), so the pre-commit hook needs nothing else.
 """
 
 from __future__ import annotations
@@ -52,6 +53,8 @@ from typing import Any, Final
 
 import click
 import yaml
+
+from .release.detect import REHEARSAL_BRANCH_PREFIX
 
 GATE_JOB: Final = "ci-approval"
 RELEASE_GATE_JOB: Final = "gate"
@@ -186,16 +189,34 @@ def _check_triggers(doc: dict[Any, Any]) -> list[str]:
     for name, body in on.items():
         if name not in _ALLOWED_TRIGGERS:
             out.append(
-                f"I1: trigger {name!r} is not allowed (tag push, pull_request labeled, workflow_dispatch, schedule)"
+                f"I1: trigger {name!r} is not allowed (tag or {REHEARSAL_BRANCH_PREFIX} branch push, "
+                "pull_request labeled, workflow_dispatch, schedule)"
             )
             continue
         body = body or {}
         if name == "push":
-            if not isinstance(body, dict) or not body.get("tags") or set(body) - {"tags"}:
-                out.append("I1: `push` must name `tags` and nothing else (no branches, no paths)")
+            if not _push_ok(body):
+                out.append(
+                    f"I1: `push` names `tags` (releases) and/or `branches` under {REHEARSAL_BRANCH_PREFIX} "
+                    "(rehearsals), nothing else (no paths, no -ignore)"
+                )
         elif name == "pull_request" and (not isinstance(body, dict) or body.get("types") != ["labeled"]):
             out.append("I1: `pull_request` must be `types: [labeled]` only")
     return out
+
+
+def _push_ok(body: Any) -> bool:
+    if not isinstance(body, dict) or set(body) - {"tags", "branches"}:
+        return False
+    if not body.get("tags") and not body.get("branches"):
+        return False
+    branches = body.get("branches")
+    if branches is None:
+        return True
+    return isinstance(branches, list) and all(
+        isinstance(b, str) and b.startswith(REHEARSAL_BRANCH_PREFIX) and len(b) > len(REHEARSAL_BRANCH_PREFIX)
+        for b in branches
+    )
 
 
 def _check_permissions(doc: dict[Any, Any]) -> list[str]:
