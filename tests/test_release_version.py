@@ -135,6 +135,18 @@ def test_classify_branch_push_is_refused() -> None:
         )
 
 
+def test_classify_refuses_a_push_deleting_its_tag() -> None:
+    with pytest.raises(ReleaseError, match="deleting"):
+        classify(
+            event_name="push",
+            ref="refs/tags/2.5.0-rc1",
+            sha="a" * 40,
+            repository="o/r",
+            payload={"deleted": True},
+            project_version="2.5.0",
+        )
+
+
 def _pr(label: str = "approved-for-cd", head_repo: str = "o/r", action: str = "labeled") -> dict[str, object]:
     return {
         "action": action,
