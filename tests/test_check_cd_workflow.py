@@ -80,7 +80,7 @@ _VIOLATIONS: list[tuple[str, Callable[[Doc], None], str]] = [
         "I1: trigger 'pull_request_target'",
     ),
     ("workflow_run", lambda d: d[True].update({"workflow_run": {"workflows": ["CI"]}}), "I1: trigger 'workflow_run'"),
-    ("push branches", lambda d: d[True]["push"].update({"branches": ["main"]}), "I1: `push` must name `tags`"),
+    ("push branches", lambda d: d[True]["push"].update({"branches": ["main"]}), "I1: `push` names `tags`"),
     ("pr opened", lambda d: d[True]["pull_request"].update({"types": ["opened", "labeled"]}), "I1: `pull_request`"),
     ("write permissions", _set("permissions", {"contents": "write"}), "I2:"),
     ("no permissions", _set("permissions", _DELETE), "I2:"),
@@ -390,6 +390,40 @@ def test_each_rule_catches_its_violation(mutate: Callable[[Doc], None], expected
     mutate(doc)
     problems = _problems(doc)
     assert any(expected in p for p in problems), problems
+
+
+_I1_PUSH = "I1: `push` names `tags` (releases) and/or `branches` under cd-rehearsal/"
+
+
+@pytest.mark.parametrize(
+    "push",
+    [
+        {"tags": ["*"], "branches": ["**"]},
+        {"tags": ["*"], "branches": ["!cd-rehearsal/x"]},
+        {"tags": ["*"], "branches": ["cd-rehearsal"]},
+        {"tags": ["*"], "branches": ["cd-rehearsal/"]},
+        {"tags": ["*"], "branches": ["cd-rehearsal/x", "main"]},
+        {"tags": ["*"], "branches": "cd-rehearsal/x"},
+        {"branches-ignore": ["main"]},
+        {"tags": ["*"], "branches-ignore": ["main"]},
+        {"branches": ["cd-rehearsal/x"], "paths": ["src/**"]},
+        {"tags": ["*"], "paths-ignore": ["docs/**"]},
+        {},
+        {"tags": [], "branches": []},
+    ],
+    ids=repr,
+)
+def test_push_branches_outside_cd_rehearsal_are_refused(push: dict[str, Any]) -> None:
+    doc = _sample()
+    doc[True]["push"] = push
+    assert any(_I1_PUSH in p for p in _problems(doc)), _problems(doc)
+
+
+def test_a_push_of_rehearsal_branches_only_passes() -> None:
+    """The ecflow shape: rehearse from one branch, no tags, no pull request."""
+    doc = _sample()
+    doc[True] = {"push": {"branches": ["cd-rehearsal/ecflow"]}}
+    assert _problems(doc) == []
 
 
 def test_the_hpc_publish_jobs_hold_only_the_ci_hpc_user() -> None:
