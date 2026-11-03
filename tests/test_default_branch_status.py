@@ -284,22 +284,24 @@ def _merge(sha: str, when: datetime, *bypassed: str, merger: str = "mo") -> dbs.
     return dbs.Commit(sha * 40, f"https://c/{sha}", "Merge", "x", pr, _run(sha * 40), when, before="❌", merge=merge)
 
 
-def test_prs_merged_past_the_rules_are_listed_newest_first() -> None:
+def test_prs_merged_before_their_ci_was_green_are_listed_newest_first() -> None:
     commits = (
-        _merge("a", NOW, "ci-result pending", "approval"),
+        _merge("a", NOW, "ci-result pending", "downstream/runner missing"),
         _merge("b", NOW - timedelta(days=1)),
-        _merge("c", NOW - timedelta(days=2), "approval", merger="regen[bot]"),
-        _merge("d", NOW - timedelta(days=3), "approval"),
-        _merge("e", NOW - timedelta(days=15), "approval"),
+        _merge("c", NOW - timedelta(days=2), "ci-result failure", merger="regen[bot]"),
+        _merge("d", NOW - timedelta(days=3), "ci-result failure"),
+        _merge("e", NOW - timedelta(days=15), "ci-result failure"),
     )
     state = replace(_state("o/eckit", commits=commits), rules_since=NOW - timedelta(days=20))
     out = dbs.render_summary({"o/eckit": state}, NOW, {"regen[bot]"})
-    section = out[out.index("## ⚠️ Merged past the branch rules from 2026-09-30 to 2026-10-14") : out.index("<details")]
-    assert "Rules last changed (UTC): eckit 2026-09-24 06:17." in section
-    assert "| Date | Commit | CI before | CI | Person | Title | Bypassed |" in section
+    section = out[
+        out.index("## ⚠️ Merged before the required CI was green from 2026-09-30 to 2026-10-14") : out.index("<details")
+    ]
+    assert "Required statuses last changed (UTC): eckit 2026-09-24 06:17." in section
+    assert "| Date | Commit | CI before | CI | Person | Title | Not green |" in section
     assert (
         f"| 2026-10-14 06:17 | eckit [#10](https://pr/a) | ❌ | [✅](https://ci/{'a' * 40})"
-        " | [@mo](https://github.com/mo) | PR a \\| piped | ci-result pending, approval |" in section
+        " | [@mo](https://github.com/mo) | PR a \\| piped | ci-result pending, downstream/runner missing |" in section
     )
     assert section.index("#10") < section.index("#13")
     assert "#11" not in section and "#12" not in section and "#14" not in section
@@ -317,13 +319,12 @@ def test_a_rule_counts_by_its_state_when_the_pr_was_merged() -> None:
     assert dbs.status_at(statuses, "ci-result", t) == "pending"
     assert dbs.status_at(statuses, "ci-result", t + timedelta(minutes=1)) == "success"
     checks = ("ci-result", "downstream/runner", "ci-result/hpc-atos", "downstream/hpc-atos")
-    assert dbs.bypassed(statuses, {"rev"}, t, checks, 1) == (
+    assert dbs.bypassed(statuses, t, checks) == (
         "ci-result pending",
         "ci-result/hpc-atos failure",
         "downstream/hpc-atos missing",
     )
-    assert dbs.bypassed(statuses, set(), t, ("downstream/runner",), 1) == ("approval",)
-    assert dbs.bypassed(statuses, {"rev"}, t, ("downstream/runner",), 1) == ()
+    assert dbs.bypassed(statuses, t, ("downstream/runner",)) == ()
 
 
 def test_ci_before_is_the_ci_result_of_what_landed_when_it_landed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,10 +343,8 @@ def test_ci_before_is_the_ci_result_of_what_landed_when_it_landed(monkeypatch: p
     pr_node = {
         "title": "Feature",
         "headRefOid": "head7",
-        "author": {"login": "ann"},
         "mergedBy": {"login": "mo"},
         "mergedAt": merged.isoformat(),
-        "reviews": {"nodes": [{"submittedAt": merged.isoformat(), "author": {"login": "ann"}}]},
     }
     rules = [
         {
@@ -380,7 +379,7 @@ def test_ci_before_is_the_ci_result_of_what_landed_when_it_landed(monkeypatch: p
     got = {c.sha[0]: c for c in state.commits}
     assert got["p"].before == "✅" and got["p"].merge is None
     assert got["m"].before == "❌"
-    assert got["m"].merge == dbs.Merge("mo", "Feature", ("ci-result failure", "approval"))
+    assert got["m"].merge == dbs.Merge("mo", "Feature", ("ci-result failure",))
     assert got["o"].before == "·"
     assert state.rules_since == rules_since
 
@@ -393,7 +392,10 @@ def test_ci_before_is_the_ci_result_of_what_landed_when_it_landed(monkeypatch: p
 
 def test_a_pr_named_by_several_commits_is_listed_once() -> None:
     # eccodes#564: GitHub links the PR to every first-parent commit it brought along.
-    commits = (_merge("a", NOW, "approval"), replace(_merge("a", NOW - timedelta(hours=1), "approval"), sha="f" * 40))
+    commits = (
+        _merge("a", NOW, "ci-result failure"),
+        replace(_merge("a", NOW - timedelta(hours=1), "ci-result failure"), sha="f" * 40),
+    )
     out = dbs.render_summary({"o/eccodes": _state("o/eccodes", commits=commits)}, NOW)
     assert out.count("eccodes [#10]") == 1
     assert "| 2026-10-14 06:17 | eccodes [#10]" in out

@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
-or merged one past the branch rules.
+or merged one before its required CI was green.
 
 The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
@@ -281,41 +281,27 @@ def _icon_of(state: str | None) -> str:
 @dataclass(frozen=True)
 class Rules:
     checks: tuple[str, ...]  # required statuses
-    approvals: int
-    since: datetime | None  # when the rulesets behind them last changed
+    since: datetime | None  # when the rulesets requiring them last changed
 
 
 def _rules(repo: str, branch: str, token: str | None) -> Rules:
-    """What the rules of `branch` require of a PR, and since when."""
+    """The statuses the rules of `branch` require, and since when."""
     data = gh_api_rest(f"repos/{repo}/rules/branches/{branch}?per_page=100", token)
     rulesets = gh_api_rest(f"repos/{repo}/rulesets?per_page=100", token)
     if not isinstance(data, list) or not isinstance(rulesets, list):
         print(f"::warning::{repo}: could not read the rules of {branch}", file=sys.stderr)
-        return Rules((), 0, None)
-    ids = {r["ruleset_id"] for r in data}
+        return Rules((), None)
+    required = [r for r in data if r["type"] == "required_status_checks"]
+    ids = {r["ruleset_id"] for r in required}
     changed = [datetime.fromisoformat(r["updated_at"]) for r in rulesets if r["id"] in ids]
-    checks = [
-        c["context"]
-        for r in data
-        if r["type"] == "required_status_checks"
-        for c in r["parameters"]["required_status_checks"]
-    ]
-    approvals = [r["parameters"]["required_approving_review_count"] for r in data if r["type"] == "pull_request"]
-    return Rules(tuple(dict.fromkeys(checks)), max(approvals, default=0), max(changed, default=None))
+    checks = [c["context"] for r in required for c in r["parameters"]["required_status_checks"]]
+    return Rules(tuple(dict.fromkeys(checks)), max(changed, default=None))
 
 
-def bypassed(
-    statuses: Sequence[StatusEntry], approvers: Collection[str], when: datetime, checks: Sequence[str], approvals: int
-) -> tuple[str, ...]:
-    """The rules a PR did not meet when it was merged at `when`."""
-    out = []
-    for check in checks:
-        state = status_at(statuses, check, when)
-        if state != "success":
-            out.append(f"{check} {state or 'missing'}")
-    if len(approvers) < approvals:
-        out.append("approval")
-    return tuple(out)
+def bypassed(statuses: Sequence[StatusEntry], when: datetime, checks: Sequence[str]) -> tuple[str, ...]:
+    """The required statuses that were not green when a PR was merged at `when`."""
+    states = ((check, status_at(statuses, check, when)) for check in checks)
+    return tuple(f"{check} {state or 'missing'}" for check, state in states if state != "success")
 
 
 def _login(actor: Mapping[str, Any] | None) -> str:
@@ -328,9 +314,7 @@ def _login(actor: Mapping[str, Any] | None) -> str:
 def _pr_query(repo: str, numbers: Collection[int]) -> str:
     owner, name = repo.split("/", 1)
     prs = "\n".join(
-        f"p{n}: pullRequest(number: {n}) {{ title headRefOid author {{ login }}"
-        " mergedBy { __typename login } mergedAt"
-        " reviews(states: APPROVED, first: 50) { nodes { submittedAt author { login } } } }"
+        f"p{n}: pullRequest(number: {n}) {{ title headRefOid mergedBy {{ __typename login }} mergedAt }}"
         for n in numbers
     )
     return f'{{ repository(owner: "{owner}", name: "{name}") {{\n{prs}\n}} }}'
@@ -340,7 +324,7 @@ def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str 
     """`state` with what its commits from `start` to `end` had passed before they landed."""
     landed = [c for c in state.commits if start <= c.date < end and (c.pr is None or c.pr[2] == state.branch)]
     prs: dict[int, Mapping[str, Any]] = {}
-    rules = Rules((), 0, None)
+    rules = Rules((), None)
     if any(c.pr for c in landed):
         result = gh_api_graphql(_pr_query(state.repo, {c.pr[0] for c in landed if c.pr}), token)
         data = result.get("data") if isinstance(result, dict) else None
@@ -359,18 +343,12 @@ def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str 
         if pr is None:
             continue
         merged = datetime.fromisoformat(pr["mergedAt"])
-        author = str((pr["author"] or {}).get("login", ""))
-        approvers = {
-            str((r["author"] or {}).get("login", ""))
-            for r in pr["reviews"]["nodes"]
-            if datetime.fromisoformat(r["submittedAt"]) <= merged
-        } - {author}
         statuses = _statuses(state.repo, pr["headRefOid"], token)
         judged = rules.since is not None and merged >= rules.since
         merge = Merge(
             _login(pr["mergedBy"]),
             pr["title"],
-            bypassed(statuses, approvers, merged, rules.checks, rules.approvals) if judged else (),
+            bypassed(statuses, merged, rules.checks) if judged else (),
         )
         commits[c.sha] = replace(c, before=_icon_of(status_at(statuses, CI_RESULT, merged)), merge=merge)
     return replace(state, commits=tuple(commits.get(c.sha, c) for c in state.commits), rules_since=rules.since)
@@ -497,7 +475,7 @@ def render_summary(
         "",
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
         " · · no run of its own, part of a later push · ❗ pushed without a pull request"
-        " · ⚠️ merged past the branch rules",
+        " · ⚠️ merged before its required CI was green",
     ]
     start, end = window(now, since, until)
     pushes = sorted(
@@ -531,19 +509,19 @@ def render_summary(
     }
     merges = sorted(by_pr.values(), key=lambda sc: sc[1].date, reverse=True)
     cutoffs = [f"{states[r].name} {states[r].rules_since:%Y-%m-%d %H:%M}" for r in order if states[r].rules_since]
-    lines += ["", f"## ⚠️ Merged past the branch rules from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
+    lines += ["", f"## ⚠️ Merged before the required CI was green from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
     lines += [
-        f"Pull requests that did not meet the default branch's rules when they were merged: a required check"
-        f" not green or too few approvals. CI before is their head's `{CI_RESULT}` then.",
+        "Pull requests merged while a status that the default branch's rules require was not green."
+        f" CI before is their head's `{CI_RESULT}` then.",
         "",
         "Guessed from today's rules, not GitHub's own bypass record, so a merge counts only after its repo's"
-        " rules last changed; anything earlier would be a false positive and is left out."
-        + (f" Rules last changed (UTC): {', '.join(cutoffs)}." if cutoffs else ""),
+        " required statuses last changed; anything earlier would be a false positive and is left out."
+        + (f" Required statuses last changed (UTC): {', '.join(cutoffs)}." if cutoffs else ""),
         "",
         *leaving_out,
     ]
     if merges:
-        lines += ["| Date | Commit | CI before | CI | Person | Title | Bypassed |", "|---|---|---|---|---|---|---|"]
+        lines += ["| Date | Commit | CI before | CI | Person | Title | Not green |", "|---|---|---|---|---|---|---|"]
         for s, c in merges:
             assert c.pr and c.merge
             commit = f"{s.name} [#{c.pr[0]}]({c.pr[1]})"
