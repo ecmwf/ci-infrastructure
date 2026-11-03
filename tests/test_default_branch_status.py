@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final
 
@@ -215,14 +216,15 @@ def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
         "o/atlas": _state("o/atlas", commits=(older,)),
     }
     out = dbs.render_summary(states, NOW)
-    section = out[out.index("## ❗ Direct pushes from 2026-09-30 to 2026-10-14") : out.index("<details")]
+    section = out[out.index("## ❗ Direct pushes from 2026-09-30 to 2026-10-14") : out.index("## ⚠️")]
     ci = f"[❌](https://ci/{'b' * 40})"
     assert (
-        f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | {ci} | [@bob](https://github.com/bob) | hotfix |"
+        f"| 2026-10-14 06:17 | eckit [`bbbbbbbb`](https://c/b) | · | {ci} | [@bob](https://github.com/bob) | hotfix |"
         in section
     )
     assert (
-        "| 2026-10-12 06:17 | atlas [`dddddddd`](https://c/d) | · | [@erin](https://github.com/erin) | fix |" in section
+        "| 2026-10-12 06:17 | atlas [`dddddddd`](https://c/d) | · | · | [@erin](https://github.com/erin) | fix |"
+        in section
     )
     assert section.index("bbbbbbbb") < section.index("dddddddd")
     assert "cccccccc" not in section and "aaaaaaaa" not in section
@@ -274,3 +276,124 @@ def test_pusher_is_the_first_attempts_actor_not_the_rerunner(monkeypatch: pytest
     }
     monkeypatch.setattr(dbs, "gh_api_rest", lambda path, token: {"workflow_runs": [run]})
     assert [r.pusher for r in dbs._runs("ecmwf/x", "develop", None)] == ["pusher"]
+
+
+def _merge(sha: str, when: datetime, *bypassed: str, merger: str = "mo") -> dbs.Commit:
+    pr = (int(sha, 16), f"https://pr/{sha}", "develop")
+    merge = dbs.Merge(merger, f"PR {sha} | piped", bypassed)
+    return dbs.Commit(sha * 40, f"https://c/{sha}", "Merge", "x", pr, _run(sha * 40), when, before="❌", merge=merge)
+
+
+def test_prs_merged_past_the_rules_are_listed_newest_first() -> None:
+    commits = (
+        _merge("a", NOW, "ci-result pending", "approval"),
+        _merge("b", NOW - timedelta(days=1)),
+        _merge("c", NOW - timedelta(days=2), "approval", merger="regen[bot]"),
+        _merge("d", NOW - timedelta(days=3), "approval"),
+        _merge("e", NOW - timedelta(days=15), "approval"),
+    )
+    state = replace(_state("o/eckit", commits=commits), rules_since=NOW - timedelta(days=20))
+    out = dbs.render_summary({"o/eckit": state}, NOW, {"regen[bot]"})
+    section = out[out.index("## ⚠️ Merged past the branch rules from 2026-09-30 to 2026-10-14") : out.index("<details")]
+    assert "Rules last changed (UTC): eckit 2026-09-24 06:17." in section
+    assert "| Date | Commit | CI before | CI | Person | Title | Bypassed |" in section
+    assert (
+        f"| 2026-10-14 06:17 | eckit [#10](https://pr/a) | ❌ | [✅](https://ci/{'a' * 40})"
+        " | [@mo](https://github.com/mo) | PR a \\| piped | ci-result pending, approval |" in section
+    )
+    assert section.index("#10") < section.index("#13")
+    assert "#11" not in section and "#12" not in section and "#14" not in section
+    assert "None." in dbs.render_summary({"o/eckit": _state("o/eckit", commits=commits[1:2])}, NOW)
+
+
+def test_a_rule_counts_by_its_state_when_the_pr_was_merged() -> None:
+    t = NOW
+    statuses = [
+        ("ci-result", "success", t + timedelta(minutes=1)),
+        ("ci-result", "pending", t - timedelta(minutes=9)),
+        ("downstream/runner", "success", t - timedelta(minutes=5)),
+        ("ci-result/hpc-atos", "failure", t - timedelta(minutes=1)),
+    ]
+    assert dbs.status_at(statuses, "ci-result", t) == "pending"
+    assert dbs.status_at(statuses, "ci-result", t + timedelta(minutes=1)) == "success"
+    checks = ("ci-result", "downstream/runner", "ci-result/hpc-atos", "downstream/hpc-atos")
+    assert dbs.bypassed(statuses, {"rev"}, t, checks, 1) == (
+        "ci-result pending",
+        "ci-result/hpc-atos failure",
+        "downstream/hpc-atos missing",
+    )
+    assert dbs.bypassed(statuses, set(), t, ("downstream/runner",), 1) == ("approval",)
+    assert dbs.bypassed(statuses, {"rev"}, t, ("downstream/runner",), 1) == ()
+
+
+def test_ci_before_is_the_ci_result_of_what_landed_when_it_landed(monkeypatch: pytest.MonkeyPatch) -> None:
+    merged = NOW - timedelta(hours=1)
+    pr = dbs.Commit("m" * 40, "u", "Merge", "x", (7, "https://pr/7", "develop"), None, merged)
+    run = replace(_run("p" * 40), created=NOW + timedelta(minutes=2))
+    push = dbs.Commit("p" * 40, "u", "hotfix", "x", None, run, NOW, head="h" * 40)
+    old = dbs.Commit("o" * 40, "u", "old", "x", None, None, NOW - timedelta(days=30), head="o" * 40)
+    statuses = {
+        "h" * 40: [
+            ("ci-result", "success", NOW + timedelta(minutes=1)),
+            ("ci-result", "failure", NOW + timedelta(minutes=3)),
+        ],
+        "head7": [("ci-result", "failure", merged - timedelta(minutes=1)), ("downstream/runner", "success", merged)],
+    }
+    pr_node = {
+        "title": "Feature",
+        "headRefOid": "head7",
+        "author": {"login": "ann"},
+        "mergedBy": {"login": "mo"},
+        "mergedAt": merged.isoformat(),
+        "reviews": {"nodes": [{"submittedAt": merged.isoformat(), "author": {"login": "ann"}}]},
+    }
+    rules = [
+        {
+            "type": "required_status_checks",
+            "ruleset_id": 2,
+            "parameters": {"required_status_checks": [{"context": "ci-result"}]},
+        },
+        {"type": "pull_request", "ruleset_id": 1, "parameters": {"required_approving_review_count": 1}},
+        {"type": "deletion", "ruleset_id": 1, "parameters": None},
+    ]
+    rules_since = merged - timedelta(hours=1)
+    rulesets = [
+        {"id": 1, "updated_at": (merged - timedelta(days=5)).isoformat()},
+        {"id": 2, "updated_at": rules_since.isoformat()},
+        {"id": 3, "updated_at": NOW.isoformat()},  # a tag ruleset
+    ]
+    asked: list[str] = []
+
+    def rest(path: str, token: str | None) -> Any:
+        asked.append(path)
+        if "/rules/branches/" in path:
+            return rules
+        if path.endswith("/rulesets?per_page=100"):
+            return rulesets
+        return [{"context": c, "state": st, "created_at": d.isoformat()} for c, st, d in statuses[path.split("/")[4]]]
+
+    monkeypatch.setattr(dbs, "gh_api_rest", rest)
+    monkeypatch.setattr(dbs, "gh_api_graphql", lambda q, t: {"data": {"repository": {"p7": pr_node}}})
+    state = dbs.with_ci_before(
+        _state("o/eckit", commits=(push, pr, old)), NOW - timedelta(days=14), dbs.window(NOW)[1], None
+    )
+    got = {c.sha[0]: c for c in state.commits}
+    assert got["p"].before == "✅" and got["p"].merge is None
+    assert got["m"].before == "❌"
+    assert got["m"].merge == dbs.Merge("mo", "Feature", ("ci-result failure", "approval"))
+    assert got["o"].before == "·"
+    assert state.rules_since == rules_since
+
+    rulesets[1]["updated_at"] = (merged + timedelta(minutes=1)).isoformat()
+    state = dbs.with_ci_before(_state("o/eckit", commits=(pr,)), NOW - timedelta(days=14), dbs.window(NOW)[1], None)
+    merge = state.commits[0].merge
+    assert merge is not None and merge.bypassed == () and state.commits[0].before == "❌"
+    assert not any("o" * 40 in path for path in asked)
+
+
+def test_a_pr_named_by_several_commits_is_listed_once() -> None:
+    # eccodes#564: GitHub links the PR to every first-parent commit it brought along.
+    commits = (_merge("a", NOW, "approval"), replace(_merge("a", NOW - timedelta(hours=1), "approval"), sha="f" * 40))
+    out = dbs.render_summary({"o/eccodes": _state("o/eccodes", commits=commits)}, NOW)
+    assert out.count("eccodes [#10]") == 1
+    assert "| 2026-10-14 06:17 | eccodes [#10]" in out

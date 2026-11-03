@@ -4,7 +4,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR.
+"""Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
+or merged one past the branch rules.
 
 The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
@@ -16,7 +17,7 @@ import os
 import sys
 import tomllib
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -31,6 +32,7 @@ from ._github_api import IN_PROGRESS_STATUSES, ManifestSchemaError, _alias, gh_a
 #: Where discovery starts: the bottom of the stack, whose manifest names its consumers.
 SEEDS: Final = ("ecmwf/ecbuild",)
 CI_WORKFLOW: Final = "ci.yml"
+CI_RESULT: Final = "ci-result"  # the commit status a ci.yml run sets on what it built
 _HISTORY: Final = 100  # commits fetched to walk the first-parent chain
 _TIMELINE: Final = 15  # first-parent commits shown per repo
 _DIRECT_PUSH_WINDOW: Final = timedelta(days=14)
@@ -48,6 +50,16 @@ class Run:
     url: str
     conclusion: str | None  # None while it runs
     pusher: str
+    created: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Merge:
+    """How a PR into the default branch was merged."""
+
+    merger: str
+    title: str
+    bypassed: tuple[str, ...]  # the branch rules it did not meet when it was merged
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,9 @@ class Commit:
     pr: tuple[int, str, str] | None  # (number, url, base) of the merged PR that brought it in
     run: Run | None
     date: datetime
+    head: str = ""  # what was merged: the last parent of a merge commit, else the commit itself
+    before: str = "·"  # the CI_RESULT of `head` (of the PR's head, for a PR) when it landed, as a _run_icon
+    merge: Merge | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,7 @@ class RepoState:
     upstream: tuple[str, ...]
     commits: tuple[Commit, ...]
     runs: tuple[Run, ...]  # newest first
+    rules_since: datetime | None = None  # last change of the rules on `branch`; merges before it are not judged
 
     @property
     def name(self) -> str:
@@ -178,6 +194,7 @@ def _runs(repo: str, branch: str, token: str | None) -> tuple[Run, ...]:
             url=r["html_url"],
             conclusion=None if r["status"] in IN_PROGRESS_STATUSES else r["conclusion"],
             pusher=(r.get("actor") or {}).get("login", ""),
+            created=datetime.fromisoformat(r["created_at"]) if r.get("created_at") else None,
         )
         for r in data.get("workflow_runs", [])
         if r["event"] != "pull_request"
@@ -199,6 +216,7 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
             pr=_merged_pr(n, branch),
             run=run_of.get(n["oid"]),
             date=datetime.fromisoformat(n["committedDate"]),
+            head=n["parents"]["nodes"][-1]["oid"] if len(n["parents"]["nodes"]) > 1 else n["oid"],
         )
         for n in first_parent(ref["target"]["history"]["nodes"], limit=None)
     )
@@ -239,10 +257,130 @@ def discover(
     return nodes, edges
 
 
-def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
-    """The state of every repo `discover` finds."""
+StatusEntry = tuple[str, str, datetime]  # (context, state, created)
+
+
+def _statuses(repo: str, sha: str, token: str | None) -> list[StatusEntry]:
+    data = gh_api_rest(f"repos/{repo}/commits/{sha}/statuses?per_page=100", token)
+    if not isinstance(data, list):
+        print(f"::warning::{repo}: could not list the statuses of {sha}", file=sys.stderr)
+        return []
+    return [(s["context"], s["state"], datetime.fromisoformat(s["created_at"])) for s in data]
+
+
+def status_at(statuses: Sequence[StatusEntry], context: str, when: datetime) -> str | None:
+    """The state `context` had at `when`, None if it was not set yet."""
+    earlier = [s for s in statuses if s[0] == context and s[2] <= when]
+    return max(earlier, key=lambda s: s[2])[1] if earlier else None
+
+
+def _icon_of(state: str | None) -> str:
+    return {None: "·", "pending": "🟡", "success": "✅"}.get(state, "❌")
+
+
+@dataclass(frozen=True)
+class Rules:
+    checks: tuple[str, ...]  # required statuses
+    approvals: int
+    since: datetime | None  # when the rulesets behind them last changed
+
+
+def _rules(repo: str, branch: str, token: str | None) -> Rules:
+    """What the rules of `branch` require of a PR, and since when."""
+    data = gh_api_rest(f"repos/{repo}/rules/branches/{branch}?per_page=100", token)
+    rulesets = gh_api_rest(f"repos/{repo}/rulesets?per_page=100", token)
+    if not isinstance(data, list) or not isinstance(rulesets, list):
+        print(f"::warning::{repo}: could not read the rules of {branch}", file=sys.stderr)
+        return Rules((), 0, None)
+    ids = {r["ruleset_id"] for r in data}
+    changed = [datetime.fromisoformat(r["updated_at"]) for r in rulesets if r["id"] in ids]
+    checks = [
+        c["context"]
+        for r in data
+        if r["type"] == "required_status_checks"
+        for c in r["parameters"]["required_status_checks"]
+    ]
+    approvals = [r["parameters"]["required_approving_review_count"] for r in data if r["type"] == "pull_request"]
+    return Rules(tuple(dict.fromkeys(checks)), max(approvals, default=0), max(changed, default=None))
+
+
+def bypassed(
+    statuses: Sequence[StatusEntry], approvers: Collection[str], when: datetime, checks: Sequence[str], approvals: int
+) -> tuple[str, ...]:
+    """The rules a PR did not meet when it was merged at `when`."""
+    out = []
+    for check in checks:
+        state = status_at(statuses, check, when)
+        if state != "success":
+            out.append(f"{check} {state or 'missing'}")
+    if len(approvers) < approvals:
+        out.append("approval")
+    return tuple(out)
+
+
+def _pr_query(repo: str, numbers: Collection[int]) -> str:
+    owner, name = repo.split("/", 1)
+    prs = "\n".join(
+        f"p{n}: pullRequest(number: {n}) {{ title headRefOid author {{ login }} mergedBy {{ login }} mergedAt"
+        " reviews(states: APPROVED, first: 50) { nodes { submittedAt author { login } } } }"
+        for n in numbers
+    )
+    return f'{{ repository(owner: "{owner}", name: "{name}") {{\n{prs}\n}} }}'
+
+
+def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str | None) -> RepoState:
+    """`state` with what its commits from `start` to `end` had passed before they landed."""
+    landed = [c for c in state.commits if start <= c.date < end and (c.pr is None or c.pr[2] == state.branch)]
+    prs: dict[int, Mapping[str, Any]] = {}
+    rules = Rules((), 0, None)
+    if any(c.pr for c in landed):
+        result = gh_api_graphql(_pr_query(state.repo, {c.pr[0] for c in landed if c.pr}), token)
+        data = result.get("data") if isinstance(result, dict) else None
+        repo_data = (data or {}).get("repository") or {}
+        prs = {int(k[1:]): v for k, v in repo_data.items() if v}
+        rules = _rules(state.repo, state.branch, token)
+    commits = {}
+    for c in landed:
+        if c.pr is None:
+            when = c.run.created if c.run and c.run.created else c.date
+            commits[c.sha] = replace(
+                c, before=_icon_of(status_at(_statuses(state.repo, c.head, token), CI_RESULT, when))
+            )
+            continue
+        pr = prs.get(c.pr[0])
+        if pr is None:
+            continue
+        merged = datetime.fromisoformat(pr["mergedAt"])
+        author = str((pr["author"] or {}).get("login", ""))
+        approvers = {
+            str((r["author"] or {}).get("login", ""))
+            for r in pr["reviews"]["nodes"]
+            if datetime.fromisoformat(r["submittedAt"]) <= merged
+        } - {author}
+        statuses = _statuses(state.repo, pr["headRefOid"], token)
+        judged = rules.since is not None and merged >= rules.since
+        merge = Merge(
+            (pr["mergedBy"] or {}).get("login", ""),
+            pr["title"],
+            bypassed(statuses, approvers, merged, rules.checks, rules.approvals) if judged else (),
+        )
+        commits[c.sha] = replace(c, before=_icon_of(status_at(statuses, CI_RESULT, merged)), merge=merge)
+    return replace(state, commits=tuple(commits.get(c.sha, c) for c in state.commits), rules_since=rules.since)
+
+
+def window(now: datetime, since: date | None = None, until: date | None = None) -> tuple[datetime, datetime]:
+    """`since` to `until`, both whole days; by default the last 14 days."""
+    start = datetime.combine(since, time(), UTC) if since else now - _DIRECT_PUSH_WINDOW
+    end = datetime.combine(until + timedelta(days=1), time(), UTC) if until else datetime.max.replace(tzinfo=UTC)
+    return start, end
+
+
+def fetch(
+    seeds: Sequence[str], token: str | None, start: datetime | None = None, end: datetime | None = None
+) -> dict[str, RepoState]:
+    """The state of every repo `discover` finds; with `start` and `end`, also `with_ci_before`."""
     nodes, edges = discover(seeds, token)
-    return {
+    states = {
         repo: repo_state(
             repo,
             node,
@@ -251,6 +389,9 @@ def fetch(seeds: Sequence[str], token: str | None) -> dict[str, RepoState]:
         )
         for repo, node in nodes.items()
     }
+    if start is None or end is None:
+        return states
+    return {repo: with_ci_before(s, start, end, token) for repo, s in states.items()}
 
 
 def ordered(upstream: Mapping[str, Sequence[str]]) -> list[str]:
@@ -306,6 +447,10 @@ def _user(login: str) -> str:
     return f"[@{login}](https://github.com/{login})"
 
 
+def _ci(c: Commit) -> str:
+    return f"[{_run_icon(c.run)}]({c.run.url})" if c.run else _run_icon(None)
+
+
 def _pusher(c: Commit) -> str:
     return c.run.pusher if c.run and c.run.pusher else c.author
 
@@ -343,10 +488,10 @@ def render_summary(
     lines += [
         "",
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
-        " · · no run of its own, part of a later push · ❗ pushed without a pull request",
+        " · · no run of its own, part of a later push · ❗ pushed without a pull request"
+        " · ⚠️ merged past the branch rules",
     ]
-    start = datetime.combine(since, time(), UTC) if since else now - _DIRECT_PUSH_WINDOW
-    end = datetime.combine(until + timedelta(days=1), time(), UTC) if until else datetime.max.replace(tzinfo=UTC)
+    start, end = window(now, since, until)
     pushes = sorted(
         (
             (s, c)
@@ -358,14 +503,46 @@ def render_summary(
         reverse=True,
     )
     lines += ["", f"## ❗ Direct pushes from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
-    if exclude:
-        lines += ["Leaving out " + ", ".join(_user(login) for login in sorted(exclude)) + ".", ""]
+    leaving_out = ["Leaving out " + ", ".join(_user(login) for login in sorted(exclude)) + ".", ""] if exclude else []
+    lines += leaving_out
     if pushes:
-        lines += ["| Date | Commit | CI | Person | Title |", "|---|---|---|---|---|"]
+        lines += ["| Date | Commit | CI before | CI | Person | Title |", "|---|---|---|---|---|---|"]
         for s, c in pushes:
-            ci = f"[{_run_icon(c.run)}]({c.run.url})" if c.run else _run_icon(None)
             commit = f"{s.name} [`{c.sha[:8]}`]({c.url})"
-            lines.append(f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {ci} | {_user(_pusher(c))} | {_cell(c.headline)} |")
+            lines.append(
+                f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {c.before} | {_ci(c)} | {_user(_pusher(c))}"
+                f" | {_cell(c.headline)} |"
+            )
+    else:
+        lines.append("None.")
+    by_pr = {
+        (s.repo, c.pr[0]): (s, c)  # several commits can name one PR; the newest stays
+        for s in states.values()
+        for c in reversed(s.commits)
+        if c.pr and c.merge and c.merge.bypassed and start <= c.date < end and c.merge.merger not in exclude
+    }
+    merges = sorted(by_pr.values(), key=lambda sc: sc[1].date, reverse=True)
+    cutoffs = [f"{states[r].name} {states[r].rules_since:%Y-%m-%d %H:%M}" for r in order if states[r].rules_since]
+    lines += ["", f"## ⚠️ Merged past the branch rules from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
+    lines += [
+        f"Pull requests that did not meet the default branch's rules when they were merged: a required check"
+        f" not green or too few approvals. CI before is their head's `{CI_RESULT}` then.",
+        "",
+        "Guessed from today's rules, not GitHub's own bypass record, so a merge counts only after its repo's"
+        " rules last changed; anything earlier would be a false positive and is left out."
+        + (f" Rules last changed (UTC): {', '.join(cutoffs)}." if cutoffs else ""),
+        "",
+        *leaving_out,
+    ]
+    if merges:
+        lines += ["| Date | Commit | CI before | CI | Person | Title | Bypassed |", "|---|---|---|---|---|---|---|"]
+        for s, c in merges:
+            assert c.pr and c.merge
+            commit = f"{s.name} [#{c.pr[0]}]({c.pr[1]})"
+            lines.append(
+                f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {c.before} | {_ci(c)} | {_user(c.merge.merger)}"
+                f" | {_cell(c.merge.title)} | {', '.join(c.merge.bypassed)} |"
+            )
     else:
         lines.append("None.")
     for repo in order:
@@ -384,8 +561,7 @@ def render_summary(
             else:
                 pusher = f" by {_user(c.run.pusher)}" if c.run and c.run.pusher else ""
                 via = f"❗ direct push{pusher}"
-            ci = f"[{_run_icon(c.run)}]({c.run.url})" if c.run else _run_icon(None)
-            lines.append(f"| {ci} | [`{c.sha[:8]}`]({c.url}) | {_user(c.author)} | {via} | {_cell(c.headline)} |")
+            lines.append(f"| {_ci(c)} | [`{c.sha[:8]}`]({c.url}) | {_user(c.author)} | {via} | {_cell(c.headline)} |")
         lines += ["", "</details>"]
     return "\n".join(lines) + "\n"
 
@@ -417,14 +593,10 @@ def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | Non
     if since and until and since > until:
         raise click.BadParameter("must not be after --until", param_hint="--since")
     try:
-        states = fetch(SEEDS, select_token())
-        summary = render_summary(
-            states,
-            datetime.now(UTC),
-            frozenset(exclude),
-            since.date() if since else None,
-            until.date() if until else None,
-        )
+        now = datetime.now(UTC)
+        days = (since.date() if since else None, until.date() if until else None)
+        states = fetch(SEEDS, select_token(), *window(now, *days))
+        summary = render_summary(states, now, frozenset(exclude), *days)
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
