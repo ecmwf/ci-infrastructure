@@ -100,14 +100,17 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
         raise CIError(str(exc)) from exc
 
 
-def release_leg_for_cluster(conn: Any, matrix_leg: str) -> tuple[str, dict[str, Any]]:
+def release_leg_for_cluster(
+    conn: Any, matrix_leg: str, *, allow_production: bool = False
+) -> tuple[str, dict[str, Any]]:
     """The leg with its release prefix expanded on the cluster (``$SCRATCH/...``): the job script gets
-    an absolute path and needs no variable of the login shell. Refuses a production prefix."""
+    an absolute path and needs no variable of the login shell. Refuses a production prefix
+    (``/usr/local/apps``) unless ``allow_production``."""
     leg = json.loads(matrix_leg)
     ctx = release_tree.release_context(leg)
     prefix = resolve_remote_path(conn, str(ctx["prefix"]))
     try:
-        check_install_prefix(prefix)
+        check_install_prefix(prefix, allow_production=allow_production)
     except ReleaseError as exc:
         raise CIError(f"the release prefix {ctx['prefix']} is {prefix} on the cluster: {exc}") from exc
     if prefix != ctx["prefix"]:
@@ -555,6 +558,13 @@ def render(job_script: str, matrix_leg: str, artifact_name: str) -> None:
     help="A release (hpc-module leg): no artifact store; fetch the job's archive and sidecars into this "
     "runner-local dir, unpacked never, checked against the job's install test.",
 )
+@click.option(
+    "--allow-production",
+    "allow_production",
+    is_flag=True,
+    default=False,
+    help="With --fetch-archive: allow a release prefix under /usr/local/apps (the gate allowed production).",
+)
 def submit_wait(
     site_name: str,
     troika_config: str | None,
@@ -572,6 +582,7 @@ def submit_wait(
     dryrun: bool,
     no_publish: bool,
     fetch_archive: str,
+    allow_production: bool,
 ) -> None:
     if run_id and not _SAFE_RUN_ID.fullmatch(run_id):
         raise CIError(
@@ -584,6 +595,8 @@ def submit_wait(
     batch = "true" if packages else "false"
     archive_dir = Path(fetch_archive) if fetch_archive else None
     release_ctx: dict[str, Any] = {}
+    if allow_production and archive_dir is None:
+        raise CIError("--allow-production applies to a release only (--fetch-archive)")
     if archive_dir is not None:
         if no_publish:
             raise CIError("--fetch-archive and --no-publish exclude each other")
@@ -619,7 +632,9 @@ def submit_wait(
     if archive_dir is not None:
         shutil.rmtree(archive_dir, ignore_errors=True)
         archive_dir.mkdir(parents=True)
-        matrix_leg, release_ctx = release_leg_for_cluster(site._connection, matrix_leg)
+        matrix_leg, release_ctx = release_leg_for_cluster(
+            site._connection, matrix_leg, allow_production=allow_production
+        )
         if release_ctx["mode"] != "rehearsal":
             state, installed = release_tree.probe_prefix(site._connection, release_ctx["prefix"], release_ctx)
             if state == release_tree.STATE_ALREADY_PUBLISHED and installed is not None:
