@@ -188,7 +188,8 @@ tag's ``X.Y.Z`` must be the ``VERSION`` file (whitespace stripped), or the CMake
      - rpm Version-Release
      - published
    * - rehearsal
-     - a same-repo pull request labelled ``approved-for-cd``
+     - a same-repo pull request labelled ``approved-for-cd``, or a push to a
+       ``cd-rehearsal/<name>`` branch (`Rehearsing from a branch`_)
      - ``2.5.0-1``
      - no
    * - prerelease
@@ -212,14 +213,21 @@ The gate
 ``actions/release-gate`` decides whether a run may release, and what. In order:
 
 1. ``CD_KILL_SWITCH=on`` (a repo or org variable) stops every release, with ``CD_KILL_SWITCH_REASON``.
-2. The event: a release tag push, or a same-repo pull request labelled ``approved-for-cd``.
+2. The event: a release tag push, a same-repo pull request labelled ``approved-for-cd``, or a
+   push of a ``cd-rehearsal/<name>`` branch (a rehearsal). A push of any other branch, of the
+   default branch, or one that deletes its ref (GitHub runs that on the default branch's commit)
+   is refused.
 3. ``release`` mode (no ``-rcN``) is refused without allow-production.
 4. The tag is the project's VERSION.
 5. CI passed on exactly this commit: a ``ci.yml`` run of this repo (never a fork's), event
    ``push`` or ``workflow_dispatch``, on the commit. A rehearsal also accepts the pull request's
    own ``pull_request`` run on its head commit. It builds ``github.sha``, the merge commit, which
    is the commit PR CI tested only as long as the base has not moved since; the head SHA is
-   what is matched and recorded. While CI is running, or has not started, the gate waits, polling
+   what is matched and recorded. A branch rehearsal builds exactly the commit CI tested, and
+   accepts only a ``push`` or ``workflow_dispatch`` run, never a ``pull_request`` one (that
+   tested a merge commit); if ``ci.yml`` does not run on a push to the branch, dispatch it
+   (``gh workflow run ci.yml --ref cd-rehearsal/<name>``), as the gate's notice says.
+   While CI is running, or has not started, the gate waits, polling
    every minute up to ``ci-wait-seconds`` (``ARTIFACT_WAIT_TIMEOUT``, else two hours). A failed run
    refuses at once. A ``ci-result`` status is never trusted: any workflow can post one.
 6. The tag has not moved: an earlier run of this workflow for the tag built the same commit.
@@ -238,6 +246,34 @@ The gate
     builds the leg anyway. Without ``NEXUS_AUTH`` the probe is anonymous and the gate warns.
     An HPC leg is not probed by the gate, which cannot reach the cluster: its build job looks at
     the leg's prefix first (below).
+
+Rehearsing from a branch
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+A rehearsal can also run with no pull request: push a branch named ``cd-rehearsal/<name>``
+whose ``cd-v3.yml`` lists it (or ``cd-rehearsal/**``) under ``on: push: branches``. The run
+builds the pushed commit (``sha`` and ``head-sha`` are both ``github.sha``), records
+``pr_number: null`` and ``ref: refs/heads/cd-rehearsal/<name>`` in the provenance, and never
+publishes.
+
+- **Why a push, not** ``workflow_dispatch``: GitHub dispatches only workflows on the default
+  branch (or ones already registered by an earlier run), so a ``cd-v3.yml`` that lives only on a
+  feature branch cannot be dispatched. A push runs the workflow file of the pushed commit.
+- **The prefix is fixed.** The gate refuses a branch push outside ``cd-rehearsal/`` (and the
+  default branch, whatever its name), and ``check-cd-workflow`` refuses a ``push.branches``
+  pattern outside it (``**``, ``main``, ``!``-negations): the workflow's own filter is in a file
+  the pusher controls, so it decides nothing on its own.
+- **CI.** The gate waits for a ``push`` or ``workflow_dispatch`` run of ``ci.yml`` on the
+  commit. If ``ci.yml`` does not run on a push to the branch, dispatch it:
+  ``gh workflow run ci.yml --ref cd-rehearsal/<name>``. If the gate times out first, dispatch
+  CI and "Re-run all jobs" once it has passed: a re-run keeps the event and the commit.
+- **Concurrency.** The run's group is its ref, never cancelled in progress: a new push to the
+  branch waits behind the running rehearsal (possibly for the whole CI wait), and GitHub keeps
+  only the newest pending run. Cancel a stale rehearsal by hand; that is harmless.
+- **One rehearsal per commit.** Two rehearsal branches on one commit have different groups but
+  the same ``job_key``, so their HPC SLURM jobs reattach to each other: run one at a time.
+- A push deleting the branch starts no rehearsal (``ci-approval`` skips it in the sample; the
+  gate refuses it anyway).
 
 HPC modules
 -----------
@@ -347,7 +383,9 @@ Credentials and the threat model
   repository URL ``NEXUS_TEST_REPO_URL_ROCKY_9`` (the URL v2 PUTs ``<url>/<file>`` to). An org
   secret is readable by any job that names it, so the check hook allows a non-CI secret only in
   a publish job; in the gate's job also a ``NEXUS_TEST_REPO_URL_*`` URL, and
-  ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` only as the release-gate step's ``env: NEXUS_AUTH``. Only the tag-push trigger reaches the publish job (``publish`` is false for a
+  ``NEXUS_TEST_REPO_UPLOAD_TOKEN`` only as the release-gate step's ``env: NEXUS_AUTH``, which the
+  sample sets for tag refs only (``startsWith(github.ref, 'refs/tags/')``): a rehearsal does not
+  probe. Only the tag-push trigger reaches the publish job (``publish`` is false for a
   rehearsal). ``upload-nexus`` takes the credential from the step's ``env``, masks it, and
   refuses any host but test Nexus. GitHub masks the URL in logs too, so it prints as ``***``;
   the receipts and the release record hold it in full.
@@ -382,7 +420,9 @@ The workflow's shape
 --------------------
 
 ``check-cd-workflow`` (a pre-commit hook, and gate check 8) holds ``cd-v3.yml`` to the shape
-of ``samples/cd/cd.yml``: tag and labelled-PR triggers only; ``contents: read``; a concurrency
+of ``samples/cd/cd.yml``: tag push, ``cd-rehearsal/`` branch push and labelled-PR triggers only
+(every ``push.branches`` pattern under ``cd-rehearsal/``; no ``paths`` or ``-ignore``);
+``contents: read``; a concurrency
 group on the ref, never cancelled; no ``secrets: inherit`` or workflow ``env``; ``build-on-hpc``
 only with ``publish: archive``; a non-CI secret
 only in a publish job (in the gate's job also a ``NEXUS_TEST_REPO_URL_*``, and the upload token

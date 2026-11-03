@@ -392,6 +392,10 @@ def test_each_rule_catches_its_violation(mutate: Callable[[Doc], None], expected
     assert any(expected in p for p in problems), problems
 
 
+def test_the_sample_rehearses_from_cd_rehearsal_branches() -> None:
+    assert _sample()[True]["push"]["branches"] == ["cd-rehearsal/**"]
+
+
 _I1_PUSH = "I1: `push` names `tags` (releases) and/or `branches` under cd-rehearsal/"
 
 
@@ -450,9 +454,9 @@ def test_the_upload_nexus_credential_is_a_secret_of_the_publish_job() -> None:
 
 def test_the_gate_probe_authenticates_with_the_upload_token_only_in_its_step_env() -> None:
     doc = _sample()
-    # Only a pushed tag publishes and probes; a labelled pull request's rehearsal gets no token.
+    # Only a pushed tag publishes and probes; a rehearsal (labelled PR or branch push) gets no token.
     assert _steps(doc, "gate")[1]["env"]["NEXUS_AUTH"] == (
-        "${{ github.event_name == 'push' && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}"
+        "${{ startsWith(github.ref, 'refs/tags/') && secrets.NEXUS_TEST_REPO_UPLOAD_TOKEN || '' }}"
     )
     assert _problems(doc) == []
     del _steps(doc, "gate")[1]["env"]["NEXUS_AUTH"]
