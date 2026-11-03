@@ -7,6 +7,7 @@
 - A push of a release tag: ``release``, or ``prerelease`` for ``-rcN``.
 - A same-repo pull request labelled ``approved-for-cd``: ``rehearsal``. It builds ``github.sha``
   (the merge commit) and records the PR head, which is what PR CI is matched on.
+- A push that deletes its ref is refused: GitHub runs it on the default branch's commit.
 - Anything else is refused.
 """
 
@@ -50,6 +51,8 @@ def classify(
     version_parts: int = 3,
 ) -> ReleaseEvent:
     if event_name == "push":
+        if payload.get("deleted"):
+            raise ReleaseError(f"a push deleting {ref!r} is not a release")
         if not ref.startswith(_TAG_REF_PREFIX):
             raise ReleaseError(f"a push of {ref!r} is not a release: releases run from tag pushes")
         tag = ref.removeprefix(_TAG_REF_PREFIX)
