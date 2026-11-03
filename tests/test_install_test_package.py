@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +102,25 @@ def test_fedora_installs_without_epel(tmp_path: Path) -> None:
     assert (tmp_path / "dnf.log").read_text().splitlines() == [f"dnf -y install binutils ./{FILENAME}"]
     receipt: dict[str, Any] = json.loads((tmp_path / "itest" / "itest-rpm-rocky-9-gxx-11.json").read_text())
     assert receipt["os"] == "Fedora Linux 43 (Container Image)"
+
+
+@pytest.mark.parametrize(
+    ("os_release", "epel"),
+    [
+        ('ID="rhel"\nID_LIKE="fedora"\n', True),
+        ('ID="almalinux"\nID_LIKE="rhel centos fedora"\n', True),
+        ('ID="centos"\nID_LIKE="rhel fedora"\n', True),
+        ("ID=opensuse-leap\nID_LIKE=\"suse opensuse\"\n", False),
+    ],
+    ids=["rhel", "almalinux", "centos-stream", "unknown"],
+)
+def test_epel_follows_the_os_family(tmp_path: Path, os_release: str, epel: bool) -> None:
+    env = _setup(tmp_path)
+    (tmp_path / "os-release").write_text(os_release)
+    result = _run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    installs = (tmp_path / "dnf.log").read_text().splitlines()
+    assert ("dnf -y install epel-release" in installs) is epel
 
 
 def test_a_digest_mismatch_fails_before_installing(tmp_path: Path) -> None:
