@@ -39,6 +39,10 @@ The downstream CI runs only for a pull request, and only if the pull request ask
 - ``run-downstream-ci:<n>`` builds and tests the consumers up to level ``n``.
   In the figures below, ``eccodes`` is at level 1 and ``multio`` at level 2, as seen from ``eckit``.
 
+A repository may instead run a level by default, for a pull request without a label,
+with ``run-default`` in its manifest (see :doc:`../configuring/downstream`);
+a label still decides instead.
+
 If you are sure that a PR cannot break a consumer,
 e.g. a change to the documentation, to the CI, or to the tests only,
 then it is possible to explicitly opt out of running via the label ``downstream-ci-not-needed``.

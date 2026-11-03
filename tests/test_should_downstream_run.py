@@ -128,3 +128,27 @@ def test_a_scheduled_ci_run_fans_out_to_nobody(tmp_path: Path, event: str, run: 
         GITHUB_EVENT_PATH=str(payload),
     )
     assert (code, out["run"]) == (0, run)
+
+
+@pytest.mark.parametrize(
+    ("labels", "run", "depth"),
+    [
+        ([], "true", "all"),
+        ([f"{LABEL}:1"], "true", "1"),
+        (["downstream-ci-not-needed"], "false", ""),
+        (None, "false", ""),
+    ],
+    ids=["none", "label-wins", "opt-out", "push"],
+)
+def test_a_default_level_runs_an_undecided_pull_request(
+    tmp_path: Path, labels: list[str] | None, run: str, depth: str
+) -> None:
+    pulls = [] if labels is None else [_pull("abc123", labels)]
+    code, out, _ = _run_gate(tmp_path, pulls, DEFAULT_LEVEL_INPUT="all", OPT_OUT_INPUT="downstream-ci-not-needed")
+    assert (code, out["run"], out["depth"]) == (0, run, depth)
+
+
+def test_a_default_level_must_be_a_level(tmp_path: Path) -> None:
+    code, _, err = _run_gate(tmp_path, [], DEFAULT_LEVEL_INPUT="0")
+    assert code == 1
+    assert "default-level must be 'all' or a level from 1" in err

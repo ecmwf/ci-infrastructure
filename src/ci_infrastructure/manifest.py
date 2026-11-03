@@ -14,7 +14,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from ._github_api import (
     _OPTION_TOKEN_RE,
@@ -482,6 +491,26 @@ class DownstreamTable(_Table):
         description="Consumer packages this repo's fan-out skips, together with every consumer in it that "
         "depends on them.",
     )
+    run_default: Literal["require-decision", "all"] | StrictInt = Field(
+        default="require-decision",
+        alias="run-default",
+        description='What a pull request without a downstream-CI label runs: `"require-decision"` runs nothing '
+        "and blocks the merge until it carries one, "
+        '`"all"` or a level from 1 runs as if it carried `run-downstream-ci:all` or `run-downstream-ci:<n>`. '
+        "A label, also `downstream-ci-not-needed`, still decides instead.",
+    )
+
+    @field_validator("run_default")
+    @classmethod
+    def _run_default_level(cls, v: str | int) -> str | int:
+        if isinstance(v, int) and v < 1:
+            raise ValueError(f'run-default must be "require-decision", "all" or a level from 1, got {v!r}')
+        return v
+
+    @property
+    def default_level(self) -> str:
+        """The level an undecided pull request runs at, `all` or digits; empty to require a decision."""
+        return "" if self.run_default == "require-decision" else str(self.run_default)
 
 
 class ManifestFile(_Table):

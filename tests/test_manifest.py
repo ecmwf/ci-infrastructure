@@ -75,3 +75,15 @@ def test_add_to_path_takes_dirs_inside_the_install_tree() -> None:
     for bad in ["/usr/bin", "../bin", "bin:sbin", ""]:
         with pytest.raises(ValidationError, match="add-to-path"):
             PackageTable.model_validate({**_PACKAGE, "add-to-path": [bad]})
+
+
+@pytest.mark.parametrize(("value", "level"), [(None, ""), ("require-decision", ""), ("all", "all"), (2, "2")], ids=str)
+def test_run_default_is_the_level_of_an_undecided_pull_request(value: object, level: str) -> None:
+    downstream = {} if value is None else {"run-default": value}
+    assert DownstreamTable.model_validate(downstream).default_level == level
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "1", "none"])
+def test_run_default_must_be_a_decision_or_a_level(value: object) -> None:
+    with pytest.raises(ManifestSchemaError, match=r"\[downstream\]\.run-default"):
+        validate({"package": _PACKAGE, "downstream": {"run-default": value}})

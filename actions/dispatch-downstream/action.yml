@@ -6,7 +6,8 @@ name: Dispatch the downstream CI for a level label
 description: >
   When the event just set a level label, `<label>:all` or `<label>:<n>`, dispatch
   each of `workflows` on the default branch with the pull request's number and
-  that level; any other event or label dispatches nothing. Payload only, so safe
+  that level; with `default-level`, removing the last level label or
+  `opt-out-label` dispatches at that level; any other event or label dispatches nothing. Payload only, so safe
   under pull_request_target. The dispatched run checks the commit's CI itself.
   Needs `actions: write`.
 
@@ -18,6 +19,14 @@ inputs:
     description: 'Prefix of the level labels.'
     required: false
     default: 'run-downstream-ci'
+  default-level:
+    description: "'all' or a level from 1 that a pull request without a level label runs at; empty dispatches only for a set label."
+    required: false
+    default: ''
+  opt-out-label:
+    description: 'Label that skips the run despite `default-level`.'
+    required: false
+    default: 'downstream-ci-not-needed'
   token:
     description: 'Token with actions:write on this repo. Defaults to github.token.'
     required: false
@@ -31,6 +40,8 @@ runs:
         GH_TOKEN: ${{ inputs.token || github.token }}
         WORKFLOWS_INPUT: ${{ inputs.workflows }}
         LABEL_INPUT: ${{ inputs.label }}
+        DEFAULT_LEVEL_INPUT: ${{ inputs.default-level }}
+        OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
       run: |
         set -euo pipefail
 
@@ -43,8 +54,15 @@ runs:
         action="$(jq -r '.action // empty' "$event")"
         name="$(jq -r '.label.name // empty' "$event")"
         level="${name#"$LABEL_INPUT:"}"
-        if [ "$action" != labeled ] || [ "$level" = "$name" ] || \
-           { [ "$level" != all ] && ! [[ "$level" =~ ^[1-9][0-9]*$ ]]; }; then
+        is_level() { [ "$1" = all ] || [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
+        # The labels left after an unlabeled event that decide: a level label or the opt-out.
+        deciding="$(jq --arg p "$LABEL_INPUT:" --arg o "${OPT_OUT_INPUT:-}" \
+          '[(.pull_request.labels // [])[].name | select(startswith($p) or . == $o)] | length' "$event")"
+        if [ "$action" = unlabeled ] && [ -n "${DEFAULT_LEVEL_INPUT:-}" ] && [ "$deciding" -eq 0 ] &&
+           { [ "$name" = "${OPT_OUT_INPUT:-}" ] || { [ "$level" != "$name" ] && is_level "$level"; }; }; then
+          level="$DEFAULT_LEVEL_INPUT"
+          echo "Dispatch downstream: '$name' removed; the repository's default is '$level'"
+        elif [ "$action" != labeled ] || [ "$level" = "$name" ] || ! is_level "$level"; then
           echo "Dispatch downstream: '${name:-no label}' is not a level label; nothing to dispatch"
           exit 0
         fi

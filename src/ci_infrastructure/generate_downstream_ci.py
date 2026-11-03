@@ -230,6 +230,7 @@ class Manifest:
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
     downstream_exclude: tuple[str, ...] = ()
+    downstream_default: str = ""
     generated_header: str = ""
     packages: dict[str, PackageRef] = field(default_factory=dict)
 
@@ -291,6 +292,7 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
         downstream_exclude=raw.downstream.exclude if raw.downstream else (),
+        downstream_default=raw.downstream.default_level if raw.downstream else "",
         generated_header=_normalise_header(raw.generated.header if raw.generated else ""),
         packages=packages,
     )
@@ -1190,7 +1192,9 @@ def render_orchestrator_workflow(
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
-    jobs = _apply_label_gate(jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers}, lane=lane)
+    jobs = _apply_label_gate(
+        jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers}, lane=lane, default_level=m.downstream_default
+    )
     jobs = _require_approval(_require_context(jobs, fork_pull_requests=m.fork_pull_requests))
 
     # No pull_request trigger: its runs, all jobs skipped for any other label, would list on the pull request.
@@ -1389,9 +1393,11 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
     job["needs"] = [jid, *(needs if isinstance(needs, list) else [needs])]
 
 
-def _apply_label_gate(jobs: dict[str, Any], levels: Mapping[str, int], *, lane: Execution) -> dict[str, Any]:
+def _apply_label_gate(
+    jobs: dict[str, Any], levels: Mapping[str, int], *, lane: Execution, default_level: str = ""
+) -> dict[str, Any]:
     """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes."""
-    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(lane)}
+    gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(lane, default_level=default_level)}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)
         cond = job.get("if")
@@ -1473,11 +1479,12 @@ def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
     }
 
 
-def _label_gate_job(lane: Execution) -> dict[str, Any]:
+def _label_gate_job(lane: Execution, *, default_level: str = "") -> dict[str, Any]:
     """Not gated on CI success: report-ci-failure needs it too.
 
     Uses github.token with explicit `permissions`; an App token 403s on non-public repos.
     The HPC lane also needs run-hpc-ci: without it, the commit's CI built no HPC artifacts.
+    With `[downstream].run-default`, a pull request without a label runs at `default_level`.
     The runner lane skips a CI attempt that re-ran only the HPC legs: its result is the earlier one's.
     """
     with_ = {
@@ -1485,6 +1492,8 @@ def _label_gate_job(lane: Execution) -> dict[str, Any]:
         "pull-request": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.pull-request }}}}",
         "level": "${{ inputs.level }}",
     }
+    if default_level:
+        with_["default-level"] = default_level
     job: dict[str, Any] = {}
     if lane == EXECUTION_HPC_ATOS:
         with_["require-label"] = HPC_LABEL
@@ -1899,6 +1908,8 @@ def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> s
     Every lane's status is posted, so the required checks are the same whatever the repo's consumers.
     """
     decision: Step = {"uses": "ecmwf/ci-infrastructure/actions/post-downstream-decision@main", "with": {}}
+    if m.downstream_default and lanes:
+        decision["with"]["default-level"] = m.downstream_default
     if runner_lanes := [lane for lane in lanes if lane != EXECUTION_HPC_ATOS]:
         decision["with"]["contexts"] = " ".join(_status_context(lane) for lane in runner_lanes)
     if EXECUTION_HPC_ATOS in lanes:
@@ -1908,12 +1919,13 @@ def render_label_gate_workflow(m: Manifest, lanes: Mapping[Execution, str]) -> s
     steps = [decision]
     if lanes:
         # The dispatched run looks up the commit's CI itself, and waits for nothing.
-        steps.append(
-            {
-                "uses": "ecmwf/ci-infrastructure/actions/dispatch-downstream@main",
-                "with": {"workflows": " ".join(lanes.values())},
-            }
-        )
+        dispatch: Step = {
+            "uses": "ecmwf/ci-infrastructure/actions/dispatch-downstream@main",
+            "with": {"workflows": " ".join(lanes.values())},
+        }
+        if m.downstream_default:
+            dispatch["with"]["default-level"] = m.downstream_default
+        steps.append(dispatch)
     doc: dict[str, Any] = {
         "name": "[PR] Downstream-CI label gate",
         # Payload only, so pull_request_target is safe; its base-branch workflow and write token
