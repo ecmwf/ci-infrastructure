@@ -57,6 +57,12 @@ def test_without_python_version_the_venv_takes_uvs_python() -> None:
     assert 'uv venv --clear "${TMPDIR:-/tmp}/ci-python"' in out and "--python" not in out
 
 
+def test_uv_picks_the_torch_backend_unless_the_leg_opts_out() -> None:
+    assert 'export UV_TORCH_BACKEND="auto"\n' in _render()
+    assert 'export UV_TORCH_BACKEND="cpu"\n' in _render(leg={"torch-backend": "cpu"})
+    assert "UV_TORCH_BACKEND" not in _render(leg={"torch-backend": ""})
+
+
 def test_a_recipe_overrides_the_test_requirements() -> None:
     out = _render(RUNNER + "{% block test_requirements %}pytest pytest-xdist{% endblock %}\n")
     assert '"${own_wheels[0]}" pytest pytest-xdist\n' in out
