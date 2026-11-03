@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
-or merged one before its required CI was green.
+or merged one past a failing required check.
 
 The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
@@ -59,7 +59,7 @@ class Merge:
 
     merger: str
     title: str
-    bypassed: tuple[str, ...]  # the branch rules it did not meet when it was merged
+    bypassed: bool  # merged past a failing required status check
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ class RepoState:
     upstream: tuple[str, ...]
     commits: tuple[Commit, ...]
     runs: tuple[Run, ...]  # newest first
-    rules_since: datetime | None = None  # last change of the rules on `branch`; merges before it are not judged
+    bypasses_known: bool = True  # False when its rule insights could not be read
 
     @property
     def name(self) -> str:
@@ -278,30 +278,38 @@ def _icon_of(state: str | None) -> str:
     return {None: "·", "pending": "🟡", "success": "✅"}.get(state, "❌")
 
 
-@dataclass(frozen=True)
-class Rules:
-    checks: tuple[str, ...]  # required statuses
-    since: datetime | None  # when the rulesets requiring them last changed
+_TIME_PERIODS: Final = (("hour", timedelta(hours=1)), ("day", timedelta(days=1)), ("week", timedelta(weeks=1)))
 
 
-def _rules(repo: str, branch: str, token: str | None) -> Rules:
-    """The statuses the rules of `branch` require, and since when."""
-    data = gh_api_rest(f"repos/{repo}/rules/branches/{branch}?per_page=100", token)
-    rulesets = gh_api_rest(f"repos/{repo}/rulesets?per_page=100", token)
-    if not isinstance(data, list) or not isinstance(rulesets, list):
-        print(f"::warning::{repo}: could not read the rules of {branch}", file=sys.stderr)
-        return Rules((), None)
-    required = [r for r in data if r["type"] == "required_status_checks"]
-    ids = {r["ruleset_id"] for r in required}
-    changed = [datetime.fromisoformat(r["updated_at"]) for r in rulesets if r["id"] in ids]
-    checks = [c["context"] for r in required for c in r["parameters"]["required_status_checks"]]
-    return Rules(tuple(dict.fromkeys(checks)), max(changed, default=None))
+def _ci_bypasses(repo: str, branch: str, start: datetime, now: datetime, token: str | None) -> dict[str, str] | None:
+    """Per pushed sha from `start` on, who pushed or merged it past a failing required status check.
 
-
-def bypassed(statuses: Sequence[StatusEntry], when: datetime, checks: Sequence[str]) -> tuple[str, ...]:
-    """The required statuses that were not green when a PR was merged at `when`."""
-    states = ((check, status_at(statuses, check, when)) for check in checks)
-    return tuple(f"{check} {state or 'missing'}" for check, state in states if state != "success")
+    From the rule insights (Administration: read), which reach back one month; None when unreadable.
+    """
+    period = next((p for p, span in _TIME_PERIODS if now - span <= start), "month")
+    if period == "month" and now - start > timedelta(days=31):
+        print(f"::warning::{repo}: rule insights reach back one month, not to {start:%Y-%m-%d}", file=sys.stderr)
+    suites: list[Mapping[str, Any]] = []
+    for page in range(1, 11):
+        data = gh_api_rest(
+            f"repos/{repo}/rulesets/rule-suites?ref=refs/heads/{branch}&time_period={period}"
+            f"&rule_suite_result=bypass&per_page=100&page={page}",
+            token,
+        )
+        if not isinstance(data, list):
+            return None
+        suites += data
+        if len(data) < 100:
+            break
+    out = {}
+    for suite in suites:
+        if datetime.fromisoformat(suite["pushed_at"]) < start:
+            continue
+        detail = gh_api_rest(f"repos/{repo}/rulesets/rule-suites/{suite['id']}", token)
+        evaluations = detail.get("rule_evaluations", []) if isinstance(detail, dict) else []
+        if any(e["rule_type"] == "required_status_checks" and e["result"] == "fail" for e in evaluations):
+            out[suite["after_sha"]] = suite["actor_name"]
+    return out
 
 
 def _login(actor: Mapping[str, Any] | None) -> str:
@@ -320,17 +328,20 @@ def _pr_query(repo: str, numbers: Collection[int]) -> str:
     return f'{{ repository(owner: "{owner}", name: "{name}") {{\n{prs}\n}} }}'
 
 
-def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str | None) -> RepoState:
-    """`state` with what its commits from `start` to `end` had passed before they landed."""
+def with_ci_before(
+    state: RepoState, start: datetime, end: datetime, token: str | None, now: datetime | None = None
+) -> RepoState:
+    """`state` with what its commits from `start` to `end` had passed before they landed,
+    and which PRs among them were merged past a failing required status check."""
     landed = [c for c in state.commits if start <= c.date < end and (c.pr is None or c.pr[2] == state.branch)]
     prs: dict[int, Mapping[str, Any]] = {}
-    rules = Rules((), None)
+    bypasses: dict[str, str] | None = {}
     if any(c.pr for c in landed):
         result = gh_api_graphql(_pr_query(state.repo, {c.pr[0] for c in landed if c.pr}), token)
         data = result.get("data") if isinstance(result, dict) else None
         repo_data = (data or {}).get("repository") or {}
         prs = {int(k[1:]): v for k, v in repo_data.items() if v}
-        rules = _rules(state.repo, state.branch, token)
+        bypasses = _ci_bypasses(state.repo, state.branch, start, now or datetime.now(UTC), token)
     commits = {}
     for c in landed:
         if c.pr is None:
@@ -344,14 +355,12 @@ def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str 
             continue
         merged = datetime.fromisoformat(pr["mergedAt"])
         statuses = _statuses(state.repo, pr["headRefOid"], token)
-        judged = rules.since is not None and merged >= rules.since
-        merge = Merge(
-            _login(pr["mergedBy"]),
-            pr["title"],
-            bypassed(statuses, merged, rules.checks) if judged else (),
-        )
+        bypasser = (bypasses or {}).get(c.sha)
+        merge = Merge(bypasser or _login(pr["mergedBy"]), pr["title"], bypasser is not None)
         commits[c.sha] = replace(c, before=_icon_of(status_at(statuses, CI_RESULT, merged)), merge=merge)
-    return replace(state, commits=tuple(commits.get(c.sha, c) for c in state.commits), rules_since=rules.since)
+    return replace(
+        state, commits=tuple(commits.get(c.sha, c) for c in state.commits), bypasses_known=bypasses is not None
+    )
 
 
 def window(now: datetime, since: date | None = None, until: date | None = None) -> tuple[datetime, datetime]:
@@ -362,7 +371,11 @@ def window(now: datetime, since: date | None = None, until: date | None = None) 
 
 
 def fetch(
-    seeds: Sequence[str], token: str | None, start: datetime | None = None, end: datetime | None = None
+    seeds: Sequence[str],
+    token: str | None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    now: datetime | None = None,
 ) -> dict[str, RepoState]:
     """The state of every repo `discover` finds; with `start` and `end`, also `with_ci_before`."""
     nodes, edges = discover(seeds, token)
@@ -377,7 +390,7 @@ def fetch(
     }
     if start is None or end is None:
         return states
-    return {repo: with_ci_before(s, start, end, token) for repo, s in states.items()}
+    return {repo: with_ci_before(s, start, end, token, now) for repo, s in states.items()}
 
 
 def ordered(upstream: Mapping[str, Sequence[str]]) -> list[str]:
@@ -475,7 +488,7 @@ def render_summary(
         "",
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
         " · · no run of its own, part of a later push · ❗ pushed without a pull request"
-        " · ⚠️ merged before its required CI was green",
+        " · ⚠️ merged past a failing required check",
     ]
     start, end = window(now, since, until)
     pushes = sorted(
@@ -508,26 +521,23 @@ def render_summary(
         if c.pr and c.merge and c.merge.bypassed and start <= c.date < end and c.merge.merger not in exclude
     }
     merges = sorted(by_pr.values(), key=lambda sc: sc[1].date, reverse=True)
-    cutoffs = [f"{states[r].name} {states[r].rules_since:%Y-%m-%d %H:%M}" for r in order if states[r].rules_since]
-    lines += ["", f"## ⚠️ Merged before the required CI was green from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
+    unknown = [states[r].name for r in order if not states[r].bypasses_known]
+    lines += ["", f"## ⚠️ Merged past a failing required check from {start:%Y-%m-%d} to {until or now:%Y-%m-%d}", ""]
     lines += [
-        "Pull requests merged while a status that the default branch's rules require was not green."
-        f" CI before is their head's `{CI_RESULT}` then.",
-        "",
-        "Guessed from today's rules, not GitHub's own bypass record, so a merge counts only after its repo's"
-        " required statuses last changed; anything earlier would be a false positive and is left out."
-        + (f" Required statuses last changed (UTC): {', '.join(cutoffs)}." if cutoffs else ""),
+        "Pull requests merged with a bypass of the default branch's required status checks, as GitHub's rule"
+        f" insights record it. CI before is their head's `{CI_RESULT}` then.",
         "",
         *leaving_out,
+        *([f"Could not read the rule insights of {', '.join(unknown)}.", ""] if unknown else []),
     ]
     if merges:
-        lines += ["| Date | Commit | CI before | CI | Person | Title | Not green |", "|---|---|---|---|---|---|---|"]
+        lines += ["| Date | Commit | CI before | CI | Person | Title |", "|---|---|---|---|---|---|"]
         for s, c in merges:
             assert c.pr and c.merge
             commit = f"{s.name} [#{c.pr[0]}]({c.pr[1]})"
             lines.append(
                 f"| {c.date:%Y-%m-%d %H:%M} | {commit} | {c.before} | {_ci(c)} | {_user(c.merge.merger)}"
-                f" | {_cell(c.merge.title)} | {', '.join(c.merge.bypassed)} |"
+                f" | {_cell(c.merge.title)} |"
             )
     else:
         lines.append("None.")
@@ -581,7 +591,7 @@ def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | Non
     try:
         now = datetime.now(UTC)
         days = (since.date() if since else None, until.date() if until else None)
-        states = fetch(SEEDS, select_token(), *window(now, *days))
+        states = fetch(SEEDS, select_token(), *window(now, *days), now)
         summary = render_summary(states, now, frozenset(exclude), *days)
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
