@@ -9,7 +9,9 @@ description: >
   `opt-out-label` alone is success; setting a level label, `<label>:all` or
   `<label>:<n>`, is pending until the dispatched lanes report; more than one level
   label is failure. Otherwise nothing is posted: an undecided pull request's
-  statuses stay "Expected", and a finished result is never reset. A lane without
+  statuses stay "Expected", and a finished result is never reset. With
+  `default-level`, no level label and no `opt-out-label` is a run decision too,
+  pending from the event that makes it so: a new commit, or the removed label. A lane without
   consumers (`no-consumers`) is success on every event. An HPC lane
   (`hpc-contexts`) also needs `hpc-label`: with `hpc-opt-out-label` instead it is
   success, and with neither a run decision posts nothing to it. Payload-only, so safe
@@ -44,6 +46,10 @@ inputs:
     description: 'Label meaning "deliberately skip it".'
     required: false
     default: 'downstream-ci-not-needed'
+  default-level:
+    description: "'all' or a level from 1 that a pull request without a level label runs at; empty requires a label."
+    required: false
+    default: ''
   token:
     description: 'Token with statuses:write. Defaults to github.token.'
     required: false
@@ -68,6 +74,7 @@ runs:
         NO_CONSUMERS_INPUT: ${{ inputs.no-consumers }}
         LABEL_INPUT: ${{ inputs.label }}
         OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
+        DEFAULT_LEVEL_INPUT: ${{ inputs.default-level }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         set -euo pipefail
@@ -103,9 +110,13 @@ runs:
         level=""
         if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
 
+        defaulted=false
         if [ "${#found[@]}" -eq 0 ]; then
           if jq -e --arg l "$OPT_OUT_INPUT" '[.pull_request.labels[].name] | index($l) != null' "$event" >/dev/null; then
             decision=skip
+          elif [ -n "${DEFAULT_LEVEL_INPUT:-}" ]; then
+            decision=run
+            defaulted=true
           else
             decision=undecided
           fi
@@ -123,7 +134,17 @@ runs:
           skip) state=success; description="Downstream CI not needed" ;;
           conflict) state=failure; description="Set exactly one of '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>'" ;;
           run)
-            if [ "$(jq -r '.action // empty' "$event")" = labeled ] &&
+            action="$(jq -r '.action // empty' "$event")"
+            if [ "$defaulted" = true ]; then
+              # Pending from the event that made the default apply; the lanes then report on it.
+              removed="$(jq -r '.label.name // empty' "$event")"
+              if [[ "$action" =~ ^(opened|reopened|synchronize)$ ]] ||
+                 { [ "$action" = unlabeled ] && { [ "$removed" = "$OPT_OUT_INPUT" ] || [ "${removed#"$LABEL_INPUT:"}" != "$removed" ]; }; }; then
+                state=pending; description="Downstream CI runs by default (level $DEFAULT_LEVEL_INPUT); waiting for it"
+              else
+                state=""
+              fi
+            elif [ "$action" = labeled ] &&
                [ "$(jq -r '.label.name // empty' "$event")" = "${found[0]}" ]; then
               state=pending; description="Downstream CI requested; waiting for it"
             else

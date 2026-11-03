@@ -2442,3 +2442,21 @@ def test_only_the_runner_lane_skips_an_hpc_only_rerun(tmp_path: Path, lane: Exec
     _make_chain_ab(tmp_path, hpc=True)
     gate = yaml.safe_load(_orch(tmp_path, lane))["jobs"]["label-gate"]
     assert (gate.get("if") == "needs.context.outputs.hpc-only != 'true'") is skips
+
+
+def test_run_default_reaches_the_decision_the_dispatch_and_the_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without it the generated workflows are unchanged, so every other repo still needs a label."""
+    write_repo(tmp_path, "a", _GATE_UPSTREAM + '    [downstream]\n    run-default = "all"\n')
+    write_repo(tmp_path, "b", _GATE_CONSUMER)
+    for repo in ("a", "b"):
+        monkeypatch.chdir(tmp_path / repo)
+        _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+    workflows = tmp_path / "a" / ".github" / "workflows"
+    decision, dispatch = yaml.safe_load((workflows / "pr-label-downstream-ci.yml").read_text())["jobs"]["gate"]["steps"]
+    assert decision["with"]["default-level"] == "all"
+    assert dispatch["with"]["default-level"] == "all"
+    gate = yaml.safe_load((workflows / "trigger-downstream.yml").read_text())["jobs"]["label-gate"]
+    assert gate["steps"][0]["with"]["default-level"] == "all"

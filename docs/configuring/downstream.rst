@@ -194,6 +194,19 @@ It also starts the downstream CI for a level label, with :action:`dispatch-downs
 ``trigger-downstream*.yml`` has no ``pull_request`` trigger of its own,
 so that its runs, every job skipped for any other label, do not list on the pull request.
 
+A repository can make a level the default instead, for a pull request that carries neither label:
+
+.. code:: toml
+
+   [downstream]
+   run-default = "all"   # or a level, e.g. 1; "require-decision" (the default) needs a label
+
+Such a pull request then runs as if it carried ``run-downstream-ci:all`` (or ``:<n>``),
+and its statuses are pending from its first commit until the lanes report.
+A label still decides instead: a level label runs that level, and ``downstream-ci-not-needed`` skips the downstream CI.
+Removing the label returns to the default, which dispatches the lanes again.
+The ``hpc-atos`` lane still needs ``run-hpc-ci`` or ``hpc-ci-not-needed``.
+
 The labels only decide which jobs of the dependency graph are **skipped**.
 It is also possible to restrict the full downstream dependency graph from this repository, i.e. what ``run-downstream-ci:all`` runs.
 This is done in the :doc:`../reference/manifest` via

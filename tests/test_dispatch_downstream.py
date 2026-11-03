@@ -16,10 +16,12 @@ import pytest
 from conftest import action_run_body, stub_gh
 
 
-def _dispatch(tmp_path: Path, action: str, label: str | None) -> tuple[int, list[str], str]:
+def _dispatch(
+    tmp_path: Path, action: str, label: str | None, *, labels: list[str] | None = None, default: str = ""
+) -> tuple[int, list[str], str]:
     payload: dict[str, Any] = {
         "action": action,
-        "pull_request": {"number": 7},
+        "pull_request": {"number": 7, **({"labels": [{"name": n} for n in labels]} if labels is not None else {})},
         "repository": {"default_branch": "develop"},
         **({"label": {"name": label}} if label else {}),
     }
@@ -34,6 +36,8 @@ def _dispatch(tmp_path: Path, action: str, label: str | None) -> tuple[int, list
         "GITHUB_REPOSITORY": "ecmwf/eckit",
         "WORKFLOWS_INPUT": "trigger-downstream.yml trigger-downstream-hpc-atos.yml",
         "LABEL_INPUT": "run-downstream-ci",
+        "DEFAULT_LEVEL_INPUT": default,
+        "OPT_OUT_INPUT": "downstream-ci-not-needed",
     }
     proc = subprocess.run(
         ["bash", "-c", action_run_body("dispatch-downstream")], env=env, capture_output=True, text=True, check=False
@@ -68,3 +72,26 @@ def test_anything_else_dispatches_nothing(tmp_path: Path, action: str, label: st
     code, calls, log = _dispatch(tmp_path, action, label)
     assert (code, calls) == (0, [])
     assert "nothing to dispatch" in log
+
+
+@pytest.mark.parametrize("label", ["downstream-ci-not-needed", "run-downstream-ci:1"])
+def test_removing_the_last_decision_dispatches_the_default_level(tmp_path: Path, label: str) -> None:
+    code, calls, _ = _dispatch(tmp_path, "unlabeled", label, labels=["documentation"], default="all")
+    assert code == 0
+    assert [c.rsplit(" ", 1)[-1] for c in calls] == ["inputs[level]=all", "inputs[level]=all"]
+
+
+@pytest.mark.parametrize(
+    ("label", "labels"),
+    [
+        ("documentation", []),
+        ("run-downstream-ci:1", ["downstream-ci-not-needed"]),
+        ("run-downstream-ci:1", ["run-downstream-ci:2"]),
+    ],
+    ids=["other-label", "opt-out-left", "level-left"],
+)
+def test_removing_a_label_that_leaves_a_decision_dispatches_nothing(
+    tmp_path: Path, label: str, labels: list[str]
+) -> None:
+    code, calls, _ = _dispatch(tmp_path, "unlabeled", label, labels=labels, default="all")
+    assert (code, calls) == (0, [])

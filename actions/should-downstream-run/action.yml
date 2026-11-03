@@ -12,6 +12,8 @@ description: >
   `level` instead; a fork's PR, which `sha` does not find, comes as `pull-request`.
   With `require-label`, a pull request without that label does not run either,
   e.g. the HPC lane without run-hpc-ci, whose CI built no HPC artifacts.
+  With `default-level`, a pull request with neither a level label nor
+  `opt-out-label` runs at that level.
 
 inputs:
   label:
@@ -33,6 +35,14 @@ inputs:
     description: 'Label the pull request must also carry for the lane to run; empty requires none.'
     required: false
     default: ''
+  default-level:
+    description: "'all' or a level from 1 that a pull request without a level label runs at; empty runs nothing."
+    required: false
+    default: ''
+  opt-out-label:
+    description: 'Label that skips the run despite `default-level`.'
+    required: false
+    default: 'downstream-ci-not-needed'
   token:
     description: 'Token with pull-requests:read on this repo. Defaults to github.token (an App token 403s on non-public repos).'
     required: false
@@ -58,6 +68,8 @@ runs:
         PULL_REQUEST_INPUT: ${{ inputs.pull-request }}
         LEVEL_INPUT: ${{ inputs.level }}
         REQUIRE_LABEL_INPUT: ${{ inputs.require-label }}
+        DEFAULT_LEVEL_INPUT: ${{ inputs.default-level }}
+        OPT_OUT_INPUT: ${{ inputs.opt-out-label }}
       run: |
         set -euo pipefail
 
@@ -72,12 +84,13 @@ runs:
           exit 1
         fi
 
-        if [ -n "${LEVEL_INPUT:-}" ]; then
-          if [ "$LEVEL_INPUT" != all ] && ! [[ "$LEVEL_INPUT" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error title=Label gate::level must be 'all' or a level from 1, got '$LEVEL_INPUT'" >&2
+        for input in level:LEVEL_INPUT default-level:DEFAULT_LEVEL_INPUT; do
+          var="${input#*:}"
+          if [ -n "${!var:-}" ] && [ "${!var}" != all ] && ! [[ "${!var}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error title=Label gate::${input%%:*} must be 'all' or a level from 1, got '${!var}'" >&2
             exit 1
           fi
-        fi
+        done
 
         # Every repository has its own nightly; a fan-out would build each consumer again.
         if [ "${GITHUB_EVENT_NAME:-}" = workflow_run ] &&
@@ -128,7 +141,12 @@ runs:
           level=""
           if [ "${#found[@]}" -gt 0 ]; then level="${found[0]#"$LABEL_INPUT:"}"; fi
 
-          if [ "${#found[@]}" -eq 0 ]; then
+          if [ "${#found[@]}" -eq 0 ] && [ -n "${DEFAULT_LEVEL_INPUT:-}" ] &&
+             ! jq -e --arg l "${OPT_OUT_INPUT:-}" '[.[] | select(.state == "open") | .labels[].name] | index($l)' "$pulls" >/dev/null; then
+            run=true
+            depth="$DEFAULT_LEVEL_INPUT"
+            why="no level label; the repository's default is '$DEFAULT_LEVEL_INPUT'"
+          elif [ "${#found[@]}" -eq 0 ]; then
             run=false
             why="no '$LABEL_INPUT:all' or '$LABEL_INPUT:<n>' label; skipping"
           elif [ "${#found[@]}" -eq 1 ] && [ "$level" != "${found[0]}" ] &&

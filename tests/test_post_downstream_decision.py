@@ -54,7 +54,13 @@ class Result:
 
 
 def _run(
-    tmp_path: Path, payload: dict[str, Any], *, contexts: str = " ".join(CONTEXTS), idle: str = "", hpc: str = ""
+    tmp_path: Path,
+    payload: dict[str, Any],
+    *,
+    contexts: str = " ".join(CONTEXTS),
+    idle: str = "",
+    hpc: str = "",
+    default: str = "",
 ) -> Result:
     event = tmp_path / "event.json"
     event.write_text(json.dumps(payload))
@@ -75,6 +81,7 @@ def _run(
         "HPC_OPT_OUT_INPUT": HPC_OPT_OUT,
         "LABEL_INPUT": LABEL,
         "OPT_OUT_INPUT": OPT_OUT,
+        "DEFAULT_LEVEL_INPUT": default,
     }
     proc = subprocess.run(
         ["bash", "-c", action_run_body("post-downstream-decision")],
@@ -183,3 +190,30 @@ def test_the_hpc_lane_follows_the_hpc_labels(
     assert r.code == 0, r.err
     posted = dict(zip(r.posted("context"), zip(r.posted("state"), r.posted("description"), strict=True), strict=True))
     assert (posted.get(CONTEXTS[0], (None,))[0], posted.get(CONTEXTS[1])) == (runner, hpc)
+
+
+@pytest.mark.parametrize(
+    ("action", "label"),
+    [("opened", None), ("synchronize", None), ("unlabeled", OPT_OUT), ("unlabeled", f"{LABEL}:1")],
+)
+def test_a_default_level_makes_an_undecided_pull_request_pending(
+    tmp_path: Path, action: str, label: str | None
+) -> None:
+    r = _run(tmp_path, _payload(action, label=label), default="all")
+    assert r.decision == "run"
+    assert r.posted("state") == ["pending", "pending"]
+    assert r.posted("description")[0] == "Downstream CI runs by default (level all); waiting for it"
+
+
+@pytest.mark.parametrize(("action", "label"), [("labeled", "documentation"), ("unlabeled", "documentation")])
+def test_a_default_level_leaves_the_lanes_result(tmp_path: Path, action: str, label: str) -> None:
+    """Another label changes nothing about the decision, so a finished result stands."""
+    r = _run(tmp_path, _payload(action, label=label), default="all")
+    assert r.decision == "run"
+    assert r.gh_calls == []
+
+
+def test_the_opt_out_label_wins_over_a_default_level(tmp_path: Path) -> None:
+    r = _run(tmp_path, _payload("labeled", labels=[OPT_OUT], label=OPT_OUT), default="all")
+    assert r.decision == "skip"
+    assert r.posted("state") == ["success", "success"]
