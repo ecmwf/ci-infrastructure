@@ -7,12 +7,16 @@
 Checks, in order; the first that fails refuses the release:
 
 1. The kill switch (``CD_KILL_SWITCH=on``).
-2. The event: a release tag push, or a same-repo pull request labelled ``approved-for-cd`` (rehearsal).
+2. The event: a release tag push; or a rehearsal, from a same-repo pull request labelled
+   ``approved-for-cd`` or a push of a ``cd-rehearsal/<name>`` branch (never the default branch).
+   A push that deletes its ref is refused.
 3. ``release`` mode needs allow-production.
 4. The tag names the project's VERSION.
 5. CI passed on exactly this commit: a ``ci.yml`` run of this repo, ``push`` or ``workflow_dispatch``
-   on the commit; for a rehearsal also the ``pull_request`` run of the PR's head. Waits while CI
-   runs, or has not started yet, up to ci-wait-seconds; refuses on a failed run.
+   on the commit; for a PR rehearsal also the ``pull_request`` run of the PR's head. A branch
+   rehearsal takes only a ``push`` or ``workflow_dispatch`` run of its commit: CI may need
+   dispatching on the branch. Waits while CI runs, or has not started yet, up to ci-wait-seconds;
+   refuses on a failed run.
 6. The tag did not move: earlier runs of this workflow for the tag, in any letter case, built the same commit.
 7. Each source dep's release-ref is a tag or a commit SHA, never a branch; resolved to a SHA.
 8. The workflow file at this commit passes check-cd-workflow.
@@ -129,7 +133,8 @@ def _accepted(run: Mapping[str, Any], event: ReleaseEvent, repository: str) -> b
     head_sha, kind = run.get("head_sha"), run.get("event")
     if kind in _TAG_EVENTS and head_sha in {event.sha, event.head_sha}:
         return True
-    if event.mode != MODE_REHEARSAL or kind != "pull_request" or head_sha != event.head_sha:
+    # A pull_request run tested a PR merge commit: it counts only for a PR rehearsal.
+    if event.mode != MODE_REHEARSAL or event.branch is not None or kind != "pull_request" or head_sha != event.head_sha:
         return False
     numbers = [p.get("number") for p in run.get("pull_requests") or [] if isinstance(p, dict)]
     if numbers:
@@ -177,7 +182,13 @@ def wait_for_ci(
             raise ReleaseError(f"CI did not pass for {what}: {run.get('conclusion')} ({run.get('html_url')})")
         if clock() >= deadline:
             raise ReleaseError(f"no passed {what} within {wait_seconds}s ({verdict}); re-run once CI has passed")
-        print(f"::notice::waiting for {what} ({'running' if verdict == 'pending' else 'not started'})")
+        notice = f"::notice::waiting for {what} ({'running' if verdict == 'pending' else 'not started'})"
+        if event.branch is not None and verdict == "none":
+            notice += (
+                f"; if {CI_WORKFLOW} does not run on a push to this branch, dispatch it: "
+                f"gh workflow run {CI_WORKFLOW} --ref {event.branch}"
+            )
+        print(notice)
         sleep(poll_seconds)
 
 
@@ -275,7 +286,11 @@ def run_gate(
         tag_prefix=meta.tag_prefix,
         version_parts=meta.version_parts,
     )
-    print(f"mode: {event.mode}; commit {event.sha}" + (f"; tag {event.version.tag}" if event.version.tag else ""))
+    print(
+        f"mode: {event.mode}; commit {event.sha}"
+        + (f"; tag {event.version.tag}" if event.version.tag else "")
+        + (f"; branch {event.branch}" if event.branch else "")
+    )
     # 3
     if event.mode == MODE_RELEASE and not inp.allow_production:
         raise ReleaseError(f"tag {event.version.tag} is a release; this pipeline publishes prereleases (-rcN) only")
@@ -317,6 +332,7 @@ def run_gate(
         "workflow_ref": inp.workflow_ref,
         "action_ref": inp.action_ref,
         "mode": event.mode,
+        "ref": inp.ref,
         "tag": event.version.tag,
         "version": event.version.base,
         "sha": event.sha,

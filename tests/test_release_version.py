@@ -135,16 +135,43 @@ def test_classify_branch_push_is_refused() -> None:
         )
 
 
-def test_classify_refuses_a_push_deleting_its_tag() -> None:
-    with pytest.raises(ReleaseError, match="deleting"):
-        classify(
-            event_name="push",
-            ref="refs/tags/2.5.0-rc1",
-            sha="a" * 40,
-            repository="o/r",
-            payload={"deleted": True},
-            project_version="2.5.0",
-        )
+def test_classify_a_cd_rehearsal_branch_push() -> None:
+    e = classify(
+        event_name="push",
+        ref="refs/heads/cd-rehearsal/x",
+        sha="a" * 40,
+        repository="o/r",
+        payload={"repository": {"default_branch": "develop"}},
+        project_version="2.5.0",
+    )
+    assert (e.mode, e.sha, e.head_sha, e.pr_number, e.head_ref, e.branch) == (
+        "rehearsal",
+        "a" * 40,
+        "a" * 40,
+        None,
+        None,
+        "cd-rehearsal/x",
+    )
+    assert (e.version.tag, e.version.base) == (None, "2.5.0")
+
+
+@pytest.mark.parametrize(
+    ("ref", "payload", "match"),
+    [
+        ("refs/heads/develop", {}, "tag pushes"),
+        ("refs/heads/feature/x", {}, "tag pushes"),
+        ("refs/heads/cd-rehearsal", {}, "tag pushes"),
+        ("refs/heads/cd-rehearsal/", {}, "tag pushes"),
+        ("refs/heads/xcd-rehearsal/x", {}, "tag pushes"),
+        ("refs/heads/cd-rehearsal/x", {"repository": {"default_branch": "cd-rehearsal/x"}}, "default branch"),
+        ("refs/heads/cd-rehearsal/x", {"deleted": True}, "deleting"),
+        ("refs/tags/2.5.0-rc1", {"deleted": True}, "deleting"),
+        ("refs/pull/1/head", {}, "tag pushes"),
+    ],
+)
+def test_classify_refuses_other_pushes(ref: str, payload: dict[str, object], match: str) -> None:
+    with pytest.raises(ReleaseError, match=match):
+        classify(event_name="push", ref=ref, sha="a" * 40, repository="o/r", payload=payload, project_version="2.5.0")
 
 
 def _pr(label: str = "approved-for-cd", head_repo: str = "o/r", action: str = "labeled") -> dict[str, object]:
