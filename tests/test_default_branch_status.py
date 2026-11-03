@@ -397,3 +397,9 @@ def test_a_pr_named_by_several_commits_is_listed_once() -> None:
     out = dbs.render_summary({"o/eccodes": _state("o/eccodes", commits=commits)}, NOW)
     assert out.count("eccodes [#10]") == 1
     assert "| 2026-10-14 06:17 | eccodes [#10]" in out
+
+
+def test_an_apps_login_gets_the_bot_suffix_rest_uses() -> None:
+    assert dbs._login({"__typename": "Bot", "login": "regen"}) == "regen[bot]"
+    assert dbs._login({"__typename": "User", "login": "mo"}) == "mo"
+    assert dbs._login(None) == ""

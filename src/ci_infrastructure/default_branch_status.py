@@ -318,10 +318,18 @@ def bypassed(
     return tuple(out)
 
 
+def _login(actor: Mapping[str, Any] | None) -> str:
+    """As REST names it: GraphQL leaves the `[bot]` off an app's login."""
+    if not actor:
+        return ""
+    return f"{actor['login']}[bot]" if actor.get("__typename") == "Bot" else str(actor["login"])
+
+
 def _pr_query(repo: str, numbers: Collection[int]) -> str:
     owner, name = repo.split("/", 1)
     prs = "\n".join(
-        f"p{n}: pullRequest(number: {n}) {{ title headRefOid author {{ login }} mergedBy {{ login }} mergedAt"
+        f"p{n}: pullRequest(number: {n}) {{ title headRefOid author {{ login }}"
+        " mergedBy { __typename login } mergedAt"
         " reviews(states: APPROVED, first: 50) { nodes { submittedAt author { login } } } }"
         for n in numbers
     )
@@ -360,7 +368,7 @@ def with_ci_before(state: RepoState, start: datetime, end: datetime, token: str 
         statuses = _statuses(state.repo, pr["headRefOid"], token)
         judged = rules.since is not None and merged >= rules.since
         merge = Merge(
-            (pr["mergedBy"] or {}).get("login", ""),
+            _login(pr["mergedBy"]),
             pr["title"],
             bypassed(statuses, approvers, merged, rules.checks, rules.approvals) if judged else (),
         )
