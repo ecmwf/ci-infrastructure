@@ -8,8 +8,9 @@ Releases (CD v3, experimental)
 .. warning::
 
    Experimental, on the ``feature/cd-v3`` branch only. It publishes **prereleases**: rpms to
-   **test Nexus**, and HPC modules into a **dry-run root** (``$SCRATCH/cd-v3-dry-run``, never
-   ``/usr/local/apps``) whose module sync and tag are only printed. deb, conda and PyPI come
+   **test Nexus**, and HPC modules into a **dry-run root** (``$SCRATCH/cd-v3-dry-run``; under
+   ``/usr/local/apps`` only with allow-production, see below) whose module sync and tag are
+   only printed. deb, conda and PyPI come
    later. v2 (``ecmwf/reusable-workflows``) stays the production publisher.
 
 A release is built from the commit CI passed on, by the same job-script recipe CI runs, into
@@ -145,7 +146,7 @@ A release leg must set ``channel``, ``options``, ``build-type``, ``install-prefi
 ``tests = false``. Per channel:
 
 - ``rpm`` (``execution = "runner"``): ``arch``, ``nexus-target``, an ``install-test-image`` from
-  ``eccr.ecmwf.int/``; ``install-prefix`` is absolute (``/usr/local/apps`` is refused).
+  ``eccr.ecmwf.int/``; ``install-prefix`` is absolute (``/usr/local/apps`` only with allow-production).
 - ``hpc-module`` (``execution = "hpc-atos"``): ``site`` (a troika site); ``modules``;
   ``install-prefix`` starts with ``{root}/{package}/{version}`` (then plain components, e.g.
   ``/GNU/8.5``), where ``{root}`` is the gate's ``hpc-root`` (default ``$SCRATCH/cd-v3-dry-run``,
@@ -372,6 +373,10 @@ Credentials and the threat model
   and runs no ``modulemgr``. A production module needs a separate deploy identity (its own ssh
   key on the ``hpc-submit`` runners) that alone can write ``/usr/local/apps``; ``promote-hpc``
   and ``sync-tag-hpc`` are already the only jobs that would hold it.
+- Until then, a supervised test may install a prerelease under ``/usr/local/apps`` with the CI
+  user: ``hpc-root: /usr/local/apps`` and ``allow-production: 'true'`` on the gate, and
+  ``allow-production: 'true'`` on ``build-on-hpc`` and ``hpc-promote``. Each step refuses that
+  prefix without its own flag. Sync and tag are still only printed.
 
 The workflow's shape
 --------------------
