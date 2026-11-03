@@ -225,6 +225,10 @@ A leg may set these fields:
      - ``""``; inserted unquoted, e.g. ``"-n auto -m 'not slow'"``
    * - ``tests``
      - ``true``; ``false`` skips installing and running pytest
+   * - ``torch-backend``
+     - ``"auto"``: uv installs CUDA torch only where it finds a GPU, CPU torch elsewhere;
+       e.g. ``"cu128"`` or ``"cpu"`` picks the build, ``""`` takes torch as the index has it
+       (exported as ``UV_TORCH_BACKEND``, so it applies to every ``uv pip install`` of the job)
    * - ``qos``, ``nodes``, ``ntasks``, ``cpus-per-task``, ``gpus-per-task``, ``mem``, ``ssdtmp``, ``time``
      - HPC only: as for ``cmake-atos.sh.j2`` (see :doc:`../reference/hpc`),
        except ``ntasks`` ``1``, ``mem`` ``16GB`` and no ``ssdtmp``, as nothing is compiled

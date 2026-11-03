@@ -15,6 +15,11 @@
 
 wheels="$CI_INSTALL_PREFIX/wheels"
 
+{% if torch_backend | default("auto") %}
+# Which torch wheels uv installs: with "auto", CUDA ones only where it finds a GPU, which
+# a GitHub runner lacks; the CUDA wheels add several GB. A leg's torch-backend = "" opts out.
+export UV_TORCH_BACKEND="{{ torch_backend | default("auto") }}"
+{% endif %}
 {% block set_environment %}{% endblock %}
 {% block python %}
 {% if python_version %}
