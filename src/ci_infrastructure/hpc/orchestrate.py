@@ -421,6 +421,18 @@ def _remote_sentinel_waiter(conn: Any, output: str, jid: int) -> Callable[[float
     return wait
 
 
+def last_stage(conn: Any, output: str) -> str | None:
+    """The last ``ci-stage:`` marker the recipe wrote; None when there is none or the output is unreadable."""
+    pipeline = f"grep -E {shlex.quote('^' + jobscript.STAGE_MARKER)} {shlex.quote(output)} | tail -n 1"
+    try:
+        proc = conn.execute(["bash", "-c", pipeline], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        stdout, _ = proc.communicate()
+    except Exception:  # noqa: BLE001 - the stage only decorates the message
+        return None
+    line = transfer.output_text(stdout).strip()
+    return line.removeprefix(jobscript.STAGE_MARKER).strip() or None
+
+
 def _echo_remote_output(conn: Any, output: str) -> None:
     try:
         proc = conn.execute(["cat", output], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -739,8 +751,11 @@ def submit_wait(
         write_outputs({"install-path": local_install_path, "cache-hit": "false", "batch": batch})
         return
 
+    failure = "the build reported a failure"
+    if verdict == "FAILURE" and (stage := last_stage(site._connection, paths.output)):
+        failure += f" in stage '{stage}'"
     detail = {
-        "FAILURE": "the build reported a failure",
+        "FAILURE": failure,
         "VANISHED": "the job left the scheduler without reporting success (killed / cancelled / node failure)",
         "TIMEOUT": "the wait timed out",
     }[verdict]

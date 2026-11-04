@@ -31,6 +31,7 @@ from ci_infrastructure.hpc.orchestrate import (
     drop_staging,
     find_active_job_by_name,
     format_job_status,
+    last_stage,
     plan_remote_prefixes,
     query_job_status,
     report_quota,
@@ -197,6 +198,19 @@ def test_sentinel_waiter_ignores_a_sentinel_from_another_job(tmp_path: Path) -> 
     assert _remote_sentinel_waiter(LocalShell(), str(output), 2222)(1.0) is None
 
 
+def test_last_stage_names_the_last_marker(tmp_path: Path) -> None:
+    output = tmp_path / "job.out"
+    output.write_text("ci-stage: configure\nci-stage: build\nci-stage: test\n1 test failed\nFinished: FAILURE 4242\n")
+    assert last_stage(LocalShell(), str(output)) == "test"
+
+
+def test_last_stage_is_none_without_a_marker_or_output(tmp_path: Path) -> None:
+    output = tmp_path / "job.out"
+    output.write_text("Finished: FAILURE 4242\n")
+    assert last_stage(LocalShell(), str(output)) is None
+    assert last_stage(LocalShell(), str(tmp_path / "missing.out")) is None
+
+
 _REPO_BUILD: Final = """#!/bin/bash
 #SBATCH --partition=compute
 #SBATCH --time=00:30:00
@@ -251,6 +265,23 @@ def test_render_injects_env_and_sentinels() -> None:
     assert "trap _ci_on_err ERR" in script
     assert script.rstrip().endswith(f'echo "{jobscript.SENTINEL_SUCCESS} {jobscript.SENTINEL_JOB_ID}"')
     assert jobscript.SENTINEL_FAILURE in script
+
+
+def test_render_reports_the_node_and_its_other_jobs(tmp_path: Path) -> None:
+    script = _script(staging_dir="/scratch/staging/art", run_id="99-1")
+    lines = script.splitlines()
+    node_i = lines.index('echo "ci: node ${SLURMD_NODENAME:-?} job ${SLURM_JOB_ID:-?}"')
+    assert (
+        lines.index("trap _ci_on_err ERR")
+        < node_i
+        < next(i for i, ln in enumerate(lines) if ln.startswith("_ci_marker="))
+    )
+    block = tmp_path / "node.sh"
+    block.write_text("set -euo pipefail\n" + "\n".join(jobscript._node_block()) + "\necho done\n")
+    env = {"PATH": "/usr/bin:/bin", "SLURMD_NODENAME": "ac6-169"}
+    proc = subprocess.run(["bash", str(block)], env=env, capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert proc.stdout.splitlines()[-1] == "done"
 
 
 def test_render_waits_for_marker_and_unpacks_when_staging_given() -> None:

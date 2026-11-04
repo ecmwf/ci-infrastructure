@@ -25,6 +25,9 @@ from .._github_api import Execution
 SENTINEL_SUCCESS: Final = "Finished: SUCCESS"
 SENTINEL_FAILURE: Final = "Finished: FAILURE"
 
+#: Recipes echo it before each stage; a failure names the last one.
+STAGE_MARKER: Final = "ci-stage: "
+
 #: Appended to every sentinel so a verdict names the job that wrote it.
 SENTINEL_JOB_ID: Final = "${SLURM_JOB_ID:-unknown}"
 
@@ -368,6 +371,17 @@ def _marker_wait_block(staging_dir: str, run_id: str, marker_wait_timeout: int, 
     ]
 
 
+def _node_block() -> list[str]:
+    """Where the job runs and what shares the node: jobs on one node can collide (ports, /tmp)."""
+    return [
+        'echo "ci: node ${SLURMD_NODENAME:-?} job ${SLURM_JOB_ID:-?}"',
+        'if [ -n "${SLURMD_NODENAME:-}" ]; then',
+        '  echo "ci: jobs on ${SLURMD_NODENAME}:"',
+        "  squeue -w \"${SLURMD_NODENAME}\" -h -o '%i %j %u' || true",
+        "fi",
+    ]
+
+
 def _sccache_block(staging_dir: str) -> list[str]:
     env_file = f"{staging_dir}/{SCCACHE_ENV_NAME}"
     return [
@@ -439,6 +453,7 @@ def render_job_script(
         out.append(f'export {key}="{value}"')
     out.append(f"_ci_on_err() {{ {sentinel_echo(SENTINEL_FAILURE)}; }}")
     out.append("trap _ci_on_err ERR")
+    out.extend(_node_block())
     out.append("")
     if staging_dir is not None and run_id is not None:
         out.extend(_marker_wait_block(staging_dir, run_id, marker_wait_timeout, deps=ships_deps))

@@ -150,6 +150,13 @@ def test_tests_false_runs_no_ctest_even_when_a_child_overrides_the_block() -> No
     assert "ctest custom" in _render(child)
 
 
+def test_stage_markers_survive_overridden_blocks() -> None:
+    child = EXTENDS + "{% block build %}\nmake\n{% endblock %}\n{% block test %}\nctest custom\n{% endblock %}\n"
+    stages = [ln for ln in _render(child).splitlines() if ln.startswith(f'echo "{jobscript.STAGE_MARKER}')]
+    assert stages == [f'echo "{jobscript.STAGE_MARKER}{s}"' for s in ("configure", "build", "test", "install")]
+    assert f'echo "{jobscript.STAGE_MARKER}test"' not in _render(leg={"tests": False})
+
+
 def test_child_overrides_blocks_and_keeps_the_base_with_super() -> None:
     child = EXTENDS + (
         "{% block preflight %}\n{{ super() }}\necho extra\n{% endblock %}\n"
@@ -282,7 +289,7 @@ def test_compiler_fields_name_the_compilers() -> None:
     assert jobscript.undeclared_template_names(RUNNER, without_cc, template_name="t") == {"c_compiler_binary"}
 
 
-TEMPLATE_SHA256: Final = "9e09bb02b215ffaaeeae2866ad0416836405f211e294cd77af1b054ef9687c17"
+TEMPLATE_SHA256: Final = "87b62215ae5432d493e05ff4fede0cd5b08401a743540451c8a39a3ea2b24683"
 TEMPLATE_VERSION: Final = 2
 
 
