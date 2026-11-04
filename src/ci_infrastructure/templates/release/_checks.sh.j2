@@ -94,18 +94,37 @@ ci_release_check_runpath() {
   return "$bad"
 }
 
-# ci_release_check_ldd ROOT
-# No ELF file under ROOT has a library ldd cannot find, without LD_LIBRARY_PATH.
+# ci_release_check_ldd ROOT [DENIED_PREFIX...]
+# No ELF file under ROOT has a library ldd cannot find, without LD_LIBRARY_PATH, nor one it finds
+# under a denied prefix (a CI or node-local tree, gone after the job). ROOT itself may sit in a
+# denied tree (the install test unpacks into $TMPDIR): what resolves under ROOT is accepted.
 ci_release_check_ldd() {
-  local root="$1" bad=0 f missing
+  local root="$1" bad=0 f missing lib d out real_root
+  shift
+  local -a denied=()
+  ci_release_prefixes denied "$@" || return 1
+  real_root="$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")"
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
-    missing="$(env -u LD_LIBRARY_PATH ldd "$f" 2>/dev/null | grep 'not found' || true)"
+    out="$(env -u LD_LIBRARY_PATH ldd "$f" 2>/dev/null || true)"
+    missing="$(printf '%s\n' "$out" | grep 'not found' || true)"
     if [ -n "$missing" ]; then
       echo "ci-release: $f does not load:" >&2
       printf '%s\n' "$missing" >&2
       bad=1
     fi
+    # The resolved paths: `libx.so => /p (0x...)`, and `\t/p (0x...)` for an absolute DT_NEEDED.
+    while IFS= read -r lib; do
+      [ -n "$lib" ] || continue
+      if ci_release_under "$lib" "$root" "$real_root"; then continue; fi
+      for d in "${denied[@]}"; do
+        if ci_release_under "$lib" "$d"; then
+          echo "ci-release: $f loads $lib, in $d, a CI or node-local tree gone after the job" >&2
+          bad=1
+          break
+        fi
+      done
+    done < <(printf '%s\n' "$out" | sed -n -e 's/^.* => \(\/[^ ]*\) (0x[0-9a-f]*)$/\1/p' -e 's/^[[:space:]]*\(\/[^ ]*\) (0x[0-9a-f]*)$/\1/p')
   done < <(find "$root" -type f -print0)
   return "$bad"
 }
