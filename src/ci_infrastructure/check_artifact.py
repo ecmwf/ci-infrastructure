@@ -15,6 +15,7 @@ from ._errors import CIError
 from ._github_api import (
     compute_deps_hash8,
     compute_platform_slug,
+    lane_of_artifact,
     make_artifact_name,
     probe_workflow_runs,
     resolve_ref_to_sha,
@@ -139,7 +140,7 @@ def main(
     if found:
         run_status, run_conclusion = None, None
     else:
-        runs = probe_workflow_runs(repo, sha, token)
+        runs = probe_workflow_runs(repo, sha, token, lane=lane_of_artifact(artifact_name))
         run_status, run_conclusion = runs.state, runs.conclusion
 
     outputs: Outputs = {

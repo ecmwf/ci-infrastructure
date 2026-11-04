@@ -478,11 +478,14 @@ def dispatch_producer_workflow(
     dispatcher_sha: str,
     branch: str,
     fallback_ref: str,
+    pin: str,
     token: str,
 ) -> None:
     """Dispatch the producer's lane workflow with rebuild-request, then wait ≤60s for its run to appear.
 
-    Without the wait, fetch_deps could see no run yet and bail instead of polling.
+    Without the wait, fetch_deps could see no run yet and bail instead of polling. `pin` is passed on:
+    a producer between the pinned repo and this consumer must build against the pinned commit, or it
+    publishes under another deps hash than the one this run waits for.
     """
     dispatch_id = (
         f"resolve-{os.environ.get('GITHUB_RUN_ID', '0')}-"
@@ -511,7 +514,13 @@ def dispatch_producer_workflow(
         "-f",
         f"fallback-ref={fallback_ref}",
     ]
-    rc, _, stderr = _gh(cmd, token)
+    rc, _, stderr = _gh([*cmd, "-f", f"pin={pin}"] if pin else cmd, token)
+    if rc != 0 and pin and "Unexpected inputs" in stderr:
+        print(
+            f"::warning::{workflow_file} in {plan.repo} predates the `pin` input; rebuilding without "
+            f"{pin}, so it may publish under another deps hash. Regenerate its downstream-CI workflows."
+        )
+        rc, _, stderr = _gh(cmd, token)
     if rc != 0:
         raise ResolveError(
             f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "
@@ -534,7 +543,7 @@ def dispatch_producer_workflow(
 def rerun_producer_ci(*, plan: DispatchPlan, token: str) -> None:
     """Re-run the commit's own CI run, then wait ≤60s for it to show as in flight."""
     rc, _, stderr = _gh(["gh", "api", "-X", "POST", f"repos/{plan.repo}/actions/runs/{plan.rerun_id}/rerun"], token)
-    if rc != 0 and not probe_workflow_runs(plan.repo, plan.sha, token).in_flight:
+    if rc != 0 and not probe_workflow_runs(plan.repo, plan.sha, token, lane=plan.lane).in_flight:
         raise ResolveError(f"Failed to re-run CI run {plan.rerun_id} of {plan.repo}@{plan.sha[:8]}: {stderr.strip()}")
     print(
         f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.sha[:8]} by re-running its CI "
@@ -546,7 +555,7 @@ def rerun_producer_ci(*, plan: DispatchPlan, token: str) -> None:
 def _await_run(plan: DispatchPlan, token: str) -> None:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if probe_workflow_runs(plan.repo, plan.sha, token).in_flight:
+        if probe_workflow_runs(plan.repo, plan.sha, token, lane=plan.lane).in_flight:
             print(f"  {plan.repo}@{plan.sha[:8]} run is now visible; resolve job exiting")
             return
         time.sleep(2)
@@ -858,7 +867,7 @@ def resolve_leg(
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
     artifact_index: s3_store.ArtifactIndex,
-    run_state_cache: dict[tuple[Repo, Sha], bool],
+    run_state_cache: dict[tuple[Repo, Sha, Execution], bool],
     token: str | None,
     can_dispatch: bool,
     lane: Execution,
@@ -1033,9 +1042,9 @@ def resolve_leg(
             # Another job of this run uploads it; a fork's run carries the base branch's commit, so no probe finds it.
             source = "artifact"  # fetch_deps polls for the upload
         else:
-            run_key = (spec.repo, sha)
+            run_key = (spec.repo, sha, lane)
             if run_key not in run_state_cache:
-                run_state_cache[run_key] = probe_workflow_runs(spec.repo, sha, token).in_flight
+                run_state_cache[run_key] = probe_workflow_runs(spec.repo, sha, token, lane=lane).in_flight
             if run_state_cache[run_key]:
                 source = "artifact"
             else:
@@ -1194,7 +1203,7 @@ def resolve_packages(
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
     artifact_index: s3_store.ArtifactIndex,
-    run_state_cache: dict[tuple[Repo, Sha], bool],
+    run_state_cache: dict[tuple[Repo, Sha, Execution], bool],
     token: str | None,
     can_dispatch: bool,
     lane: Execution,
@@ -1459,7 +1468,7 @@ def _run(
         and all(r == own_repo for r in pins)
     )
     stale = StaleFallback(token) if allow_stale else None
-    run_state_cache: dict[tuple[Repo, Sha], bool] = {}
+    run_state_cache: dict[tuple[Repo, Sha, Execution], bool] = {}
     matrices_out: dict[str, dict[str, Any]] = {}
     unresolved: list[str] = []
 
@@ -1584,6 +1593,7 @@ def _run(
                 dispatcher_sha=str(own_sha),
                 branch=branch,
                 fallback_ref=str(plan.ref),
+                pin=pin,
                 token=dispatch_token,
             )
 

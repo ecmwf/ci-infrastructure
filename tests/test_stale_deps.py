@@ -93,7 +93,7 @@ def base_sha(monkeypatch: pytest.MonkeyPatch) -> list[Sha]:
     monkeypatch.setattr(
         resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: head[0] if repo == "o/base" else _MIDDLE
     )
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns(state="none"))
     monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: None)
     monkeypatch.setattr(resolve_deps, "is_ancestor", lambda repo, older, head, token: older != _UNMERGED)
     return head
@@ -223,7 +223,7 @@ def test_no_fallback_to_a_build_against_an_unmerged_upstream(
     store = _Store()
     deps = [_spec("middle", allow_stale=True)]
     with monkeypatch.context() as m:
-        m.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
+        m.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns(state="running"))
         under_test = _resolve(store, deps, allow_stale=False, pins={Repo("o/base"): Ref(_UNMERGED)})
     store.tars += [under_test["base"].artifact_name, under_test["middle"].artifact_name]
     base_sha[0] = _NEW

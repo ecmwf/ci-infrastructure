@@ -698,6 +698,12 @@ def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
             "type": "string",
             "default": "main",
         },
+        "pin": {
+            "description": "owner/repo@sha the dispatching consumer was pinned to; only with rebuild-request",
+            "required": False,
+            "default": "",
+            "type": "string",
+        },
     }
 
 
@@ -755,9 +761,9 @@ def _git_read_mint_step(m: Manifest) -> Step:
     }
 
 
-# An upstream change is tested at its commit; a rebuild request comes from a consumer and pins nothing.
+# An upstream change is tested at its commit; a rebuild request carries the requesting consumer's pin.
 _PIN_CHANGE_UNDER_TEST: Final = (
-    "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
+    "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || inputs.pin }}"
 )
 
 

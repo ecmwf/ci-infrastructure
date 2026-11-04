@@ -504,7 +504,7 @@ def _resolve_fork_sibling(published_in_run: frozenset[str]) -> tuple[list[Any], 
 def test_a_sibling_another_kind_of_this_run_publishes_is_awaited(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fork's run carries the base branch's commit, so no probe sees it in flight; the pin must not fail it."""
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: pytest.fail("probed"))
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: pytest.fail("probed"))
     to_fetch, plans = _resolve_fork_sibling(frozenset({"cxxmath"}))
     assert [(d.name, d.source, d.sha) for d in to_fetch] == [("cxxmath", "artifact", "f" * 40)]
     assert plans == {}
@@ -515,7 +515,7 @@ def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkey
         in_flight = False
 
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: _NotInFlight())
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: _NotInFlight())
     with pytest.raises(ResolveError, match="the commit under test"):
         _resolve_fork_sibling(frozenset())
 

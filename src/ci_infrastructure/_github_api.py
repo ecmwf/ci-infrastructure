@@ -257,21 +257,28 @@ class WorkflowRuns(NamedTuple):
         return self.state == "running"
 
 
-# Any other workflow (e.g. a legacy CI stuck in the queue) must not look like a build in flight.
-_BUILD_WORKFLOWS: Final = frozenset({"ci.yml", "cross-repo-trigger.yml", "cross-repo-trigger-hpc-atos.yml"})
+_HPC_SEGMENT_RE: Final = re.compile(r"-hpcv\d+(?:-|$)")
 
 
-def _is_build_workflow(run: Mapping[str, Any]) -> bool:
+def lane_of_artifact(artifact_name: str) -> Execution:
+    """hpc artifacts carry the `-hpcv<N>` segment (see make_artifact_name)."""
+    return EXECUTION_HPC_ATOS if _HPC_SEGMENT_RE.search(artifact_name) else EXECUTION_RUNNER
+
+
+def _is_build_workflow(run: Mapping[str, Any], lane: Execution | None) -> bool:
+    """ci.yml builds both lanes, a cross-repo trigger only its own; other workflows (a stuck legacy CI) never count."""
     path = run.get("path")
-    return isinstance(path, str) and PurePosixPath(path.split("@", 1)[0]).name in _BUILD_WORKFLOWS
+    lanes = (EXECUTION_RUNNER, EXECUTION_HPC_ATOS) if lane is None else (lane,)
+    workflows = {"ci.yml", *(f"cross-repo-trigger{lane_suffix(x)}.yml" for x in lanes)}
+    return isinstance(path, str) and PurePosixPath(path.split("@", 1)[0]).name in workflows
 
 
-def probe_workflow_runs(repo: str, sha: str, token: str | None) -> WorkflowRuns:
-    """Probe the build-workflow runs for `sha`; an in-progress run wins over a failed one."""
+def probe_workflow_runs(repo: str, sha: str, token: str | None, *, lane: Execution | None = None) -> WorkflowRuns:
+    """Probe the runs for `sha` that can publish `lane`'s artifacts; an in-progress run wins over a failed one."""
     data = gh_api_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
     if not isinstance(data, dict):
         return WorkflowRuns("none")
-    runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict) and _is_build_workflow(r)]
+    runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict) and _is_build_workflow(r, lane)]
     if not runs:
         return WorkflowRuns("none")
     for run in runs:
