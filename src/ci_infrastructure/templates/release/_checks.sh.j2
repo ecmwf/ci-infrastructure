@@ -10,13 +10,53 @@ ci_release_is_elf() {
   [ -f "$1" ] && [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]
 }
 
-# ci_release_check_runpath ROOT ALLOWED_PREFIX...
+# ci_release_under PATH PREFIX...: PATH is one of the prefixes, or below one (text only).
+ci_release_under() {
+  local path="$1" d
+  shift
+  for d in "$@"; do
+    case "$path" in
+      "$d"|"$d"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# ci_release_prefixes NAME ARG...: the absolute ARGs, trailing slashes stripped, into array NAME;
+# an empty ARG is skipped (an unset variable must not allow, or deny, everything). A relative
+# ARG, `/` or `//` is a configuration error: it would match every path.
+ci_release_prefixes() {
+  local -n _ci_out="$1"
+  local p
+  shift
+  _ci_out=()
+  for p in "$@"; do
+    [ -n "$p" ] || continue
+    while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+    case "$p" in
+      /?*) _ci_out+=("$p") ;;
+      *)
+        echo "ci-release: configuration error: '$p' is not an absolute path below /" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+# ci_release_check_runpath ROOT ALLOWED_PREFIX... [-- DENIED_PREFIX...]
 # Every RUNPATH/RPATH entry of every ELF file under ROOT is $ORIGIN-relative, or an absolute path
 # under an allowed prefix with no `.` or `..` component (`/opt/ecmwf/../../usr/lib64` escapes it).
-# An empty entry (`:/opt/ecmwf/lib`) is a finding: the loader reads it as the current directory.
+# An entry under a denied prefix (a CI or node-local tree, gone after the job) is a finding even
+# when an allowed prefix covers it. An empty entry (`:/opt/ecmwf/lib`) is a finding: the loader
+# reads it as the current directory. Prefixes are compared as text.
 ci_release_check_runpath() {
-  local root="$1" bad=0 f entry ok allowed
+  local root="$1" bad=0 f entry ok d
   shift
+  local -a raw_allowed=() raw_denied=() allowed=() denied=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do raw_allowed+=("$1"); shift; done
+  if [ $# -gt 0 ]; then shift; raw_denied=("$@"); fi
+  ci_release_prefixes allowed "${raw_allowed[@]}" || return 1
+  ci_release_prefixes denied "${raw_denied[@]}" || return 1
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
     while IFS= read -r entry; do
@@ -33,17 +73,20 @@ ci_release_check_runpath() {
           case "$entry/" in
             */./*|*/../*) ;;
             *)
-              for allowed in "$@"; do
-                case "$entry" in
-                  "$allowed"|"$allowed"/*) ok=true ;;
-                esac
+              for d in "${denied[@]}"; do
+                if ci_release_under "$entry" "$d"; then
+                  echo "ci-release: $f: RUNPATH entry '$entry' is in $d, a CI or node-local tree gone after the job" >&2
+                  bad=1
+                  continue 2
+                fi
               done
+              if ci_release_under "$entry" "${allowed[@]}"; then ok=true; fi
               ;;
           esac
           ;;
       esac
       if ! $ok; then
-        echo "ci-release: $f: RUNPATH entry '$entry' is neither \$ORIGIN-relative nor under: $*" >&2
+        echo "ci-release: $f: RUNPATH entry '$entry' is neither \$ORIGIN-relative nor under: ${allowed[*]}" >&2
         bad=1
       fi
     done < <(readelf -d "$f" 2>/dev/null | sed -n 's/.*(\(RUNPATH\|RPATH\)).*\[\(.*\)\]$/\2/p' | tr ':' '\n')
