@@ -26,7 +26,8 @@ the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and bui
 The dependencies travel in one archive, which the job unpacks into ``$CI_DEPS_DIR``:
 creating their files on the shared filesystem took the runner up to half a minute for ``eckit`` alone.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
-and ``PATH`` at the directories each declares in ``add-to-path``.
+and ``PATH`` at the directories each declares in ``add-to-path``,
+and, in a release job, ``CI_WORK_DIR`` at the CI work dir on the cluster.
 The cluster therefore needs no GitHub token.
 When the runner has an sccache bucket (``SCCACHE_BUCKET``),
 the sccache that :action:`setup-sccache` installs and a file with its configuration and credentials go into the staging directory too,
@@ -56,7 +57,8 @@ The build script
 ----------------
 
 ``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
-the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_DEPS_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
+the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_DEPS_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``
+and, in a release job, ``CI_WORK_DIR``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
 the shared template does this, a hand-written script does it itself:
