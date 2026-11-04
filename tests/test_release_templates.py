@@ -942,6 +942,73 @@ def test_ldd_check_accepts_libraries_under_root_in_a_denied_tree(tmp_path: Path)
     assert _checks(f"ci_release_check_ldd {tmp_path / 'link' / 'opt' / 'x'} {denied}", tmp_path).returncode == 0
 
 
+def _foo_lib(tmp_path: Path, lib_dir: Path) -> None:
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "foo.c").write_text("int foo(void) { return 1; }\n")
+    (tmp_path / "main.c").write_text("int foo(void);\nint main(void) { return foo(); }\n")
+    _cc("-shared", "-fPIC", str(tmp_path / "foo.c"), "-o", str(lib_dir / "libfoo.so"))
+
+
+def _main_linked(tmp_path: Path, out: Path, lib_dir: Path, rpath: str) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _cc(
+        str(tmp_path / "main.c"),
+        "-o",
+        str(out),
+        f"-L{lib_dir}",
+        "-lfoo",
+        f"-Wl,-rpath,{rpath}",
+        "-Wl,--enable-new-dtags",
+    )
+
+
+@needs_cc
+def test_ldd_check_refuses_an_origin_path_escaping_root(tmp_path: Path) -> None:
+    """`$ORIGIN/../../..` prints as ROOT/bin/../../../deps: still outside ROOT, in the denied tree."""
+    denied = tmp_path / "tmp"
+    root = denied / "ci-itest-1" / "opt" / "x"
+    deps = denied / "ci-itest-1" / "deps"
+    _foo_lib(tmp_path, deps)
+    _main_linked(tmp_path, root / "bin" / "main", deps, "$ORIGIN/../../../deps")
+    result = _checks(f"ci_release_check_ldd {root} {denied}", tmp_path)
+    assert result.returncode == 1 and f"in {denied}, a CI or node-local tree" in result.stderr
+
+
+@needs_cc
+def test_ldd_check_refuses_a_symlink_from_root_into_a_denied_tree(tmp_path: Path) -> None:
+    denied = tmp_path / "work"
+    staged = denied / "staging" / "lib"
+    _foo_lib(tmp_path, staged)
+    root = tmp_path / "p"
+    (root / "lib").mkdir(parents=True)
+    (root / "lib" / "libfoo.so").symlink_to(staged / "libfoo.so")
+    _main_linked(tmp_path, root / "bin" / "main", root / "lib", "$ORIGIN/../lib")
+    result = _checks(f"ci_release_check_ldd {root} {denied}", tmp_path)
+    assert result.returncode == 1 and f"({staged}/libfoo.so), in {denied}" in result.stderr
+
+
+@needs_cc
+def test_ldd_check_refuses_a_denied_library_with_a_space_in_its_path(tmp_path: Path) -> None:
+    denied = tmp_path / "work"
+    lib_dir = denied / "my lib"
+    _foo_lib(tmp_path, lib_dir)
+    root = tmp_path / "p"
+    _main_linked(tmp_path, root / "main", lib_dir, str(lib_dir))
+    result = _checks(f"ci_release_check_ldd {root} {denied}", tmp_path)
+    assert result.returncode == 1 and f"loads {lib_dir}/libfoo.so, in {denied}" in result.stderr
+
+
+@needs_cc
+def test_ldd_check_denies_a_non_canonical_prefix(tmp_path: Path) -> None:
+    denied = tmp_path / "work"
+    lib_dir = denied / "staging"
+    _foo_lib(tmp_path, lib_dir)
+    root = tmp_path / "p"
+    _main_linked(tmp_path, root / "main", lib_dir, str(lib_dir))
+    result = _checks(f"ci_release_check_ldd {root} {tmp_path}/./work", tmp_path)
+    assert result.returncode == 1 and f"loads {lib_dir}/libfoo.so" in result.stderr
+
+
 def test_leak_check(tmp_path: Path) -> None:
     cmake_dir = tmp_path / "p" / "lib" / "cmake" / "pkg"
     cmake_dir.mkdir(parents=True)
