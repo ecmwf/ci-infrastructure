@@ -45,12 +45,17 @@ ci_release_prefixes() {
 
 # ci_release_add_canonical NAME: append to array NAME each entry's canonical form (readlink -m:
 # symlinks, `//` and `.` resolved) where it differs, so a denied tree is matched under either name.
+# One whose canonical form is `/` (`/scratch/..`) is a configuration error, as `/` is.
 ci_release_add_canonical() {
   local -n _ci_arr="$1"
   local p c
   for p in "${_ci_arr[@]}"; do
     c="$(readlink -m -- "$p" 2>/dev/null || true)"
-    if [ -n "$c" ] && [ "$c" != / ] && [ "$c" != "$p" ]; then _ci_arr+=("$c"); fi
+    if [ "$c" = / ]; then
+      echo "ci-release: configuration error: '$p' is /" >&2
+      return 1
+    fi
+    if [ -n "$c" ] && [ "$c" != "$p" ]; then _ci_arr+=("$c"); fi
   done
 }
 
@@ -69,7 +74,7 @@ ci_release_check_runpath() {
   if [ $# -gt 0 ]; then shift; raw_denied=("$@"); fi
   ci_release_prefixes allowed "${raw_allowed[@]}" || return 1
   ci_release_prefixes denied "${raw_denied[@]}" || return 1
-  ci_release_add_canonical denied
+  ci_release_add_canonical denied || return 1
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
     while IFS= read -r entry; do
@@ -118,7 +123,7 @@ ci_release_check_ldd() {
   shift
   local -a denied=()
   ci_release_prefixes denied "$@" || return 1
-  ci_release_add_canonical denied
+  ci_release_add_canonical denied || return 1
   real_root="$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")"
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
