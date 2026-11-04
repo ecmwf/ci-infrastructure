@@ -67,6 +67,21 @@ def test_a_pr_merged_by_hand_counts_through_the_merged_parent() -> None:
     assert dbs._merged_pr(node, "develop") == (487, "u", "develop")
 
 
+def test_a_rebase_merged_pr_owns_all_its_commits() -> None:
+    # eccodes#622: GitHub links only the last rebased commit to the PR.
+    pr = {"number": 622, "url": "u", "merged": True, "baseRefName": "develop", "mergeCommit": {"oid": "c3"}}
+    nodes = [_node("c3", "c2", [{**pr, "commits": {"totalCount": 3}}]), _node("c2", "c1"), _node("c1", "a")]
+    nodes += [_node("a", None)]
+    assert dbs._with_rebased_prs(nodes, "develop") == [(622, "u", "develop")] * 3 + [None]
+
+
+def test_a_squash_merged_pr_owns_only_its_commit() -> None:
+    pr = {"number": 7, "url": "u", "merged": True, "baseRefName": "develop", "mergeCommit": {"oid": "s"}}
+    nodes = [_node("s", "a", [{**pr, "commits": {"totalCount": 3}}]), _node("a", None)]
+    nodes[1]["committedDate"] = "2026-10-13T09:00:00Z"
+    assert dbs._with_rebased_prs(nodes, "develop") == [(7, "u", "develop"), None]
+
+
 def test_verdict_skips_running_and_cancelled_runs() -> None:
     assert _state("o/a", _run("3", None), _run("2", "cancelled"), _run("1", "failure")).verdict == "red"
     assert _state("o/a", _run("2", "success"), _run("1", "failure")).verdict == "green"
