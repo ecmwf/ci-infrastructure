@@ -43,6 +43,17 @@ ci_release_prefixes() {
   done
 }
 
+# ci_release_add_canonical NAME: append to array NAME each entry's canonical form (readlink -m:
+# symlinks, `//` and `.` resolved) where it differs, so a denied tree is matched under either name.
+ci_release_add_canonical() {
+  local -n _ci_arr="$1"
+  local p c
+  for p in "${_ci_arr[@]}"; do
+    c="$(readlink -m -- "$p" 2>/dev/null || true)"
+    if [ -n "$c" ] && [ "$c" != / ] && [ "$c" != "$p" ]; then _ci_arr+=("$c"); fi
+  done
+}
+
 # ci_release_check_runpath ROOT ALLOWED_PREFIX... [-- DENIED_PREFIX...]
 # Every RUNPATH/RPATH entry of every ELF file under ROOT is $ORIGIN-relative, or an absolute path
 # under an allowed prefix with no `.` or `..` component (`/opt/ecmwf/../../usr/lib64` escapes it).
@@ -97,12 +108,14 @@ ci_release_check_runpath() {
 # ci_release_check_ldd ROOT [DENIED_PREFIX...]
 # No ELF file under ROOT has a library ldd cannot find, without LD_LIBRARY_PATH, nor one it finds
 # under a denied prefix (a CI or node-local tree, gone after the job). ROOT itself may sit in a
-# denied tree (the install test unpacks into $TMPDIR): what resolves under ROOT is accepted.
+# denied tree (the install test unpacks into $TMPDIR): a library whose resolved path (readlink -f:
+# `..` and symlinks followed, so `$ORIGIN/../../..` cannot escape) is under ROOT is accepted.
 ci_release_check_ldd() {
-  local root="$1" bad=0 f missing lib d out real_root
+  local root="$1" bad=0 f missing lib real d out real_root
   shift
   local -a denied=()
   ci_release_prefixes denied "$@" || return 1
+  ci_release_add_canonical denied
   real_root="$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")"
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
@@ -116,15 +129,17 @@ ci_release_check_ldd() {
     # The resolved paths: `libx.so => /p (0x...)`, and `\t/p (0x...)` for an absolute DT_NEEDED.
     while IFS= read -r lib; do
       [ -n "$lib" ] || continue
-      if ci_release_under "$lib" "$root" "$real_root"; then continue; fi
+      real="$(readlink -f -- "$lib" 2>/dev/null || printf '%s' "$lib")"
+      if ci_release_under "$real" "$real_root"; then continue; fi
       for d in "${denied[@]}"; do
-        if ci_release_under "$lib" "$d"; then
+        if ci_release_under "$lib" "$d" || ci_release_under "$real" "$d"; then
+          if [ "$real" != "$lib" ]; then lib="$lib ($real)"; fi
           echo "ci-release: $f loads $lib, in $d, a CI or node-local tree gone after the job" >&2
           bad=1
           break
         fi
       done
-    done < <(printf '%s\n' "$out" | sed -n -e 's/^.* => \(\/[^ ]*\) (0x[0-9a-f]*)$/\1/p' -e 's/^[[:space:]]*\(\/[^ ]*\) (0x[0-9a-f]*)$/\1/p')
+    done < <(printf '%s\n' "$out" | sed -n -e 's/^.* => \(\/.*\) (0x[0-9a-f]*)$/\1/p' -e 's/^[[:space:]]*\(\/.*\) (0x[0-9a-f]*)$/\1/p')
   done < <(find "$root" -type f -print0)
   return "$bad"
 }
