@@ -49,6 +49,11 @@ CHANNEL_EXECUTION: Final[Mapping[str, Execution]] = {
 #: Release builds and their install-test images come from our registry only.
 TRUSTED_REGISTRY: Final = "eccr.ecmwf.int/"
 PRODUCTION_ROOT: Final = "/usr/local/apps"
+#: The absolute trees an installed HPC module's RUNPATH may name, besides its own prefix. ecbuild
+#: sets CMAKE_INSTALL_RPATH_USE_LINK_PATH, so every library a project links from a loaded module
+#: (Qt, a shared Boost, Python) lands in its RUNPATH, and on Atos every non-system module lives
+#: here. Fixed in code, so a leg cannot widen it; a module outside it is refused at install test.
+HPC_RUNPATH_ROOTS: Final = (PRODUCTION_ROOT,)
 
 #: Where HPC modules are installed unless the gate is given another root: a dry-run tree of the
 #: troika user's scratch, never the production module tree. Expanded on the cluster.
@@ -312,6 +317,7 @@ def release_context(
             },
             "cpack_overrides": "",
             "exclude_script": "",
+            "runpath_roots": list(HPC_RUNPATH_ROOTS),
         }
     else:
         prefix = str(leg["install-prefix"])
@@ -330,6 +336,8 @@ def release_context(
                 package_release=PACKAGE_RELEASE,
             ),
             "exclude_script": exclude_script(meta.exclude, install_prefix=prefix),
+            # install-test-package checks an rpm's RUNPATH against its prefix alone.
+            "runpath_roots": [],
         }
     ctx["prefix_sh"] = prefix_shell_word(prefix)
     filename = ctx["filename"]
