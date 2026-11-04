@@ -94,6 +94,17 @@ def test_an_rpm_leg_builds_on_a_runner(tmp_path: Path) -> None:
         legs.expand(legs.load(manifest), ["release-rpm"], _event())
 
 
+def test_an_rpm_leg_has_no_runpath_roots(tmp_path: Path) -> None:
+    rm = legs.load(write_release_repo(tmp_path))
+    [leg] = legs.expand(rm, ["release-rpm"], _event())["release-rpm"]
+    assert leg["_release"]["runpath_roots"] == []
+
+
+@pytest.mark.parametrize("root", legs.HPC_RUNPATH_ROOTS)
+def test_each_hpc_runpath_root_is_a_plain_prefix(root: str) -> None:
+    assert legs.check_install_prefix(root, allow_production=True) == root
+
+
 # --- hpc-module legs ------------------------------------------------------------------------------------
 
 
@@ -115,6 +126,8 @@ def test_an_hpc_leg_installs_under_the_dry_run_root(tmp_path: Path) -> None:
     assert ctx["job_key"] == "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567"
     assert ctx["filename"] == "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8.tar.zst"
     assert ctx["module"] == {"name": "pkg", "version": "2.5.0-rc1", "tag": ""}
+    # What the install test lets a RUNPATH name besides the prefix: the module tree.
+    assert ctx["runpath_roots"] == ["/usr/local/apps"]
     meta = json.loads(ctx["build_meta"])
     assert meta["site"] == "hpc-batch" and meta["modules"][2] == "load gcc/old"
     assert "_resolved" not in leg
