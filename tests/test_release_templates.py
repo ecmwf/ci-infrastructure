@@ -779,6 +779,69 @@ def test_runpath_check(tmp_path: Path) -> None:
     assert _checks(f"ci_release_check_runpath {prefix} {prefix}", tmp_path).returncode == 0
 
 
+_QT_LIB: Final = "/usr/local/apps/qt/6.6.1/6.6.1/gcc_64/lib"
+
+
+def _elf_with_runpath(tmp_path: Path, prefix: Path, runpath: str) -> None:
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
+    src = tmp_path / "main.c"
+    src.write_text("int main(void) { return 0; }\n")
+    _cc(str(src), "-o", str(prefix / "bin" / "x"), f"-Wl,-rpath,{runpath}", "-Wl,--enable-new-dtags")
+
+
+@needs_cc
+def test_runpath_check_allows_a_module_root(tmp_path: Path) -> None:
+    """ecbuild's USE_LINK_PATH names the module trees (ecflow_ui.x and Qt, run 41661593257)."""
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, f"$ORIGIN/../lib:{_QT_LIB}")
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix}", tmp_path)
+    assert result.returncode == 1 and _QT_LIB in result.stderr
+    assert result.stderr.rstrip().endswith(f"nor under: {prefix}")
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps", tmp_path).returncode == 0
+    # A trailing slash on an allowed root is the same root.
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps/", tmp_path).returncode == 0
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps// --", tmp_path).returncode == 0
+
+
+@pytest.mark.parametrize("runpath", ["/usr/local/appsX/lib", "/usr/local/apps/../../tmp"])
+@needs_cc
+def test_runpath_check_matches_whole_components(tmp_path: Path, runpath: str) -> None:
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, runpath)
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps", tmp_path)
+    assert result.returncode == 1 and runpath in result.stderr
+
+
+@needs_cc
+def test_runpath_check_denial_wins(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "x"
+    staged = tmp_path / "work" / "staging" / "k" / "deps" / "x" / "lib"
+    _elf_with_runpath(tmp_path, prefix, str(staged))
+    # An allowed root covering the entry passes, until the work dir is denied.
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path}", tmp_path).returncode == 0
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path} -- {tmp_path}/work", tmp_path)
+    assert result.returncode == 1
+    assert f"'{staged}' is in {tmp_path}/work, a CI or node-local tree gone after the job" in result.stderr
+    # An empty denied entry (an unset variable) denies nothing.
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path} -- ''", tmp_path).returncode == 0
+    # A denied prefix matches whole components: <tmp>/wor does not deny <tmp>/work.
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path} -- {tmp_path}/wor", tmp_path).returncode == 0
+
+
+@needs_cc
+def test_runpath_check_refuses_a_bad_prefix(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, "/elsewhere/lib")
+    # An empty allowed prefix is skipped: it allows nothing, rather than every absolute path.
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix} ''", tmp_path)
+    assert result.returncode == 1 and "/elsewhere/lib" in result.stderr
+    for bad in ("/", "//", "rel"):
+        for args in (f"{prefix} '{bad}'", f"{prefix} -- '{bad}'"):
+            result = _checks(f"ci_release_check_runpath {prefix} {args}", tmp_path)
+            assert result.returncode == 1, (bad, args)
+            assert "configuration error" in result.stderr, (bad, args)
+
+
 @needs_cc
 def test_ldd_check(tmp_path: Path) -> None:
     lib = tmp_path / "libfoo.so"
