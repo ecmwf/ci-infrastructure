@@ -108,7 +108,7 @@ class Status:
     ok: bool
 
 
-_PR_FIELDS: Final = "number url merged baseRefName mergeCommit { oid }"
+_PR_FIELDS: Final = "number url merged baseRefName mergeCommit { oid } commits { totalCount }"
 
 
 def _query(repos: Sequence[str]) -> str:
@@ -180,6 +180,33 @@ def _merged_pr(node: Mapping[str, Any], branch: str) -> tuple[int, str, str] | N
     return None
 
 
+def _rebased(node: Mapping[str, Any]) -> int:
+    """How many commits the PR rebase-merged as `node` brought, `node` included; 1 if none was.
+
+    GitHub links only the last of a rebase merge's commits to its PR.
+    """
+    if len(node["parents"]["nodes"]) > 1:
+        return 1
+    for pr in node["associatedPullRequests"]["nodes"]:
+        if pr["merged"] and (pr.get("mergeCommit") or {}).get("oid") == node["oid"]:
+            return int((pr.get("commits") or {}).get("totalCount", 1))
+    return 1
+
+
+def _with_rebased_prs(chain: Sequence[Mapping[str, Any]], branch: str) -> list[tuple[int, str, str] | None]:
+    """`_merged_pr` of each commit of `chain`, also for the earlier commits of a rebase merge.
+
+    Those carry the merge's committed date; a squash merge's parent does not.
+    """
+    prs = [_merged_pr(n, branch) for n in chain]
+    for i, node in enumerate(chain):
+        for j in range(i + 1, min(i + _rebased(node), len(chain))):
+            if prs[j] or chain[j]["committedDate"] != node["committedDate"]:
+                break
+            prs[j] = prs[i]
+    return prs
+
+
 def _runs(repo: str, branch: str, token: str | None) -> tuple[Run, ...]:
     data = gh_api_rest(
         f"repos/{repo}/actions/workflows/{CI_WORKFLOW}/runs?branch={branch}&per_page=100&exclude_pull_requests=true",
@@ -207,18 +234,19 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
     run_of: dict[str, Run] = {}
     for run in runs:  # newest first: a re-run commit keeps its latest run
         run_of.setdefault(run.sha, run)
+    chain = first_parent(ref["target"]["history"]["nodes"], limit=None)
     commits = tuple(
         Commit(
             sha=n["oid"],
             url=n["url"],
             headline=n["messageHeadline"],
             author=(n["author"]["user"] or {}).get("login") or n["author"]["name"] or "",
-            pr=_merged_pr(n, branch),
+            pr=pr,
             run=run_of.get(n["oid"]),
             date=datetime.fromisoformat(n["committedDate"]),
             head=n["parents"]["nodes"][-1]["oid"] if len(n["parents"]["nodes"]) > 1 else n["oid"],
         )
-        for n in first_parent(ref["target"]["history"]["nodes"], limit=None)
+        for n, pr in zip(chain, _with_rebased_prs(chain, branch), strict=True)
     )
     return RepoState(repo, branch, upstream, commits, runs)
 
