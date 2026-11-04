@@ -133,12 +133,15 @@ module {{ m }}
 {% endfor %}
 echo "Modules for the install test:"
 module list 2>&1
-# A RUNPATH may point into the modules' libraries, and into the prefix; nothing else absolute.
-ci_release_allowed=("$release_prefix")
-IFS=: read -r -a _ci_dirs <<< "${LD_LIBRARY_PATH:-}"
-for _ci_dir in "${_ci_dirs[@]}"; do
-  case "$_ci_dir" in /?*) ci_release_allowed+=("${_ci_dir%/}") ;; esac
-done
+# A RUNPATH may name the prefix, and the module tree: ecbuild keeps the link path in the install
+# RPATH, so the directory of each library linked from a loaded module (Qt, a shared Boost) lands
+# in the RUNPATH, and every non-system module on Atos lives under the roots below.
+# LD_LIBRARY_PATH is never read: `module purge` keeps what the job's opening lines exported (the
+# staged deps), and no module adds to it. Never the CI work dir, the build and staging trees, the
+# source or $TMPDIR: they are gone after the job.
+ci_release_allowed=("$release_prefix"{% for root in release.runpath_roots %} {{ root | sh }}{% endfor %})
+ci_release_denied=("${CI_WORK_DIR:-}" "$install_root" "$build" "${CI_SOURCE_DIR:-}" "${TMPDIR:-}")
+echo "Install test: RUNPATH may name ${ci_release_allowed[*]}; never ${ci_release_denied[*]}"
 unset LD_LIBRARY_PATH
 if [ "$(sha256sum "$CI_INSTALL_ARCHIVE" | cut -d' ' -f1)" != "$(cat "$CI_INSTALL_ARCHIVE.sha256")" ]; then
   echo "::error::$CI_INSTALL_ARCHIVE is not the archive written above (sha256 differs)" >&2
@@ -149,9 +152,9 @@ rm -rf "$ci_itest_root"
 ci_itest_tree="$ci_itest_root$release_prefix"
 mkdir -p "$ci_itest_tree"
 zstd -dc "$CI_INSTALL_ARCHIVE" | tar -xf - -C "$ci_itest_tree"
-ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}"
-ci_release_check_ldd "$ci_itest_tree"
-ci_release_check_leaks "$ci_itest_tree" "$install_root" "${CI_SOURCE_DIR:-}" "${TMPDIR:-}"
+ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}" -- "${ci_release_denied[@]}"
+ci_release_check_ldd "$ci_itest_tree" "${ci_release_denied[@]}"
+ci_release_check_leaks "$ci_itest_tree" "$install_root" "${CI_SOURCE_DIR:-}" "${TMPDIR:-}" "${CI_WORK_DIR:-}"
 echo "Install test:" {{ install_test_command | sh }} "(in $ci_itest_tree, the unpacked $release_prefix)"
 (
   cd "$ci_itest_tree"

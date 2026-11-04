@@ -385,18 +385,26 @@ def test_hpc_release_leg_renders_the_overlay_and_its_install_test(tmp_path: Path
     assert '  "job_key": "pkg-2.5.0-rc1-hpc-hpc-atos-gnu-gxx-8-01234567",' in lines
     # The install test: build gone, modules purged and reloaded, no LD_LIBRARY_PATH, the checks.
     verify = out[out.index("# --- Install test") :]
+    verify_lines = verify.splitlines()
     for needle in (
         'rm -rf "$build" "$install_root"',
         "module purge",
         "module load gcc/old",
         "module list 2>&1",
         "unset LD_LIBRARY_PATH",
-        'ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}"',
-        'ci_release_check_ldd "$ci_itest_tree"',
+        'ci_release_check_runpath "$ci_itest_tree" "${ci_release_allowed[@]}" -- "${ci_release_denied[@]}"',
+        'ci_release_check_ldd "$ci_itest_tree" "${ci_release_denied[@]}"',
         "ci_release_check_leaks",
         "  bin/pkg-version",
     ):
         assert needle in verify, needle
+    # The module tree is allowed by a root fixed in code; the job's LD_LIBRARY_PATH is never read.
+    assert 'ci_release_allowed=("$release_prefix" /usr/local/apps)' in verify_lines
+    assert (
+        'ci_release_denied=("${CI_WORK_DIR:-}" "$install_root" "$build" "${CI_SOURCE_DIR:-}" "${TMPDIR:-}")'
+        in verify_lines
+    )
+    assert '<<< "${LD_LIBRARY_PATH' not in verify
     assert verify.index("module purge") < verify.index("unset LD_LIBRARY_PATH") < verify.index("bin/pkg-version")
     assert "ci_release_check_runpath() {" in out  # _checks.sh.j2, included
     # Nothing the compute node does not have.
@@ -421,6 +429,12 @@ def test_the_hpc_lane_base_templates_are_unchanged() -> None:
     assert overlay.startswith('{% extends "ci-infrastructure/cmake-atos.sh.j2" %}')
 
 
+needs_cc = pytest.mark.skipif(
+    shutil.which("cc") is None or shutil.which("readelf") is None or shutil.which("ldd") is None,
+    reason="needs cc, readelf and ldd",
+)
+
+
 _HPC_STUBS: Final = {
     "module": 'case "$1" in list) echo "Currently Loaded Modules: gcc/8.5.0 cmake" >&2 ;; esac',
     "gcc": 'echo "gcc (GCC) 8.5.0"',
@@ -441,6 +455,10 @@ _HPC_STUBS: Final = {
             echo "prefix=$STUB_PREFIX" > "$t/lib64/pkgconfig/pkg.pc"
             echo "prefix=/nowhere" > "$t/lib64/pkgconfig/pkg_test_custom.pc"
             if [ -n "${STUB_LEAK:-}" ]; then echo "set(X $CI_SOURCE_DIR/src)" > "$t/lib64/cmake/pkg/x.cmake"; fi
+            if [ -n "${STUB_RPATH:-}" ]; then
+              printf 'int main(void){return 0;}\\n' \\
+                | cc -x c - -o "$t/bin/pkg-elf" -Wl,-rpath,"$STUB_RPATH" -Wl,--enable-new-dtags
+            fi
             ;;
           *) exit 3 ;;
         esac
@@ -541,6 +559,31 @@ def test_the_hpc_script_fails_without_an_install_test_receipt(
     result = _run_hpc_stubbed(tmp_path, release_extra=release_extra, **env)
     assert result.returncode != 0
     assert message in result.stderr
+    assert not (tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").exists()
+
+
+@needs_cc
+def test_the_hpc_script_passes_a_runpath_into_the_module_tree(tmp_path: Path) -> None:
+    """Run 41661593257: ecflow_ui.x's RUNPATH names Qt in /usr/local/apps; no module puts that on LD_LIBRARY_PATH."""
+    result = _run_hpc_stubbed(tmp_path, STUB_RPATH=f"$ORIGIN/../lib:{_QT_LIB}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Install test: RUNPATH may name " in result.stdout and " /usr/local/apps; never " in result.stdout
+    assert json.loads((tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").read_text())["result"]
+
+
+@pytest.mark.parametrize("work_dir", [True, False], ids=["work-dir-denied", "not-allowed"])
+@needs_cc
+def test_the_hpc_script_refuses_a_runpath_into_staging(tmp_path: Path, work_dir: bool) -> None:
+    """The job's opening lines put the staged deps on LD_LIBRARY_PATH; that allows nothing."""
+    staged = tmp_path / "work" / "staging" / "key" / "deps" / "x" / "lib"
+    env = {"STUB_RPATH": str(staged), "LD_LIBRARY_PATH": f"{staged.parent / 'lib64'}:{staged}"}
+    if work_dir:
+        env["CI_WORK_DIR"] = str(tmp_path / "work")
+    result = _run_hpc_stubbed(tmp_path, **env)
+    assert result.returncode != 0
+    assert f"'{staged}'" in result.stderr
+    if work_dir:
+        assert f"is in {tmp_path / 'work'}, a CI or node-local tree gone after the job" in result.stderr
     assert not (tmp_path / "work" / "install" / "key.install.tar.zst.itest.json").exists()
 
 
@@ -729,12 +772,6 @@ def _checks(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-c", f". {CHECKS}\n{script}"], cwd=tmp_path, capture_output=True, text=True, env={**os.environ}
     )
-
-
-needs_cc = pytest.mark.skipif(
-    shutil.which("cc") is None or shutil.which("readelf") is None or shutil.which("ldd") is None,
-    reason="needs cc, readelf and ldd",
-)
 
 
 def _cc(*args: str) -> None:

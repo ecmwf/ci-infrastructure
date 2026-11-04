@@ -294,10 +294,15 @@ other mode in a release: it would use the CI artifact store):
    ``[release] exclude``, and archives the prefix's tree (``.tar.zst``, relative to the prefix).
 4. **The install test, in the same job:** the build and staging trees are deleted, modules purged
    and reloaded, ``LD_LIBRARY_PATH`` unset; the archive's digest is checked and it is unpacked
-   fresh; every ELF file's RUNPATH may name only ``$ORIGIN``, the prefix and the modules' library
-   directories; ``ldd`` must find every library; no build path (``$TMPDIR``, the source and
+   fresh; every ELF file's RUNPATH may name only ``$ORIGIN``, the prefix and ``/usr/local/apps``,
+   where the modules live (ecbuild keeps the directory of each library linked from a module, e.g.
+   Qt, in the install RUNPATH), and never the CI work tree, ``$TMPDIR`` or the source tree, even
+   when the job's ``LD_LIBRARY_PATH`` names them; ``ldd`` must find every library without
+   ``LD_LIBRARY_PATH``, and none in those trees; no build path (``$TMPDIR``, the source and
    staging trees, ``github-ci/``) may be in a CMake, pkg-config or ``share/`` file; and the smoke
-   command runs in the unpacked prefix. A tree that is not relocatable fails here.
+   command runs in the unpacked prefix. A tree that is not relocatable fails here. A module
+   outside ``/usr/local/apps`` is refused: allowing another root is a ci-infrastructure change
+   (``HPC_RUNPATH_ROOTS`` in ``release/legs.py``).
 5. ``build-on-hpc`` fetches the archive and its sidecars, never unpacked, and refuses them unless
    the install test passed exactly that digest, for that commit and job key. They are uploaded as
    ``release-<job_key>``: the archive, ``SHA256SUMS``, ``build-meta.json``,
