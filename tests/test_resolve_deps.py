@@ -419,7 +419,7 @@ def test_pin_resolves_the_change_under_test_directly_and_through_a_middle_packag
 
 def _missing_artifact(monkeypatch: pytest.MonkeyPatch, ci_run: CiRun | None) -> None:
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="none"))
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns(state="none"))
     monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: ci_run)
 
 
@@ -609,7 +609,9 @@ python-version = "3.11"
 def _in_flight(monkeypatch: pytest.MonkeyPatch, stored: bool = False) -> None:
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: stored)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns(state="running"))
+    monkeypatch.setattr(
+        resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns(state="running")
+    )
 
 
 @pytest.mark.parametrize("stored", [False, True], ids=["ci-in-flight", "stale-artifact"])
