@@ -1009,6 +1009,30 @@ def test_ldd_check_denies_a_non_canonical_prefix(tmp_path: Path) -> None:
     assert result.returncode == 1 and f"loads {lib_dir}/libfoo.so" in result.stderr
 
 
+@needs_cc
+def test_runpath_check_refuses_an_empty_component(tmp_path: Path) -> None:
+    """`/usr/local/apps//ci` must not dodge a denied `/usr/local/apps/ci` by matching only the root."""
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, f"{tmp_path}//work/lib")
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path} -- {tmp_path}/work", tmp_path)
+    assert result.returncode == 1 and f"'{tmp_path}//work/lib'" in result.stderr
+
+
+@needs_cc
+def test_runpath_check_denies_a_non_canonical_prefix(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, f"{tmp_path}/work/lib")
+    result = _checks(f"ci_release_check_runpath {prefix} {prefix} {tmp_path} -- {tmp_path}/./work", tmp_path)
+    assert result.returncode == 1 and "a CI or node-local tree gone after the job" in result.stderr
+
+
+@needs_cc
+def test_runpath_check_accepts_an_entry_with_a_trailing_slash(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, f"{_QT_LIB}/")
+    assert _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps", tmp_path).returncode == 0
+
+
 def test_leak_check(tmp_path: Path) -> None:
     cmake_dir = tmp_path / "p" / "lib" / "cmake" / "pkg"
     cmake_dir.mkdir(parents=True)

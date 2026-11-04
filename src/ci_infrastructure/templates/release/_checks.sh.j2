@@ -56,7 +56,8 @@ ci_release_add_canonical() {
 
 # ci_release_check_runpath ROOT ALLOWED_PREFIX... [-- DENIED_PREFIX...]
 # Every RUNPATH/RPATH entry of every ELF file under ROOT is $ORIGIN-relative, or an absolute path
-# under an allowed prefix with no `.` or `..` component (`/opt/ecmwf/../../usr/lib64` escapes it).
+# under an allowed prefix with no `.`, `..` or empty component (`/opt/ecmwf/../../usr/lib64` escapes
+# it; `/usr/local/apps//ci` would dodge a denied `/usr/local/apps/ci`).
 # An entry under a denied prefix (a CI or node-local tree, gone after the job) is a finding even
 # when an allowed prefix covers it. An empty entry (`:/opt/ecmwf/lib`) is a finding: the loader
 # reads it as the current directory. Prefixes are compared as text.
@@ -68,9 +69,11 @@ ci_release_check_runpath() {
   if [ $# -gt 0 ]; then shift; raw_denied=("$@"); fi
   ci_release_prefixes allowed "${raw_allowed[@]}" || return 1
   ci_release_prefixes denied "${raw_denied[@]}" || return 1
+  ci_release_add_canonical denied
   while IFS= read -r -d '' f; do
     ci_release_is_elf "$f" || continue
     while IFS= read -r entry; do
+      while [ "$entry" != / ] && [ "${entry%/}" != "$entry" ]; do entry="${entry%/}"; done
       if [ -z "$entry" ]; then
         echo "ci-release: $f: empty RUNPATH entry (the loader searches the current directory)" >&2
         bad=1
@@ -82,7 +85,7 @@ ci_release_check_runpath() {
         '$ORIGIN'|'$ORIGIN'/*|'${ORIGIN}'|'${ORIGIN}'/*) ok=true ;;
         /*)
           case "$entry/" in
-            */./*|*/../*) ;;
+            */./*|*/../*|*//*) ;;
             *)
               for d in "${denied[@]}"; do
                 if ci_release_under "$entry" "$d"; then
