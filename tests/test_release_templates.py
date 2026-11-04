@@ -1044,6 +1044,18 @@ def test_runpath_check_accepts_an_entry_with_a_trailing_slash(tmp_path: Path) ->
     assert _checks(f"ci_release_check_runpath {prefix} {prefix} /usr/local/apps", tmp_path).returncode == 0
 
 
+@needs_cc
+def test_checks_refuse_a_denied_prefix_that_resolves_to_the_root(tmp_path: Path) -> None:
+    prefix = tmp_path / "opt" / "x"
+    _elf_with_runpath(tmp_path, prefix, "$ORIGIN/../lib")
+    for script in (
+        f"ci_release_check_runpath {prefix} {prefix} -- /scratch/..",
+        f"ci_release_check_ldd {prefix} /scratch/..",
+    ):
+        result = _checks(script, tmp_path)
+        assert result.returncode == 1 and "configuration error: '/scratch/..' is /" in result.stderr, script
+
+
 def test_leak_check(tmp_path: Path) -> None:
     cmake_dir = tmp_path / "p" / "lib" / "cmake" / "pkg"
     cmake_dir.mkdir(parents=True)
