@@ -24,7 +24,8 @@ and then copies the source and the dependencies into a staging directory on the 
 A marker file, ``TRANSFER_COMPLETED``, signals the end of the transfer;
 the job waits for it, unpacks everything into the node-local ``$TMPDIR`` and builds there.
 ``CMAKE_PREFIX_PATH`` points at the shipped dependencies, ``LD_LIBRARY_PATH`` at their libraries,
-and ``PATH`` at the directories each declares in ``add-to-path``.
+and ``PATH`` at the directories each declares in ``add-to-path``,
+and, in a release job, ``CI_WORK_DIR`` at the CI work dir on the cluster.
 The cluster therefore needs neither a GitHub token nor access to S3.
 Every ``ssh`` and ``scp`` that fails because the host name does not resolve is tried twice more,
 after 10 and 30 seconds, as the runner pods' DNS drops such lookups now and then.
@@ -46,7 +47,8 @@ The build script
 ----------------
 
 ``ci-infrastructure`` wraps the build script with ``#SBATCH --output/--error``,
-the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``,
+the variables ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH``, ``CI_SOURCE_DIR``, ``CI_INSTALL_PREFIX`` and ``CI_INSTALL_ARCHIVE``
+and, in a release job, ``CI_WORK_DIR``,
 and the sentinel.
 The script has to leave a zstd tar of the install tree in ``$CI_INSTALL_ARCHIVE``;
 the shared template does this, a hand-written script does it itself:

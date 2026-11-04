@@ -101,11 +101,12 @@ def resolve_recipe(repo_script: Path, *, matrix_leg: str, artifact_name: str) ->
 
 
 def release_leg_for_cluster(
-    conn: Any, matrix_leg: str, *, allow_production: bool = False
+    conn: Any, matrix_leg: str, *, allow_production: bool = False, work_dir: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """The leg with its release prefix expanded on the cluster (``$SCRATCH/...``): the job script gets
     an absolute path and needs no variable of the login shell. Refuses a production prefix
-    (``/usr/local/apps``) unless ``allow_production``."""
+    (``/usr/local/apps``) unless ``allow_production``, and a prefix in the CI work dir ``work_dir``
+    (the install test denies RUNPATHs into it)."""
     leg = json.loads(matrix_leg)
     ctx = release_tree.release_context(leg)
     prefix = resolve_remote_path(conn, str(ctx["prefix"]))
@@ -113,6 +114,13 @@ def release_leg_for_cluster(
         check_install_prefix(prefix, allow_production=allow_production)
     except ReleaseError as exc:
         raise CIError(f"the release prefix {ctx['prefix']} is {prefix} on the cluster: {exc}") from exc
+    if work_dir is not None:
+        work = PurePosixPath(work_dir)
+        if PurePosixPath(prefix) == work or work in PurePosixPath(prefix).parents:
+            raise CIError(
+                f"the release prefix {ctx['prefix']} is {prefix} on the cluster, inside the CI work dir {work}: "
+                "the nightly gc sweeps it"
+            )
     if prefix != ctx["prefix"]:
         print(f"submit-wait: release prefix {ctx['prefix']} -> {prefix}")
     ctx |= {"prefix": prefix, "prefix_sh": shlex.quote(prefix)}
@@ -633,7 +641,7 @@ def submit_wait(
         shutil.rmtree(archive_dir, ignore_errors=True)
         archive_dir.mkdir(parents=True)
         matrix_leg, release_ctx = release_leg_for_cluster(
-            site._connection, matrix_leg, allow_production=allow_production
+            site._connection, matrix_leg, allow_production=allow_production, work_dir=resolved_work_dir
         )
         if release_ctx["mode"] != "rehearsal":
             state, installed = release_tree.probe_prefix(site._connection, release_ctx["prefix"], release_ctx)
@@ -675,6 +683,8 @@ def submit_wait(
         marker_wait_timeout=marker_wait_timeout,
         packages=list(packages),
         path_dirs=path_dirs,
+        # A release's install test refuses a RUNPATH into the work dir; a CI job script is unchanged.
+        env={"CI_WORK_DIR": str(PurePosixPath(resolved_work_dir))} if archive_dir is not None else None,
     )
     print(f"::group::Job script submitted for {artifact_name} (from {repo_script})")
     print(rendered)

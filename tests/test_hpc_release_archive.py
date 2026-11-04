@@ -187,7 +187,7 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh-output"))
     leg = hpc_leg(tmp_path)
     work = tmp_path / "work"
-    calls: dict[str, Any] = {"submitted": 0, "rendered": []}
+    calls: dict[str, Any] = {"submitted": 0, "rendered": [], "scripts": []}
 
     def no_store(name: str) -> bool:
         raise AssertionError("a release must not touch the artifact store")
@@ -203,7 +203,8 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     def render(**kw: Any) -> str:
         calls["rendered"].append(kw["repo_script"])
-        return str(real_render(**kw))
+        calls["scripts"].append(str(real_render(**kw)))
+        return str(calls["scripts"][-1])
 
     monkeypatch.setattr(s3_store, "object_exists", no_store)
     monkeypatch.setattr(orchestrate, "load_site", lambda *a, **k: _Site())
@@ -233,7 +234,14 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "--fetch-archive",
         str(tmp_path / "release"),
     ]
-    return {"args": args, "leg": leg, "calls": calls, "out": tmp_path / "gh-output", "dir": tmp_path / "release"}
+    return {
+        "args": args,
+        "leg": leg,
+        "calls": calls,
+        "out": tmp_path / "gh-output",
+        "dir": tmp_path / "release",
+        "work": work,
+    }
 
 
 def _outputs(path: Path) -> dict[str, str]:
@@ -252,6 +260,20 @@ def test_submit_wait_fetches_the_release_archive(cli: dict[str, Any]) -> None:
     # The job script names the prefix as expanded on the cluster.
     [recipe] = cli["calls"]["rendered"]
     assert f"release_prefix={ctx['prefix']}" in recipe.splitlines()
+    # And knows the CI work dir, whose trees its install test refuses in a RUNPATH.
+    [script] = cli["calls"]["scripts"]
+    assert f'export CI_WORK_DIR="{cli["work"]}"' in script.splitlines()
+
+
+@pytest.mark.parametrize("sub", ["", "/root"], ids=["holds-the-root", "is-the-root"])
+def test_a_prefix_inside_the_work_dir_is_refused(cli: dict[str, Any], tmp_path: Path, sub: str) -> None:
+    """The prefix sits under <tmp_path>/root; a work dir holding it (the gc sweeps it) is refused."""
+    args = list(cli["args"])
+    args[args.index("--remote-work-dir") + 1] = str(tmp_path) + sub
+    result = CliRunner().invoke(orchestrate.main, args)
+    assert result.exit_code != 0
+    assert "inside the CI work dir" in result.output and "the nightly gc sweeps it" in result.output
+    assert cli["calls"]["submitted"] == 0
 
 
 def test_submit_wait_skips_a_release_installed_already(cli: dict[str, Any]) -> None:
