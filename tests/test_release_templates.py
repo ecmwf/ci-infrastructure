@@ -867,6 +867,55 @@ def test_ldd_check(tmp_path: Path) -> None:
     assert _checks(f"ci_release_check_ldd {prefix}", tmp_path).returncode == 0
 
 
+@needs_cc
+def test_ldd_check_refuses_a_library_in_a_denied_tree(tmp_path: Path) -> None:
+    denied = tmp_path / "work"
+    lib_dir = denied / "staging" / "lib"
+    lib_dir.mkdir(parents=True)
+    (tmp_path / "foo.c").write_text("int foo(void) { return 1; }\n")
+    (tmp_path / "main.c").write_text("int foo(void);\nint main(void) { return foo(); }\n")
+    _cc("-shared", "-fPIC", str(tmp_path / "foo.c"), "-o", str(lib_dir / "libfoo.so"))
+    prefix = tmp_path / "p"
+    prefix.mkdir()
+    _cc(str(tmp_path / "main.c"), "-o", str(prefix / "main"), f"-L{lib_dir}", "-lfoo", f"-Wl,-rpath,{lib_dir}")
+    assert _checks(f"ci_release_check_ldd {prefix}", tmp_path).returncode == 0
+    assert _checks(f"ci_release_check_ldd {prefix} ''", tmp_path).returncode == 0
+    result = _checks(f"ci_release_check_ldd {prefix} {denied}", tmp_path)
+    assert result.returncode == 1
+    assert f"loads {lib_dir}/libfoo.so, in {denied}, a CI or node-local tree" in result.stderr
+    # An absolute DT_NEEDED (`\t/p (0x...)` in ldd's output) is found too.
+    abs_needed = tmp_path / "abs.so"
+    _cc("-shared", "-fPIC", str(tmp_path / "foo.c"), "-o", str(abs_needed), f"-Wl,-soname,{lib_dir}/libfoo.so")
+    _cc(str(tmp_path / "main.c"), "-o", str(prefix / "main"), str(abs_needed))
+    result = _checks(f"ci_release_check_ldd {prefix} {denied}", tmp_path)
+    assert result.returncode == 1 and f"loads {lib_dir}/libfoo.so" in result.stderr
+
+
+@needs_cc
+def test_ldd_check_accepts_libraries_under_root_in_a_denied_tree(tmp_path: Path) -> None:
+    """The install test unpacks into $TMPDIR, which is denied: the tree's own libraries pass."""
+    denied = tmp_path / "tmp"
+    root = denied / "ci-itest-1" / "opt" / "x"
+    (root / "lib").mkdir(parents=True)
+    (root / "bin").mkdir()
+    (tmp_path / "foo.c").write_text("int foo(void) { return 1; }\n")
+    (tmp_path / "main.c").write_text("int foo(void);\nint main(void) { return foo(); }\n")
+    _cc("-shared", "-fPIC", str(tmp_path / "foo.c"), "-o", str(root / "lib" / "libfoo.so"))
+    _cc(
+        str(tmp_path / "main.c"),
+        "-o",
+        str(root / "bin" / "main"),
+        f"-L{root / 'lib'}",
+        "-lfoo",
+        "-Wl,-rpath,$ORIGIN/../lib",
+        "-Wl,--enable-new-dtags",
+    )
+    assert _checks(f"ci_release_check_ldd {root} {denied}", tmp_path).returncode == 0
+    # Through a symlinked ROOT too: ldd prints the resolved path.
+    (tmp_path / "link").symlink_to(denied / "ci-itest-1")
+    assert _checks(f"ci_release_check_ldd {tmp_path / 'link' / 'opt' / 'x'} {denied}", tmp_path).returncode == 0
+
+
 def test_leak_check(tmp_path: Path) -> None:
     cmake_dir = tmp_path / "p" / "lib" / "cmake" / "pkg"
     cmake_dir.mkdir(parents=True)
