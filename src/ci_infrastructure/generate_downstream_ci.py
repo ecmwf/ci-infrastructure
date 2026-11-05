@@ -88,9 +88,9 @@ def _normalise_header(header: str) -> str:
 SLIM_RUNNER: Final = "ubuntu-slim"
 # Free for public repositories, with 4 CPUs: replaces SLIM_RUNNER there.
 PUBLIC_RUNNER: Final = "ubuntu-latest"
-# For short jobs that run the ci_infrastructure package: baked in, so no pip install from PyPI.
-BASE_IMAGE_RUNNER: Final = "arc-runner-normal"
-BASE_IMAGE: Final = "eccr.ecmwf.int/public-ci-images/ubuntu24.04-base:latest"
+# For short jobs that run the ci_infrastructure package, in private repos too: a pod's start-up
+# would dominate them, and the package's venv comes from the Actions cache.
+PACKAGE_RUNNER: Final = "ubuntu-latest"
 
 
 Step: TypeAlias = dict[str, Any]
@@ -777,11 +777,9 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
         outputs[f"matrix-{kind}"] = f"${{{{ toJSON(fromJSON(steps.r.outputs.json)['{kind}']) }}}}"
     return {
         "if": cond,
-        "runs-on": BASE_IMAGE_RUNNER,
-        "container": {"image": BASE_IMAGE},
+        "runs-on": PACKAGE_RUNNER,
         "outputs": outputs,
         "steps": [
-            _announce_image_step(),
             _mint_step(),
             {
                 "id": "pick",
@@ -1523,10 +1521,8 @@ def _label_gate_job(lane: Execution, *, default_level: str = "") -> dict[str, An
 def _validate_job() -> dict[str, Any]:
     return {
         "if": _SUCCESS_GATE,
-        "runs-on": BASE_IMAGE_RUNNER,
-        "container": {"image": BASE_IMAGE},
+        "runs-on": PACKAGE_RUNNER,
         "steps": [
-            _announce_image_step(),
             _mint_step(),
             {
                 "uses": "actions/checkout@v6",

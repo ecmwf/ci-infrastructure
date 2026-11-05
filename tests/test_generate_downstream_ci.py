@@ -19,10 +19,9 @@ from ci_infrastructure import check_ci_approval
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
-    BASE_IMAGE,
-    BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
+    PACKAGE_RUNNER,
     PUBLIC_RUNNER,
     SLIM_RUNNER,
     SchemaError,
@@ -1195,7 +1194,7 @@ def test_public_repos_run_api_jobs_on_ubuntu_latest(tmp_path: Path, visibility: 
 
 
 def test_job_runners(tmp_path: Path) -> None:
-    """API-only jobs use SLIM_RUNNER, package jobs the base image, kind jobs the leg's runs-on."""
+    """API-only jobs use SLIM_RUNNER, package jobs PACKAGE_RUNNER, kind jobs the leg's runs-on."""
     write_repo(
         tmp_path,
         "a",
@@ -1234,9 +1233,8 @@ def test_job_runners(tmp_path: Path) -> None:
     assert orch["context"]["runs-on"] == SLIM_RUNNER
     validate = orch["validate"]
     for job in (consumer["jobs"]["resolve"], validate):
-        assert job["runs-on"] == BASE_IMAGE_RUNNER
-        assert job["container"] == {"image": BASE_IMAGE}
-        assert job["steps"][0]["name"] == "Announce image"
+        assert job["runs-on"] == PACKAGE_RUNNER
+        assert "container" not in job
 
 
 def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
