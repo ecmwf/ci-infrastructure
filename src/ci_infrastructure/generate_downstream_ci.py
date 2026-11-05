@@ -1519,6 +1519,12 @@ def _label_gate_job(lane: Execution, *, default_level: str = "") -> dict[str, An
 
 
 def _validate_job() -> dict[str, Any]:
+    """allow-unsafe-pr-checkout is safe only because nothing checked out is executed; never copy it.
+
+    For a fork's pull request the head commit is the fork's, which actions/checkout refuses under
+    workflow_run without it. The generator only parses the checked-out manifests and workflows, and
+    `context` passes only a commit with an approved CI (fork) run.
+    """
     return {
         "if": _SUCCESS_GATE,
         "runs-on": PACKAGE_RUNNER,
@@ -1530,6 +1536,7 @@ def _validate_job() -> dict[str, Any]:
                     "ref": _HEAD_SHA,
                     "token": "${{ steps.mint.outputs.token }}",
                     "persist-credentials": False,
+                    "allow-unsafe-pr-checkout": True,
                 },
             },
             {

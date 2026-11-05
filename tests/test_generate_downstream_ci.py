@@ -1619,13 +1619,19 @@ def test_resolve_pins_the_upstream_change_or_the_rebuild_requests_pin(tmp_path: 
     )
 
 
-def test_no_checkout_opts_into_fork_code(tmp_path: Path) -> None:
-    """actions/checkout then refuses a fork's code under workflow_run."""
+def test_only_validate_opts_into_fork_code(tmp_path: Path) -> None:
+    """validate checks out a fork's approved head commit, which it only parses; nothing else may."""
     _make_chain_abc(tmp_path)
-    for doc in (_orch(tmp_path), _consumer(tmp_path, "b")):
-        for job in yaml.safe_load(doc)["jobs"].values():
+    opted = set()
+    for name, doc in (("orch", _orch(tmp_path)), ("b", _consumer(tmp_path, "b"))):
+        jobs = yaml.safe_load(doc)["jobs"]
+        for job_id, job in jobs.items():
             for step in job.get("steps", []):
-                assert "allow-unsafe-pr-checkout" not in (step.get("with") or {})
+                if "allow-unsafe-pr-checkout" in (step.get("with") or {}):
+                    opted.add((name, job_id))
+                    assert step["with"]["persist-credentials"] is False
+    assert opted == {("orch", "validate")}
+    assert "ci-approval" in yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["needs"]
 
 
 def _drift_repo(tmp_path: Path) -> Path:
