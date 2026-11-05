@@ -19,10 +19,9 @@ from ci_infrastructure import check_ci_approval
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
-    BASE_IMAGE,
-    BASE_IMAGE_RUNNER,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
+    PACKAGE_RUNNER,
     PUBLIC_RUNNER,
     SLIM_RUNNER,
     SchemaError,
@@ -1195,7 +1194,7 @@ def test_public_repos_run_api_jobs_on_ubuntu_latest(tmp_path: Path, visibility: 
 
 
 def test_job_runners(tmp_path: Path) -> None:
-    """API-only jobs use SLIM_RUNNER, package jobs the base image, kind jobs the leg's runs-on."""
+    """API-only jobs use SLIM_RUNNER, package jobs PACKAGE_RUNNER, kind jobs the leg's runs-on."""
     write_repo(
         tmp_path,
         "a",
@@ -1234,9 +1233,8 @@ def test_job_runners(tmp_path: Path) -> None:
     assert orch["context"]["runs-on"] == SLIM_RUNNER
     validate = orch["validate"]
     for job in (consumer["jobs"]["resolve"], validate):
-        assert job["runs-on"] == BASE_IMAGE_RUNNER
-        assert job["container"] == {"image": BASE_IMAGE}
-        assert job["steps"][0]["name"] == "Announce image"
+        assert job["runs-on"] == PACKAGE_RUNNER
+        assert "container" not in job
 
 
 def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
@@ -1621,13 +1619,19 @@ def test_resolve_pins_the_upstream_change_or_the_rebuild_requests_pin(tmp_path: 
     )
 
 
-def test_no_checkout_opts_into_fork_code(tmp_path: Path) -> None:
-    """actions/checkout then refuses a fork's code under workflow_run."""
+def test_only_validate_opts_into_fork_code(tmp_path: Path) -> None:
+    """validate checks out a fork's approved head commit, which it only parses; nothing else may."""
     _make_chain_abc(tmp_path)
-    for doc in (_orch(tmp_path), _consumer(tmp_path, "b")):
-        for job in yaml.safe_load(doc)["jobs"].values():
+    opted = set()
+    for name, doc in (("orch", _orch(tmp_path)), ("b", _consumer(tmp_path, "b"))):
+        jobs = yaml.safe_load(doc)["jobs"]
+        for job_id, job in jobs.items():
             for step in job.get("steps", []):
-                assert "allow-unsafe-pr-checkout" not in (step.get("with") or {})
+                if "allow-unsafe-pr-checkout" in (step.get("with") or {}):
+                    opted.add((name, job_id))
+                    assert step["with"]["persist-credentials"] is False
+    assert opted == {("orch", "validate")}
+    assert "ci-approval" in yaml.safe_load(_orch(tmp_path))["jobs"]["validate"]["needs"]
 
 
 def _drift_repo(tmp_path: Path) -> Path:
