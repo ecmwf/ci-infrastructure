@@ -10,8 +10,7 @@ Tested one by one, both sides fail:
 ``eckit``'s :doc:`downstream CI <downstream-ci>` builds ``eccodes``' ``develop``, which does not use the changed interface yet,
 and ``eccodes``' own CI builds against ``eckit``'s ``develop``, which does not have it yet.
 
-Such changes go on special branches starting with ``sync/`` or ``feature/``;
-the former ``sync-branch/`` still works for branches opened under it.
+Such changes go on special branches starting with ``sync/`` or ``feature/``.
 Whenever a branch with such a prefix exists in two repos, the CI tests these
 branches automatically against each other.
 

@@ -2347,8 +2347,7 @@ def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytes
         assert doc[True] == {"pull_request_target": {"types": ["opened", "reopened", "closed"]}}
         job = doc["jobs"]["list"]
         assert job["if"] == (
-            "(startsWith(github.head_ref, 'sync/') || startsWith(github.head_ref, 'sync-branch/') "
-            "|| startsWith(github.head_ref, 'feature/')) "
+            "(startsWith(github.head_ref, 'sync/') || startsWith(github.head_ref, 'feature/')) "
             "&& github.event.pull_request.head.repo.full_name == github.repository"
         )
         assert [s["uses"] for s in job["steps"]] == ["ecmwf/ci-infrastructure/actions/sync-branch-prs@main"]

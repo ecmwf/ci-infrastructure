@@ -39,12 +39,14 @@ def _run(tmp_path: Path, branch: str, *, exists: bool) -> tuple[str, list[str]]:
     return ref, calls
 
 
-@pytest.mark.parametrize("branch", ["master", "develop", "try-new-CI", "feature-sync/foo", "features/foo", ""])
+@pytest.mark.parametrize(
+    "branch", ["master", "develop", "try-new-CI", "feature-sync/foo", "features/foo", "sync-branch/foo", ""]
+)
 def test_a_non_sync_branch_is_never_probed(tmp_path: Path, branch: str) -> None:
     assert _run(tmp_path, branch, exists=True) == (FALLBACK, [])
 
 
-@pytest.mark.parametrize("branch", ["sync/foo", "sync-branch/foo", "feature/foo"])
+@pytest.mark.parametrize("branch", ["sync/foo", "feature/foo"])
 def test_a_sync_branch_is_used_where_it_exists(tmp_path: Path, branch: str) -> None:
     ref, calls = _run(tmp_path, branch, exists=True)
     assert ref == branch
