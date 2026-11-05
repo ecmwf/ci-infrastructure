@@ -14,8 +14,7 @@ import re
 import sys
 from typing import Final
 
-# sync-branch/ only until the branches opened under that name are merged.
-SYNC_BRANCH_PREFIXES: Final = ("sync/", "sync-branch/", "feature/")
+SYNC_BRANCH_PREFIXES: Final = ("sync/", "feature/")
 SYNC_BRANCH_RE: Final = re.compile("^(?:" + "|".join(map(re.escape, SYNC_BRANCH_PREFIXES)) + ")")
 
 
