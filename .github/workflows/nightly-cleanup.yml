@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: ecmwf/ci-infrastructure/actions/announce-image@main
 
-      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+      - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
 
       - name: Garbage-collect the cluster work dir
         shell: bash
@@ -73,7 +73,7 @@ jobs:
     steps:
       - uses: ecmwf/ci-infrastructure/actions/announce-image@main
 
-      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+      - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
 
       - name: Delete the oldest-written ${{ matrix.store.name }} objects
         shell: bash

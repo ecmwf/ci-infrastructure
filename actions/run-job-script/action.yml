@@ -42,7 +42,10 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+
+    # uv and the bases' tools for the job script on a host that is not an official image; a no-op in one.
+    - uses: ecmwf/ci-infrastructure/actions/ensure-environment@main
 
     - name: Get install prefix
       id: prefix

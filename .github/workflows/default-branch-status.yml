@@ -44,7 +44,7 @@ jobs:
           permission-pull-requests: read
           permission-administration: read  # rule insights: who merged past a failing required check
 
-      - uses: ./actions/ensure-infrastructure-present
+      - uses: ./actions/_ensure-python-ci-infrastructure
 
       - shell: bash
         env:

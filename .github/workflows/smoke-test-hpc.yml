@@ -82,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+      - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
         with:
           force-reinstall: true
 
@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+      - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
         with:
           force-reinstall: true
 
