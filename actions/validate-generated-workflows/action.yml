@@ -29,7 +29,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: ecmwf/ci-infrastructure/actions/ensure-infrastructure-present@main
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
 
     - name: Validate generated workflows
       shell: bash

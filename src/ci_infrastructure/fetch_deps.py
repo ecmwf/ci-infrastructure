@@ -25,7 +25,14 @@ import click
 
 from . import failure_reasons, s3_store
 from ._errors import CIError, escape_command_data
-from ._github_api import IN_PROGRESS_STATUSES, WorkflowRuns, probe_workflow_runs, select_token, write_outputs
+from ._github_api import (
+    IN_PROGRESS_STATUSES,
+    WorkflowRuns,
+    lane_of_artifact,
+    probe_workflow_runs,
+    select_token,
+    write_outputs,
+)
 
 _DEFAULT_POLL_INTERVAL: Final = 60
 _DEFAULT_WAIT_TIMEOUT: Final = 1800
@@ -109,7 +116,7 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
                 print(f"  ✓ {name} is now available after waiting {_fmt_duration(time.monotonic() - start)} for {repo}")
             return True
 
-        run = probe_workflow_runs(repo, sha, token)
+        run = probe_workflow_runs(repo, sha, token, lane=lane_of_artifact(name))
         state = run.state
         if state == "running":
             remaining = deadline - time.monotonic()

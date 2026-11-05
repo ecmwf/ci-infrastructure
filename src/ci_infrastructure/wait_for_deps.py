@@ -19,7 +19,7 @@ from typing import Any
 
 import click
 
-from ._github_api import WorkflowRuns, probe_workflow_runs, select_token
+from ._github_api import WorkflowRuns, lane_of_artifact, probe_workflow_runs, select_token
 from .fetch_deps import _run_phase, poll_for_artifact
 
 
@@ -69,7 +69,11 @@ def main(matrix_json: str) -> None:
     token = select_token()
     groups = by_upstream(deps)
     print(f"wait_for_deps: waiting on {len(deps)} artifact(s) from {len(groups)} upstream run(s):")
-    print("\n".join(table(groups, lambda repo, sha: probe_workflow_runs(repo, sha, token))))
+
+    def probe(repo: str, sha: str) -> WorkflowRuns:
+        return probe_workflow_runs(repo, sha, token, lane=lane_of_artifact(groups[(repo, sha)][0]))
+
+    print("\n".join(table(groups, probe)))
     missing: list[str] = []
     for (repo, sha), names in groups.items():
         lost = [name for name in names if not poll_for_artifact(repo, sha, name, token)]

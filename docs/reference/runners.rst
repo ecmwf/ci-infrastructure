@@ -73,7 +73,7 @@ The private images are needed to connect to the HPC and require credentials.
 Accessing the HPC requires an HPC image **and** the HPC runner group (see above).
 
 The official images have ``ci-infrastructure`` baked in.
-:action:`ensure-infrastructure-present` then reuses it and installs nothing.
+:action:`_ensure-python-ci-infrastructure` then reuses it and installs nothing.
 Right after a merge to ``main`` the baked copy is stale until the images are republished.
 The action then warns and installs from the checkout.
 
@@ -274,6 +274,10 @@ Each base has three kinds of Python, which do not interfere:
 - A recipe that calls ``get_python_via_uv`` (see :doc:`../configuring/job-scripts`)
   gets the leg's ``python-version`` from uv in ``UV_PYTHON_INSTALL_DIR`` (``/opt/uv/python``),
   downloaded if the image lacks it.
+
+A leg without an official image, e.g. one that runs on a GitHub-hosted runner, gets uv and the bases' tools and headers from
+:action:`ensure-environment`, which :action:`run-job-script` calls first; in an official image it does nothing.
+Call it yourself before other steps that need them.
 
 Workflow steps outside the recipe that need the leg's Python can use
 `astral-sh/setup-uv <https://github.com/astral-sh/setup-uv>`__ with ``python-version`` and ``activate-environment``.

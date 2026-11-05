@@ -78,7 +78,7 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
 # Install ci-infrastructure from the build context, so an image tagged <sha>
 # contains <sha> (src/, pyproject.toml and LICENSE are tag paths). LICENSE must be
 # copied: setuptools silently builds a wheel without a missing license file. Not
-# editable: ensure-infrastructure-present hashes the installed *.py files.
+# editable: _ensure-python-ci-infrastructure hashes the installed *.py files.
 COPY pyproject.toml LICENSE /tmp/ci-infrastructure/
 COPY src /tmp/ci-infrastructure/src
 RUN UV_PYTHON_INSTALL_DIR=/opt/ci-infrastructure/python \
@@ -86,11 +86,11 @@ RUN UV_PYTHON_INSTALL_DIR=/opt/ci-infrastructure/python \
  && uv pip install --no-cache --python /opt/ci-infrastructure/venv/bin/python "/tmp/ci-infrastructure[runtime]" \
  && rm -rf /tmp/ci-infrastructure
 
-# ensure-infrastructure-present reuses this interpreter instead of a venv. It
+# _ensure-python-ci-infrastructure reuses this interpreter instead of a venv. It
 # lives outside _work, which ARC's Kubernetes mode overlays per job.
 ENV CI_INFRASTRUCTURE_PYTHON=/opt/ci-infrastructure/venv/bin/python
 
-# The baked commit, named in ensure-infrastructure-present's mismatch error.
+# The baked commit, named in _ensure-python-ci-infrastructure's mismatch error.
 # Declared late to keep the pip layer cached.
 ARG SOURCE_REVISION=""
 ENV CI_INFRASTRUCTURE_BAKED_REF=${SOURCE_REVISION}

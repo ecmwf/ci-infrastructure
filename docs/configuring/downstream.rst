@@ -39,6 +39,9 @@ A missing artifact is rebuilt unless that commit's ``CI`` was red:
 on the declared ref or sync branch through ``rebuild-request``,
 for any other commit, such as one under test, by re-running that commit's ``CI``.
 A fork's commit is never rebuilt.
+A consumer under test against an upstream commit passes that pin on with ``rebuild-request``,
+so a producer between the two is rebuilt against the same commit.
+Only a run of the artifact's lane counts as in flight: ``CI``, or the ``cross-repo-trigger`` workflow of that lane.
 An artifact that is not to be had, such as one of a red commit, fails only the legs that need it,
 in their first step, with the errors of the red run and of the runs those link to, up to the first failure.
 A request that no producer leg can ever build fails the whole resolve.
@@ -136,6 +139,7 @@ and opens a pull request with the regenerated workflows.
 It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.yaml`` to the commit that generated them,
 so the pull request is checked by the hooks that match its files.
 It labels a new pull request ``downstream-ci-not-needed`` and ``hpc-ci-not-needed`` (the input ``labels``), since it changes only generated workflows.
+The input ``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.
 The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 
 - ``pr`` (default): the pull request waits for a human.

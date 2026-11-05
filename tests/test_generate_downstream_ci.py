@@ -1028,7 +1028,7 @@ def test_announce_image_action_needs_nothing_from_this_repo() -> None:
     assert [s for s in steps if "run" in s], "expected an inline script"
     assert not [s for s in steps if "uses" in s], "announce-image must not compose another action"
     script = "\n".join(s.get("run", "") for s in steps)
-    for forbidden in ("ensure-infrastructure-present", "CI_INFRASTRUCTURE_PYTHON", "pip "):
+    for forbidden in ("_ensure-python-ci-infrastructure", "CI_INFRASTRUCTURE_PYTHON", "pip "):
         assert forbidden not in script, f"{forbidden} reintroduces a bootstrap dependency"
 
 
@@ -1612,12 +1612,12 @@ def test_generated_header_round_trips_through_check(tmp_path: Path) -> None:
     assert _write_or_check_path(out, rendered, check=True) == (False, [])
 
 
-def test_resolve_pins_the_upstream_change_but_not_a_rebuild_request(tmp_path: Path) -> None:
+def test_resolve_pins_the_upstream_change_or_the_rebuild_requests_pin(tmp_path: Path) -> None:
     _make_chain_abc(tmp_path)
     steps = yaml.safe_load(_consumer(tmp_path, "b"))["jobs"]["resolve"]["steps"]
     resolve = next(s for s in steps if s.get("id") == "r")
     assert resolve["with"]["pin"] == (
-        "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || '' }}"
+        "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || inputs.pin }}"
     )
 
 

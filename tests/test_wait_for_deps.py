@@ -45,7 +45,7 @@ def test_a_missing_dep_only_warns(monkeypatch: pytest.MonkeyPatch, available: bo
 
     monkeypatch.setattr(wait_for_deps, "poll_for_artifact", poll)
     monkeypatch.setattr(wait_for_deps, "select_token", lambda: None)
-    monkeypatch.setattr(wait_for_deps, "probe_workflow_runs", lambda repo, sha, token: WorkflowRuns("none"))
+    monkeypatch.setattr(wait_for_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns("none"))
     result = CliRunner().invoke(wait_for_deps.main, ["--matrix-json", json.dumps(_matrix([_dep("eckit-gcc")]))])
     assert result.exit_code == 0
     assert polled == ["eckit-gcc"]

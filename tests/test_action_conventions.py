@@ -16,7 +16,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACTIONS_DIR = REPO_ROOT / "actions"
-BOOTSTRAP = "ensure-infrastructure-present"
+BOOTSTRAP = "_ensure-python-ci-infrastructure"
 
 # Run with a bare python3 from the checkout; must not bootstrap.
 STDLIB_ONLY = {"check-pr-declaration", "pick-ref"}
@@ -78,7 +78,7 @@ def test_action_bootstraps_exactly_when_it_needs_the_package(path: Path) -> None
         pytest.fail(
             f"{name} uses the ci_infrastructure package but does not nest "
             f"{BOOTSTRAP}, so its caller has to bootstrap -- which no action may "
-            "require (see actions/ensure-infrastructure-present/action.yml)"
+            "require (see actions/_ensure-python-ci-infrastructure/action.yml)"
         )
     if nests and not needs:
         pytest.fail(
