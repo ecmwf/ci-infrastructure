@@ -761,11 +761,12 @@ def _stale_fallback(
     index: s3_store.ArtifactIndex,
     lane: Execution,
     stale: StaleFallback,
+    pending: frozenset[PackageName] = frozenset(),
 ) -> tuple[dict[PackageName, ResolvedDep], set[PackageName]] | None:
     """`current` with `dep` and its tree swapped for a stored build of `dep`'s commit against older upstreams.
 
     The stored tree must hold the same packages, at commits in the history of the current ones and still in
-    the store, leave `keep` alone and agree with every package outside it; else None, and `dep` is rebuilt.
+    the store, leave `keep` alone and agree with every package outside it but `pending`; else None.
     """
     below = tree.below(dep.name)
     prefix = f"{dep.name}-{dep.sha}-"
@@ -828,7 +829,7 @@ def _stale_fallback(
             ),
         }
         subtree = below | {dep.name}
-        outside = [n for n in trial if n not in replaced | subtree]
+        outside = [n for n in trial if n not in replaced | subtree | pending]
         if all(
             trial[p].artifact_name == a
             for n in outside
@@ -837,6 +838,17 @@ def _stale_fallback(
         ):
             return trial, subtree
     return None
+
+
+def _consistent(final: Mapping[PackageName, ResolvedDep], tree: _DepTree, replaced: set[PackageName]) -> bool:
+    """Every package not swapped still finds the builds it was resolved against."""
+    return all(
+        final[p].artifact_name == a
+        for n in final
+        if n not in replaced
+        for a in tree.direct_of.get(n, ())
+        if (p := tree.package_of(a)) is not None
+    )
 
 
 def _stale_note(
@@ -1115,15 +1127,28 @@ def resolve_leg(
 
     final = dict(visited)
     if stale:
-        replaced: set[PackageName] = set()
-        for name in stale_ok:
-            if visited[name].cached or name in replaced or name in keep:
-                continue
-            hit = _stale_fallback(visited[name], final, tree, replaced, keep, artifact_index, lane, stale)
-            if hit is not None:
-                final, subtree = hit
-                replaced |= subtree
-                stale.notes.add(_stale_note(final[name], final, visited, subtree))
+        candidates = [n for n in stale_ok if not visited[n].cached and n not in keep]
+
+        def fall_back(joint: bool) -> tuple[dict[PackageName, ResolvedDep], set[PackageName], set[str]]:
+            """Swap the candidates one by one; `joint` lets a swap break deps a later swap may mend."""
+            out, replaced, notes = dict(visited), set[PackageName](), set[str]()
+            for i, name in enumerate(candidates):
+                if name in replaced:
+                    continue
+                later = candidates[i + 1 :]
+                pending = frozenset(later).union(*(tree.below(n) for n in later)) if joint else frozenset()
+                hit = _stale_fallback(visited[name], out, tree, replaced, keep, artifact_index, lane, stale, pending)
+                if hit is not None:
+                    out, subtree = hit
+                    replaced |= subtree
+                    notes.add(_stale_note(out[name], out, visited, subtree))
+            return out, replaced, notes
+
+        # Direct deps sharing upstreams only fall back together: each swap alone would break the other's tree.
+        final, replaced, notes = fall_back(joint=True)
+        if not _consistent(final, tree, replaced):
+            final, replaced, notes = fall_back(joint=False)
+        stale.notes |= notes
         for name, key in plan_key_of.items():
             if final[name].source == "triggered rebuild":
                 dispatch_plans.setdefault(key, plans[key])

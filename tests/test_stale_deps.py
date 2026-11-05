@@ -52,6 +52,8 @@ build-type = "Release"
 platform = "ubuntu-24.04"
 """
 
+_SIDE_MANIFEST: Final = _MIDDLE_MANIFEST.replace('"middle"', '"side"').replace("o/middle", "o/side")
+
 
 @dataclass
 class _Store(s3_store.ArtifactIndex):
@@ -114,7 +116,10 @@ def _resolve(
         own_deps=deps,
         own_sha=Sha("d" * 40),
         matrix_entry=dict(_LEG),
-        manifest_cache={(Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST)},
+        manifest_cache={
+            (Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST),
+            (Repo("o/side"), Ref("main")): parse_manifest(_SIDE_MANIFEST),
+        },
         sync_branch=None,
         sync_exists_by_repo={},
         sha_cache={},
@@ -528,3 +533,17 @@ def test_a_sibling_is_built_without_fallbacks_when_its_consumer_drops_them(
     awaited = {d["name"]: d for d in python["_resolved"]["deps"]}["p1"]
     assert awaited["artifact-name"] == build["_resolved"]["own-artifact-name"]
     assert {d["name"]: d for d in build["_resolved"]["deps"]}["middle"]["source"] == "triggered rebuild"
+
+
+def test_direct_deps_on_a_shared_upstream_fall_back_together(base_sha: list[Sha]) -> None:
+    store = _Store()
+    deps = [_spec("middle", allow_stale=True), _spec("side", allow_stale=True)]
+    old = _published_then_base_moves(base_sha, store, deps)
+    store.tars.append(old["side"].artifact_name)
+
+    got = _resolve(store, deps, allow_stale=True)
+
+    assert {n: got[n].artifact_name for n in ("middle", "side", "base")} == {
+        n: old[n].artifact_name for n in ("middle", "side", "base")
+    }
+    assert got["middle"].source == got["side"].source == "stale artifact"
