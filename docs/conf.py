@@ -67,7 +67,7 @@ ghactions_groups = [
     (
         "Checkout and build",
         "Get the right sources and build them.",
-        ["checkout-under-test", "pick-ref", "pre-commit", "run-job-script", "setup-sccache"],
+        ["checkout-under-test", "ensure-environment", "pick-ref", "pre-commit", "run-job-script", "setup-sccache"],
     ),
     (
         "Dependencies",
@@ -111,7 +111,7 @@ ghactions_groups = [
     (
         "Internals",
         "Nested by the actions that need it.",
-        ["ensure-infrastructure-present"],
+        ["_ensure-python-ci-infrastructure"],
     ),
 ]
 

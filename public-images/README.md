@@ -54,7 +54,7 @@ Docker `ENV` is inherited. **Every Dockerfile must re-declare the whole `CI_IMAG
 Copy the block from an existing image.
 
 The base also sets `CI_INFRASTRUCTURE_PYTHON` and `CI_INFRASTRUCTURE_BAKED_REF`.
-`ensure-infrastructure-present` uses them to reuse the baked package, or to reinstall it when it is stale.
+`_ensure-python-ci-infrastructure` uses them to reuse the baked package, or to reinstall it when it is stale.
 `CI_INFRASTRUCTURE_PYTHON` is a venv on ci-infrastructure's own uv-managed CPython under `/opt/ci-infrastructure`, never on `PATH`.
 Pythons for builds go to `UV_PYTHON_INSTALL_DIR` (`/opt/uv/python`); `verify-environment.sh` checks both.
 

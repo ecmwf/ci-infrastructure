@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Ensure ci-infrastructure infrastructure is present
+name: Ensure the ci-infrastructure Python package is present
 description: |
-  If `$CI_INFRASTRUCTURE_PYTHON` is not set, install ci-infrastructure
+  If `$CI_INFRASTRUCTURE_PYTHON` is not set, install the ci-infrastructure Python package
   and expose its Python via `$CI_INFRASTRUCTURE_PYTHON`.
   It does nothing if the infrastructure is already installed,
   either because of prior calls or because it is baked into the image.
@@ -12,10 +12,9 @@ description: |
   On a GitHub-hosted runner with an image version, e.g. ubuntu-latest, the venv is kept in the Actions cache.
 
   .. note::
-    All actions that need the CI infrastructure are guaranteed to call it themselves,
-    i.e. the user does not have to bootstrap.
-    But it also does no harm to call it.
-    Call it yourself when a workflow runs `$CI_INFRASTRUCTURE_PYTHON` directly.
+    All actions that need the package call it themselves, so a workflow does not.
+    Only a workflow that runs `$CI_INFRASTRUCTURE_PYTHON` directly calls it.
+    For the tools a job script needs (uv, cmake, ...) see `ensure-environment`.
     `tests/test_action_conventions.py` enforces that every action using the package nests it.
 
 inputs:
@@ -81,13 +80,13 @@ runs:
           fi
         done
         if [ -z "$repo_root" ]; then
-          echo "::error::ensure-infrastructure-present: cannot locate a ci-infrastructure checkout (probed: ${cands[*]})." >&2
+          echo "::error::_ensure-python-ci-infrastructure: cannot locate a ci-infrastructure checkout (probed: ${cands[*]})." >&2
           exit 1
         fi
         if [ "$repo_root" = "${GITHUB_WORKSPACE:-}" ]; then
-          echo "ensure-infrastructure-present: sources = the job workspace ($repo_root)"
+          echo "_ensure-python-ci-infrastructure: sources = the job workspace ($repo_root)"
         else
-          echo "ensure-infrastructure-present: sources = the action checkout ($repo_root)"
+          echo "_ensure-python-ci-infrastructure: sources = the action checkout ($repo_root)"
         fi
 
         # The env var reaches nested calls, which cannot forward inputs.
@@ -95,11 +94,11 @@ runs:
         [ "${FORCE_REINSTALL_INPUT:-}" = "true" ] && force_reinstall=true
         [ "${CI_INFRASTRUCTURE_FORCE_REINSTALL:-}" = "true" ] && force_reinstall=true
         if $force_reinstall && [ "$repo_root" != "${GITHUB_WORKSPACE:-}" ]; then
-          echo "::warning::ensure-infrastructure-present: force-reinstall is set, but the workspace is not a ci-infrastructure checkout — installing from the action checkout ($repo_root), which is the ref this action was pinned at, not a branch under test."
+          echo "::warning::_ensure-python-ci-infrastructure: force-reinstall is set, but the workspace is not a ci-infrastructure checkout — installing from the action checkout ($repo_root), which is the ref this action was pinned at, not a branch under test."
         fi
 
         checkout_hash="$(pkg_hash "$repo_root/src/ci_infrastructure")" \
-          || { echo "::error::ensure-infrastructure-present: no package files under $repo_root/src/ci_infrastructure" >&2; exit 1; }
+          || { echo "::error::_ensure-python-ci-infrastructure: no package files under $repo_root/src/ci_infrastructure" >&2; exit 1; }
 
         python="${CI_INFRASTRUCTURE_PYTHON:-}"
         baked_ok=false
@@ -109,10 +108,10 @@ runs:
           baked_hash="$(pkg_hash "$baked_dir" || true)"
           if [ -n "$baked_hash" ] && [ "$baked_hash" = "$checkout_hash" ]; then
             baked_ok=true
-            echo "ensure-infrastructure-present: reusing the baked interpreter $python (package digest $baked_hash matches the checkout)"
+            echo "_ensure-python-ci-infrastructure: reusing the baked interpreter $python (package digest $baked_hash matches the checkout)"
           else
             baked_ref="${CI_INFRASTRUCTURE_BAKED_REF:-}"
-            echo "::warning::ensure-infrastructure-present: the ci-infrastructure baked into this image does not match the checkout (baked package digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}); installing from the checkout instead. Expected on a pull request or just after a merge to main, until images.yml republishes the image; if it persists, check images.yml."
+            echo "::warning::_ensure-python-ci-infrastructure: the ci-infrastructure baked into this image does not match the checkout (baked package digest ${baked_hash:-unreadable}, checkout $checkout_hash${baked_ref:+, image built from $baked_ref}); installing from the checkout instead. Expected on a pull request or just after a merge to main, until images.yml republishes the image; if it persists, check images.yml."
           fi
         fi
 
@@ -163,17 +162,17 @@ runs:
           venv="$VENV"
           venv_root="$(dirname "$venv")"
           if $force_reinstall && [ -d "$venv" ]; then
-            echo "ensure-infrastructure-present: force-reinstall — discarding the cached venv at $venv"
+            echo "_ensure-python-ci-infrastructure: force-reinstall — discarding the cached venv at $venv"
             rm -rf "$venv"
           fi
           if [ -x "$python" ] && "$python" -c "import ci_infrastructure.hpc.orchestrate" >/dev/null 2>&1; then
-            echo "ensure-infrastructure-present: reusing existing venv at $venv (no pip install needed)"
+            echo "_ensure-python-ci-infrastructure: reusing existing venv at $venv (no pip install needed)"
           else
             if [ -x "$python" ]; then
-              echo "ensure-infrastructure-present: existing venv at $venv is incomplete (import check failed) — rebuilding from scratch."
+              echo "_ensure-python-ci-infrastructure: existing venv at $venv is incomplete (import check failed) — rebuilding from scratch."
               rm -rf "$venv"
             fi
-            echo "ensure-infrastructure-present: no venv at $venv — creating one now."
+            echo "_ensure-python-ci-infrastructure: no venv at $venv — creating one now."
             echo "  This installs ci-infrastructure from $repo_root, pulling its deps"
             echo "  (pydantic, boto3, click, PyYAML, jinja2) from PyPI and troika from GitHub over git; if this"
             echo "  container has no outbound access to PyPI and GitHub the install will stall below."
@@ -215,7 +214,7 @@ runs:
               done
 
               if [ -z "$bootstrap_py" ]; then
-                echo "::error::ensure-infrastructure-present: no Python >=3.11.2 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}) and any activated venv (VIRTUAL_ENV=${VIRTUAL_ENV:-<unset>}). Install uv (preferred) or python3.11.2+ in the runner image, or in the consumer container." >&2
+                echo "::error::_ensure-python-ci-infrastructure: no Python >=3.11.2 found on PATH after excluding the consumer setup-python interpreter (pythonLocation=${pythonLocation:-<unset>}) and any activated venv (VIRTUAL_ENV=${VIRTUAL_ENV:-<unset>}). Install uv (preferred) or python3.11.2+ in the runner image, or in the consumer container." >&2
                 exit 1
               fi
 
@@ -224,7 +223,7 @@ runs:
               echo "  pip install ci-infrastructure from $repo_root ..."
               "$venv/bin/pip" install --no-input --timeout 60 --retries 2 --disable-pip-version-check "$repo_root[runtime]"
             fi
-            echo "ensure-infrastructure-present: venv ready in $((SECONDS - start))s"
+            echo "_ensure-python-ci-infrastructure: venv ready in $((SECONDS - start))s"
           fi
           # Persistent hosts would collect one venv per ci-infrastructure change; keep only this one.
           find "$venv_root" -mindepth 1 -maxdepth 1 -type d ! -path "$venv" -exec rm -rf {} + 2>/dev/null || true

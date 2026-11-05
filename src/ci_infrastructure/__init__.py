@@ -5,5 +5,5 @@
 """Shared CI orchestration CLIs.
 
 Composite actions run them as `$CI_INFRASTRUCTURE_PYTHON -m ci_infrastructure.<module>`
-(the venv from `ensure-infrastructure-present`), not via the console scripts.
+(the venv from `_ensure-python-ci-infrastructure`), not via the console scripts.
 """

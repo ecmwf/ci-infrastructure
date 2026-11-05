@@ -1028,7 +1028,7 @@ def test_announce_image_action_needs_nothing_from_this_repo() -> None:
     assert [s for s in steps if "run" in s], "expected an inline script"
     assert not [s for s in steps if "uses" in s], "announce-image must not compose another action"
     script = "\n".join(s.get("run", "") for s in steps)
-    for forbidden in ("ensure-infrastructure-present", "CI_INFRASTRUCTURE_PYTHON", "pip "):
+    for forbidden in ("_ensure-python-ci-infrastructure", "CI_INFRASTRUCTURE_PYTHON", "pip "):
         assert forbidden not in script, f"{forbidden} reintroduces a bootstrap dependency"
 
 

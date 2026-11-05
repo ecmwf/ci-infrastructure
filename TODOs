@@ -20,7 +20,7 @@
 
 - after troika is typed. drop the ignore missing imports
 
-- ensure-infrastructure-present's freshness check hashes *.py only; declare
+- _ensure-python-ci-infrastructure's freshness check hashes *.py only; declare
   troika-config.yml and certs/*.pem as package-data and widen the hash.
 
 PR Contributor Declaration (checker landed, rollout pending):
