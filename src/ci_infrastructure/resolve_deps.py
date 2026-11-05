@@ -1320,6 +1320,43 @@ def _unique(deps: Sequence[ResolvedDep]) -> list[ResolvedDep]:
     return list(out.values())
 
 
+def _without_deps_hash(artifact_name: str, deps_hash: str) -> str:
+    return artifact_name.replace(f"-{deps_hash}-", "-", 1) if deps_hash else artifact_name
+
+
+def _awaited_siblings(
+    matrices: Mapping[str, Mapping[str, Any]], own_sha: Sha, published_in_run: frozenset[PackageName]
+) -> set[str]:
+    """Variants (artifact names without deps hash) of siblings a leg awaits from this run but no leg publishes."""
+    published = {
+        pkg["own-artifact-name"]
+        for m in matrices.values()
+        for leg in m["include"]
+        for pkg in leg["_resolved"].get("packages", {}).values()
+    }
+    return {
+        _without_deps_hash(d["artifact-name"], d["deps-hash"])
+        for m in matrices.values()
+        for leg in m["include"]
+        for d in leg["_resolved"]["deps"]
+        if d["sha"] == own_sha
+        and d["name"] in published_in_run
+        and d["source"] == "artifact"
+        and not d["cached"]
+        and d["artifact-name"] not in published
+    }
+
+
+def _legs_publishing(matrices: Mapping[str, Mapping[str, Any]], variants: set[str]) -> set[tuple[str, int]]:
+    return {
+        (mname, i)
+        for mname, m in matrices.items()
+        for i, leg in enumerate(m["include"])
+        for pkg in leg["_resolved"].get("packages", {}).values()
+        if _without_deps_hash(pkg["own-artifact-name"], pkg["own-deps-hash"]) in variants
+    }
+
+
 def bfs_load_manifests(
     root_deps: Sequence[DepSpec],
     sync_branch: Ref | None,
@@ -1469,8 +1506,6 @@ def _run(
     )
     stale = StaleFallback(token) if allow_stale else None
     run_state_cache: dict[tuple[Repo, Sha, Execution], bool] = {}
-    matrices_out: dict[str, dict[str, Any]] = {}
-    unresolved: list[str] = []
 
     # Without an App token from resolve-deps, orphan pins hard-fail.
     dispatch_token = os.environ.get("DISPATCH_TOKEN", "").strip()
@@ -1486,80 +1521,92 @@ def _run(
         for p in local_manifest.packages_by_kind.get(mname, ())
     )
 
-    for mname in matrix_names:
-        include = local_manifest.matrix.get(mname, [])
-        if not include:
-            print(f"::warning::No [matrix.{mname}.include] in manifest; skipping.", file=sys.stderr)
-            continue
-
-        out_include: list[dict[str, Any]] = []
-        built = build_order(local_manifest, local_manifest.built_by_kind.get(mname, ()))
-        prefixes = built or [local_manifest.package.prefix]
-        lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
-        package = local_manifest.packages.get(prefixes[0], local_manifest.packages[local_manifest.package.prefix])
-        for entry in include:
-            job_name = job_names.name_suffix(entry, include, package.compiler_inputs)
-            try:
-                deps_resolved, per_package = resolve_packages(
-                    local_manifest,
-                    prefixes,
-                    own_sha=own_sha,
-                    own_ref=own_ref,
-                    matrix_entry=entry,
-                    manifest_cache=manifest_cache,
-                    sync_branch=sync_branch,
-                    sync_exists_by_repo=sync_exists,
-                    sha_cache=sha_cache,
-                    artifact_index=artifact_index,
-                    run_state_cache=run_state_cache,
-                    token=token,
-                    can_dispatch=can_dispatch,
-                    lane=lane,
-                    dispatch_plans=dispatch_plans,
-                    pins=pins,
-                    published_in_run=published_in_run,
-                    stale=stale,
-                )
-            except LegError as e:
-                print(f"::warning::[{mname}] {job_name}: {escape_command_data(str(e))}", file=sys.stderr)
-                unresolved.append(f"[{mname}] {job_name}")
-                out_include.append({**entry, "_resolved": unresolved_leg(local_manifest.package.name, job_name, e)})
+    # A leg that drops its stale fallbacks needs its siblings built without them too:
+    # re-resolve their legs until every sibling awaited from this run is one a leg of it publishes.
+    fresh_legs: set[tuple[str, int]] = set()
+    while True:
+        matrices_out: dict[str, dict[str, Any]] = {}
+        unresolved: list[str] = []
+        if stale:
+            stale.notes = set()
+        for mname in matrix_names:
+            include = local_manifest.matrix.get(mname, [])
+            if not include:
+                print(f"::warning::No [matrix.{mname}.include] in manifest; skipping.", file=sys.stderr)
                 continue
-            own = per_package[prefixes[0]]
-            cmake_paths = [str(d.install_path) for d in deps_resolved]
-            all_artifact_names = [d.artifact_name for d in deps_resolved]
-            resolved_block: dict[str, Any] = {
-                "cmake-prefix-path": ";".join(cmake_paths),
-                "all-artifact-names": " ".join(all_artifact_names),
-                "all-artifact-sources": " ".join(d.source for d in deps_resolved),
-                "own-name": local_manifest.package.name,
-                "own-artifact-name": own.artifact_name,
-                "own-sha": own_sha,
-                "own-ref": current_branch,
-                "own-platform": own.platform,
-                "own-compiler": own.compiler or "",
-                "own-build-type": own.build_type,
-                "own-python": own.python_version or "",
-                "own-option": own.option,
-                "own-deps-hash": own.deps_hash or "",
-                "own-tar-name": f"{own.artifact_name}.tar.gz",
-                "deps": [d.to_json() for d in deps_resolved],
-                "direct-artifact-names": " ".join(own.direct_artifact_names),
-                "job-name": job_name,
-            }
-            resolved_block["crates"] = leg_crates(local_manifest, prefixes, entry, lane)
-            resolved_block["packages"] = {
-                p: {
-                    "own-artifact-name": o.artifact_name,
-                    "own-deps-hash": o.deps_hash or "",
-                    "direct-artifact-names": " ".join(o.direct_artifact_names),
-                    "install-path": str(_install_base() / p),
-                }
-                for p, o in per_package.items()
-            }
-            out_include.append({**entry, "_resolved": resolved_block})
 
-        matrices_out[mname] = {"include": out_include}
+            out_include: list[dict[str, Any]] = []
+            built = build_order(local_manifest, local_manifest.built_by_kind.get(mname, ()))
+            prefixes = built or [local_manifest.package.prefix]
+            lane = local_manifest.execution_by_kind.get(mname, EXECUTION_RUNNER)
+            package = local_manifest.packages.get(prefixes[0], local_manifest.packages[local_manifest.package.prefix])
+            for i, entry in enumerate(include):
+                job_name = job_names.name_suffix(entry, include, package.compiler_inputs)
+                try:
+                    deps_resolved, per_package = resolve_packages(
+                        local_manifest,
+                        prefixes,
+                        own_sha=own_sha,
+                        own_ref=own_ref,
+                        matrix_entry=entry,
+                        manifest_cache=manifest_cache,
+                        sync_branch=sync_branch,
+                        sync_exists_by_repo=sync_exists,
+                        sha_cache=sha_cache,
+                        artifact_index=artifact_index,
+                        run_state_cache=run_state_cache,
+                        token=token,
+                        can_dispatch=can_dispatch,
+                        lane=lane,
+                        dispatch_plans=dispatch_plans,
+                        pins=pins,
+                        published_in_run=published_in_run,
+                        stale=None if (mname, i) in fresh_legs else stale,
+                    )
+                except LegError as e:
+                    print(f"::warning::[{mname}] {job_name}: {escape_command_data(str(e))}", file=sys.stderr)
+                    unresolved.append(f"[{mname}] {job_name}")
+                    out_include.append({**entry, "_resolved": unresolved_leg(local_manifest.package.name, job_name, e)})
+                    continue
+                own = per_package[prefixes[0]]
+                cmake_paths = [str(d.install_path) for d in deps_resolved]
+                all_artifact_names = [d.artifact_name for d in deps_resolved]
+                resolved_block: dict[str, Any] = {
+                    "cmake-prefix-path": ";".join(cmake_paths),
+                    "all-artifact-names": " ".join(all_artifact_names),
+                    "all-artifact-sources": " ".join(d.source for d in deps_resolved),
+                    "own-name": local_manifest.package.name,
+                    "own-artifact-name": own.artifact_name,
+                    "own-sha": own_sha,
+                    "own-ref": current_branch,
+                    "own-platform": own.platform,
+                    "own-compiler": own.compiler or "",
+                    "own-build-type": own.build_type,
+                    "own-python": own.python_version or "",
+                    "own-option": own.option,
+                    "own-deps-hash": own.deps_hash or "",
+                    "own-tar-name": f"{own.artifact_name}.tar.gz",
+                    "deps": [d.to_json() for d in deps_resolved],
+                    "direct-artifact-names": " ".join(own.direct_artifact_names),
+                    "job-name": job_name,
+                }
+                resolved_block["crates"] = leg_crates(local_manifest, prefixes, entry, lane)
+                resolved_block["packages"] = {
+                    p: {
+                        "own-artifact-name": o.artifact_name,
+                        "own-deps-hash": o.deps_hash or "",
+                        "direct-artifact-names": " ".join(o.direct_artifact_names),
+                        "install-path": str(_install_base() / p),
+                    }
+                    for p, o in per_package.items()
+                }
+                out_include.append({**entry, "_resolved": resolved_block})
+
+            matrices_out[mname] = {"include": out_include}
+        more = _legs_publishing(matrices_out, _awaited_siblings(matrices_out, own_sha, published_in_run)) - fresh_legs
+        if not more:
+            break
+        fresh_legs |= more
 
     t_legs = time.monotonic()
     for note in sorted(stale.notes if stale else ()):

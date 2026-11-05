@@ -84,6 +84,7 @@ where the build job publishes ``eccodes`` built against older upstreams, a Pytho
 It does so only if that tree has the same packages, at commits in the history of the current ones,
 all still in the store, and if no other dependency, nor a direct one without ``allow-stale``, needs the current builds of them;
 otherwise the dependency is rebuilt as before.
+Where a leg needs current builds beneath a package of the same repository, the legs publishing that package build it against them too.
 The leg's dependency table shows such a dependency with source ``stale artifact``,
 and the resolve job notes against which commits it was built.
 
