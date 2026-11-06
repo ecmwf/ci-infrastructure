@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final
 
@@ -218,6 +219,18 @@ def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:
     assert "| · | [`aaaaaaaa`](https://c/a) | [@carol](https://github.com/carol) | [#7](https://pr/7) |" in out
     assert "<details open><summary>❌ <b>eckit</b>" in out
     assert "<details open><summary>⛔ <b>atlas</b>" in out
+
+
+def test_each_group_of_connected_repos_gets_its_own_table() -> None:
+    states = {
+        "ecmwf/eckit": _state("ecmwf/eckit", upstream=("ecmwf/ecbuild",)),
+        "ecmwf/ecbuild": _state("ecmwf/ecbuild"),
+        "ecmwf/anemoi-datasets": _state("ecmwf/anemoi-datasets", upstream=("ecmwf/anemoi-utils",)),
+        "ecmwf/anemoi-utils": _state("ecmwf/anemoi-utils"),
+    }
+    out = dbs.render_summary(states, NOW).split("## ❗")[0]
+    tables = {t.split("\n", 1)[0]: re.findall(r"\| \[([\w-]+)\]\(", t) for t in out.split("## From ")[1:]}
+    assert tables == {"ecbuild": ["ecbuild", "eckit"], "anemoi-utils": ["anemoi-utils", "anemoi-datasets"]}
 
 
 def test_direct_pushes_of_the_last_14_days_are_listed_newest_first() -> None:
