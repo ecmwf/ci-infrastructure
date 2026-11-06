@@ -7,7 +7,10 @@ FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-RUN apt-get update && apt-get install -y \
+# uutils tee panics on pipe buffer limits: https://github.com/uutils/coreutils/issues/15709
+RUN apt-get update && apt-get install -y --allow-remove-essential \
+    coreutils-from-gnu \
+    coreutils-from-uutils- \
     sudo \
     git \
     bison \
