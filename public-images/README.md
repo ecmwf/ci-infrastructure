@@ -19,6 +19,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
 - The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, `openmpi` a working `mpicc`/`mpirun`, and `rust<X.Y>` that Rust toolchain with `clippy` and `rustfmt`, linking with the named gcc. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
+- `release` promises what release builds link and package with; see [Release images](#release-images).
 
 [`verify-environment.sh`](verify-environment.sh) checks this contract.
 
@@ -36,6 +37,36 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 | `fedora43` | 15 | 6 | 1.83 | 3.31 | 3.14 |
 | `fedora44` | 16 | 6 | 1.90 | 4.3 | 3.14 |
 | `rolling-arch` | newest | 6 | newest | newest | newest |
+
+## Release images
+
+`<platform>/gcc<N>-gfortran<N>-release` is the platform's gcc variant plus what a release build
+(CD v3, `[matrix.release-*]`) links and packages with, so the package it builds has every optional
+feature its project offers and nothing is installed at build time. Release builds use `:latest`
+and record the tag they ran in (`CI_IMAGE_TAG`): registry cleanup keeps only the two newest
+versions, so a pinned tag would disappear.
+
+- It holds the platform's packager (`rpm-build`; `dpkg-dev` and `file` on Debian and Ubuntu) and these libraries with headers, from the
+  distribution and its add-on repositories (EPEL, CRB/PowerTools), except libaec where noted below:
+  libaec, bzip2, lz4, BLAS/LAPACK and Eigen. A project that needs another library adds it to every
+  release image in one change.
+- Only distribution versions that are still supported get one: today rocky8, rocky9, rocky10,
+  fedora43, fedora44, debian12, debian13, ubuntu22.04, ubuntu24.04 and ubuntu26.04.
+- The list is a promise across platforms, but the versions are the distribution's, except libaec.
+- libaec is built from source where the distribution's is unusable for eckit (`find_package(libaec 1.1.4)`):
+  rocky8 (1.0.2), rocky10 (EPEL, 1.1.3), debian12 and ubuntu22.04 (1.0.6), ubuntu24.04 (1.1.2),
+  debian13 (1.1.3), and fedora43, whose 1.1.4 has a CMake config that needs a `libaec.a` it does
+  not ship. There it is the pinned 1.1.7, static only and position-independent (`-fPIC`), under
+  `/usr/local` (`lib`, not `lib64`), and its CMake config defaults to the static targets
+  (`libaec_USE_STATIC_LIBS ON`). A package therefore embeds libaec and depends on no libaec the
+  target may lack, and no `/usr/local` RPATH reaches it. The distribution's `-devel`/`-dev` package
+  is not installed there. To bump it, change `LIBAEC_VERSION` and `LIBAEC_SHA256` in every
+  Dockerfile that has them.
+
+`verify-environment.sh` builds, links and runs a program against each library with the image's gcc,
+and runs `find_package(libaec 1.1.4)` as eckit calls it. On a source-built image it also checks that
+`libaec::aec` is the static library under `/usr/local/lib`, that there is only one `libaec.h`, and
+that no shared libaec is under `/usr/local`.
 
 ## Tags and rebuilds
 
