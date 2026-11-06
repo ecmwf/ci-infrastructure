@@ -191,13 +191,16 @@ class DepTable(_Table):
         default=None,
         alias="compiler-inputs",
         description="Leg fields holding the upstream's compilers; must match the upstream package's "
-        "`compiler-inputs`, which apply when this is omitted. `[]` if the upstream is compiler-independent.",
+        "`compiler-inputs`, which apply when this is omitted. `[]` if the upstream is compiler-independent. "
+        "A leg without one of these fields uses the upstream's field in the same sorted position.",
     )
     build_type_input: str = Field(
         default="build-type", alias="build-type-input", description="Leg field selecting the upstream's build type."
     )
     platform_input: str = Field(
-        default="platform", alias="platform-input", description="Leg field selecting the upstream's platform."
+        default="platform",
+        alias="platform-input",
+        description="Leg field selecting the upstream's platform; a leg without it uses `platform`.",
     )
     options: str = Field(
         default="",
