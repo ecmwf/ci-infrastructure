@@ -17,7 +17,9 @@ on:
 jobs:
   # `arc`: an ARC pod in the internal-tools image, which carries the cluster ssh
   # identity. `hpc`: a self-hosted runner with that identity on the host and no
-  # container, proving the actions don't depend on the image.
+  # container, proving the actions don't depend on the image. `arc-hpc-runner`:
+  # `arc` in the hpc-runner image, the candidate pod image of hpc-submit, whose
+  # steps run as `runner` instead of root.
   #
   # JSON, since a YAML alias cannot be conditional. The reduced matrix drops the
   # `hpc` include too: an unmatched include would ADD a row with no site.
@@ -35,11 +37,12 @@ jobs:
         run: |
           set -euo pipefail
           arc='{"lane":"arc","runner":"hpc-submit","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-internal-tools:latest"}'
+          arc_hpc_runner='{"lane":"arc-hpc-runner","runner":"hpc-submit","container":"eccr.ecmwf.int/private-ci-images/ubuntu24.04-hpc-runner:latest"}'
           hpc='{"lane":"hpc","runner":"hpc","container":""}'
           if [ "${FULL:-false}" = "true" ]; then
-            matrix="{\"lane\":[\"arc\",\"hpc\"],\"site\":[\"hpc-batch\",\"ac-batch\"],\"include\":[$arc,$hpc]}"
+            matrix="{\"lane\":[\"arc\",\"arc-hpc-runner\",\"hpc\"],\"site\":[\"hpc-batch\",\"ac-batch\"],\"include\":[$arc,$arc_hpc_runner,$hpc]}"
           else
-            matrix="{\"lane\":[\"arc\"],\"site\":[\"hpc-batch\"],\"include\":[$arc]}"
+            matrix="{\"lane\":[\"arc\",\"arc-hpc-runner\"],\"site\":[\"hpc-batch\"],\"include\":[$arc,$arc_hpc_runner]}"
           fi
           echo "$matrix" | jq -e . > /dev/null
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
