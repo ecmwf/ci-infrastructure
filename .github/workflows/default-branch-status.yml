@@ -9,6 +9,10 @@ on:
     - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
+      pushes:
+        description: 'Also list the direct pushes and the merges without green CI (many API calls).'
+        type: boolean
+        default: false
       since:
         description: 'First day of the direct pushes, YYYY-MM-DD (UTC). Default: 14 days ago.'
         required: false
@@ -51,9 +55,13 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           SINCE: ${{ inputs.since }}
           UNTIL: ${{ inputs.until }}
+          PUSHES: ${{ inputs.pushes }}
         # The regenerate bot's pushes are the auto-commit mode at work, not someone skipping review.
         run: |
           args=(--exclude 'ecmwf-ci-workflow-regenerator[bot]')
           [ -z "$SINCE" ] || args+=(--since "$SINCE")
           [ -z "$UNTIL" ] || args+=(--until "$UNTIL")
+          # The direct pushes and bypassed merges cost a few REST calls per commit and ran into the rate limit;
+          # off for now, the scheduled run shows only the state of the default branches.
+          [ "$PUSHES" = true ] || args+=(--no-pushes)
           "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.default_branch_status "${args[@]}"
