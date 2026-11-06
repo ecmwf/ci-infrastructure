@@ -141,6 +141,7 @@ and opens a pull request with the regenerated workflows.
 It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.yaml`` to the commit that generated them,
 so the pull request is checked by the hooks that match its files.
 It labels a new pull request ``downstream-ci-not-needed`` and ``hpc-ci-not-needed`` (the input ``labels``), since it changes only generated workflows.
+The input ``add-labels`` adds labels to these, e.g. ``expensive-tests-not-needed``; ``labels`` replaces them.
 The input ``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.
 The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 
