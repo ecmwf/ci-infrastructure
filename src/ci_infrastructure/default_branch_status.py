@@ -510,9 +510,12 @@ def render_summary(
     exclude: Collection[str] = (),
     since: date | None = None,
     until: date | None = None,
+    pushes: bool = True,
 ) -> str:
     """The dashboard; its table of direct pushes covers `since` to `until`, both whole days (default: the
-    last 14 days), and leaves out the people in `exclude`."""
+    last 14 days), and leaves out the people in `exclude`.
+
+    Without `pushes`, only the default branches' CI: no direct pushes and no merges without green CI."""
     blockers = red_upstream(states)
     order = ordered({r: s.upstream for r, s in states.items()})
     lines = [
@@ -545,6 +548,22 @@ def render_summary(
         " · · no run of its own, part of a later push · ❗ pushed without a pull request"
         " · ⚠️ merged without green CI",
     ]
+    if pushes:
+        lines += _activity(states, now, exclude, since, until, order)
+    lines += _timelines(states, blockers, order)
+    return "\n".join(lines) + "\n"
+
+
+def _activity(
+    states: Mapping[str, RepoState],
+    now: datetime,
+    exclude: Collection[str],
+    since: date | None,
+    until: date | None,
+    order: Sequence[str],
+) -> list[str]:
+    """The tables of direct pushes and of merges without green CI."""
+    lines: list[str] = []
     start, end = window(now, since, until)
     pushes = sorted(
         (
@@ -596,6 +615,14 @@ def render_summary(
             )
     else:
         lines.append("None.")
+    return lines
+
+
+def _timelines(
+    states: Mapping[str, RepoState], blockers: Mapping[str, Sequence[str]], order: Sequence[str]
+) -> list[str]:
+    """Per repo, its last first-parent commits; open when its branch is red or blocked."""
+    lines: list[str] = []
     for repo in order:
         s = states[repo]
         st = status(s, blockers[repo])
@@ -614,7 +641,7 @@ def render_summary(
                 via = f"❗ direct push{pusher}"
             lines.append(f"| {_ci(c)} | [`{c.sha[:8]}`]({c.url}) | {_user(c.author)} | {via} | {_cell(c.headline)} |")
         lines += ["", "</details>"]
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def failures(states: Mapping[str, RepoState]) -> list[str]:
@@ -636,7 +663,13 @@ def failures(states: Mapping[str, RepoState]) -> list[str]:
     help="First day of the direct pushes, UTC. Default: 14 days ago. Only each repo's last 100 commits are read.",
 )
 @click.option("--until", type=click.DateTime(["%Y-%m-%d"]), help="Last day of the direct pushes, UTC. Default: today.")
-def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | None) -> None:
+@click.option(
+    "--pushes/--no-pushes",
+    default=True,
+    show_default=True,
+    help="Also list the direct pushes and the merges without green CI. These take a few REST calls per commit.",
+)
+def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | None, pushes: bool) -> None:
     """Write the dashboard of the rolled-out repos' default branches to $GITHUB_STEP_SUMMARY.
 
     Fails when a default branch is red or blocked by a red upstream.
@@ -646,8 +679,9 @@ def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | Non
     try:
         now = datetime.now(UTC)
         days = (since.date() if since else None, until.date() if until else None)
-        states = fetch(SEEDS, select_token(), *window(now, *days), now)
-        summary = render_summary(states, now, frozenset(exclude), *days)
+        start, end = window(now, *days) if pushes else (None, None)
+        states = fetch(SEEDS, select_token(), start, end, now)
+        summary = render_summary(states, now, frozenset(exclude), *days, pushes=pushes)
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
