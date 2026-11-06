@@ -59,7 +59,7 @@ jobs:
       credentials:
         username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
         password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
-    steps:
+    steps: &ssh-steps
       - name: SSH to HPC
         shell: bash
         env:
@@ -79,7 +79,7 @@ jobs:
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
-    steps:
+    steps: &roundtrip-steps
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
@@ -145,7 +145,7 @@ jobs:
     strategy: *hpc-lanes
     runs-on: ${{ matrix.runner }}
     container: *hpc-container
-    steps:
+    steps: &submit-steps
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
@@ -202,3 +202,32 @@ jobs:
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --tar-dir "$RUNNER_TEMP/hpc-submit/tars" \
             --no-publish
+
+  # The same jobs in the hpc-runner image, the candidate pod image of hpc-submit.
+  ssh-hpc-runner:
+    name: ssh to HPC (${{ matrix.lane }}, ${{ matrix.site }})
+    strategy: &hpc-runner-lane
+      matrix:
+        lane: [hpc-runner-image]
+        site: [hpc-batch]
+    runs-on: hpc-submit
+    container: &hpc-runner-container
+      image: eccr.ecmwf.int/private-ci-images/ubuntu24.04-hpc-runner:latest
+      credentials:
+        username: ${{ secrets.ECCR_PULL_ROBOT_NAME }}
+        password: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}
+    steps: *ssh-steps
+
+  hpc-roundtrip-hpc-runner:
+    name: transfer round-trip (${{ matrix.lane }}, ${{ matrix.site }})
+    strategy: *hpc-runner-lane
+    runs-on: hpc-submit
+    container: *hpc-runner-container
+    steps: *roundtrip-steps
+
+  hpc-submit-hpc-runner:
+    name: submit a SLURM job (${{ matrix.lane }}, ${{ matrix.site }})
+    strategy: *hpc-runner-lane
+    runs-on: hpc-submit
+    container: *hpc-runner-container
+    steps: *submit-steps
