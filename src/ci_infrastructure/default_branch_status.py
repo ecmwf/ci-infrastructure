@@ -7,7 +7,8 @@
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
 or merged one without green CI.
 
-The repos are found from ecbuild along the manifests' `[[deps]]` and `[[trigger-downstream]]`.
+The repos are found from ecbuild and anemoi-utils along the manifests' `[[deps]]` and `[[trigger-downstream]]`;
+each group of connected repos gets its own table.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
 """
 
@@ -29,8 +30,8 @@ from . import manifest
 from ._errors import CIError
 from ._github_api import IN_PROGRESS_STATUSES, ManifestSchemaError, _alias, gh_api_graphql, gh_api_rest, select_token
 
-#: Where discovery starts: the bottom of the stack, whose manifest names its consumers.
-SEEDS: Final = ("ecmwf/ecbuild",)
+#: Where discovery starts: the bottom of each stack, whose manifest names its consumers.
+SEEDS: Final = ("ecmwf/ecbuild", "ecmwf/anemoi-utils")
 CI_WORKFLOW: Final = "ci.yml"
 CI_RESULT: Final = "ci-result"  # the commit status a ci.yml run sets on what it built
 _HISTORY: Final = 100  # commits fetched to walk the first-parent chain
@@ -434,6 +435,21 @@ def ordered(upstream: Mapping[str, Sequence[str]]) -> list[str]:
         raise CIError(f"the manifests' deps form a cycle: {exc.args[1]}") from exc
 
 
+def groups(states: Mapping[str, RepoState]) -> list[list[str]]:
+    """The repos connected through their deps, each group in `ordered` order."""
+    group = {repo: {repo} for repo in states}
+    for repo, s in states.items():
+        for up in s.upstream:
+            if group[up] is not group[repo]:
+                merged = group[up] | group[repo]
+                for r in merged:
+                    group[r] = merged
+    out: dict[int, list[str]] = {}
+    for repo in ordered({r: s.upstream for r, s in states.items()}):
+        out.setdefault(id(group[repo]), []).append(repo)
+    return list(out.values())
+
+
 def red_upstream(states: Mapping[str, RepoState]) -> dict[str, tuple[str, ...]]:
     """Per repo, every transitive upstream whose own CI is red."""
     red: dict[str, tuple[str, ...]] = {}
@@ -503,21 +519,26 @@ def render_summary(
         "# Default branches",
         "",
         f"{now:%Y-%m-%d %H:%M} UTC, the last completed `{CI_WORKFLOW}` run of each default branch.",
-        "",
-        "| | Repo | Branch | Last completed run | Upstream | Status |",
-        "|---|---|---|---|---|---|",
     ]
-    for repo in order:
-        s = states[repo]
-        st = status(s, blockers[repo])
-        last = s.last_completed
-        run = f"[`{last.sha[:8]}`]({last.url}) {last.conclusion}" if last else ""
-        if s.runs and s.runs[0].conclusion is None:
-            run += f", 🟡 [`{s.runs[0].sha[:8]}`]({s.runs[0].url}) running"
-        ups = ", ".join(states[u].name for u in s.upstream)
-        lines.append(
-            f"| {st.icon} | [{s.name}](https://github.com/{repo}) | `{s.branch}` | {run} | {ups} | {st.text} |"
-        )
+    for group in groups(states):
+        lines += [
+            "",
+            f"## From {states[next((r for r in group if r in SEEDS), group[0])].name}",
+            "",
+            "| | Repo | Branch | Last completed run | Upstream | Status |",
+            "|---|---|---|---|---|---|",
+        ]
+        for repo in group:
+            s = states[repo]
+            st = status(s, blockers[repo])
+            last = s.last_completed
+            run = f"[`{last.sha[:8]}`]({last.url}) {last.conclusion}" if last else ""
+            if s.runs and s.runs[0].conclusion is None:
+                run += f", 🟡 [`{s.runs[0].sha[:8]}`]({s.runs[0].url}) running"
+            ups = ", ".join(states[u].name for u in s.upstream)
+            lines.append(
+                f"| {st.icon} | [{s.name}](https://github.com/{repo}) | `{s.branch}` | {run} | {ups} | {st.text} |"
+            )
     lines += [
         "",
         "✅ green · ❌ CI failed · ⛔ blocked by a failing upstream · 🟡 running · ⚪ cancelled or skipped"
