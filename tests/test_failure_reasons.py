@@ -45,23 +45,56 @@ def api(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("api")
-def test_the_chain_follows_linked_runs_to_the_actual_failure() -> None:
+def test_the_chain_names_the_root_cause_and_links_the_jobs_in_between() -> None:
     assert failure_reasons.explain("https://github.com/o/eccodes/actions/runs/3", None).splitlines() == [
         "",
-        "  o/eccodes › resolve: dep 'eckit' was red: https://github.com/o/eckit/actions/runs/2",
-        "    o/eckit › build (gcc): ctest: 2 tests failed",
-        "    o/eckit › build (gcc): see https://github.com/o/eccodes/actions/runs/3",
+        "  caused by o/eckit › build (gcc): ctest: 2 tests failed",
+        "    https://github.com/o/eckit/actions/runs/2/job/21",
+        "  via https://github.com/o/eccodes/actions/runs/3/job/31",
     ]
 
 
 @pytest.mark.usefixtures("api")
-def test_a_failed_job_without_errors_is_still_named_and_many_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_failed_job_per_run_is_spelled_out_and_runner_noise_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs = [{"id": i, "name": f"leg {i}", "conclusion": "failure"} for i in range(7)]
     monkeypatch.setitem(_RUNS, "repos/o/x/actions/runs/9/jobs?filter=latest&per_page=100", {"jobs": jobs})
+    for i in range(7):
+        monkeypatch.setitem(
+            _RUNS,
+            f"repos/o/x/check-runs/{i}/annotations?per_page=50",
+            [
+                {"annotation_level": "failure", "message": "Executing the custom container implementation failed. X"},
+                {"annotation_level": "failure", "message": "1 dep(s) could not be fetched."},
+                {"annotation_level": "failure", "message": f"Could not fetch dep y-{i} " + "x" * 300},
+            ],
+        )
     lines = failure_reasons.explain_run("o/x", 9, None)
-    assert lines[0] == "  o/x › leg 0: failed"
-    assert len(lines) == failure_reasons.MAX_JOBS + 1
-    assert lines[-1] == "  … and 2 more failed job(s) of o/x"
+    assert lines[0].startswith("  caused by o/x › leg 0: Could not fetch dep y-0 xxx")
+    assert lines[0].endswith("… (and 6 more failed job(s) of that run)")
+    assert lines[1:] == ["    https://github.com/o/x/actions/runs/9/job/0"]
+
+
+@pytest.mark.usefixtures("api")
+def test_a_failed_job_without_errors_is_its_own_root_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = [{"id": 1, "name": "leg", "conclusion": "failure"}]
+    monkeypatch.setitem(_RUNS, "repos/o/y/actions/runs/8/jobs?filter=latest&per_page=100", {"jobs": jobs})
+    assert failure_reasons.explain_run("o/y", 8, None) == [
+        "  caused by o/y › leg: failed",
+        "    https://github.com/o/y/actions/runs/8/job/1",
+    ]
+
+
+@pytest.mark.usefixtures("api")
+def test_a_red_upstream_run_without_failed_jobs_leaves_the_linking_job_as_root_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The upstream run was re-run green since; the consumer's own job is all there is to show.
+    monkeypatch.setitem(_RUNS, "repos/o/eckit/actions/runs/2/jobs?filter=latest&per_page=100", {"jobs": []})
+    assert failure_reasons.explain("https://github.com/o/eccodes/actions/runs/3", None).splitlines() == [
+        "",
+        "  caused by o/eccodes › resolve: dep 'eckit' was red: https://github.com/o/eckit/actions/runs/2",
+        "    https://github.com/o/eccodes/actions/runs/3/job/31",
+    ]
 
 
 @pytest.mark.usefixtures("api")
