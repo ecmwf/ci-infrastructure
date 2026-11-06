@@ -597,6 +597,16 @@ def _install_base() -> Path:
     return Path("$RUNNER_TEMP") / "install"
 
 
+def _with_producer_compilers(
+    leg: Mapping[str, Any], compiler_inputs: Sequence[str], producer_inputs: Sequence[str] | None
+) -> Mapping[str, Any]:
+    """`leg` with each unset compiler input taken from the producer's field in the same sorted position."""
+    if producer_inputs is None or len(producer_inputs) != len(compiler_inputs):
+        return leg
+    pairs = zip(sorted(compiler_inputs), sorted(producer_inputs), strict=True)
+    return {**{field: leg[own] for field, own in pairs if field not in leg and own in leg}, **leg}
+
+
 def _join_compilers(
     compiler_inputs: Sequence[str],
     matrix_entry: Mapping[str, Any],
@@ -936,10 +946,14 @@ def resolve_leg(
                 f"dep '{spec.package}' (declared by '{declared_by}') takes its compiler-inputs from its producer, "
                 f"but {spec.repo}@{ref} declares no package '{spec.package}'"
             )
-        compiler = _join_compilers(compiler_inputs, parent_ctx, context=f"dep '{spec.package}'")
+        compiler = _join_compilers(
+            compiler_inputs,
+            _with_producer_compilers(parent_ctx, compiler_inputs, info.compiler_inputs if info else None),
+            context=f"dep '{spec.package}'",
+        )
 
         build_type = str(parent_ctx.get(spec.build_type_input, "Release"))
-        platform = str(parent_ctx.get(spec.platform_input, ""))
+        platform = str(parent_ctx.get(spec.platform_input, parent_ctx.get("platform", "")))
         platform_slug = compute_platform_slug(platform)
 
         if spec.option:

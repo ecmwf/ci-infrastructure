@@ -784,3 +784,40 @@ def test_legs_naming_one_variant_must_agree_on_what_the_deps_read() -> None:
     cache = {(Repo("o/middle"), Ref("main")): parse_manifest(_FORTRAN_WHEN_MANIFEST + same)}
     deps, _ = _resolve(_own("top"), [_dep_spec("middle")], dict(_LEG), manifest_cache=cache)
     assert "fortranlib" in [d.name for d in deps]
+
+
+_CXXMATH_MANIFEST: Final = """
+[package]
+visibility = "private"
+name = "cxxmath"
+prefix = "cxxmath"
+repo = "o/cxxmath"
+compiler-inputs = ["cxx-compiler"]
+
+[[matrix.build.include]]
+cxx-compiler = "clang++-18"
+build-type = "Release"
+platform = "ubuntu-24.04"
+runs-on = "small"
+"""
+
+
+@pytest.mark.usefixtures("offline")
+@pytest.mark.parametrize(
+    "leg",
+    [
+        dict(_LEG),
+        {
+            "cxx-compiler": "g++-11",
+            "build-type": "Release",
+            "platform": "ubuntu-22.04",
+            "upstream-cxx-compiler": "clang++-18",
+            "upstream-platform": "ubuntu-24.04",
+        },
+    ],
+)
+def test_a_leg_without_the_upstream_fields_uses_its_own(leg: dict[str, str]) -> None:
+    cache = {(Repo("o/cxxmath"), Ref("main")): parse_manifest(_CXXMATH_MANIFEST)}
+    spec = _dep_spec("cxxmath", compiler_inputs=["upstream-cxx-compiler"], platform_input="upstream-platform")
+    [dep], _ = _resolve(_own("top"), [spec], leg, manifest_cache=cache)
+    assert "ubuntu-24.04-clang++-18-Release" in dep.artifact_name
