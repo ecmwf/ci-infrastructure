@@ -1423,13 +1423,7 @@ def _require_approval(jobs: dict[str, Any]) -> dict[str, Any]:
         _APPROVAL_JOB_ID: {
             "runs-on": SLIM_RUNNER,
             "permissions": {"pull-requests": "write"},
-            # Its checkout would be the default branch, not the commit under test; ci.yml's gate checks that one.
-            "steps": [
-                {
-                    "uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main",
-                    "with": {"check-workflows": "false"},
-                }
-            ],
+            "steps": [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}],
         }
     }
     for jid, job in jobs.items():
