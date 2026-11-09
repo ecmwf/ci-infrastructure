@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# actions/require-ci-approval with check-workflows: 'true' runs both checks in CI instead.
 - id: check-ci-approval
   name: require the ci-approval gate on workflows that can run fork code
   description: >
