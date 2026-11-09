@@ -22,9 +22,16 @@ inputs:
     default: ${{ github.head_ref || github.ref_name }}
   pin:
     description: >
-      owner/repo@sha of the change under test. That repo resolves at this
-      commit wherever it appears in the dependency tree, so a downstream run
-      builds against it rather than its default branch. Empty pins nothing.
+      owner/repo@sha of the change under test, or several separated by spaces.
+      Each repo resolves at its commit wherever it appears in the dependency
+      tree, so a downstream run builds against it rather than its default
+      branch. Empty pins nothing.
+    required: false
+    default: ''
+  expected-artifacts:
+    description: >
+      Space-separated artifacts of other repos that an earlier job of this run
+      publishes: taken as on their way rather than missing.
     required: false
     default: ''
   matrix:
@@ -111,6 +118,17 @@ outputs:
       '{}' when resolving failed, so that such job outputs still evaluate and the
       resolve error stays the one reported.
     value: ${{ steps.r.outputs.json || '{}' }}
+  own-sha:
+    description: 'The commit of this repo the legs resolved against.'
+    value: ${{ steps.r.outputs.own-sha }}
+  pins:
+    description: >
+      `pin`, plus this repo and every dep repo at the commit it resolved to: a
+      later resolve of the same run given these builds against the same tree.
+    value: ${{ steps.r.outputs.pins }}
+  artifacts:
+    description: 'Space-separated artifacts the publishing legs upload.'
+    value: ${{ steps.r.outputs.artifacts }}
   app-token:
     description: 'App-minted token, same job only (masked values arrive empty through job outputs).'
     value: ${{ steps.mint.outputs.token }}
@@ -161,6 +179,7 @@ runs:
         MANIFEST: ${{ inputs.manifest }}
         CURRENT_BRANCH: ${{ inputs.current-branch }}
         PIN: ${{ inputs.pin }}
+        EXPECTED_ARTIFACTS: ${{ inputs.expected-artifacts }}
         FORK_PR: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository }}
         PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -176,5 +195,6 @@ runs:
           --manifest "$MANIFEST" \
           --current-branch "$CURRENT_BRANCH" \
           --pin "$PIN" \
+          --expected-artifacts "$EXPECTED_ARTIFACTS" \
           --matrix "$MATRIX" \
           --upstream-manifest-path "$UPSTREAM_MANIFEST_PATH"

@@ -35,6 +35,10 @@ inputs:
     description: 'Forwarded as fallback-ref'
     required: false
     default: 'main'
+  pin:
+    description: 'Forwarded as pin when set: owner/repo@sha pins the consumer resolves against.'
+    required: false
+    default: ''
   token:
     description: 'Token with actions:write on consumer-repo (github.token cannot dispatch cross-repo).'
     required: true
@@ -130,8 +134,11 @@ runs:
         FROM_JOBS: ${{ inputs.from-jobs }}
         BRANCH: ${{ inputs.branch }}
         FALLBACK_REF: ${{ inputs.fallback-ref }}
+        PIN: ${{ inputs.pin }}
       run: |
         set -euo pipefail
+        pin=()
+        if [ -n "$PIN" ]; then pin=(-f "pin=$PIN"); fi
         gh workflow run "$WORKFLOW_FILE" \
           --repo "$CONSUMER_REPO" \
           --ref "$REF" \
@@ -140,7 +147,8 @@ runs:
           -f "from-sha=$FROM_SHA" \
           -f "from-jobs=$FROM_JOBS" \
           -f "branch=$BRANCH" \
-          -f "fallback-ref=$FALLBACK_REF"
+          -f "fallback-ref=$FALLBACK_REF" \
+          ${pin[@]+"${pin[@]}"}
 
     - name: Discover dispatched run id
       id: discover

@@ -102,13 +102,21 @@ def as_repo(s: str) -> Repo:
 
 
 def parse_pin(pin: str) -> dict[Repo, Ref]:
-    """`owner/repo@<40-hex sha>` -> {repo: sha}; empty -> {}."""
-    if not pin.strip():
-        return {}
-    repo, sep, sha = pin.strip().partition("@")
-    if not sep or not _SHA_PIN_RE.fullmatch(sha):
-        raise ResolveError(f"--pin must be owner/repo@<40-hex sha>, got {pin!r}")
-    return {as_repo(repo): Ref(sha)}
+    """Whitespace- or comma-separated `owner/repo@<40-hex sha>` -> {repo: sha}; empty -> {}."""
+    pins: dict[Repo, Ref] = {}
+    for item in pin.replace(",", " ").split():
+        repo, sep, sha = item.partition("@")
+        if not sep or not _SHA_PIN_RE.fullmatch(sha):
+            raise ResolveError(f"--pin must be owner/repo@<40-hex sha>, got {item!r}")
+        r = as_repo(repo)
+        if pins.get(r, sha) != sha:
+            raise ResolveError(f"--pin pins {r} to both {pins[r]} and {sha}")
+        pins[r] = Ref(sha)
+    return pins
+
+
+def format_pins(pins: Mapping[Repo, Ref]) -> str:
+    return " ".join(f"{r}@{s}" for r, s in sorted(pins.items()))
 
 
 class ResolveError(Exception):
@@ -663,7 +671,7 @@ def _classify_orphan_pin(
     if pinned:
         raise LegError(
             spec.package,
-            f"dep '{spec.package}' is pinned to {spec.repo}@{sha[:8]}, the commit under test, but "
+            f"dep '{spec.package}' is pinned to {spec.repo}@{sha[:8]}, but "
             f"no artifact named '{artifact_name}' exists and no CI is in flight for it: "
             "that commit's CI did not publish this leg.",
         )
@@ -901,11 +909,13 @@ def resolve_leg(
     local: Mapping[PackageName, ResolvedDep] | None = None,
     published_in_run: frozenset[PackageName] = frozenset(),
     stale: StaleFallback | None = None,
+    expected_in_run: frozenset[str] = frozenset(),
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     """Transitive deps (leaves first) and the OWN artifact of one matrix entry.
 
     `own_ref` is the commit's ref, for deps on packages of the own repo (siblings);
     `local` are siblings built earlier in the same job, `published_in_run` those another job of this run uploads.
+    `expected_in_run` are artifacts of other repos that an earlier job of this run uploads.
     With `stale`, a missing `allow-stale` dep falls back to `_stale_fallback`.
     """
     local = local or {}
@@ -1067,6 +1077,8 @@ def resolve_leg(
         elif spec.sibling and ref == own_ref and spec.package in published_in_run:
             # Another job of this run uploads it; a fork's run carries the base branch's commit, so no probe finds it.
             source = "artifact"  # fetch_deps polls for the upload
+        elif artifact_name in expected_in_run:
+            source = "artifact"
         else:
             run_key = (spec.repo, sha, lane)
             if run_key not in run_state_cache:
@@ -1250,6 +1262,7 @@ def resolve_packages(
     pins: Mapping[Repo, Ref] | None = None,
     published_in_run: frozenset[PackageName] = frozenset(),
     stale: StaleFallback | None = None,
+    expected_in_run: frozenset[str] = frozenset(),
 ) -> tuple[list[ResolvedDep], dict[PackageName, ResolvedOwn]]:
     """One leg of a kind publishing `prefixes` in build order: the deps to fetch, and each package's artifact.
 
@@ -1287,6 +1300,7 @@ def resolve_packages(
                 local=built,
                 published_in_run=published_in_run,
                 stale=attempt,
+                expected_in_run=expected_in_run,
             )
             for d in deps:
                 if d.source != "local":
@@ -1311,6 +1325,34 @@ def leg_crates(
         if spec.applies_to(leg, lane)
         for crate in spec.crates
     }
+
+
+def _used_pins(
+    pins: Mapping[Repo, Ref], own_repo: Repo, own_sha: Sha, matrices: Mapping[str, Mapping[str, Any]]
+) -> dict[Repo, Ref]:
+    """`pins`, this repo's commit and each dep repo's commit, so later resolves of one run build the same tree.
+
+    A repo resolved at two commits (two refs of it in the graph) stays unpinned.
+    """
+    seen: dict[Repo, set[str]] = {}
+    for mdata in matrices.values():
+        for entry in mdata["include"]:
+            for dep in entry["_resolved"].get("deps", ()):
+                if dep.get("source") in ("artifact", "triggered rebuild") and dep.get("sha"):
+                    seen.setdefault(Repo(dep["repo"]), set()).add(dep["sha"])
+    used = {r: Ref(next(iter(shas))) for r, shas in seen.items() if len(shas) == 1}
+    return {**used, own_repo: Ref(own_sha), **pins}
+
+
+def _published_artifacts(manifest: Manifest, matrices: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    """The artifacts the legs of publishing kinds upload."""
+    names: set[str] = set()
+    for mname, mdata in matrices.items():
+        if not manifest.packages_by_kind.get(mname):
+            continue
+        for entry in mdata["include"]:
+            names.update(p["own-artifact-name"] for p in entry["_resolved"].get("packages", {}).values())
+    return names
 
 
 def build_order(manifest: Manifest, prefixes: Sequence[PackageName]) -> list[PackageName]:
@@ -1477,7 +1519,16 @@ def bfs_load_manifests(
 @click.option(
     "--pin",
     default="",
-    help="owner/repo@sha: resolve that repo at this commit wherever it appears (the change under test).",
+    help=(
+        "owner/repo@sha, several separated by spaces or commas: resolve each repo at its commit "
+        "wherever it appears (the change under test, and in downstream CI the commits the run resolved)."
+    ),
+)
+@click.option(
+    "--expected-artifacts",
+    "expected_artifacts",
+    default="",
+    help="Space-separated artifacts of other repos that an earlier job of this run publishes.",
 )
 def main(
     manifest: str,
@@ -1486,9 +1537,10 @@ def main(
     self_repo: str,
     upstream_manifest_path: str,
     pin: str,
+    expected_artifacts: str,
 ) -> None:
     try:
-        _run(manifest, current_branch, matrix, self_repo, upstream_manifest_path, pin)
+        _run(manifest, current_branch, matrix, self_repo, upstream_manifest_path, pin, expected_artifacts)
     except (ResolveError, ValueError) as e:
         raise CIError(str(e)) from e
 
@@ -1500,6 +1552,7 @@ def _run(
     self_repo: str,
     upstream_manifest_path: str,
     pin: str = "",
+    expected_artifacts: str = "",
 ) -> None:
     if not os.path.exists(manifest):
         raise ResolveError(f"Manifest not found: {manifest}")
@@ -1515,6 +1568,7 @@ def _run(
         sync_branch = Ref(current_branch)
 
     pins = parse_pin(pin)
+    expected_in_run = frozenset(expected_artifacts.split())
     token = select_token()
 
     t_start = time.monotonic()
@@ -1601,6 +1655,7 @@ def _run(
                         pins=pins,
                         published_in_run=published_in_run,
                         stale=None if (mname, i) in fresh_legs else stale,
+                        expected_in_run=expected_in_run,
                     )
                 except LegError as e:
                     print(f"::warning::[{mname}] {job_name}: {escape_command_data(str(e))}", file=sys.stderr)
@@ -1694,6 +1749,9 @@ def _run(
         f"matrix-{mname}": json.dumps(mdata, separators=(",", ":")) for mname, mdata in matrices_out.items()
     }
     outputs["json"] = json.dumps(matrices_out, separators=(",", ":"))
+    outputs["own-sha"] = own_sha
+    outputs["pins"] = format_pins(_used_pins(pins, own_repo, own_sha, matrices_out))
+    outputs["artifacts"] = " ".join(sorted(_published_artifacts(local_manifest, matrices_out)))
     write_outputs(outputs)
 
     print(
