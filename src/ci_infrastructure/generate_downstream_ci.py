@@ -1791,7 +1791,8 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     "--manifest-path",
     "manifest_path",
     default=".ci/manifest.toml",
-    help="Path to this repo's manifest, also used for sibling manifests.",
+    help="Path to this repo's manifest; its path from the working directory (the repo root) "
+    "is also used for sibling manifests.",
 )
 @click.option(
     "--check",
@@ -1816,6 +1817,20 @@ def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Pat
     _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
 
 
+def _in_repo_path(manifest_path: str) -> str:
+    """The manifest's path within a repo, for the siblings: relative to the working directory, the repo root."""
+    path = Path(manifest_path)
+    if not path.is_absolute():
+        return manifest_path
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        raise CIError(
+            f"--manifest-path {manifest_path} is outside the working directory {Path.cwd()}; "
+            "run from the repo root: the manifest's path within it is also read from every sibling repo"
+        ) from None
+
+
 def _run(
     manifest_path: str,
     check: bool,
@@ -1830,12 +1845,13 @@ def _run(
     local_manifest_path = Path(manifest_path)
     if not local_manifest_path.is_file():
         raise CIError(f"no manifest found at {local_manifest_path}")
+    sibling_manifest_path = _in_repo_path(manifest_path)
 
     try:
         local = parse_manifest(local_manifest_path)
         validate_job_templates(local)
         # No env token is fine: gh falls back to its own auth.
-        manifests = _fetch_sibling_manifests(local, select_token(), manifest_path, sibling_root)
+        manifests = _fetch_sibling_manifests(local, select_token(), sibling_manifest_path, sibling_root)
         derive_cross_repo_needs(manifests)
         validate_graph(manifests)
         closures = compute_transitive_consumers(manifests)
