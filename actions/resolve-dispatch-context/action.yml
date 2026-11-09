@@ -44,6 +44,9 @@ outputs:
   ci-url:
     description: 'Link to that CI run, for a status that points at the failure.'
     value: ${{ steps.ctx.outputs.ci-url }}
+  ci-run-id:
+    description: "That CI run's id, or '' when there is none."
+    value: ${{ steps.ctx.outputs.ci-run-id }}
   ci-summary:
     description: 'Why a non-success conclusion is what it is, as status-description prose.'
     value: ${{ steps.ctx.outputs.ci-summary }}
@@ -78,6 +81,7 @@ runs:
         fork_verdict() {
           conclusion=""
           url=""
+          ci_run_id=""
           summary="No approved CI run for this commit"
           why="no approved '${FORK_CI_WORKFLOW_INPUT}' run for #$1 at $2"
           gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/workflows/${FORK_CI_WORKFLOW_INPUT}/runs" \
@@ -88,6 +92,7 @@ runs:
                  "$tmp/dispatch-context-jobs.json" >/dev/null; then
               conclusion="$run_conclusion"
               url="$run_url"
+              ci_run_id="$id"
               summary=""
               [ "$conclusion" = success ] || summary="Upstream CI failed"
               why="approved '${FORK_CI_WORKFLOW_INPUT}' run for #$1 at $2 concluded '${conclusion}'"
@@ -109,6 +114,7 @@ runs:
         summary=""
         pull_request=""
         base_ref=""
+        ci_run_id=""
         if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
           head_sha=$(jq -r '.workflow_run.head_sha // ""' "$GITHUB_EVENT_PATH")
           head_branch=$(jq -r '.workflow_run.head_branch // ""' "$GITHUB_EVENT_PATH")
@@ -116,6 +122,7 @@ runs:
           run_path=$(jq -r '.workflow_run.path // ""' "$GITHUB_EVENT_PATH")
           conclusion=$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")
           url=$(jq -r '.workflow_run.html_url // ""' "$GITHUB_EVENT_PATH")
+          ci_run_id=$(jq -r '.workflow_run.id // ""' "$GITHUB_EVENT_PATH")
           why="workflow_run: CI concluded '${conclusion}'"
           [ "$conclusion" = success ] || summary="Upstream CI failed"
           if [ -n "$FORK_CI_WORKFLOW_INPUT" ] && [ "${run_path##*/}" = "$FORK_CI_WORKFLOW_INPUT" ]; then
@@ -184,6 +191,7 @@ runs:
             if [ -n "$match" ]; then
               conclusion=$(printf '%s' "$match" | jq -r '.conclusion // ""')
               url=$(printf '%s' "$match" | jq -r '.html_url // ""')
+              ci_run_id=$(printf '%s' "$match" | jq -r '.id // ""')
               why="${GITHUB_EVENT_NAME}: latest completed '${CI_WORKFLOW_INPUT}' for ${head_sha} concluded '${conclusion}'"
               [ "$conclusion" = success ] || summary="Upstream CI failed"
             else
@@ -219,6 +227,7 @@ runs:
           echo "head-branch=$head_branch"
           echo "ci-conclusion=$conclusion"
           echo "ci-url=$url"
+          echo "ci-run-id=$ci_run_id"
           echo "ci-summary=$summary"
           echo "pull-request=$pull_request"
           echo "hpc-only=$hpc_only"

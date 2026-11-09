@@ -516,7 +516,7 @@ def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkey
 
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
     monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: _NotInFlight())
-    with pytest.raises(ResolveError, match="the commit under test"):
+    with pytest.raises(ResolveError, match="is pinned to"):
         _resolve_fork_sibling(frozenset())
 
 

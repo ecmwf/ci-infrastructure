@@ -608,7 +608,7 @@ def transitive_cross_repo_needs(m: Manifest, kind: str, by_pkg: Mapping[str, Man
 
 def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execution) -> str | None:
     """cross-repo-trigger{-hpc}.yml for the kinds with triggers on `lane`, or None."""
-    runnable = sorted(k for k, mk in m.matrices.items() if mk.triggers and mk.execution == lane)
+    runnable = _runnable_kinds(m, lane)
     if not runnable:
         return None
 
@@ -656,7 +656,37 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
     return _render_doc(m, doc)
 
 
+def _runnable_kinds(m: Manifest, lane: Execution) -> list[str]:
+    """The kinds cross-repo-trigger{-hpc}.yml runs, and its resolve job resolves."""
+    return sorted(k for k, mk in m.matrices.items() if mk.triggers and mk.execution == lane)
+
+
 def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
+    return {**_trigger_inputs(), **_resolved_inputs()}
+
+
+def _resolved_inputs() -> dict[str, dict[str, Any]]:
+    """What the downstream runner resolved for this repo; a dispatch leaves them empty and resolves itself."""
+    return {
+        "resolved": {
+            "description": (
+                "The resolve-deps json output for this repo's kinds, resolved by the downstream runner "
+                "with the rest of its run. Empty resolves here."
+            ),
+            "required": False,
+            "default": "",
+            "type": "string",
+        },
+        "resolved-ref": {
+            "description": "The commit of this repo that `resolved` is for",
+            "required": False,
+            "default": "",
+            "type": "string",
+        },
+    }
+
+
+def _trigger_inputs() -> dict[str, dict[str, Any]]:
     return {
         "from-repo": {
             "description": "owner/repo of the dispatcher (upstream producer or downstream consumer)",
@@ -699,7 +729,10 @@ def _shared_trigger_inputs() -> dict[str, dict[str, Any]]:
             "default": "main",
         },
         "pin": {
-            "description": "owner/repo@sha the dispatching consumer was pinned to; only with rebuild-request",
+            "description": (
+                "Space-separated owner/repo@sha to resolve against: those of the downstream runner, or "
+                "of the consumer that requests a rebuild. Empty pins from-repo@from-sha alone."
+            ),
             "required": False,
             "default": "",
             "type": "string",
@@ -761,9 +794,11 @@ def _git_read_mint_step(m: Manifest) -> Step:
     }
 
 
-# An upstream change is tested at its commit; a rebuild request carries the requesting consumer's pin.
+# An upstream change is tested at its commit, or at the downstream runner's pins;
+# a rebuild request carries the requesting consumer's pin.
 _PIN_CHANGE_UNDER_TEST: Final = (
-    "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || inputs.pin }}"
+    "${{ !inputs.rebuild-request && (inputs.pin || format('{0}@{1}', inputs.from-repo, inputs.from-sha))"
+    " || inputs.pin }}"
 )
 
 
@@ -771,14 +806,11 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
     matrix_arg = ",".join(runnable)
     all_triggers: frozenset[str] = frozenset().union(*(m.matrices[k].triggers for k in runnable))
     cond = _render_kind_filter(cross, all_triggers)
-    outputs: dict[str, str] = {"ref": "${{ steps.pick.outputs.ref }}"}
-    for kind in runnable:
-        # resolve-deps declares matrix-<kind> outputs only for a fixed set of kinds.
-        outputs[f"matrix-{kind}"] = f"${{{{ toJSON(fromJSON(steps.r.outputs.json)['{kind}']) }}}}"
     return {
-        "if": cond,
+        # The downstream runner resolved this repo already.
+        "if": f"({cond}) && !inputs.resolved",
         "runs-on": PACKAGE_RUNNER,
-        "outputs": outputs,
+        "outputs": {"ref": "${{ steps.r.outputs.own-sha }}", "json": "${{ steps.r.outputs.json }}"},
         "steps": [
             _mint_step(),
             {
@@ -949,6 +981,9 @@ def _publish_steps(m: Manifest, kind: str, root_output: str, found: str | None =
     return steps
 
 
+_RESOLVED_REF: Final = "${{ inputs.resolved-ref || needs.resolve.outputs.ref }}"
+
+
 def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
@@ -956,7 +991,19 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     local_needs = [n for n in mk.needs if "/" not in n]
     needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
 
-    cond = _render_kind_filter(cross, mk.triggers)
+    # `resolve` is skipped when the downstream runner passes `resolved`, so its result is not required.
+    # Starts with `!`, so it needs the `${{ }}`.
+    cond = (
+        "${{ "
+        + " && ".join(
+            [
+                "!failure() && !cancelled()",
+                f"({_render_kind_filter(cross, mk.triggers)})",
+                *(f"needs.{job_id(m.package_name, n)}.result == 'success'" for n in local_needs),
+            ]
+        )
+        + " }}"
+    )
 
     # The slots come from resolve_deps (job_names), shared with the repo's own ci.yml.
     job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
@@ -970,7 +1017,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
             "uses": "actions/checkout@v6",
             "with": {
                 "repository": m.repo,
-                "ref": "${{ needs.resolve.outputs.ref }}",
+                "ref": _RESOLVED_REF,
                 "token": "${{ steps.mint.outputs.token }}",
                 "persist-credentials": False,
                 **({"submodules": m.submodules} if m.submodules else {}),
@@ -1033,7 +1080,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     job["container"] = container
     job["strategy"] = {
         "fail-fast": False,
-        "matrix": f"${{{{ fromJSON(needs.resolve.outputs.matrix-{kind}) }}}}",
+        "matrix": f"${{{{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['{kind}'] }}}}",
     }
     job["steps"] = steps
     return job
@@ -1175,8 +1222,16 @@ def render_orchestrator_workflow(
     consumer_deps = _cross_package_deps(all_consumers, by_pkg, lane=lane)
     levels = _consumer_levels(consumer_deps)
 
+    called = [p for p in all_consumers if not _edge_needs_dispatch(m, by_pkg[p])]
     jobs: dict[str, Any] = {
         "validate": _validate_job(),
+        _RESOLVE_JOB_ID: _orchestrator_resolve_job(
+            [
+                (by_pkg[p], consumer_refs[by_pkg[p].repo], levels[p])
+                for p in sorted(called, key=lambda p: (levels[p], p))
+            ],
+            lane=lane,
+        ),
         "report-start": _report_start_job(lane),
         "report-ci-failure": _report_ci_failure_job(lane),
     }
@@ -1189,10 +1244,10 @@ def render_orchestrator_workflow(
         consumer_job_ids.append(jid)
         dep_ids = sorted(_orchestrator_job_id(p) for p in consumer_deps.get(cpkg, set()))
         from_jobs = sorted(origins[cpkg])
-        if _edge_needs_dispatch(m, cmanifest):
-            jobs[jid] = _orchestrator_dispatch_job(cpkg, crepo, cref, from_jobs, dep_ids, lane=lane)
-        else:
+        if cpkg in called:
             jobs[jid] = _orchestrator_job(cpkg, crepo, cref, from_jobs, dep_ids, lane=lane)
+        else:
+            jobs[jid] = _orchestrator_dispatch_job(cpkg, crepo, cref, from_jobs, dep_ids, lane=lane)
 
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
@@ -1468,6 +1523,7 @@ def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
             "head-branch": "${{ steps.ctx.outputs.head-branch }}",
             "ci-conclusion": "${{ steps.ctx.outputs.ci-conclusion }}",
             "ci-url": "${{ steps.ctx.outputs.ci-url }}",
+            "ci-run-id": "${{ steps.ctx.outputs.ci-run-id }}",
             "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
             "pull-request": "${{ steps.ctx.outputs.pull-request }}",
             "hpc-only": "${{ steps.ctx.outputs.hpc-only }}",
@@ -1547,6 +1603,131 @@ def _validate_job() -> dict[str, Any]:
     }
 
 
+_RESOLVE_JOB_ID: Final = "resolve"
+# Only well-formed pins of other repos: the commit under test is the context's, whatever the artifact says.
+_START_PINS_SCRIPT: Final = """\
+set -euo pipefail
+pins="${GITHUB_REPOSITORY}@${HEAD_SHA}"
+dir="${RUNNER_TEMP}/resolved-pins"
+if [ -n "${CI_RUN_ID}" ] && gh run download "${CI_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \\
+     --name resolved-pins --dir "$dir" 2>/dev/null; then
+  while read -r pin; do
+    if [[ "$pin" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ ]] && [[ "$pin" != "${GITHUB_REPOSITORY}@"* ]]; then
+      pins="$pins $pin"
+    fi
+  done < <(tr ' ' '\\n' < "$dir/pins.txt")
+  echo "Starting from the commits run ${CI_RUN_ID} resolved: $pins"
+else
+  echo "::notice::No resolved-pins artifact on CI run '${CI_RUN_ID}'; the other repos resolve at their branch tips."
+fi
+echo "PINS=$pins" >> "$GITHUB_ENV"
+echo "EXPECTED=" >> "$GITHUB_ENV"
+"""
+_PINS: Final = f"${{{{ needs.{_RESOLVE_JOB_ID}.outputs.pins }}}}"
+# Artifacts and the dep-tree sidecars resolve-deps records beside them.
+_RESOLVE_ENV: Final = {
+    "ARTIFACT_S3_ENDPOINT": "${{ secrets.ARTIFACT_S3_ENDPOINT }}",
+    "ARTIFACT_S3_BUCKET": "${{ secrets.ARTIFACT_S3_BUCKET }}",
+    "AWS_ACCESS_KEY_ID": "${{ secrets.AWS_ACCESS_KEY_ID }}",
+    "AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+}
+
+
+def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *, lane: Execution) -> dict[str, Any]:
+    """Every called consumer resolved once, upstream first, against one set of commits.
+
+    The pins start from the commits the upstream's CI resolved (its `resolved-pins` artifact), and each
+    consumer is pinned to the commits the ones before it resolved, and takes the artifacts they publish
+    as on their way, so a merge since that CI resolved cannot change the tree between them.
+    A consumer that fails to resolve here resolves in its own run and reports the error there.
+    Dispatched consumers get the pins only.
+    """
+    steps: list[Step] = [
+        _mint_step(),
+        {
+            "name": "Pin the commits the upstream's CI resolved",
+            "env": {
+                "GH_TOKEN": "${{ steps.mint.outputs.token }}",
+                "HEAD_SHA": _HEAD_SHA,
+                "CI_RUN_ID": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.ci-run-id }}}}",
+            },
+            "run": _START_PINS_SCRIPT,
+        },
+    ]
+    outputs: dict[str, str] = {}
+    for cm, cref, level in consumers:
+        seg = _id_segment(cm.package_name)
+        run_it = f"({_GATE_DEPTH} == 'all' || {_GATE_DEPTH} >= {level})"
+        path = f".downstream/{cm.package_name}"
+        steps += [
+            {
+                "id": f"pick-{seg}",
+                "if": run_it,
+                "uses": "ecmwf/ci-infrastructure/actions/pick-ref@main",
+                "with": {
+                    "repo": cm.repo,
+                    "try-branch": _HEAD_BRANCH,
+                    "fallback-ref": cref,
+                    "token": "${{ steps.mint.outputs.token }}",
+                },
+            },
+            {
+                "if": run_it,
+                "uses": "actions/checkout@v6",
+                "with": {
+                    "repository": cm.repo,
+                    "ref": f"${{{{ steps.pick-{seg}.outputs.ref }}}}",
+                    "token": "${{ steps.mint.outputs.token }}",
+                    "persist-credentials": False,
+                    "path": path,
+                    "sparse-checkout": ".ci",
+                },
+            },
+            {
+                "name": f"Resolve {cm.package_name}",
+                "id": f"r-{seg}",
+                "if": run_it,
+                "continue-on-error": True,
+                "uses": "ecmwf/ci-infrastructure/actions/resolve-deps@main",
+                "with": {
+                    "manifest": f"{path}/.ci/manifest.toml",
+                    "current-branch": f"${{{{ steps.pick-{seg}.outputs.ref }}}}",
+                    "pin": "${{ env.PINS }}",
+                    "expected-artifacts": "${{ env.EXPECTED }}",
+                    "matrix": ",".join(_runnable_kinds(cm, lane)),
+                    "token": "${{ steps.mint.outputs.token }}",
+                    "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
+                    "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                },
+            },
+            {
+                "name": f"Carry {cm.package_name}'s commits to the next consumer",
+                "if": f"steps.r-{seg}.outcome == 'success'",
+                "env": {
+                    "R_PINS": f"${{{{ steps.r-{seg}.outputs.pins }}}}",
+                    "R_ARTIFACTS": f"${{{{ steps.r-{seg}.outputs.artifacts }}}}",
+                },
+                "run": (
+                    'echo "PINS=${R_PINS}" >> "$GITHUB_ENV"\n'
+                    'echo "EXPECTED=${EXPECTED} ${R_ARTIFACTS}" >> "$GITHUB_ENV"'
+                ),
+            },
+        ]
+        # Empty unless it resolved: the consumer then resolves itself.
+        outputs[seg] = f"${{{{ steps.r-{seg}.outcome == 'success' && steps.r-{seg}.outputs.json || '' }}}}"
+        outputs[f"{seg}-ref"] = f"${{{{ steps.r-{seg}.outcome == 'success' && steps.r-{seg}.outputs.own-sha || '' }}}}"
+    steps.append({"id": "pins", "run": 'echo "pins=${PINS}" >> "$GITHUB_OUTPUT"'})
+    outputs["pins"] = "${{ steps.pins.outputs.pins }}"
+    return {
+        "if": _SUCCESS_GATE,
+        "needs": ["validate"],
+        "runs-on": PACKAGE_RUNNER,
+        "env": dict(_RESOLVE_ENV),
+        "outputs": outputs,
+        "steps": steps,
+    }
+
+
 def _consumer_inputs(cref: str, from_jobs: Sequence[str]) -> dict[str, str]:
     return {
         "from-repo": "${{ github.repository }}",
@@ -1554,6 +1735,7 @@ def _consumer_inputs(cref: str, from_jobs: Sequence[str]) -> dict[str, str]:
         "from-jobs": json.dumps(sorted(from_jobs), separators=(",", ":")),
         "branch": _HEAD_BRANCH,
         "fallback-ref": cref,
+        "pin": _PINS,
     }
 
 
@@ -1566,11 +1748,16 @@ def _orchestrator_job(
     *,
     lane: Execution,
 ) -> dict[str, Any]:
+    seg = _id_segment(cpkg)
     return {
         "name": cpkg,
-        "needs": ["validate", *dep_job_ids],
+        "needs": ["validate", _RESOLVE_JOB_ID, *dep_job_ids],
         "uses": f"{crepo}/.github/workflows/cross-repo-trigger{lane_suffix(lane)}.yml@{cref}",
-        "with": _consumer_inputs(cref, from_jobs),
+        "with": {
+            **_consumer_inputs(cref, from_jobs),
+            "resolved": f"${{{{ needs.{_RESOLVE_JOB_ID}.outputs.{seg} }}}}",
+            "resolved-ref": f"${{{{ needs.{_RESOLVE_JOB_ID}.outputs.{seg}-ref }}}}",
+        },
         "secrets": "inherit",
     }
 
@@ -1598,7 +1785,7 @@ def _orchestrator_dispatch_job(
     )
     return {
         "name": cpkg,
-        "needs": ["validate", *dep_job_ids],
+        "needs": ["validate", _RESOLVE_JOB_ID, *dep_job_ids],
         "runs-on": SLIM_RUNNER,
         "steps": [
             _mint_step(),

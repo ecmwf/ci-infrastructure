@@ -22,9 +22,16 @@ inputs:
     default: ${{ github.head_ref || github.ref_name }}
   pin:
     description: >
-      owner/repo@sha of the change under test. That repo resolves at this
-      commit wherever it appears in the dependency tree, so a downstream run
-      builds against it rather than its default branch. Empty pins nothing.
+      owner/repo@sha of the change under test, or several separated by spaces.
+      Each repo resolves at its commit wherever it appears in the dependency
+      tree, so a downstream run builds against it rather than its default
+      branch. Empty pins nothing.
+    required: false
+    default: ''
+  expected-artifacts:
+    description: >
+      Space-separated artifacts of other repos that an earlier job of this run
+      publishes: taken as on their way rather than missing.
     required: false
     default: ''
   matrix:
@@ -111,6 +118,19 @@ outputs:
       '{}' when resolving failed, so that such job outputs still evaluate and the
       resolve error stays the one reported.
     value: ${{ steps.r.outputs.json || '{}' }}
+  own-sha:
+    description: 'The commit of this repo the legs resolved against.'
+    value: ${{ steps.r.outputs.own-sha }}
+  pins:
+    description: >
+      `pin`, plus this repo and every dep repo at the commit it resolved to: a
+      later resolve of the same run given these builds against the same tree.
+      In a pull request's CI also uploaded as the run artifact `resolved-pins`
+      (pins.txt), where its downstream run reads them.
+    value: ${{ steps.r.outputs.pins }}
+  artifacts:
+    description: 'Space-separated artifacts the publishing legs upload.'
+    value: ${{ steps.r.outputs.artifacts }}
   app-token:
     description: 'App-minted token, same job only (masked values arrive empty through job outputs).'
     value: ${{ steps.mint.outputs.token }}
@@ -161,6 +181,7 @@ runs:
         MANIFEST: ${{ inputs.manifest }}
         CURRENT_BRANCH: ${{ inputs.current-branch }}
         PIN: ${{ inputs.pin }}
+        EXPECTED_ARTIFACTS: ${{ inputs.expected-artifacts }}
         FORK_PR: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository }}
         PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -176,5 +197,29 @@ runs:
           --manifest "$MANIFEST" \
           --current-branch "$CURRENT_BRANCH" \
           --pin "$PIN" \
+          --expected-artifacts "$EXPECTED_ARTIFACTS" \
           --matrix "$MATRIX" \
           --upstream-manifest-path "$UPSTREAM_MANIFEST_PATH"
+
+    # A pull request's CI resolves once per run: its downstream run starts from these commits,
+    # so a merge upstream while this run builds does not give the consumers another tree.
+    - name: Record the resolved commits
+      id: record
+      if: (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && steps.r.outputs.pins != ''
+      shell: bash
+      env:
+        PINS: ${{ steps.r.outputs.pins }}
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP}/resolved-pins"
+        mkdir -p "$dir"
+        printf '%s\n' "$PINS" > "$dir/pins.txt"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+    - if: steps.record.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: resolved-pins
+        path: ${{ steps.record.outputs.dir }}/pins.txt
+        overwrite: true
+        if-no-files-found: error

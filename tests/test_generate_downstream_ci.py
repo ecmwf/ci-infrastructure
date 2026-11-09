@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import textwrap
 from pathlib import Path
 from typing import Any, Final
@@ -19,6 +21,7 @@ from ci_infrastructure import check_ci_approval
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
+    _START_PINS_SCRIPT,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     PACKAGE_RUNNER,
@@ -799,7 +802,7 @@ def test_workflow_uses_pick_ref(tmp_path: Path) -> None:
     yaml = _consumer(tmp_path, "c")
     assert "actions/pick-ref@main" in yaml
     assert "ref: ${{ steps.pick.outputs.ref }}" in yaml
-    assert "ref: ${{ needs.resolve.outputs.ref }}" in yaml
+    assert "ref: ${{ inputs.resolved-ref || needs.resolve.outputs.ref }}" in yaml
     # Under workflow_call github.repository is the caller's, so both checkouts pin it.
     assert yaml.count("repository: org/c") == 2
     assert "client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}" in yaml
@@ -1168,6 +1171,7 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         "report-ci-failure",
         "report-result",
         "report-start",
+        "resolve",
         "validate",
     ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/test"]
@@ -1286,10 +1290,11 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         "report-ci-failure",
         "report-result",
         "report-start",
+        "resolve",
         "validate",
     ]
-    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "label-gate", "validate"]
-    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "b"]
+    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "resolve"]
+    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "resolve", "b"]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert _render_orch(tmp_path, EXECUTION_HPC_ATOS) is None
@@ -1326,9 +1331,9 @@ def test_lane_split_consumer_files(tmp_path: Path) -> None:
     runner = _consumer(tmp_path, "b", EXECUTION_RUNNER)
     hpc = _consumer(tmp_path, "b", EXECUTION_HPC_ATOS)
 
-    assert "matrix-build-hpc" not in runner
+    assert "['build-hpc']" not in runner
     assert "b__build:\n" in runner
-    assert "matrix-build-hpc" in hpc
+    assert "['build-hpc']" in hpc
     assert "b__build_hpc:\n" in hpc
     assert "b__build:\n" not in hpc
 
@@ -1354,10 +1359,10 @@ def test_resolve_outputs_read_custom_kinds_from_json(tmp_path: Path) -> None:
     )
     doc = yaml.safe_load(_consumer(tmp_path, "b"))
 
-    assert doc["jobs"]["resolve"]["outputs"]["matrix-fortran"] == (
-        "${{ toJSON(fromJSON(steps.r.outputs.json)['fortran']) }}"
+    assert doc["jobs"]["resolve"]["outputs"]["json"] == "${{ steps.r.outputs.json }}"
+    assert doc["jobs"]["b__fortran"]["strategy"]["matrix"] == (
+        "${{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['fortran'] }}"
     )
-    assert doc["jobs"]["b__fortran"]["strategy"]["matrix"] == "${{ fromJSON(needs.resolve.outputs.matrix-fortran) }}"
 
 
 _DISPATCH_INPUTS: Final = {
@@ -1615,7 +1620,8 @@ def test_resolve_pins_the_upstream_change_or_the_rebuild_requests_pin(tmp_path: 
     steps = yaml.safe_load(_consumer(tmp_path, "b"))["jobs"]["resolve"]["steps"]
     resolve = next(s for s in steps if s.get("id") == "r")
     assert resolve["with"]["pin"] == (
-        "${{ !inputs.rebuild-request && format('{0}@{1}', inputs.from-repo, inputs.from-sha) || inputs.pin }}"
+        "${{ !inputs.rebuild-request && (inputs.pin || format('{0}@{1}', inputs.from-repo, inputs.from-sha))"
+        " || inputs.pin }}"
     )
 
 
@@ -1973,6 +1979,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     assert ctx["needs"] == ["ci-approval"]
     assert sorted(ctx["outputs"]) == [
         "ci-conclusion",
+        "ci-run-id",
         "ci-summary",
         "ci-url",
         "head-branch",
@@ -2463,3 +2470,124 @@ def test_run_default_reaches_the_decision_the_dispatch_and_the_lanes(
     assert dispatch["with"]["default-level"] == "all"
     gate = yaml.safe_load((workflows / "trigger-downstream.yml").read_text())["jobs"]["label-gate"]
     assert gate["steps"][0]["with"]["default-level"] == "all"
+
+
+def test_downstream_runner_resolves_each_called_consumer_once_upstream_first(tmp_path: Path) -> None:
+    """One resolve against one set of commits: a merge during the run cannot split the tree."""
+    _make_chain_abc(tmp_path)
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    resolve = jobs["resolve"]
+    ids = [s["id"] for s in resolve["steps"] if s.get("id", "").startswith("r-")]
+    assert ids == ["r-b", "r-c"]
+    for step in (s for s in resolve["steps"] if s.get("id") in ids):
+        assert step["with"]["pin"] == "${{ env.PINS }}"
+        assert step["with"]["expected-artifacts"] == "${{ env.EXPECTED }}"
+        assert step["continue-on-error"] is True
+    assert resolve["steps"][1]["env"]["CI_RUN_ID"] == "${{ needs.context.outputs.ci-run-id }}"
+    assert resolve["outputs"]["c"] == "${{ steps.r-c.outcome == 'success' && steps.r-c.outputs.json || '' }}"
+
+    c = jobs["c"]
+    assert "resolve" in c["needs"]
+    assert c["with"]["resolved"] == "${{ needs.resolve.outputs.c }}"
+    assert c["with"]["resolved-ref"] == "${{ needs.resolve.outputs.c-ref }}"
+    assert c["with"]["pin"] == "${{ needs.resolve.outputs.pins }}"
+
+
+def test_dispatched_consumer_is_not_resolved_in_the_public_run_but_gets_the_pins(tmp_path: Path) -> None:
+    _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    assert not [s for s in jobs["resolve"]["steps"] if s.get("id") == "r-b"]
+    dispatch = next(s for s in jobs["b"]["steps"] if "dispatch-and-wait" in s.get("uses", ""))
+    assert dispatch["with"]["pin"] == "${{ needs.resolve.outputs.pins }}"
+
+
+def test_consumer_takes_the_downstream_runners_resolve_or_resolves_itself(tmp_path: Path) -> None:
+    write_repo(
+        tmp_path,
+        "a",
+        """
+        [[trigger-downstream]]
+        repo = "org/b"
+        ref = "main"
+        [matrix.build]
+        triggers = ["upstream-change", "rebuild-request"]
+        defaults.job-script = "./.ci/build.sh"
+        needs = []
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    write_repo(
+        tmp_path,
+        "b",
+        """
+        [[deps]]
+        repo = "org/a"
+        package = "a"
+        ref = "main"
+        compiler-inputs = []
+        [matrix.build]
+        triggers = ["upstream-change", "rebuild-request"]
+        defaults.job-script = "./.ci/build.sh"
+        needs = ["a/build"]
+        [[matrix.build.include]]
+        runs-on = "ubuntu-latest"
+        [matrix.test]
+        triggers = ["upstream-change"]
+        defaults.job-script = "./.ci/build.sh"
+        needs = ["build"]
+        [[matrix.test.include]]
+        runs-on = "ubuntu-latest"
+        """,
+    )
+    doc = yaml.safe_load(_consumer(tmp_path, "b"))
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        assert {"resolved", "resolved-ref", "pin"} <= set(doc[True][trigger]["inputs"])
+    resolve, test = doc["jobs"]["resolve"], doc["jobs"]["b__test"]
+    assert resolve["if"].endswith(" && !inputs.resolved")
+    assert resolve["outputs"] == {"ref": "${{ steps.r.outputs.own-sha }}", "json": "${{ steps.r.outputs.json }}"}
+    assert test["needs"] == ["resolve", "b__build"]
+    assert test["if"].startswith("${{ !failure() && !cancelled() && (")
+    assert test["if"].endswith(" && needs.b__build.result == 'success' }}")
+    assert test["strategy"]["matrix"] == "${{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['test'] }}"
+    checkout = next(s for s in test["steps"] if s.get("uses") == "actions/checkout@v6")
+    assert checkout["with"]["ref"] == "${{ inputs.resolved-ref || needs.resolve.outputs.ref }}"
+
+
+_STUB_DOWNLOAD: Final = """#!/bin/bash
+# gh run download <id> --repo <repo> --name resolved-pins --dir <dir>
+[ "$3" = 7 ] || exit 1
+mkdir -p "$9"
+printf '%s\\n' "$PINS_TXT" > "$9/pins.txt"
+"""
+
+
+@pytest.mark.parametrize(
+    ("run_id", "expected"),
+    [
+        ("7", f"o/up@{'c' * 40} o/eckit@{'b' * 40}"),
+        ("9", f"o/up@{'c' * 40}"),
+        ("", f"o/up@{'c' * 40}"),
+    ],
+)
+def test_downstream_pins_start_from_the_commits_the_upstream_ci_resolved(
+    tmp_path: Path, run_id: str, expected: str
+) -> None:
+    """The commit under test stays the context's; malformed pins are dropped; no artifact pins it alone."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(_STUB_DOWNLOAD)
+    (bin_dir / "gh").chmod(0o755)
+    env_file = tmp_path / "env"
+    env_file.touch()
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "o/up",
+        "HEAD_SHA": "c" * 40,
+        "CI_RUN_ID": run_id,
+        "RUNNER_TEMP": str(tmp_path / "tmp"),
+        "GITHUB_ENV": str(env_file),
+        "PINS_TXT": f"o/up@{'a' * 40} o/eckit@{'b' * 40} bad o/other@main",
+    }
+    subprocess.run(["bash", "-c", _START_PINS_SCRIPT], env=env, check=True)
+    assert env_file.read_text().splitlines() == [f"PINS={expected}", "EXPECTED="]

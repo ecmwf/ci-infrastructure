@@ -184,6 +184,7 @@ def _resolve(
     lane: Execution = EXECUTION_RUNNER,
     manifest_cache: dict[tuple[Repo, Ref], Manifest] | None = None,
     pins: dict[Repo, Ref] | None = None,
+    expected_in_run: frozenset[str] = frozenset(),
 ) -> tuple[list[ResolvedDep], ResolvedOwn]:
     return resolve_leg(
         own=own,
@@ -201,6 +202,7 @@ def _resolve(
         lane=lane,
         dispatch_plans={},
         pins=pins,
+        expected_in_run=expected_in_run,
     )
 
 
@@ -425,8 +427,54 @@ def _missing_artifact(monkeypatch: pytest.MonkeyPatch, ci_run: CiRun | None) -> 
 
 def test_pinned_commit_without_its_artifact_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
     _missing_artifact(monkeypatch, None)
-    with pytest.raises(ResolveError, match="the commit under test"):
+    with pytest.raises(ResolveError, match="is pinned to"):
         _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins={Repo("o/base"): _PINNED})
+
+
+def test_an_artifact_an_earlier_job_of_the_run_publishes_is_awaited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The downstream runner resolves a consumer before its upstream consumer built it."""
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    pins = {Repo("o/base"): _PINNED}
+    _missing_artifact(monkeypatch, None)
+    with pytest.raises(ResolveError, match="is pinned to"):
+        _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins=pins)
+
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: True)
+    [base], _ = _resolve(_own("top"), [_dep_spec("base")], dict(_LEG), pins=pins)
+    _missing_artifact(monkeypatch, None)
+    [awaited], _ = _resolve(
+        _own("top"), [_dep_spec("base")], dict(_LEG), pins=pins, expected_in_run=frozenset({base.artifact_name})
+    )
+    assert (awaited.artifact_name, awaited.source, awaited.cached) == (base.artifact_name, "artifact", False)
+
+
+def test_used_pins_add_this_repo_and_each_dep_repo_resolved_at_one_commit() -> None:
+    def leg(*deps: tuple[str, str, str]) -> dict[str, Any]:
+        return {"_resolved": {"deps": [{"repo": r, "sha": sha, "source": src} for r, sha, src in deps]}}
+
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    matrices = {
+        "build": {
+            "include": [
+                leg(("o/base", a, "artifact"), ("o/two", a, "artifact"), ("o/own", c, "local")),
+                leg(("o/base", a, "triggered rebuild"), ("o/two", b, "artifact"), ("o/gone", c, "unresolved")),
+                {"_resolved": {"error": "dep 'x' has no artifact"}},
+            ]
+        }
+    }
+    pins = resolve_deps._used_pins({Repo("o/up"): Ref(b)}, Repo("o/own"), Sha(c), matrices)
+    assert resolve_deps.format_pins(pins) == f"o/base@{a} o/own@{c} o/up@{b}"
+
+
+def test_published_artifacts_skip_the_kinds_that_publish_nothing() -> None:
+    manifest = parse_manifest(_PY_LEGS_PRODUCER)
+    [kind] = [k for k, pkgs in manifest.packages_by_kind.items() if pkgs]
+    leg = {"_resolved": {"packages": {"p": {"own-artifact-name": "p-1"}, "q": {"own-artifact-name": "q-1"}}}}
+    matrices: dict[str, dict[str, Any]] = {
+        kind: {"include": [leg, {"_resolved": {"error": "x"}}]},
+        "lint": {"include": [leg]},
+    }
+    assert resolve_deps._published_artifacts(manifest, matrices) == {"p-1", "q-1"}
 
 
 @pytest.mark.usefixtures("offline")
@@ -468,6 +516,11 @@ def test_a_leg_without_its_dep_is_emitted_to_fail_while_the_others_resolve(
     assert [(d["name"], d["source"], d["cached"]) for d in legs[1]["_resolved"]["deps"]] == [
         ("base", "unresolved", True)
     ]
+    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+    own_sha = legs[0]["_resolved"]["own-sha"]
+    assert outputs["own-sha"] == own_sha
+    assert f"o/up@{_PINNED}" in outputs["pins"].split()
+    assert outputs["artifacts"].split() == [legs[0]["_resolved"]["own-artifact-name"]]
 
 
 def test_a_manifest_mismatch_still_fails_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,7 +542,7 @@ def test_a_pinned_commit_is_rebuilt_by_re_running_its_ci() -> None:
 
 
 def test_a_fork_commit_is_not_rebuilt() -> None:
-    with pytest.raises(ResolveError, match="the commit under test"):
+    with pytest.raises(ResolveError, match="is pinned to"):
         _classify_pinned(CiRun(7, "success", "someone/base", None))
 
 
@@ -509,13 +562,20 @@ def test_bfs_reads_pinned_manifests_at_the_pin(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.parametrize(
     ("pin", "expected"),
-    [("", {}), (f"o/base@{'a' * 40}", {Repo("o/base"): Ref("a" * 40)})],
+    [
+        ("", {}),
+        (f"o/base@{'a' * 40}", {Repo("o/base"): Ref("a" * 40)}),
+        (
+            f" o/base@{'a' * 40}  o/up@{'b' * 40},o/base@{'a' * 40} ",
+            {Repo("o/base"): Ref("a" * 40), Repo("o/up"): Ref("b" * 40)},
+        ),
+    ],
 )
 def test_parse_pin(pin: str, expected: dict[Repo, Ref]) -> None:
     assert parse_pin(pin) == expected
 
 
-@pytest.mark.parametrize("pin", ["o/base", "o/base@main", f"base@{'a' * 40}"])
+@pytest.mark.parametrize("pin", ["o/base", "o/base@main", f"base@{'a' * 40}", f"o/base@{'a' * 40} o/base@{'b' * 40}"])
 def test_parse_pin_rejects(pin: str) -> None:
     with pytest.raises((ResolveError, ValueError)):
         parse_pin(pin)

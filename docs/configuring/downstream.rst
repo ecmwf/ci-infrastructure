@@ -134,6 +134,17 @@ and posts the result as the status ``downstream/runner`` (and ``downstream/hpc-a
 The ``hpc-atos`` lane also needs the label ``run-hpc-ci``, without which the commit's ``CI`` built no HPC artifacts;
 with ``hpc-ci-not-needed`` instead, its status is a success at once.
 
+Its ``resolve`` job resolves every consumer once, before any of them builds, upstream first.
+It starts from the commits the pull request's ``CI`` resolved,
+which :action:`resolve-deps` records there as the run artifact ``resolved-pins``,
+so the consumers build against the upstreams the commit under test was built against.
+Each consumer is pinned to the commits the ones before it resolved,
+so a merge into an upstream's default branch during the run cannot give two consumers different trees,
+and takes the artifacts they publish as on their way.
+The consumers' ``cross-repo-trigger`` workflows take that result as ``resolved`` and skip their own ``resolve`` job.
+A consumer that fails to resolve there, or a private one that a public repository dispatches,
+resolves in its own run, pinned to the same commits.
+
 The generated files must follow the manifests, also those of the other repositories.
 :action:`validate-generated-workflows` reports when they have drifted.
 A bot runs :action:`regenerate-workflows-pr` on every push to the default branch and nightly,
