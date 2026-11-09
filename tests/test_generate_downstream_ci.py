@@ -1931,9 +1931,7 @@ def test_ci_approval_gate_fronts_every_job(tmp_path: Path) -> None:
     assert doc["jobs"]["ci-approval"] == {
         "runs-on": "ubuntu-slim",
         "permissions": {"pull-requests": "write"},
-        "steps": [
-            {"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main", "with": {"check-workflows": "false"}}
-        ],
+        "steps": [{"uses": "ecmwf/ci-infrastructure/actions/require-ci-approval@main"}],
     }
     for jid, job in doc["jobs"].items():
         if jid != "ci-approval":

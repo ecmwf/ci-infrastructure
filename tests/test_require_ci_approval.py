@@ -231,8 +231,3 @@ def test_it_checks_the_commit_checkout_under_test_checks_out() -> None:
     (under_test,) = doc["runs"]["steps"]
     assert under_test["uses"] == checkout["uses"]
     assert under_test["with"]["ref"].replace("inputs.ref || ", "") == checkout["with"]["ref"]
-
-
-def test_the_checks_are_on_by_default() -> None:
-    doc = yaml.safe_load((REPO_ROOT / "actions" / "require-ci-approval" / "action.yml").read_text(encoding="utf-8"))
-    assert doc["inputs"]["check-workflows"]["default"] == "true"

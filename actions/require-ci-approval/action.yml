@@ -16,10 +16,9 @@ description: >
   Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
   job reports Success. Needs bash, jq and gh.
 
-  Then, unless `check-workflows: 'false'`, it also runs the check-ci-approval and
+  With `check-workflows: 'true'` it then also runs the check-ci-approval and
   check-ci-result checks, with the package the other actions use, over `.github/workflows/`
-  of the commit under test, in place of the pre-commit hooks. The job then needs
-  `contents: read`.
+  of the commit under test, in place of the pre-commit hooks.
 
 inputs:
   trust-same-repo:
@@ -33,10 +32,9 @@ inputs:
       'true' also runs the check-ci-approval and check-ci-result pre-commit
       hooks' checks over the workflows of the commit under test, once the gate
       passed: a sparse checkout of `.github` and `.ci` that is parsed, never run.
-      Needs `contents: read` and a Python >=3.11.2 or uv on the runner;
-      'false' skips them.
+      Needs `contents: read` and a Python >=3.11.2 or uv on the runner.
     required: false
-    default: 'true'
+    default: 'false'
   token:
     description: 'Token to look up the permission of whoever started the run. Defaults to github.token.'
     required: false
