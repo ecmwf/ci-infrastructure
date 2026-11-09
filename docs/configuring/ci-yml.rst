@@ -120,6 +120,12 @@ and passes ``toJSON(needs)`` to the action.
      hooks:
        - id: check-ci-result
 
+The regenerate bot pins this ``rev`` to the commit of the generator that wrote the workflows.
+The gate, :action:`require-ci-approval`, runs both checks in CI as well (see `Fork pull requests`_),
+so the hook block is optional, and with it the bot's pinning:
+a ``.pre-commit-config.yaml`` without the ci-infrastructure repo is left as it is.
+This suits a repository whose ``.pre-commit-config.yaml`` is synced from elsewhere.
+
 HPC legs
 --------
 
@@ -220,6 +226,7 @@ For that, ``ci.yml`` needs three changes:
        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
        runs-on: ubuntu-latest
        permissions:
+         contents: read
          pull-requests: write
        steps:
          - uses: ecmwf/ci-infrastructure/actions/require-ci-approval@main
@@ -238,3 +245,13 @@ For that, ``ci.yml`` needs three changes:
   checkouts of other repositories (with ``repository:``) may stay ``actions/checkout``.
 
 The ``check-ci-approval`` pre-commit hook checks all three.
+
+:action:`require-ci-approval` also runs ``check-ci-approval`` and ``check-ci-result``
+itself, with the same ci-infrastructure package as the other actions, once the gate passed, so a repository may drop the hooks.
+It checks the workflows of the commit under test, the one :action:`checkout-under-test` checks out,
+from a sparse checkout of ``.github`` and ``.ci`` into a directory of its own, removed afterwards.
+That is a fork's code under ``pull_request_target``, approved by then; it is only parsed, never run or imported.
+A failure there is titled ``Workflow check``, never ``CI approval``.
+For this checkout the gate job needs ``contents: read``, as above:
+a job's ``permissions:`` replace the workflow's, and leave out every scope they do not name.
+``check-workflows: 'false'`` skips the checks, and with them the checkout and the Python setup.

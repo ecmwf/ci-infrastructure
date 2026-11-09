@@ -56,10 +56,13 @@ def render_single(root: Path, body: str, lane: Execution = EXECUTION_RUNNER, nam
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 
 
-def action_run_body(name: str) -> str:
-    """The `run:` body of actions/<name>'s single composite step."""
+def action_run_body(name: str, step_id: str | None = None) -> str:
+    """The `run:` body of actions/<name>'s single composite step, or of the step `step_id`."""
     doc: dict[str, Any] = yaml.safe_load((REPO_ROOT / "actions" / name / "action.yml").read_text(encoding="utf-8"))
-    (step,) = doc["runs"]["steps"]
+    if step_id is None:
+        (step,) = doc["runs"]["steps"]
+    else:
+        (step,) = (s for s in doc["runs"]["steps"] if s.get("id") == step_id)
     return str(step["run"])
 
 

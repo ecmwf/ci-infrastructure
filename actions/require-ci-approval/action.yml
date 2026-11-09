@@ -16,11 +16,25 @@ description: >
   Gate jobs with `needs:` only: it FAILS rather than skips, because a skipped
   job reports Success. Needs bash, jq and gh.
 
+  Then, unless `check-workflows: 'false'`, it also runs the check-ci-approval and
+  check-ci-result checks, with the package the other actions use, over `.github/workflows/`
+  of the commit under test, in place of the pre-commit hooks. The job then needs
+  `contents: read`.
+
 inputs:
   trust-same-repo:
     description: >
       'true' treats a head branch in the base repository as approved; 'false'
       demands a maintainer's run from everyone.
+    required: false
+    default: 'true'
+  check-workflows:
+    description: >
+      'true' also runs the check-ci-approval and check-ci-result pre-commit
+      hooks' checks over the workflows of the commit under test, once the gate
+      passed: a sparse checkout of `.github` and `.ci` that is parsed, never run.
+      Needs `contents: read` and a Python >=3.11.2 or uv on the runner;
+      'false' skips them.
     required: false
     default: 'true'
   token:
@@ -37,13 +51,25 @@ outputs:
 runs:
   using: composite
   steps:
+    - if: inputs.check-workflows == 'true'
+      uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+
     - id: gate
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         TRUST_SAME_REPO_INPUT: ${{ inputs.trust-same-repo }}
+        CHECK_WORKFLOWS_INPUT: ${{ inputs.check-workflows }}
       run: |
         set -euo pipefail
+
+        case "${CHECK_WORKFLOWS_INPUT:-}" in
+          ''|true|TRUE|True|false|FALSE|False) ;;
+          *)
+            echo "::error title=CI approval::input 'check-workflows' must be 'true' or 'false', got '$CHECK_WORKFLOWS_INPUT'." >&2
+            exit 1
+            ;;
+        esac
 
         case "${TRUST_SAME_REPO_INPUT:-}" in
           ''|true|TRUE|True) trust_same_repo=true ;;
@@ -107,3 +133,55 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
         echo "::error title=CI approval::this fork pull request is not approved to run CI; a maintainer must read commit ${head_sha:0:12} and re-run this run." >&2
         exit 1
+
+    # After the gate, so an unapproved fork's commit is never fetched. Same commit as
+    # actions/checkout-under-test; its own directory, so a later checkout is undisturbed.
+    - if: inputs.check-workflows == 'true'
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      with:
+        ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.head.sha) || (github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number)) || '' }}
+        token: ${{ inputs.token || github.token }}
+        path: .require-ci-approval-checkout
+        sparse-checkout: |
+          .github
+          .ci
+        persist-credentials: false
+        allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+    # The checkout may be a fork's: only parsed with yaml.safe_load and tomllib, and -I
+    # keeps its files off sys.path, so nothing of it is imported or run.
+    - id: check
+      if: inputs.check-workflows == 'true'
+      shell: bash
+      env:
+        CHECKOUT_DIR: .require-ci-approval-checkout
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/$CHECKOUT_DIR"
+        trap 'cd "$GITHUB_WORKSPACE" && rm -rf "$CHECKOUT_DIR"' EXIT
+
+        shopt -s nullglob
+        workflows=( .github/workflows/*.yml .github/workflows/*.yaml )
+        ci=()
+        for f in .github/workflows/ci.yml .github/workflows/ci.yaml; do [ -f "$f" ] && ci+=( "$f" ); done
+        failed=false
+        run_check() {
+          local out
+          [ "$#" -gt 1 ] || return 0
+          if ! out="$("$CI_INFRASTRUCTURE_PYTHON" -I -m "ci_infrastructure.$1" "${@:2}" 2>&1)"; then
+            failed=true
+            # Every line prefixed: a job name from the pull request cannot start a workflow command.
+            while IFS= read -r line; do
+              echo "::error title=Workflow check::$line"
+            done <<< "$out"
+          fi
+        }
+        # The files the pre-commit hooks select.
+        run_check check_ci_approval ${workflows[@]+"${workflows[@]}"}
+        run_check check_ci_result ${ci[@]+"${ci[@]}"}
+
+        if $failed; then
+          echo "::error title=Workflow check::the workflows fail check-ci-approval or check-ci-result (see above); this is not about approval." >&2
+          exit 1
+        fi
+        echo "Workflow check: ${#workflows[@]} workflow(s) pass check-ci-approval and check-ci-result."

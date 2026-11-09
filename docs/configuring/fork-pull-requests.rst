@@ -42,7 +42,8 @@ whose workflow files are always those of the base branch, never the fork's,
 and calls ``ci.yml`` as a `reusable workflow <https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows>`__.
 
 ``ci.yml`` needs three small changes, shown in :doc:`ci-yml`;
-the ``check-ci-approval`` pre-commit hook fails until they are in.
+the ``check-ci-approval`` pre-commit hook fails until they are in,
+as does :action:`require-ci-approval` itself, which runs the same check.
 
 How a fork pull request runs
 ----------------------------

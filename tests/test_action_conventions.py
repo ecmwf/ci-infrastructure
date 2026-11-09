@@ -86,7 +86,7 @@ def test_action_bootstraps_exactly_when_it_needs_the_package(path: Path) -> None
         )
 
 
-def test_the_bootstrap_is_nested_first_and_unconditionally() -> None:
+def test_the_bootstrap_is_nested_first_and_only_behind_an_opt_out() -> None:
     for path in _action_files():
         doc = yaml.safe_load(path.read_text())
         steps = _steps(doc)
@@ -94,7 +94,18 @@ def test_the_bootstrap_is_nested_first_and_unconditionally() -> None:
         if not idx:
             continue
         assert idx == [0], f"{path.parent.name}: bootstrap must be the first step, found at {idx}"
-        assert "if" not in steps[0], f"{path.parent.name}: bootstrap must not be conditional"
+        # An opt-out input, on by default, may skip it, with every step that uses the package.
+        cond = steps[0].get("if")
+        match = re.fullmatch(r"inputs\.([\w-]+) == 'true'", cond) if cond is not None else None
+        assert cond is None or match, (
+            f"{path.parent.name}: bootstrap may only be conditional on an opt-out input, got {cond!r}"
+        )
+        if match:
+            default = doc["inputs"][match[1]].get("default")
+            assert default == "true", f"{path.parent.name}: input {match[1]} must default to 'true', got {default!r}"
+            for step in steps[1:]:
+                if "CI_INFRASTRUCTURE_PYTHON" in str(step.get("run", "")):
+                    assert step.get("if") == cond, f"{path.parent.name}: a step using the package must share if: {cond}"
 
 
 def test_stdlib_only_exemptions_exist_and_run_python() -> None:
