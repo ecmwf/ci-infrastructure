@@ -135,6 +135,9 @@ The ``hpc-atos`` lane also needs the label ``run-hpc-ci``, without which the com
 with ``hpc-ci-not-needed`` instead, its status is a success at once.
 
 Its ``resolve`` job resolves every consumer once, before any of them builds, upstream first.
+It starts from the commits the pull request's ``CI`` resolved,
+which :action:`resolve-deps` records there as the run artifact ``resolved-pins``,
+so the consumers build against the upstreams the commit under test was built against.
 Each consumer is pinned to the commits the ones before it resolved,
 so a merge into an upstream's default branch during the run cannot give two consumers different trees,
 and takes the artifacts they publish as on their way.

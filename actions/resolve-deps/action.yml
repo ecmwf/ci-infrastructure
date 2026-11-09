@@ -125,6 +125,8 @@ outputs:
     description: >
       `pin`, plus this repo and every dep repo at the commit it resolved to: a
       later resolve of the same run given these builds against the same tree.
+      In a pull request's CI also uploaded as the run artifact `resolved-pins`
+      (pins.txt), where its downstream run reads them.
     value: ${{ steps.r.outputs.pins }}
   artifacts:
     description: 'Space-separated artifacts the publishing legs upload.'
@@ -198,3 +200,26 @@ runs:
           --expected-artifacts "$EXPECTED_ARTIFACTS" \
           --matrix "$MATRIX" \
           --upstream-manifest-path "$UPSTREAM_MANIFEST_PATH"
+
+    # A pull request's CI resolves once per run: its downstream run starts from these commits,
+    # so a merge upstream while this run builds does not give the consumers another tree.
+    - name: Record the resolved commits
+      id: record
+      if: (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && steps.r.outputs.pins != ''
+      shell: bash
+      env:
+        PINS: ${{ steps.r.outputs.pins }}
+      run: |
+        set -euo pipefail
+        dir="${RUNNER_TEMP}/resolved-pins"
+        mkdir -p "$dir"
+        printf '%s\n' "$PINS" > "$dir/pins.txt"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+    - if: steps.record.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: resolved-pins
+        path: ${{ steps.record.outputs.dir }}/pins.txt
+        overwrite: true
+        if-no-files-found: error

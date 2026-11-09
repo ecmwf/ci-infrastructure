@@ -1523,6 +1523,7 @@ def _context_job(*, fork_pull_requests: bool = False) -> dict[str, Any]:
             "head-branch": "${{ steps.ctx.outputs.head-branch }}",
             "ci-conclusion": "${{ steps.ctx.outputs.ci-conclusion }}",
             "ci-url": "${{ steps.ctx.outputs.ci-url }}",
+            "ci-run-id": "${{ steps.ctx.outputs.ci-run-id }}",
             "ci-summary": "${{ steps.ctx.outputs.ci-summary }}",
             "pull-request": "${{ steps.ctx.outputs.pull-request }}",
             "hpc-only": "${{ steps.ctx.outputs.hpc-only }}",
@@ -1603,6 +1604,25 @@ def _validate_job() -> dict[str, Any]:
 
 
 _RESOLVE_JOB_ID: Final = "resolve"
+# Only well-formed pins of other repos: the commit under test is the context's, whatever the artifact says.
+_START_PINS_SCRIPT: Final = """\
+set -euo pipefail
+pins="${GITHUB_REPOSITORY}@${HEAD_SHA}"
+dir="${RUNNER_TEMP}/resolved-pins"
+if [ -n "${CI_RUN_ID}" ] && gh run download "${CI_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \\
+     --name resolved-pins --dir "$dir" 2>/dev/null; then
+  while read -r pin; do
+    if [[ "$pin" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$ ]] && [[ "$pin" != "${GITHUB_REPOSITORY}@"* ]]; then
+      pins="$pins $pin"
+    fi
+  done < <(tr ' ' '\\n' < "$dir/pins.txt")
+  echo "Starting from the commits run ${CI_RUN_ID} resolved: $pins"
+else
+  echo "::notice::No resolved-pins artifact on CI run '${CI_RUN_ID}'; the other repos resolve at their branch tips."
+fi
+echo "PINS=$pins" >> "$GITHUB_ENV"
+echo "EXPECTED=" >> "$GITHUB_ENV"
+"""
 _PINS: Final = f"${{{{ needs.{_RESOLVE_JOB_ID}.outputs.pins }}}}"
 # Artifacts and the dep-tree sidecars resolve-deps records beside them.
 _RESOLVE_ENV: Final = {
@@ -1616,17 +1636,22 @@ _RESOLVE_ENV: Final = {
 def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *, lane: Execution) -> dict[str, Any]:
     """Every called consumer resolved once, upstream first, against one set of commits.
 
-    Each consumer is pinned to the commits the ones before it resolved, and takes the artifacts
-    they publish as on their way, so a merge during the run cannot change the tree between them.
+    The pins start from the commits the upstream's CI resolved (its `resolved-pins` artifact), and each
+    consumer is pinned to the commits the ones before it resolved, and takes the artifacts they publish
+    as on their way, so a merge since that CI resolved cannot change the tree between them.
     A consumer that fails to resolve here resolves in its own run and reports the error there.
     Dispatched consumers get the pins only.
     """
     steps: list[Step] = [
         _mint_step(),
         {
-            "name": "Pin the commit under test",
-            "env": {"HEAD_SHA": _HEAD_SHA},
-            "run": 'echo "PINS=${GITHUB_REPOSITORY}@${HEAD_SHA}" >> "$GITHUB_ENV"\necho "EXPECTED=" >> "$GITHUB_ENV"',
+            "name": "Pin the commits the upstream's CI resolved",
+            "env": {
+                "GH_TOKEN": "${{ steps.mint.outputs.token }}",
+                "HEAD_SHA": _HEAD_SHA,
+                "CI_RUN_ID": f"${{{{ needs.{_CONTEXT_JOB_ID}.outputs.ci-run-id }}}}",
+            },
+            "run": _START_PINS_SCRIPT,
         },
     ]
     outputs: dict[str, str] = {}

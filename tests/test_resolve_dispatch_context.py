@@ -125,6 +125,7 @@ def test_a_ci_run_of_this_repo_passes_its_verdict_through(tmp_path: Path) -> Non
         "success",
         "",
     )
+    assert out["ci-run-id"] == "1"
 
 
 def test_the_plain_ci_run_of_a_fork_has_no_verdict(tmp_path: Path) -> None:
@@ -145,6 +146,7 @@ def test_an_approved_fork_run_names_the_pr_its_commit_and_the_base_branch(tmp_pa
         "success",
         "7",
     )
+    assert out["ci-run-id"] == "99"
 
 
 def test_a_fork_run_whose_gate_did_not_pass_is_not_an_approval(tmp_path: Path) -> None:
@@ -163,7 +165,7 @@ def test_a_fork_run_for_a_commit_the_pr_moved_on_from_does_nothing(tmp_path: Pat
 
 
 def test_a_dispatch_for_a_pr_of_this_repo_reads_its_ci_run(tmp_path: Path) -> None:
-    runs = [{"name": "CI", "conclusion": "success", "html_url": "https://run/5"}]
+    runs = [{"id": 5, "name": "CI", "conclusion": "success", "html_url": "https://run/5"}]
     code, out, _ = _ctx(
         tmp_path, "workflow_dispatch", {}, pr=_pr(head_repo=REPO, number=3), runs=runs, pull_request="3"
     )
@@ -174,6 +176,7 @@ def test_a_dispatch_for_a_pr_of_this_repo_reads_its_ci_run(tmp_path: Path) -> No
         "success",
         "3",
     )
+    assert out["ci-run-id"] == "5"
 
 
 def test_a_dispatch_for_a_fork_needs_an_approved_fork_run(tmp_path: Path) -> None:

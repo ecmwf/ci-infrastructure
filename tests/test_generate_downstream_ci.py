@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import textwrap
 from pathlib import Path
 from typing import Any, Final
@@ -19,6 +21,7 @@ from ci_infrastructure import check_ci_approval
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
+    _START_PINS_SCRIPT,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     PACKAGE_RUNNER,
@@ -1976,6 +1979,7 @@ def test_the_commit_comes_from_the_context_job_everywhere(tmp_path: Path) -> Non
     assert ctx["needs"] == ["ci-approval"]
     assert sorted(ctx["outputs"]) == [
         "ci-conclusion",
+        "ci-run-id",
         "ci-summary",
         "ci-url",
         "head-branch",
@@ -2479,7 +2483,7 @@ def test_downstream_runner_resolves_each_called_consumer_once_upstream_first(tmp
         assert step["with"]["pin"] == "${{ env.PINS }}"
         assert step["with"]["expected-artifacts"] == "${{ env.EXPECTED }}"
         assert step["continue-on-error"] is True
-    assert resolve["steps"][1]["env"] == {"HEAD_SHA": "${{ needs.context.outputs.head-sha }}"}
+    assert resolve["steps"][1]["env"]["CI_RUN_ID"] == "${{ needs.context.outputs.ci-run-id }}"
     assert resolve["outputs"]["c"] == "${{ steps.r-c.outcome == 'success' && steps.r-c.outputs.json || '' }}"
 
     c = jobs["c"]
@@ -2548,3 +2552,42 @@ def test_consumer_takes_the_downstream_runners_resolve_or_resolves_itself(tmp_pa
     assert test["strategy"]["matrix"] == "${{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['test'] }}"
     checkout = next(s for s in test["steps"] if s.get("uses") == "actions/checkout@v6")
     assert checkout["with"]["ref"] == "${{ inputs.resolved-ref || needs.resolve.outputs.ref }}"
+
+
+_STUB_DOWNLOAD: Final = """#!/bin/bash
+# gh run download <id> --repo <repo> --name resolved-pins --dir <dir>
+[ "$3" = 7 ] || exit 1
+mkdir -p "$9"
+printf '%s\\n' "$PINS_TXT" > "$9/pins.txt"
+"""
+
+
+@pytest.mark.parametrize(
+    ("run_id", "expected"),
+    [
+        ("7", f"o/up@{'c' * 40} o/eckit@{'b' * 40}"),
+        ("9", f"o/up@{'c' * 40}"),
+        ("", f"o/up@{'c' * 40}"),
+    ],
+)
+def test_downstream_pins_start_from_the_commits_the_upstream_ci_resolved(
+    tmp_path: Path, run_id: str, expected: str
+) -> None:
+    """The commit under test stays the context's; malformed pins are dropped; no artifact pins it alone."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(_STUB_DOWNLOAD)
+    (bin_dir / "gh").chmod(0o755)
+    env_file = tmp_path / "env"
+    env_file.touch()
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "o/up",
+        "HEAD_SHA": "c" * 40,
+        "CI_RUN_ID": run_id,
+        "RUNNER_TEMP": str(tmp_path / "tmp"),
+        "GITHUB_ENV": str(env_file),
+        "PINS_TXT": f"o/up@{'a' * 40} o/eckit@{'b' * 40} bad o/other@main",
+    }
+    subprocess.run(["bash", "-c", _START_PINS_SCRIPT], env=env, check=True)
+    assert env_file.read_text().splitlines() == [f"PINS={expected}", "EXPECTED="]
