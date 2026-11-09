@@ -43,7 +43,7 @@ and calls ``ci.yml`` as a `reusable workflow <https://docs.github.com/en/actions
 
 ``ci.yml`` needs three small changes, shown in :doc:`ci-yml`;
 the ``check-ci-approval`` pre-commit hook fails until they are in,
-as does :action:`require-ci-approval` with ``check-workflows: 'true'``.
+as does :action:`require-ci-approval` itself, which runs the same check.
 
 How a fork pull request runs
 ----------------------------
