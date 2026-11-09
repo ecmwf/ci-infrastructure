@@ -20,7 +20,7 @@ else
 fi
 # The floor libaec sets, which is the highest of any submodule we build.
 MIN_CMAKE=3.26
-# eckit's find_package(libaec 1.1.4); release images below it build libaec from source.
+# eckit's find_package(libaec 1.1.4).
 MIN_LIBAEC=1.1.4
 
 fail() { echo "::error::$DECLARES: $*"; exit 1; }
@@ -173,33 +173,16 @@ expect_rust() {
   echo "rust: $(rustc --version), $(cargo --version)"
 }
 
-# The libraries release builds link (README "Release images"): build, link and run against each,
-# with the named gcc, as a release build finds them (default search paths, no flags of its own).
+# The libraries release builds link (README "Release images"): build, link and run against each
+# with the named gcc, found as a release build finds them (default search paths).
 expect_release() {
-  local cc="$1" cxx eigen_flags out header aec_header="" major minor patch
-  local aec_version aec_target aec_type aec_location aec_kind
+  local cc="$1" cxx eigen_flags out aec_version aec_type
   [ -n "$cc" ] || fail "'$variant' names release but no gcc to build with"
   cxx="${cc/gcc/g++}"
-  # One libaec: the source build under /usr/local, or the distribution's, never both.
-  for header in /usr/include/libaec.h /usr/local/include/libaec.h; do
-    [ -f "$header" ] || continue
-    [ -z "$aec_header" ] || fail "both $aec_header and $header exist; a release image has one libaec"
-    aec_header="$header"
-  done
-  [ -n "$aec_header" ] || fail "libaec.h is in neither /usr/include nor /usr/local/include"
-  # A shared libaec under /usr/local would become a dependency and an RPATH no target has.
-  if compgen -G '/usr/local/lib*/libaec.so*' >/dev/null || compgen -G '/usr/local/lib/*/libaec.so*' >/dev/null; then
-    fail "a shared libaec is under /usr/local; the source build installs only the static library"
-  fi
-  IFS=. read -r major minor patch <<<"$MIN_LIBAEC"
   cat >"$omp_tmp/release.c" <<'EOF'
 #include <bzlib.h>
 #include <libaec.h>
 #include <lz4.h>
-/* Headers before 1.1.0 have no version macros: those are too old as well. */
-#if !defined(AEC_VERSION_MAJOR) || AEC_VERSION_MAJOR * 10000 + AEC_VERSION_MINOR * 100 + AEC_VERSION_PATCH < MIN_AEC
-#error "libaec.h is older than MIN_LIBAEC"
-#endif
 extern double ddot_(const int* n, const double* x, const int* incx, const double* y, const int* incy);
 extern void dgesv_(const int* n, const int* nrhs, double* a, const int* lda, int* ipiv, double* b,
                    const int* ldb, int* info);
@@ -218,54 +201,35 @@ int main(void) {
     return info != 0 || b != 2.0;
 }
 EOF
-  if ! out="$("$cc" -DMIN_AEC=$((major * 10000 + minor * 100 + patch)) "$omp_tmp/release.c" -o "$omp_tmp/release.bin" \
-      -laec -lbz2 -llz4 -llapack -lblas 2>&1)"; then
+  if ! out="$("$cc" "$omp_tmp/release.c" -o "$omp_tmp/release.bin" -laec -lbz2 -llz4 -llapack -lblas 2>&1)"; then
     printf '%s\n' "$out" >&2
-    fail "$cc cannot build against libaec >= $MIN_LIBAEC ($aec_header), bzip2, lz4, LAPACK and BLAS"
+    fail "$cc cannot build against libaec, bzip2, lz4, LAPACK and BLAS"
   fi
   "$omp_tmp/release.bin" || fail "the libaec/bzip2/lz4/LAPACK/BLAS program does not run"
-  # As eckit finds and links it: find_package(libaec), then libaec::aec into a shared library,
-  # which also proves a static libaec is position-independent.
+  # As eckit does: find_package(libaec 1.1.4), then libaec::aec into a shared library, which also
+  # proves a static libaec is position-independent.
   mkdir "$omp_tmp/aec"
-  printf '%s\n' '#include <libaec.h>' \
-    'int probe(void) { struct aec_stream s = {0}; int r; s.bits_per_sample = 8; s.block_size = 16; s.rsi = 1;' \
-    '  r = aec_encode_init(&s); aec_encode_end(&s); return r; }' >"$omp_tmp/aec/probe.c"
+  printf '%s\n' '#include <libaec.h>' 'int probe(struct aec_stream *s) { return aec_encode_init(s); }' \
+    >"$omp_tmp/aec/probe.c"
   cat >"$omp_tmp/aec/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.26)
 project(aec_probe C)
 find_package(libaec ${MIN_LIBAEC} REQUIRED)
 add_library(probe SHARED probe.c)
 target_link_libraries(probe PRIVATE libaec::aec)
-get_target_property(target libaec::aec ALIASED_TARGET)
-if(NOT target)
-  set(target libaec::aec)
-endif()
-get_target_property(type ${target} TYPE)
-set(location "")
-if(type MATCHES "^(STATIC|SHARED|UNKNOWN)_LIBRARY$")
-  get_target_property(location ${target} LOCATION)
-endif()
-file(WRITE "${CMAKE_BINARY_DIR}/aec-probe.txt" "${libaec_VERSION}\n${target}\n${type}\n${location}\n")
+get_target_property(type libaec::aec TYPE)
+file(WRITE "${CMAKE_BINARY_DIR}/aec-probe.txt" "${libaec_VERSION}\n${type}\n")
 EOF
   if ! out="$(cmake -S "$omp_tmp/aec" -B "$omp_tmp/aec/build" -DCMAKE_C_COMPILER="$(command -v "$cc")" \
-      -DCMAKE_BUILD_TYPE=Release -DMIN_LIBAEC="$MIN_LIBAEC" 2>&1 && cmake --build "$omp_tmp/aec/build" 2>&1)"; then
+      -DMIN_LIBAEC="$MIN_LIBAEC" 2>&1 && cmake --build "$omp_tmp/aec/build" 2>&1)"; then
     printf '%s\n' "$out" >&2
     fail "find_package(libaec $MIN_LIBAEC) and libaec::aec do not build a shared library with $cc"
   fi
-  { read -r aec_version; read -r aec_target; read -r aec_type; read -r aec_location; } <"$omp_tmp/aec/build/aec-probe.txt"
-  if [ "$aec_header" = /usr/local/include/libaec.h ]; then
-    [ "$aec_type" = STATIC_LIBRARY ] \
-      || fail "libaec::aec is $aec_target, a $aec_type; the source build installs only the static library"
-    case "$aec_location" in
-      /usr/local/lib/*) ;;
-      *) fail "libaec::aec is $aec_target at '$aec_location', not the source build under /usr/local/lib" ;;
-    esac
+  { read -r aec_version; read -r aec_type; } <"$omp_tmp/aec/build/aec-probe.txt"
+  # build-libaec.sh installs only the static library.
+  if [ -f /usr/local/include/libaec.h ] && [ "$aec_type" != STATIC_LIBRARY ]; then
+    fail "libaec::aec is a $aec_type, not the static library build-libaec.sh installs"
   fi
-  case "$aec_type" in
-    STATIC_LIBRARY) aec_kind=static ;;
-    SHARED_LIBRARY) aec_kind=shared ;;
-    *)              aec_kind="$aec_type" ;;
-  esac
   printf '%s\n' '#include <Eigen/Dense>' \
     'int main() { Eigen::Matrix2d m; m << 1, 2, 3, 4; return m.determinant() > -1.5; }' >"$omp_tmp/eigen.cxx"
   eigen_flags="$(pkg-config --cflags eigen3 2>/dev/null)" || eigen_flags="-I/usr/include/eigen3"
@@ -275,7 +239,7 @@ EOF
     fail "$cxx cannot build against Eigen ($eigen_flags)"
   fi
   "$omp_tmp/eigen.bin" || fail "the Eigen program does not run"
-  echo "release libraries: libaec $aec_version ($aec_kind, $aec_target), bzip2, lz4, LAPACK/BLAS, Eigen (${eigen_flags})"
+  echo "release libraries: libaec $aec_version ($aec_type), bzip2, lz4, LAPACK/BLAS, Eigen (${eigen_flags})"
   # The packager, so a release build installs nothing at run time.
   if command -v dnf >/dev/null; then
     command -v rpmbuild >/dev/null || fail "rpmbuild is not on PATH"

@@ -21,29 +21,9 @@ RUN apt-get update && apt-get install -y \
     libeigen3-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# libaec from source: Debian 12's is 1.0.6, below eckit's 1.1.4 (README "Release images").
-# Static only, so a package embeds it and needs no libaec on the target. Upstream already sets
-# POSITION_INDEPENDENT_CODE; the flag here states that the static library must stay PIC.
-# Its CMake config loads the shared targets unless libaec_USE_STATIC_LIBS is ON, and only the
-# static ones are installed, so the installed config sets it.
-ARG LIBAEC_VERSION=1.1.7
-ARG LIBAEC_SHA256=cc7b93be9002e25a88b45d6b8d5f6120756cb5e1000613f91d803ce0beba24d9
-RUN cd /tmp \
- && curl -fsSLO "https://github.com/Deutsches-Klimarechenzentrum/libaec/releases/download/v${LIBAEC_VERSION}/libaec-${LIBAEC_VERSION}.tar.gz" \
- && echo "${LIBAEC_SHA256}  libaec-${LIBAEC_VERSION}.tar.gz" | sha256sum -c - \
- && cmake -E tar xzf "libaec-${LIBAEC_VERSION}.tar.gz" \
- && cmake -S "libaec-${LIBAEC_VERSION}" -B libaec-build \
-      -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib \
-      -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON \
-      -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF \
- && cmake --build libaec-build -j"$(nproc)" \
- && cmake --install libaec-build \
- && cfg=/usr/local/lib/cmake/libaec/libaec-config.cmake \
- && { printf '%s\n' '# ci-infrastructure: only the static libraries are installed.' \
-        'set(libaec_USE_STATIC_LIBS ON)' ''; cat "$cfg"; } >"$cfg.new" \
- && mv "$cfg.new" "$cfg" \
- && rm -rf "libaec-${LIBAEC_VERSION}" libaec-build "libaec-${LIBAEC_VERSION}.tar.gz"
+# libaec from source: Debian 12's is 1.0.6, below eckit's 1.1.4
+COPY public-images/build-libaec.sh /tmp/
+RUN sh /tmp/build-libaec.sh gcc-12 && rm /tmp/build-libaec.sh
 
 # Re-declared in every image: an inherited copy would announce the base.
 ARG IMAGE_NAME=""
