@@ -142,6 +142,9 @@ It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.
 so the pull request is checked by the hooks that match its files.
 It labels a new pull request ``downstream-ci-not-needed`` and ``hpc-ci-not-needed`` (the input ``labels``), since it changes only generated workflows.
 The input ``add-labels`` adds labels to these, e.g. ``expensive-tests-not-needed``; ``labels`` replaces them.
+Labels match the repository's whatever their case, and the pull request gets the repository's spelling.
+A label the repository lacks is left out: quietly if it is one of the defaults, since not every repository has every lane,
+with a warning if the caller named it, so that a typo shows.
 The input ``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.
 The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 

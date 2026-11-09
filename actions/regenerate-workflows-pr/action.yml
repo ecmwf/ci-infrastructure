@@ -36,7 +36,13 @@ inputs:
     required: false
     default: ''
   labels:
-    description: 'Comma-separated labels for a newly opened PR; one the repo lacks is left out.'
+    description: >
+      Comma-separated labels for a newly opened PR, matched case-insensitively against the repo's;
+      one the repo lacks is left out with a warning.
+    required: false
+    default: ''
+  optional-labels:
+    description: "As `labels`, but one the repo lacks is left out without a warning."
     required: false
     default: ''
   title:
@@ -97,6 +103,7 @@ runs:
         BRANCH: ${{ inputs.branch }}
         BASE: ${{ inputs.base || github.ref_name }}
         LABELS: ${{ inputs.labels }}
+        OPTIONAL_LABELS: ${{ inputs.optional-labels }}
         TITLE: ${{ inputs.title }}
         MODE: ${{ inputs.mode }}
         DIRECT_PUSH: ${{ inputs.direct-push }}
@@ -163,19 +170,28 @@ runs:
             status=pr-updated
           else
             # gh pr create fails on a label the repo lacks; this runs org-wide, so leave such a label out.
+            # Label names are unique case-insensitively, and repos differ in case: take the repo's spelling.
             existing=$(gh label list --limit 1000 --json name --jq '.[].name')
             labels=()
-            IFS=',' read -ra wanted <<< "$LABELS"
-            for label in "${wanted[@]}"; do
-              label="${label#"${label%%[![:space:]]*}"}"; label="${label%"${label##*[![:space:]]}"}"
-              [ -n "$label" ] || continue
-              if grep -qxF -- "$label" <<< "$existing"; then
-                labels+=(--label "$label")
-              else
-                echo "::warning title=Regenerate workflows::$GITHUB_REPOSITORY has no label '$label'; opening the PR without it."
-              fi
-            done
-            open_pr=$(gh pr create --head "$BRANCH" --base "$BASE" --title "$title" --body "$body" "${labels[@]}")
+            picked=""
+            pick_labels() {
+              local level="$1" label match wanted
+              IFS=',' read -ra wanted <<< "$2"
+              for label in ${wanted[@]+"${wanted[@]}"}; do
+                label="${label#"${label%%[![:space:]]*}"}"; label="${label%"${label##*[![:space:]]}"}"
+                [ -n "$label" ] || continue
+                if match=$(grep -ixF -m1 -- "$label" <<< "$existing"); then
+                  grep -qixF -- "$match" <<< "$picked" && continue
+                  picked+="$match"$'\n'
+                  labels+=(--label "$match")
+                else
+                  echo "::$level title=Regenerate workflows::$GITHUB_REPOSITORY has no label '$label'; opening the PR without it."
+                fi
+              done
+            }
+            pick_labels warning "$LABELS"
+            pick_labels notice "$OPTIONAL_LABELS"
+            open_pr=$(gh pr create --head "$BRANCH" --base "$BASE" --title "$title" --body "$body" ${labels[@]+"${labels[@]}"})
             status=pr-opened
           fi
           echo "::notice title=Regenerate workflows::$open_pr"

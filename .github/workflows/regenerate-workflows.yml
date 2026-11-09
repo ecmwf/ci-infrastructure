@@ -10,12 +10,14 @@ on:
   workflow_call:
     inputs:
       labels:
-        description: 'Comma-separated labels for a newly opened PR, replacing the default; one the repo lacks is left out.'
+        description: >
+          Comma-separated labels for a newly opened PR, replacing the default; one the repo lacks is left out,
+          with a warning unless it comes from the default.
         type: string
         required: false
         default: 'downstream-ci-not-needed,hpc-ci-not-needed'
       add-labels:
-        description: 'Comma-separated labels added to `labels`.'
+        description: 'Comma-separated labels added to `labels`; one the repo lacks is left out with a warning.'
         type: string
         required: false
         default: ''
@@ -93,7 +95,9 @@ jobs:
           write-token: ${{ steps.write.outputs.token }}
           app-slug: ${{ steps.write.outputs.app-slug }}
           branch: ${{ inputs.branch }}
-          labels: ${{ format('{0},{1}', inputs.labels, inputs.add-labels) }}
+          # The default labels are optional: a repo without a lane may lack its label.
+          labels: ${{ format('{0},{1}', inputs.labels != 'downstream-ci-not-needed,hpc-ci-not-needed' && inputs.labels || '', inputs.add-labels) }}
+          optional-labels: ${{ inputs.labels == 'downstream-ci-not-needed,hpc-ci-not-needed' && inputs.labels || '' }}
           title: ${{ inputs.title }}
           mode: ${{ inputs.mode }}
           direct-push: ${{ inputs.direct-push }}
