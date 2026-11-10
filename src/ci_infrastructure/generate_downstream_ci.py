@@ -636,9 +636,10 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
             "workflow_dispatch": {"inputs": _workflow_dispatch_inputs()},
         },
         # Not github.workflow: under workflow_call that is the caller's, and sharing
-        # its group deadlocks. No cancel, so a late dispatcher reuses the in-flight run.
+        # its group deadlocks; nor github.ref, the caller's default branch for all its PRs.
+        # No cancel, so a late dispatcher reuses the in-flight run.
         "concurrency": {
-            "group": f"cross-repo-trigger-{lane}-{m.package_name}-" + "${{ github.ref }}",
+            "group": f"cross-repo-trigger-{lane}-{m.package_name}-" + "${{ inputs.from-repo }}-${{ inputs.from-sha }}",
             "cancel-in-progress": False,
         },
         # Artifacts and sccache live in separate buckets.

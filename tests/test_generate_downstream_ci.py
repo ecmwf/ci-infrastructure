@@ -766,7 +766,7 @@ def test_workflow_dispatch_trigger(tmp_path: Path) -> None:
     assert "contains(fromJSON(inputs.from-jobs)," in yaml
     assert "inputs.rebuild-request" in yaml
     # A static package token: under workflow_call github.workflow is the caller's.
-    assert "group: cross-repo-trigger-runner-c-${{ github.ref }}" in yaml
+    assert "group: cross-repo-trigger-runner-c-${{ inputs.from-repo }}-${{ inputs.from-sha }}" in yaml
     assert "cancel-in-progress: false" in yaml
 
 
@@ -1337,8 +1337,8 @@ def test_lane_split_consumer_files(tmp_path: Path) -> None:
     assert "b__build_hpc:\n" in hpc
     assert "b__build:\n" not in hpc
 
-    assert "group: cross-repo-trigger-runner-b-${{ github.ref }}" in runner
-    assert "group: cross-repo-trigger-hpc-atos-b-${{ github.ref }}" in hpc
+    assert "group: cross-repo-trigger-runner-b-${{ inputs.from-repo }}-${{ inputs.from-sha }}" in runner
+    assert "group: cross-repo-trigger-hpc-atos-b-${{ inputs.from-repo }}-${{ inputs.from-sha }}" in hpc
 
 
 def test_resolve_outputs_read_custom_kinds_from_json(tmp_path: Path) -> None:
