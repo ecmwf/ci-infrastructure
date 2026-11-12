@@ -22,6 +22,7 @@ from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
     _START_PINS_SCRIPT,
+    GENERATED_WORKFLOWS,
     ORCHESTRATOR_MAX_REUSABLE_WORKFLOWS,
     ORCHESTRATOR_MAX_TOTAL_JOBS,
     PACKAGE_RUNNER,
@@ -2389,6 +2390,15 @@ def _render_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repos: tuple[st
     for repo in repos:
         monkeypatch.chdir(tmp_path / repo)
         _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+
+
+def test_the_regenerate_bot_knows_every_generated_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """regenerate-repos.yml copies and deletes only GENERATED_WORKFLOWS."""
+    _make_chain_ab(tmp_path, hpc=True)
+    _render_all(tmp_path, monkeypatch)
+    written = {p.name for repo in ("a", "b") for p in (tmp_path / repo / ".github" / "workflows").iterdir()}
+    assert written <= set(GENERATED_WORKFLOWS)
+    assert "trigger-downstream-hpc-atos.yml" in written
 
 
 def test_hpc_legs_come_with_the_hpc_label_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

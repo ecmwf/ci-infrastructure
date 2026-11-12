@@ -71,6 +71,18 @@ LABEL_GATE_WORKFLOW: Final = "pr-label-downstream-ci.yml"
 HPC_LABEL_WORKFLOW: Final = "pr-label-hpc-ci.yml"
 SYNC_BRANCH_WORKFLOW: Final = "pr-sync-branch.yml"
 RETRY_NIGHTLY_WORKFLOW: Final = "retry-nightly.yml"
+# Every file _render_one_repo may write or delete; the regenerate bot touches no other.
+GENERATED_WORKFLOWS: Final = (
+    FORK_CI_WORKFLOW,
+    "cross-repo-trigger.yml",
+    "cross-repo-trigger-hpc-atos.yml",
+    "trigger-downstream.yml",
+    "trigger-downstream-hpc-atos.yml",
+    LABEL_GATE_WORKFLOW,
+    HPC_LABEL_WORKFLOW,
+    SYNC_BRANCH_WORKFLOW,
+    RETRY_NIGHTLY_WORKFLOW,
+)
 # Re-runs of a failed scheduled CI run, beyond its first attempt.
 NIGHTLY_RETRIES: Final = 2
 FORK_CI_NAME: Final = "CI (fork)"
