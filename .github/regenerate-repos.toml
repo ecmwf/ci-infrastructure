@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The repos regenerate-repos.yml writes to; the regenerator App must be installed on each.
+# mode: 'pr', 'pr-auto-merge' or 'auto-commit'.
+
+[defaults]
+mode = "pr-auto-merge"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed"]
+title = "Regenerate downstream-CI workflows"
+
+[repos.ecbuild]
+[repos.stack-dependencies]
+[repos.eckit]
+[repos.eccodes]
+[repos.ecflow]
+[repos.fckit]
+[repos.atlas]
+[repos.metkit]
+[repos.mir]
+[repos.fdb]
+[repos.gribjump]
+
+[repos.odc]
+labels = ["downstream-ci-not-needed"]
+
+[repos.zfdb]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.anemoi-utils]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed"]
+title = "chore: Regenerate downstream-CI workflows"
+
+[repos.anemoi-transform]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed"]
+title = "chore: Regenerate downstream-CI workflows"
+
+[repos.anemoi-datasets]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed"]
+title = "chore: Regenerate downstream-CI workflows"
+
+[repos.anemoi-inference]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed"]
+title = "chore: Regenerate downstream-CI workflows"
+
+[repos.anemoi-plugins]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed"]
+title = "chore: Regenerate downstream-CI workflows"
+
+[repos.anemoi-core]
+mode = "pr"
+labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed", "expensive-tests-not-needed"]
+title = "chore: Regenerate downstream-CI workflows"

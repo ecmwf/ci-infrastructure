@@ -147,25 +147,31 @@ resolves in its own run, pinned to the same commits.
 
 The generated files must follow the manifests, also those of the other repositories.
 :action:`validate-generated-workflows` reports when they have drifted.
-A bot runs :action:`regenerate-workflows-pr` on every push to the default branch and nightly,
+The workflow ``regenerate-repos.yml`` in ci-infrastructure regenerates them nightly,
+and on a manual run for the repositories it is given,
 and opens a pull request with the regenerated workflows.
+It reads the default branches with a read-only token, runs the generator in a job without any token,
+and writes only the generated files, in a job that runs no code of the repository;
+the key of the bot App is an environment secret that only ``main`` of ci-infrastructure can use.
 It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.yaml`` to the commit that generated them,
 so the pull request is checked by the hooks that match its files.
-It labels a new pull request ``downstream-ci-not-needed`` and ``hpc-ci-not-needed`` (the input ``labels``), since it changes only generated workflows.
-The input ``add-labels`` adds labels to these, e.g. ``expensive-tests-not-needed``; ``labels`` replaces them.
-The input ``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.
-The input ``mode`` of ``regenerate-workflows.yml`` chooses what happens next:
 
-- ``pr`` (default): the pull request waits for a human.
+The repositories and their settings are listed in ``.github/regenerate-repos.toml`` of ci-infrastructure;
+the bot App must be installed on each of them.
+``labels`` are set on a new pull request, by default ``downstream-ci-not-needed`` and ``hpc-ci-not-needed``, since it changes only generated workflows.
+``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.
+``mode`` chooses what happens next:
+
+- ``pr``: the pull request waits for a human.
 - ``auto-commit``: the bot pushes to the default branch instead;
   this needs the bot App on the bypass list of the branch protection, otherwise it falls back to the pull request.
-- ``pr-auto-merge``: the bot enables `auto-merge <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request>`__ on the pull request,
+- ``pr-auto-merge`` (default): the bot enables `auto-merge <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request>`__ on the pull request,
   so it is merged once the required checks pass: squashed, or with the method the repository allows instead.
   This needs "Allow auto-merge" in the repository settings and required status checks on the default branch.
   If the default branch also requires a review, put the bot App on the bypass list of that ruleset in the mode "pull requests only"
   and keep the required status checks in a separate ruleset that it does not bypass.
 
-So it is sufficient to change the manifest: once that is merged, the bot takes care of the rest.
+So it is sufficient to change the manifest: once that is merged, the bot takes care of the rest by the next night.
 
 .. note::
 

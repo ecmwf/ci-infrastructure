@@ -1,0 +1,235 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Regenerate downstream-CI workflows in the repos
+
+# fetch and write read and push the repos' default branches; the generator runs in between without a token.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: 'Space-separated repos to regenerate, e.g. eckit atlas. Empty: every repo in .github/regenerate-repos.toml.'
+        required: false
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: regenerate-repos
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # main only; holds the regenerator key.
+    environment: regenerate-workflows
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.fetch.outputs.targets }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./actions/_ensure-python-ci-infrastructure
+
+      - id: targets
+        shell: bash
+        env:
+          REPOS: ${{ inputs.repos }}
+        run: |
+          set -euo pipefail
+          targets=$("$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.regenerate_targets --repos "$REPOS")
+          { echo "targets=$targets"; echo "names=$(jq -r 'map(.repo) | join(",")' <<< "$targets")"; } >> "$GITHUB_OUTPUT"
+
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.REGENERATE_WORKFLOWS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REGENERATE_WORKFLOWS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.targets.outputs.names }}
+          permission-contents: read
+
+      - id: fetch
+        name: Fetch the default branches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          TARGETS: ${{ steps.targets.outputs.targets }}
+          TREES: ${{ runner.temp }}/trees
+        run: |
+          set -euo pipefail
+          # Env-only git config: the token never lands in a .git/config.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          mkdir -p "$TREES"
+          heads='{}'
+          for repo in $(jq -r '.[].repo' <<< "$TARGETS"); do
+            base=$(gh api "repos/$OWNER/$repo" --jq .default_branch)
+            git clone -q --depth 1 --filter=blob:none --sparse --branch "$base" \
+              "https://github.com/$OWNER/$repo.git" "$TREES/$repo"
+            git -C "$TREES/$repo" sparse-checkout set .ci .github
+            heads=$(jq -c --arg r "$repo" --arg b "$base" --arg s "$(git -C "$TREES/$repo" rev-parse HEAD)" \
+              '.[$r] = {base: $b, sha: $s}' <<< "$heads")
+            rm -rf "$TREES/$repo/.git"
+          done
+          echo "targets=$(jq -c --argjson h "$heads" 'map(. + $h[.repo])' <<< "$TARGETS")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: trees
+          path: ${{ runner.temp }}/trees
+          include-hidden-files: true
+          retention-days: 3
+
+  generate:
+    needs: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No secret: the generator renders the repos' manifests and recipes.
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.generate.outputs.targets }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./actions/_ensure-python-ci-infrastructure
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: trees
+          path: ${{ runner.temp }}/trees
+
+      - id: generate
+        shell: bash
+        env:
+          TARGETS: ${{ needs.fetch.outputs.targets }}
+          TREES: ${{ runner.temp }}/trees
+          OUT: ${{ runner.temp }}/generated
+        run: |
+          set -uo pipefail
+          names=$("$CI_INFRASTRUCTURE_PYTHON" -I -c \
+            'from ci_infrastructure.generate_downstream_ci import GENERATED_WORKFLOWS as g; print(*g)')
+          ok=() failed=()
+          for repo in $(jq -r '.[].repo' <<< "$TARGETS"); do
+            echo "::group::$repo"
+            if (cd "$TREES/$repo" && "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.generate_downstream_ci --sibling-root "$TREES"); then
+              mkdir -p "$OUT/$repo"
+              for name in $names; do
+                [ ! -f "$TREES/$repo/.github/workflows/$name" ] || cp "$TREES/$repo/.github/workflows/$name" "$OUT/$repo/"
+              done
+              ok+=("$repo")
+            else
+              failed+=("$repo")
+            fi
+            echo "::endgroup::"
+          done
+          echo "targets=$(jq -c --args 'map(select(.repo | IN($ARGS.positional[])))' "${ok[@]}" <<< "$TARGETS")" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: generated
+          path: ${{ runner.temp }}/generated
+          retention-days: 3
+
+      - if: steps.generate.outputs.failed != ''
+        shell: bash
+        env:
+          FAILED: ${{ steps.generate.outputs.failed }}
+        run: |
+          echo "::error title=Regenerate workflows::The generator failed for: $FAILED"
+          exit 1
+
+  write:
+    name: write (${{ matrix.target.repo }})
+    needs: generate
+    if: ${{ !cancelled() && needs.generate.outputs.targets != '' && needs.generate.outputs.targets != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: regenerate-workflows
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target: ${{ fromJSON(needs.generate.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: ./actions/_ensure-python-ci-infrastructure
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: generated
+          path: ${{ runner.temp }}/generated
+
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.REGENERATE_WORKFLOWS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REGENERATE_WORKFLOWS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.target.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      # The commit the generator read; regenerate-open-pr.sh pushes to base without force, so a newer base falls back to the PR.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ github.repository_owner }}/${{ matrix.target.repo }}
+          ref: ${{ matrix.target.sha }}
+          token: ${{ steps.token.outputs.token }}
+          path: target
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Copy the generated workflows
+        shell: bash
+        env:
+          GENERATED: ${{ runner.temp }}/generated/${{ matrix.target.repo }}
+        run: |
+          set -euo pipefail
+          names=$("$CI_INFRASTRUCTURE_PYTHON" -I -c \
+            'from ci_infrastructure.generate_downstream_ci import GENERATED_WORKFLOWS as g; print(*g)')
+          mkdir -p target/.github/workflows
+          for name in $names; do
+            if [ -f "$GENERATED/$name" ]; then
+              cp "$GENERATED/$name" "target/.github/workflows/$name"
+            else
+              rm -f "target/.github/workflows/$name"
+            fi
+          done
+          cd target
+          "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.pin_hook_rev "$GITHUB_SHA"
+
+      - name: Open, update or close the PR
+        working-directory: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPO: ${{ github.repository_owner }}/${{ matrix.target.repo }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+          BRANCH: ci/regenerate-workflows
+          BASE: ${{ matrix.target.base }}
+          LABELS: ${{ join(matrix.target.labels, ',') }}
+          TITLE: ${{ matrix.target.title }}
+          MODE: ${{ matrix.target.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash "$GITHUB_WORKSPACE/scripts/regenerate-open-pr.sh"
