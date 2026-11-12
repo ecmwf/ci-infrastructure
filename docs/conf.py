@@ -87,7 +87,6 @@ ghactions_groups = [
             "dispatch-and-wait",
             "report-check-run",
             "validate-generated-workflows",
-            "regenerate-workflows-pr",
             "sync-branch-prs",
             "retry-scheduled-run",
         ],
