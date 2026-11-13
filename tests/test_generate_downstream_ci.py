@@ -1797,6 +1797,48 @@ def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: p
     assert "::warning::" not in capsys.readouterr().err
 
 
+def _workflows(repo: Path) -> dict[str, str]:
+    return {p.name: p.read_text() for p in sorted((repo / ".github" / "workflows").glob("*.yml"))}
+
+
+def test_an_absolute_manifest_path_still_reads_the_siblings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Joined onto the sibling root, an absolute path would read this repo's manifest for every sibling."""
+    _make_chain_ab(tmp_path)
+    monkeypatch.chdir(tmp_path / "a")
+    _run(".ci/manifest.toml", check=False, sibling_root=tmp_path)
+    relative = _workflows(tmp_path / "a")
+    assert "trigger-downstream.yml" in relative
+
+    _run(str(tmp_path / "a" / ".ci" / "manifest.toml"), check=False, sibling_root=tmp_path)
+
+    assert _workflows(tmp_path / "a") == relative
+
+
+def test_github_reads_the_siblings_at_the_path_within_the_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path)
+    monkeypatch.chdir(tmp_path / "a")
+    asked: list[str] = []
+
+    def fake_layer(
+        layer: list[tuple[str, str]], sync_branch: None, token: str | None, manifest_path: str
+    ) -> dict[tuple[str, str], tuple[str | None, bool]]:
+        asked.append(manifest_path)
+        return {key: (None, False) for key in layer}
+
+    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci.select_token", lambda: None)
+    monkeypatch.setattr("ci_infrastructure.generate_downstream_ci.fetch_manifests_layer", fake_layer)
+    _run(str(tmp_path / "a" / ".ci" / "manifest.toml"), check=True)
+
+    assert asked == [".ci/manifest.toml"]
+
+
+def test_a_manifest_outside_the_repo_is_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _make_chain_ab(tmp_path)
+    monkeypatch.chdir(tmp_path / "b")
+    with pytest.raises(CIError, match="outside the working directory"):
+        _run(str(tmp_path / "a" / ".ci" / "manifest.toml"), check=True, sibling_root=tmp_path)
+
+
 def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) -> None:
     """A quote in the leg must never become shell syntax."""
     rendered = render_single(
