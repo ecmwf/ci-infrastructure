@@ -98,6 +98,21 @@ def test_a_called_workflow_runs_under_its_callers_triggers(tmp_path: Path) -> No
     assert "pull_request_target" in check(callee)[0]
 
 
+@pytest.mark.parametrize(
+    ("environment", "rules"),
+    [
+        ("    environment: crates-io\n", []),
+        ("    environment:\n      name: crates-io\n      url: https://crates.io\n", []),
+        ("    environment: ${{ inputs.environment }}\n", ["R1"]),
+    ],
+)
+def test_a_job_bound_to_an_environment_is_trusted(tmp_path: Path, environment: str, rules: list[str]) -> None:
+    token = "        env:\n          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n"
+    text = _job(CHECKOUT + BUILD + token, on="on:\n  workflow_dispatch:\n")
+    text = text.replace("    runs-on: arc-runner-normal\n", "    runs-on: arc-runner-normal\n" + environment)
+    assert _rules(check(_workflow(tmp_path, text))) == rules
+
+
 def test_hpc_secrets_only_beside_build_on_hpc(tmp_path: Path) -> None:
     pull = "        env:\n          TOKEN: ${{ secrets.ECCR_PULL_ROBOT_TOKEN }}\n"
     hpc = "      - uses: ecmwf/ci-infrastructure/actions/build-on-hpc@main\n"

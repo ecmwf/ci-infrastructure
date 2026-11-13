@@ -6,6 +6,9 @@
 
   - R1: a job that runs repository code holds at most the reader App's key and the S3 key;
     an HPC leg (build-on-hpc) also its identity's image pull and HPC user.
+    A job bound to a literal `environment:` is exempt: GitHub withholds that environment's secrets
+    from refs its branch policy rejects. Whether the policy exists, and the secrets live there and
+    not in the repository or organisation, only the GitHub API tells; the central run checks that.
     A job runs it when it checks the repository out (under pull_request_target or workflow_run
     only with an explicit `ref:`), or builds, fetches deps or runs a local action.
     Only `schedule`, and `push` to main, master or develop or of tags, never run code under test;
@@ -71,6 +74,13 @@ def secret_class(name: str) -> str | None:
 
 def _secrets_in(value: Any) -> set[str]:
     return {a or b for expr in _EXPRESSION.findall(json.dumps(value)) for a, b in _SECRET.findall(expr)}
+
+
+def environment(job: dict[str, Any]) -> str | None:
+    """The job's environment, if named literally; an expression may evaluate to none."""
+    raw = job.get("environment")
+    name = raw.get("name") if isinstance(raw, dict) else raw
+    return name if isinstance(name, str) and name.strip() and "${{" not in name else None
 
 
 def _with(step: dict[Any, Any]) -> dict[Any, Any]:
@@ -168,7 +178,7 @@ def check(workflow: Path) -> list[str]:
             if step_uses.startswith(MINT_TOKEN) and with_block.get("app") == "reader":
                 if not str(with_block.get("repositories", "")).strip():
                     problems.append(f"{where}: R2 a reader mint names its `repositories:`")
-        if not triggers or not runs_code(job, triggers):
+        if not triggers or environment(job) or not runs_code(job, triggers):
             continue
         allowed = {"reader", "s3", None} | ({"hpc"} if _uses(job, BUILD_ON_HPC) else set())
         held = sorted(n for n in _secrets_in(job) if secret_class(n) not in allowed)

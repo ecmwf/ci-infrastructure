@@ -271,6 +271,25 @@ an HPC leg, i.e. a job using :action:`build-on-hpc`, may also hold its image pul
 Any other key belongs in a job without a checkout, e.g. the one that reports or dispatches.
 Only ``schedule``, and ``push`` to ``main``, ``master``, or ``develop`` or of tags, never run code under test.
 
+A job that needs another key anyway, e.g. to publish a release, names a
+`deployment environment <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments>`__
+whose branch policy admits only the default branch and tags, and holds the key as a secret of that environment:
+
+.. code:: yaml
+
+   publish:
+     environment: crates-io
+     steps:
+       - uses: actions/checkout@<sha>
+       - run: cargo publish
+         env:
+           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+GitHub then withholds the secret from a run on any other ref, so the hook does not check such a job.
+The environment must be named literally, not by an expression.
+A repository or organisation secret of the same name would still reach the job from any ref,
+so the key must exist only in the environment.
+
 The ``check-ci-credentials`` pre-commit hook checks this, and three more rules:
 a token is minted with ``actions/mint-token``, never with ``actions/create-github-app-token`` itself;
 a reader mint names its ``repositories``;
