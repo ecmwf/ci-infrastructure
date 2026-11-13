@@ -259,3 +259,46 @@ from a sparse checkout of ``.github`` and ``.ci`` into a directory of its own, r
 That is a fork's code under ``pull_request_target``, approved by then; it is only parsed, never run or imported.
 A failure there is titled ``Workflow check``, never ``CI approval``.
 The gate job then needs ``contents: read`` as well.
+
+Keys in jobs that run code
+--------------------------
+
+A job that checks the repository out, builds, fetches deps, or runs a local action runs code under test:
+a pull request's, or, downstream, the code of an upstream pull request that the job links against.
+Whatever key that job holds, the code can read.
+Only the reader App's key (``CI_READER_APP_*``) and the S3 key (``ARTIFACT_S3_*``, ``AWS_*``, and ``SCCACHE_*``) may sit there;
+an HPC leg, i.e. a job using :action:`build-on-hpc`, may also hold its image pull (``ECCR_PULL_*``) and HPC user (``HPC_CI_*``).
+Any other key belongs in a job without a checkout, e.g. the one that reports or dispatches.
+Only ``schedule``, and ``push`` to ``main``, ``master``, or ``develop`` or of tags, never run code under test.
+
+A job that needs another key anyway, e.g. to publish a release, names a
+`deployment environment <https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments>`__
+whose branch policy admits only the default branch and tags, and holds the key as a secret of that environment:
+
+.. code:: yaml
+
+   publish:
+     environment: crates-io
+     steps:
+       - uses: actions/checkout@<sha>
+       - run: cargo publish
+         env:
+           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+GitHub then withholds the secret from a run on any other ref, so the hook does not check such a job.
+The environment must be named literally, not by an expression.
+A repository or organisation secret of the same name would still reach the job from any ref,
+so the key must exist only in the environment.
+
+The ``check-ci-credentials`` pre-commit hook checks this, and three more rules:
+a token is minted with ``actions/mint-token``, never with ``actions/create-github-app-token`` itself;
+a reader mint names its ``repositories``;
+and no secret is handed to every job, through the workflow's ``env:``, ``toJSON(secrets)``, or ``secrets: inherit`` into another owner's workflow.
+A job it should not check goes under ``credentials:`` in ``.github/ci-approval-allowlist.yml``, with a reason:
+
+.. code:: yaml
+
+   credentials:
+     - workflow: publish-crates.yml
+       jobs: [publish]
+       reason: Runs only on tags; the crates.io token cannot be split from the build.
