@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Mint an App token
+description: >
+  The one way the CI mints a GitHub App token: for one of the CI Apps, on named
+  repositories of this owner, with named permissions, each within what that App
+  may grant. `reader` is read-only and the only App a job that runs repository
+  code may mint. The keys are the secrets CI_<APP>_APP_CLIENT_ID and
+  CI_<APP>_APP_PRIVATE_KEY, e.g. CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY.
+
+inputs:
+  app:
+    description: "'reader', 'dispatcher', 'reporter' or 'synced-pr-links'."
+    required: true
+  client-id:
+    description: "The App's client ID."
+    required: true
+  private-key:
+    description: "The App's private key."
+    required: true
+  repositories:
+    description: 'Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes".'
+    required: true
+  permissions:
+    description: >
+      Comma-, space- or newline-separated `name:level` pairs, e.g. "contents:read actions:read".
+      reader: actions, administration, contents and pull-requests, read only.
+      dispatcher: actions. reporter: checks. synced-pr-links: pull-requests, and contents read.
+    required: true
+
+outputs:
+  token:
+    description: 'The installation token; revoked when the job ends.'
+    value: ${{ steps.mint.outputs.token }}
+  app-slug:
+    description: "The App's slug, e.g. for a commit's bot author."
+    value: ${{ steps.mint.outputs.app-slug }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        OWNER: ${{ github.repository_owner }}
+        REPOSITORIES: ${{ inputs.repositories }}
+        PERMISSIONS: ${{ inputs.permissions }}
+      run: |
+        set -euo pipefail -f
+        fail() { echo "::error title=mint-token::$*"; exit 1; }
+        case "$APP" in
+          reader) allowed="actions:read administration:read contents:read pull-requests:read" ;;
+          dispatcher) allowed="actions:read actions:write" ;;
+          reporter) allowed="checks:read checks:write" ;;
+          synced-pr-links) allowed="contents:read pull-requests:read pull-requests:write" ;;
+          *) fail "app must be reader, dispatcher, reporter or synced-pr-links, not '$APP'" ;;
+        esac
+
+        names=(actions administration checks contents pull-requests)
+        levels=("" "" "" "" "")
+        for pair in $(tr ',' ' ' <<< "$PERMISSIONS"); do
+          [[ " $allowed " == *" $pair "* ]] || fail "$APP may not grant '$pair'; it grants $allowed"
+          for i in "${!names[@]}"; do
+            [ "${names[$i]}" != "${pair%%:*}" ] || levels[i]="${pair#*:}"
+          done
+        done
+        # No permission-* at all would give the token every permission of the App.
+        [ -n "$(printf '%s' "${levels[@]}")" ] || fail "permissions is empty"
+
+        repos=()
+        for repo in $(tr ',' ' ' <<< "$REPOSITORIES"); do
+          case "$repo" in
+            "$OWNER"/*) repo="${repo#"$OWNER"/}" ;;
+            */*) fail "'$repo' is not a repository of $OWNER" ;;
+          esac
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not a repository name"
+          repos+=("$repo")
+        done
+        [ "${#repos[@]}" -gt 0 ] || fail "repositories is empty"
+
+        {
+          for i in "${!names[@]}"; do echo "${names[$i]}=${levels[$i]}"; done
+          echo "repositories=$(IFS=,; echo "${repos[*]}")"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: mint
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ steps.check.outputs.repositories }}
+        permission-actions: ${{ steps.check.outputs.actions }}
+        permission-administration: ${{ steps.check.outputs.administration }}
+        permission-checks: ${{ steps.check.outputs.checks }}
+        permission-contents: ${{ steps.check.outputs.contents }}
+        permission-pull-requests: ${{ steps.check.outputs.pull-requests }}
