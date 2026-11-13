@@ -101,8 +101,10 @@ for repo in "$@"; do
     continue
   fi
 
-  settings='{"allow_auto_merge": true, "delete_branch_on_merge": true, "allow_update_branch": true}'
-  show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
+  settings='{"allow_auto_merge": true, "delete_branch_on_merge": true, "allow_update_branch": true,
+    "allow_merge_commit": true, "allow_squash_merge": true, "allow_rebase_merge": true}'
+  show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch,
+    allow_merge_commit, allow_squash_merge, allow_rebase_merge}')" "$settings"
   call api -X PATCH "repos/$repo" --input - <<< "$settings"
 
   # Before the checks: a repo not yet ready for them still gets its labels.
