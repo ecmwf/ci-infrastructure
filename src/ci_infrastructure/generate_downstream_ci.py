@@ -2154,8 +2154,8 @@ def render_hpc_label_workflow(m: Manifest) -> str | None:
     if not any(mk.execution == EXECUTION_HPC_ATOS for mk in m.matrices.values()):
         return None
     with_: dict[str, str] = {
-        "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-        "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+        "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+        "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
     }
     if m.fork_pull_requests:
         with_["fork-ci-workflow"] = FORK_CI_WORKFLOW
@@ -2205,8 +2205,8 @@ def render_sync_branch_workflow(m: Manifest) -> str:
                     {
                         "uses": "ecmwf/ci-infrastructure/actions/sync-branch-prs@main",
                         "with": {
-                            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-                            "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                            "client-id": "${{ secrets.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
+                            "app-private-key": "${{ secrets.CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY }}",
                         },
                     }
                 ],
@@ -2221,7 +2221,7 @@ def render_retry_nightly_workflow(m: Manifest) -> str:
     doc: dict[str, Any] = {
         "name": "[Nightly] Retry failed CI",
         "on": {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}},
-        "permissions": {},
+        "permissions": {"contents": "read"},
         "jobs": {
             "retry": {
                 "if": (
@@ -2234,8 +2234,8 @@ def render_retry_nightly_workflow(m: Manifest) -> str:
                     {
                         "uses": "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main",
                         "with": {
-                            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-                            "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                            "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                            "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
                         },
                     }
                 ],

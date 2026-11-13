@@ -36,11 +36,11 @@ inputs:
     required: false
     default: ''
   client-id:
-    description: "Client ID of the App that re-runs the job: unlike github.token, its re-run's completion starts the workflows that follow CI. '' re-runs with github.token."
+    description: "Client ID of the dispatcher App, which re-runs the job: unlike github.token, its re-run's completion starts the workflows that follow CI. '' re-runs with github.token."
     required: false
     default: ''
   app-private-key:
-    description: 'Private key of that App.'
+    description: 'Private key of the dispatcher App.'
     required: false
     default: ''
 
@@ -49,11 +49,13 @@ runs:
   steps:
     - id: mint
       if: inputs.client-id != ''
-      uses: actions/create-github-app-token@v3
+      uses: ecmwf/ci-infrastructure/actions/mint-token@main
       with:
+        app: dispatcher
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.app-private-key }}
-        permission-actions: write
+        repositories: ${{ github.event.repository.name }}
+        permissions: actions:write
 
     - id: decide
       shell: bash

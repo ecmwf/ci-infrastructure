@@ -50,6 +50,13 @@ def test_the_dispatcher_may_write_actions(tmp_path: Path) -> None:
     assert got["actions"] == "write"
 
 
+def test_synced_pr_links_may_take_every_installed_repository(tmp_path: Path) -> None:
+    code, out, got = _check(tmp_path, "synced-pr-links", "*", "pull-requests:write")
+    assert code == 0, out
+    assert got["repositories"] == ""
+    assert got["pull-requests"] == "write"
+
+
 @pytest.mark.parametrize(
     ("app", "repositories", "permissions", "message"),
     [
@@ -61,6 +68,9 @@ def test_the_dispatcher_may_write_actions(tmp_path: Path) -> None:
         ("reader", "", "contents:read", "repositories is empty"),
         ("reader", "other/eckit", "contents:read", "not a repository of ecmwf"),
         ("reader", "eck$it", "contents:read", "not a repository name"),
+        ("reader", "*", "contents:read", "only synced-pr-links may take"),
+        ("dispatcher", "*", "actions:write", "only synced-pr-links may take"),
+        ("synced-pr-links", "*", "", "permissions is empty"),
     ],
 )
 def test_anything_else_fails(tmp_path: Path, app: str, repositories: str, permissions: str, message: str) -> None:
