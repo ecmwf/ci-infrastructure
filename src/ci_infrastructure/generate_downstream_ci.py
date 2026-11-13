@@ -634,7 +634,11 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
                 seen.add(key)
                 union_cross.append(r)
 
-    jobs: dict[str, Any] = {"resolve": _resolve_job(m, runnable, union_cross)}
+    repos = upstream_repos(m, {x.repo: x for x in by_pkg.values()})
+    jobs: dict[str, Any] = {
+        _RESOLVE_JOB_ID: _resolve_job(m, runnable, union_cross, repos),
+        REBUILD_JOB_ID: _rebuild_job(repos, [_RESOLVE_JOB_ID]),
+    }
     for kind in runnable:
         jid = job_id(m.package_name, kind)
         jobs[jid] = _kind_job(m, kind, cross_needs_per_kind[kind])
@@ -807,6 +811,60 @@ def _git_read_mint_step(m: Manifest) -> Step:
     }
 
 
+def upstream_repos(m: Manifest, by_repo: Mapping[str, Manifest]) -> list[str]:
+    """`m`'s repo and every repo it depends on, transitively, as far as the fetched manifests tell."""
+    seen: dict[str, None] = {m.repo: None}
+    queue = [d.repo for d in m.deps]
+    while queue:
+        repo = queue.pop()
+        if repo in seen:
+            continue
+        seen[repo] = None
+        if (up := by_repo.get(repo)) is not None:
+            queue += [d.repo for d in up.deps]
+    return sorted(seen)
+
+
+def _reader_mint_step(repos: Sequence[str]) -> Step:
+    """Read-only, on the repos the job resolves: the job checks out code under test."""
+    return {
+        "id": "mint",
+        "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
+        "with": {
+            "app": "reader",
+            "client-id": "${{ secrets.CI_READER_APP_CLIENT_ID }}",
+            "private-key": "${{ secrets.CI_READER_APP_PRIVATE_KEY }}",
+            "repositories": ",".join(r.split("/", 1)[1] for r in repos),
+            "permissions": "contents:read actions:read",
+        },
+    }
+
+
+REBUILD_JOB_ID: Final = "rebuild-producers"
+
+
+def _rebuild_job(repos: Sequence[str], needs: Sequence[str] = ()) -> dict[str, Any]:
+    """Starts the producer rebuilds `resolve` planned, with the dispatcher key in a job without a checkout."""
+    plans = f"needs.{_RESOLVE_JOB_ID}.outputs.dispatch-plans"
+    job: dict[str, Any] = {}
+    if needs:
+        job["needs"] = list(needs)
+    job["if"] = f"${{{{ {plans} != '' && {plans} != '[]' }}}}"
+    job["runs-on"] = PACKAGE_RUNNER
+    job["steps"] = [
+        {
+            "uses": "ecmwf/ci-infrastructure/actions/dispatch-producers@main",
+            "with": {
+                "dispatch-plans": f"${{{{ {plans} }}}}",
+                "repositories": ",".join(r.split("/", 1)[1] for r in repos),
+                "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
+            },
+        }
+    ]
+    return job
+
+
 # An upstream change is tested at its commit, or at the downstream runner's pins;
 # a rebuild request carries the requesting consumer's pin.
 _PIN_CHANGE_UNDER_TEST: Final = (
@@ -815,7 +873,7 @@ _PIN_CHANGE_UNDER_TEST: Final = (
 )
 
 
-def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) -> dict[str, Any]:
+def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef], repos: Sequence[str]) -> dict[str, Any]:
     matrix_arg = ",".join(runnable)
     all_triggers: frozenset[str] = frozenset().union(*(m.matrices[k].triggers for k in runnable))
     cond = _render_kind_filter(cross, all_triggers)
@@ -823,9 +881,13 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
         # The downstream runner resolved this repo already.
         "if": f"({cond}) && !inputs.resolved",
         "runs-on": PACKAGE_RUNNER,
-        "outputs": {"ref": "${{ steps.r.outputs.own-sha }}", "json": "${{ steps.r.outputs.json }}"},
+        "outputs": {
+            "ref": "${{ steps.r.outputs.own-sha }}",
+            "json": "${{ steps.r.outputs.json }}",
+            "dispatch-plans": "${{ steps.r.outputs.dispatch-plans }}",
+        },
         "steps": [
-            _mint_step(),
+            _reader_mint_step(repos),
             {
                 "id": "pick",
                 "uses": "ecmwf/ci-infrastructure/actions/pick-ref@main",
@@ -854,9 +916,7 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef]) 
                     "pin": _PIN_CHANGE_UNDER_TEST,
                     "matrix": matrix_arg,
                     "token": "${{ steps.mint.outputs.token }}",
-                    # Enables dispatching a producer whose artifact is missing.
-                    "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-                    "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                    "rebuild-missing": "true",
                 },
             },
         ],
@@ -1002,9 +1062,10 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     display = f"{m.package_name}/{kind}"
 
     local_needs = [n for n in mk.needs if "/" not in n]
-    needs_list = ["resolve"] + [job_id(m.package_name, n) for n in local_needs]
+    needs_list = [_RESOLVE_JOB_ID, REBUILD_JOB_ID] + [job_id(m.package_name, n) for n in local_needs]
 
-    # `resolve` is skipped when the downstream runner passes `resolved`, so its result is not required.
+    # `resolve` is skipped when the downstream runner passes `resolved`, and `rebuild-producers` when
+    # nothing is missing, so their results are not required.
     # Starts with `!`, so it needs the `${{ }}`.
     cond = (
         "${{ "
@@ -1236,6 +1297,7 @@ def render_orchestrator_workflow(
     levels = _consumer_levels(consumer_deps)
 
     called = [p for p in all_consumers if not _edge_needs_dispatch(m, by_pkg[p])]
+    repos = sorted({r for p in [m.package_name, *called] for r in upstream_repos(by_pkg[p], by_repo)})
     jobs: dict[str, Any] = {
         "validate": _validate_job(),
         _RESOLVE_JOB_ID: _orchestrator_resolve_job(
@@ -1243,8 +1305,10 @@ def render_orchestrator_workflow(
                 (by_pkg[p], consumer_refs[by_pkg[p].repo], levels[p])
                 for p in sorted(called, key=lambda p: (levels[p], p))
             ],
+            repos,
             lane=lane,
         ),
+        REBUILD_JOB_ID: _rebuild_job(repos, [_RESOLVE_JOB_ID]),
         "report-start": _report_start_job(lane),
         "report-ci-failure": _report_ci_failure_job(lane),
     }
@@ -1646,7 +1710,9 @@ _RESOLVE_ENV: Final = {
 }
 
 
-def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *, lane: Execution) -> dict[str, Any]:
+def _orchestrator_resolve_job(
+    consumers: Sequence[tuple[Manifest, str, int]], repos: Sequence[str], *, lane: Execution
+) -> dict[str, Any]:
     """Every called consumer resolved once, upstream first, against one set of commits.
 
     The pins start from the commits the upstream's CI resolved (its `resolved-pins` artifact), and each
@@ -1656,7 +1722,7 @@ def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *,
     Dispatched consumers get the pins only.
     """
     steps: list[Step] = [
-        _mint_step(),
+        _reader_mint_step(repos),
         {
             "name": "Pin the commits the upstream's CI resolved",
             "env": {
@@ -1709,8 +1775,7 @@ def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *,
                     "expected-artifacts": "${{ env.EXPECTED }}",
                     "matrix": ",".join(_runnable_kinds(cm, lane)),
                     "token": "${{ steps.mint.outputs.token }}",
-                    "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-                    "app-private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
+                    "rebuild-missing": "true",
                 },
             },
             {
@@ -1731,6 +1796,21 @@ def _orchestrator_resolve_job(consumers: Sequence[tuple[Manifest, str, int]], *,
         outputs[f"{seg}-ref"] = f"${{{{ steps.r-{seg}.outcome == 'success' && steps.r-{seg}.outputs.own-sha || '' }}}}"
     steps.append({"id": "pins", "run": 'echo "pins=${PINS}" >> "$GITHUB_OUTPUT"'})
     outputs["pins"] = "${{ steps.pins.outputs.pins }}"
+    plan_env = {
+        f"PLANS_{n}": f"${{{{ steps.r-{_id_segment(cm.package_name)}.outputs.dispatch-plans || '[]' }}}}"
+        for n, (cm, _, _) in enumerate(consumers)
+    }
+    steps.append(
+        {
+            "id": "plans",
+            "env": plan_env,
+            "run": (
+                "plans=$(printf '%s\\n' " + " ".join(f'"${{{k}}}"' for k in plan_env) + " | jq -cs 'add // []')\n"
+                'echo "dispatch-plans=${plans}" >> "$GITHUB_OUTPUT"'
+            ),
+        }
+    )
+    outputs["dispatch-plans"] = "${{ steps.plans.outputs.dispatch-plans }}"
     return {
         "if": _SUCCESS_GATE,
         "needs": ["validate"],
@@ -1762,9 +1842,12 @@ def _orchestrator_job(
     lane: Execution,
 ) -> dict[str, Any]:
     seg = _id_segment(cpkg)
+    # rebuild-producers is skipped when nothing is missing; everything else must have succeeded.
+    succeeded = " && ".join(f"needs['{j}'].result == 'success'" for j in ["validate", _RESOLVE_JOB_ID, *dep_job_ids])
     return {
         "name": cpkg,
-        "needs": ["validate", _RESOLVE_JOB_ID, *dep_job_ids],
+        "needs": ["validate", _RESOLVE_JOB_ID, REBUILD_JOB_ID, *dep_job_ids],
+        "if": f"${{{{ !cancelled() && !failure() && {succeeded} }}}}",
         "uses": f"{crepo}/.github/workflows/cross-repo-trigger{lane_suffix(lane)}.yml@{cref}",
         "with": {
             **_consumer_inputs(cref, from_jobs),

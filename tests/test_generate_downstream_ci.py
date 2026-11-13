@@ -775,7 +775,7 @@ def test_workflow_mints_app_token_per_job(tmp_path: Path) -> None:
     """Masked outputs are redacted across needs, so each job mints its own token."""
     _make_chain_abc(tmp_path)
     yaml = _consumer(tmp_path, "c")
-    assert yaml.count("actions/create-github-app-token@v3") >= 2
+    assert yaml.count("actions/create-github-app-token@v3") + yaml.count("actions/mint-token@main") >= 2
     assert "${{ steps.mint.outputs.token }}" in yaml
     assert "needs.resolve.outputs.app-token" not in yaml
 
@@ -788,7 +788,7 @@ def test_build_leg_token_is_scoped_and_not_left_for_the_job_script(tmp_path: Pat
         for step in steps:
             if step.get("uses", "").startswith("actions/checkout@"):
                 assert step["with"]["persist-credentials"] is False, jid
-        if jid == "resolve":
+        if jid in ("resolve", "rebuild-producers"):
             continue
         [mint] = [s for s in steps if s.get("id") == "mint"]
         assert {k: v for k, v in mint["with"].items() if k.startswith("permission-")} == {
@@ -806,8 +806,6 @@ def test_workflow_uses_pick_ref(tmp_path: Path) -> None:
     assert "ref: ${{ inputs.resolved-ref || needs.resolve.outputs.ref }}" in yaml
     # Under workflow_call github.repository is the caller's, so both checkouts pin it.
     assert yaml.count("repository: org/c") == 2
-    assert "client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}" in yaml
-    assert "app-private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}" in yaml
 
 
 def test_orchestrator_basic(tmp_path: Path) -> None:
@@ -1169,6 +1167,7 @@ def test_orchestrator_emits_one_job_per_consumer_with_all_originator_kinds(tmp_p
         "ci-approval",
         "context",
         "label-gate",
+        "rebuild-producers",
         "report-ci-failure",
         "report-result",
         "report-start",
@@ -1288,14 +1287,30 @@ def test_orchestrator_orders_per_consumer(tmp_path: Path) -> None:
         "ci-approval",
         "context",
         "label-gate",
+        "rebuild-producers",
         "report-ci-failure",
         "report-result",
         "report-start",
         "resolve",
         "validate",
     ]
-    assert doc["jobs"]["b"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "resolve"]
-    assert doc["jobs"]["c"]["needs"] == ["ci-approval", "context", "label-gate", "validate", "resolve", "b"]
+    assert doc["jobs"]["b"]["needs"] == [
+        "ci-approval",
+        "context",
+        "label-gate",
+        "validate",
+        "resolve",
+        "rebuild-producers",
+    ]
+    assert doc["jobs"]["c"]["needs"] == [
+        "ci-approval",
+        "context",
+        "label-gate",
+        "validate",
+        "resolve",
+        "rebuild-producers",
+        "b",
+    ]
     assert json.loads(doc["jobs"]["b"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert json.loads(doc["jobs"]["c"]["with"]["from-jobs"]) == ["a/build", "a/build-hpc"]
     assert _render_orch(tmp_path, EXECUTION_HPC_ATOS) is None
@@ -2555,8 +2570,12 @@ def test_consumer_takes_the_downstream_runners_resolve_or_resolves_itself(tmp_pa
         assert {"resolved", "resolved-ref", "pin"} <= set(doc[True][trigger]["inputs"])
     resolve, test = doc["jobs"]["resolve"], doc["jobs"]["b__test"]
     assert resolve["if"].endswith(" && !inputs.resolved")
-    assert resolve["outputs"] == {"ref": "${{ steps.r.outputs.own-sha }}", "json": "${{ steps.r.outputs.json }}"}
-    assert test["needs"] == ["resolve", "b__build"]
+    assert resolve["outputs"] == {
+        "ref": "${{ steps.r.outputs.own-sha }}",
+        "json": "${{ steps.r.outputs.json }}",
+        "dispatch-plans": "${{ steps.r.outputs.dispatch-plans }}",
+    }
+    assert test["needs"] == ["resolve", "rebuild-producers", "b__build"]
     assert test["if"].startswith("${{ !failure() && !cancelled() && (")
     assert test["if"].endswith(" && needs.b__build.result == 'success' }}")
     assert test["strategy"]["matrix"] == "${{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['test'] }}"
@@ -2601,3 +2620,37 @@ def test_downstream_pins_start_from_the_commits_the_upstream_ci_resolved(
     }
     subprocess.run(["bash", "-c", _START_PINS_SCRIPT], env=env, check=True)
     assert env_file.read_text().splitlines() == [f"PINS={expected}", "EXPECTED="]
+
+
+def test_resolve_holds_the_reader_key_and_the_dispatcher_key_sits_in_its_own_job(tmp_path: Path) -> None:
+    _make_chain_abc(tmp_path)
+    jobs = yaml.safe_load(_consumer(tmp_path, "c"))["jobs"]
+    [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
+    assert mint["uses"] == "ecmwf/ci-infrastructure/actions/mint-token@main"
+    assert mint["with"]["app"] == "reader"
+    assert mint["with"]["repositories"] == "a,b,c"
+    [r] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "r"]
+    assert r["with"]["rebuild-missing"] == "true"
+    assert "client-id" not in r["with"]
+    rebuild = jobs["rebuild-producers"]
+    assert rebuild["needs"] == ["resolve"]
+    assert not any("checkout" in s.get("uses", "") for s in rebuild["steps"])
+    [step] = rebuild["steps"]
+    assert step["uses"] == "ecmwf/ci-infrastructure/actions/dispatch-producers@main"
+    assert step["with"]["repositories"] == "a,b,c"
+    assert step["with"]["client-id"] == "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}"
+
+
+def test_orchestrator_merges_the_plans_and_called_consumers_wait_for_the_rebuilds(tmp_path: Path) -> None:
+    _make_chain_abc(tmp_path)
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
+    assert mint["with"]["app"] == "reader"
+    assert mint["with"]["repositories"] == "a,b,c"
+    [plans] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "plans"]
+    assert "jq -cs 'add // []'" in plans["run"]
+    assert jobs["resolve"]["outputs"]["dispatch-plans"] == "${{ steps.plans.outputs.dispatch-plans }}"
+    assert "rebuild-producers" in jobs["c"]["needs"]
+    assert "!cancelled() && !failure()" in jobs["c"]["if"]
+    assert "needs['b'].result == 'success'" in jobs["c"]["if"]
+    assert "needs['label-gate'].outputs.run == 'true'" in jobs["c"]["if"]
