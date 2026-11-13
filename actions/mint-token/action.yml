@@ -21,7 +21,9 @@ inputs:
     description: "The App's private key."
     required: true
   repositories:
-    description: 'Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes".'
+    description: >
+      Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes".
+      synced-pr-links alone may take '*': every repository it is installed on, as it walks the manifest graph.
     required: true
   permissions:
     description: >
@@ -71,6 +73,12 @@ runs:
         [ -n "$(printf '%s' "${levels[@]}")" ] || fail "permissions is empty"
 
         repos=()
+        if [ "$(tr -d ' ,\n' <<< "$REPOSITORIES")" = "*" ]; then
+          [ "$APP" = synced-pr-links ] || fail "only synced-pr-links may take repositories '*'"
+          for i in "${!names[@]}"; do echo "${names[$i]}=${levels[$i]}"; done >> "$GITHUB_OUTPUT"
+          echo "repositories=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         for repo in $(tr ',' ' ' <<< "$REPOSITORIES"); do
           case "$repo" in
             "$OWNER"/*) repo="${repo#"$OWNER"/}" ;;
