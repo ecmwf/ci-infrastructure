@@ -13,6 +13,16 @@
   language: python
   files: ^\.github/workflows/.*\.ya?ml$
 
+- id: check-ci-credentials
+  name: keep keys beyond the reader App's out of jobs that run code under test
+  description: >
+    Fails a job that runs repository code and holds a key other than the reader App's or the S3 key,
+    a token minted without actions/mint-token, a reader mint without repositories, and secrets handed
+    to every job. Exemptions go under `credentials:` in .github/ci-approval-allowlist.yml.
+  entry: ci-infrastructure-check-ci-credentials
+  language: python
+  files: ^\.github/workflows/.*\.ya?ml$
+
 - id: check-ci-result
   name: require the ci-result job in ci.yml
   description: >
