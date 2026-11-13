@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dispatch producer rebuilds
+description: >
+  Start the rebuilds actions/resolve-deps planned (its dispatch-plans output, with
+  rebuild-missing set), with the dispatcher App. Run it in its own job between
+  resolve and the build legs, one that checks nothing out: the dispatcher key
+  must not sit beside the code under test. Every plan is checked again, as it
+  comes from a job that saw that code.
+
+inputs:
+  dispatch-plans:
+    description: "resolve-deps' dispatch-plans output; '' or '[]' dispatches nothing."
+    required: true
+  repositories:
+    description: 'Comma- or space-separated repositories a plan may name: the upstream of the resolved repos.'
+    required: true
+  client-id:
+    description: 'Client ID of the dispatcher App.'
+    required: true
+  app-private-key:
+    description: 'Private key of the dispatcher App (PEM).'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+
+    - id: check
+      shell: bash
+      env:
+        DISPATCH_PLANS: ${{ inputs.dispatch-plans }}
+        REPOSITORIES: ${{ inputs.repositories }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.dispatch_producers --repositories "$REPOSITORIES" --check
+
+    - id: token
+      if: steps.check.outputs.repositories != ''
+      uses: ecmwf/ci-infrastructure/actions/mint-token@main
+      with:
+        app: dispatcher
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        repositories: ${{ steps.check.outputs.repositories }}
+        permissions: actions:write
+
+    - if: steps.check.outputs.repositories != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+        DISPATCH_PLANS: ${{ inputs.dispatch-plans }}
+        REPOSITORIES: ${{ inputs.repositories }}
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.dispatch_producers --repositories "$REPOSITORIES"

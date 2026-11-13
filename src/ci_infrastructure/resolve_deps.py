@@ -26,6 +26,7 @@ Outputs (to $GITHUB_OUTPUT, or stdout)::
                                           deps are then one `unresolved` entry, on which fetch-deps fails
 
     json=<JSON: all blocks keyed by matrix name>
+    dispatch-plans=<JSON: the producers to rebuild, for dispatch_producers; [] for none>
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import secrets
 import sys
 import time
 import tomllib
@@ -53,7 +53,6 @@ from ._github_api import (
     CiRun,
     Execution,
     ManifestSchemaError,
-    _gh,
     compute_deps_hash8,
     compute_platform_slug,
     fetch_manifests_layer,
@@ -479,98 +478,20 @@ def is_normal_ref(
     return ref == spec.ref
 
 
-def dispatch_producer_workflow(
-    *,
-    plan: DispatchPlan,
-    dispatcher_repo: str,
-    dispatcher_sha: str,
-    branch: str,
-    fallback_ref: str,
-    pin: str,
-    token: str,
-) -> None:
-    """Dispatch the producer's lane workflow with rebuild-request, then wait ≤60s for its run to appear.
-
-    Without the wait, fetch_deps could see no run yet and bail instead of polling. `pin` is passed on:
-    a producer between the pinned repo and this consumer must build against the pinned commit, or it
-    publishes under another deps hash than the one this run waits for.
-    """
-    dispatch_id = (
-        f"resolve-{os.environ.get('GITHUB_RUN_ID', '0')}-"
-        f"{os.environ.get('GITHUB_RUN_ATTEMPT', '0')}-{secrets.token_hex(4)}"
-    )
-    workflow_file = f"cross-repo-trigger{lane_suffix(plan.lane)}.yml"
-    cmd = [
-        "gh",
-        "workflow",
-        "run",
-        workflow_file,
-        "--repo",
-        plan.repo,
-        "--ref",
-        plan.ref,
-        "-f",
-        f"dispatch-id={dispatch_id}",
-        "-f",
-        f"from-repo={dispatcher_repo}",
-        "-f",
-        f"from-sha={dispatcher_sha}",
-        "-f",
-        "rebuild-request=true",
-        "-f",
-        f"branch={branch}",
-        "-f",
-        f"fallback-ref={fallback_ref}",
-    ]
-    rc, _, stderr = _gh([*cmd, "-f", f"pin={pin}"] if pin else cmd, token)
-    if rc != 0 and pin and "Unexpected inputs" in stderr:
-        print(
-            f"::warning::{workflow_file} in {plan.repo} predates the `pin` input; rebuilding without "
-            f"{pin}, so it may publish under another deps hash. Regenerate its downstream-CI workflows."
-        )
-        rc, _, stderr = _gh(cmd, token)
-    if rc != 0:
-        raise ResolveError(
-            f"Failed to dispatch {workflow_file} in {plan.repo}@{plan.ref} "
-            f"(dispatcher {dispatcher_repo}@{dispatcher_sha[:8]}): {stderr.strip()}"
-        )
-
-    print(
-        f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.ref} (sha={plan.sha[:8]}, "
-        f"lane={plan.lane}): its artifact was missing, so it will recompile. Downstream build jobs "
-        "will WAIT for it to finish."
-    )
-    print(
-        f"  dispatched {workflow_file} in {plan.repo}@{plan.ref} (sha={plan.sha[:8]}, "
-        f"dispatch-id={dispatch_id}); "
-        "waiting for run to appear"
-    )
-    _await_run(plan, token)
-
-
-def rerun_producer_ci(*, plan: DispatchPlan, token: str) -> None:
-    """Re-run the commit's own CI run, then wait ≤60s for it to show as in flight."""
-    rc, _, stderr = _gh(["gh", "api", "-X", "POST", f"repos/{plan.repo}/actions/runs/{plan.rerun_id}/rerun"], token)
-    if rc != 0 and not probe_workflow_runs(plan.repo, plan.sha, token, lane=plan.lane).in_flight:
-        raise ResolveError(f"Failed to re-run CI run {plan.rerun_id} of {plan.repo}@{plan.sha[:8]}: {stderr.strip()}")
-    print(
-        f"::notice::Triggering REBUILD of upstream {plan.repo}@{plan.sha[:8]} by re-running its CI "
-        f"(run {plan.rerun_id}): its artifact was missing. Downstream build jobs will WAIT for it to finish."
-    )
-    _await_run(plan, token)
-
-
-def _await_run(plan: DispatchPlan, token: str) -> None:
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        if probe_workflow_runs(plan.repo, plan.sha, token, lane=plan.lane).in_flight:
-            print(f"  {plan.repo}@{plan.sha[:8]} run is now visible; resolve job exiting")
-            return
-        time.sleep(2)
-    print(
-        f"::warning::Dispatched run for {plan.repo}@{plan.sha[:8]} did not appear within 60s. "
-        "fetch_deps will fail to find it if visibility doesn't catch up."
-    )
+def plan_record(plan: DispatchPlan, *, from_sha: str, branch: str, pin: str) -> dict[str, object]:
+    """What dispatch_producers needs to start `plan`'s rebuild; it checks every field again."""
+    record: dict[str, object] = {
+        "repo": plan.repo,
+        "ref": plan.ref,
+        "sha": plan.sha,
+        "lane": plan.lane,
+        "from-sha": from_sha,
+        "branch": branch,
+        "pin": pin,
+    }
+    if plan.rerun_id is not None:
+        record["rerun-id"] = plan.rerun_id
+    return record
 
 
 def make_artifact_name(
@@ -692,8 +613,8 @@ def _classify_orphan_pin(
             f"dep '{spec.package}' from {spec.repo}@{ref} resolved to {sha}, "
             f"but no artifact named '{artifact_name}' is in the producer's store "
             "and no producer CI is in flight for that commit. The pin is orphaned. "
-            "Pass client-id and app-private-key to actions/resolve-deps to enable "
-            "auto-recovery via consumer-driven dispatch.",
+            "Set rebuild-missing on actions/resolve-deps, and run actions/dispatch-producers "
+            "on its dispatch-plans, to rebuild it.",
         )
 
     if producer_manifest is not None:
@@ -1530,6 +1451,12 @@ def bfs_load_manifests(
     default="",
     help="Space-separated artifacts of other repos that an earlier job of this run publishes.",
 )
+@click.option(
+    "--rebuild-missing",
+    "rebuild_missing",
+    is_flag=True,
+    help="Plan a rebuild of a producer whose artifact is missing (output dispatch-plans) instead of failing.",
+)
 def main(
     manifest: str,
     current_branch: str,
@@ -1538,9 +1465,19 @@ def main(
     upstream_manifest_path: str,
     pin: str,
     expected_artifacts: str,
+    rebuild_missing: bool,
 ) -> None:
     try:
-        _run(manifest, current_branch, matrix, self_repo, upstream_manifest_path, pin, expected_artifacts)
+        _run(
+            manifest,
+            current_branch,
+            matrix,
+            self_repo,
+            upstream_manifest_path,
+            pin,
+            expected_artifacts,
+            rebuild_missing,
+        )
     except (ResolveError, ValueError) as e:
         raise CIError(str(e)) from e
 
@@ -1553,6 +1490,7 @@ def _run(
     upstream_manifest_path: str,
     pin: str = "",
     expected_artifacts: str = "",
+    rebuild_missing: bool = False,
 ) -> None:
     if not os.path.exists(manifest):
         raise ResolveError(f"Manifest not found: {manifest}")
@@ -1600,9 +1538,8 @@ def _run(
     stale = StaleFallback(token) if allow_stale else None
     run_state_cache: dict[tuple[Repo, Sha, Execution], bool] = {}
 
-    # Without an App token from resolve-deps, orphan pins hard-fail.
-    dispatch_token = os.environ.get("DISPATCH_TOKEN", "").strip()
-    can_dispatch = bool(dispatch_token)
+    # Without rebuild_missing, orphan pins hard-fail.
+    can_dispatch = rebuild_missing
     dispatch_plans: dict[tuple[Repo, Ref, Execution], DispatchPlan] = {}
 
     matrix_names = [m.strip() for m in matrix.split(",") if m.strip()]
@@ -1711,38 +1648,21 @@ def _run(
         print(f"Dep trees not recorded beside the artifacts: {e}")
     else:
         print(f"Recorded the dep trees of {written} artifact(s) beside them.")
-    # After all legs, so a producer flagged by several legs is dispatched once.
-    if dispatch_plans:
-        dispatcher_repo = os.environ.get("GITHUB_REPOSITORY", "")
-        branch = current_branch or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME") or "main"
+    # After all legs, so a producer flagged by several legs is planned once.
+    branch = current_branch or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME") or "main"
+    plans_out = [plan_record(p, from_sha=own_sha, branch=branch, pin=pin) for p in dispatch_plans.values()]
+    if plans_out:
         rebuild_repos = ", ".join(sorted(p.repo for p in dispatch_plans.values()))
         print(
             f"::notice::{len(dispatch_plans)} upstream package(s) need a rebuild before this repo can "
-            f"build: {rebuild_repos}. Dispatching their CI now; this run's build jobs will wait for them."
+            f"build: {rebuild_repos}. dispatch-producers starts their CI; the build jobs will wait for them."
         )
-        rerun: set[int] = set()
-        for plan in dispatch_plans.values():
-            if plan.rerun_id is not None:
-                # Both lanes of one commit share its CI run.
-                if plan.rerun_id not in rerun:
-                    rerun.add(plan.rerun_id)
-                    rerun_producer_ci(plan=plan, token=dispatch_token)
-                continue
-            dispatch_producer_workflow(
-                plan=plan,
-                dispatcher_repo=dispatcher_repo,
-                dispatcher_sha=str(own_sha),
-                branch=branch,
-                fallback_ref=str(plan.ref),
-                pin=pin,
-                token=dispatch_token,
-            )
 
     t_dispatch = time.monotonic()
     print(
         f"Timing: manifests {t_manifests - t_start:.1f}s ({len(manifest_cache) - 1} upstream), "
         f"legs {t_legs - t_manifests:.1f}s ({artifact_index.listings} S3 listings, "
-        f"{len(run_state_cache)} run probes), dispatch {t_dispatch - t_legs:.1f}s ({len(dispatch_plans)} plans)"
+        f"{len(run_state_cache)} run probes), planning {t_dispatch - t_legs:.1f}s ({len(dispatch_plans)} plans)"
     )
 
     outputs: dict[str, str] = {
@@ -1752,6 +1672,7 @@ def _run(
     outputs["own-sha"] = own_sha
     outputs["pins"] = format_pins(_used_pins(pins, own_repo, own_sha, matrices_out))
     outputs["artifacts"] = " ".join(sorted(_published_artifacts(local_manifest, matrices_out)))
+    outputs["dispatch-plans"] = json.dumps(plans_out, separators=(",", ":"))
     write_outputs(outputs)
 
     print(

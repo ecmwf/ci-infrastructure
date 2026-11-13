@@ -85,6 +85,7 @@ ghactions_groups = [
         [
             "resolve-dispatch-context",
             "dispatch-and-wait",
+            "dispatch-producers",
             "report-check-run",
             "validate-generated-workflows",
             "sync-branch-prs",
