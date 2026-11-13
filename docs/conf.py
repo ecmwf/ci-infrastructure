@@ -106,6 +106,7 @@ ghactions_groups = [
             "check-pr-declaration",
         ],
     ),
+    ("Tokens", "Mint short-lived App tokens; no workflow calls create-github-app-token itself.", ["mint-token"]),
     ("Logging", "Say what a job runs in and what it built against.", ["announce-image", "print-dep-table"]),
     (
         "Internals",
