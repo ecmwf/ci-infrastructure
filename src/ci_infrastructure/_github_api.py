@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
 
+from . import app_token
 from ._errors import CIError
 
 JSON: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
@@ -56,8 +57,11 @@ def _alias(s: str) -> str:
     return _ALIAS_SAFE_RE.sub("_", s)
 
 
-def _gh(args: Sequence[str], token: str | None, input_text: str | None = None) -> tuple[int, str, str]:
-    """Run `gh`; a token overrides GH_TOKEN, None leaves gh's own auth fallback."""
+#: Expired token -> its replacement, as callers keep passing the token they started with.
+_renewed: dict[str, str] = {}
+
+
+def _run_gh(args: Sequence[str], token: str | None, input_text: str | None) -> tuple[int, str, str]:
     env = {**os.environ}
     if token:
         env["GH_TOKEN"] = token
@@ -69,6 +73,27 @@ def _gh(args: Sequence[str], token: str | None, input_text: str | None = None) -
         env=env,
     )
     return result.returncode, result.stdout, result.stderr
+
+
+def _gh(args: Sequence[str], token: str | None, input_text: str | None = None) -> tuple[int, str, str]:
+    """Run `gh`; a token overrides GH_TOKEN, None leaves gh's own auth fallback.
+
+    An expired token is replaced by a new App token, where the step has the App's credentials.
+    """
+    if token:
+        token = _renewed.get(token, token)
+    rc, out, err = _run_gh(args, token, input_text)
+    if rc != 0 and "HTTP 401" in err:
+        fresh = app_token.mint_from_env()
+        if fresh:
+            print("::notice::The GitHub token has expired; continuing with a new App token.", file=sys.stderr)
+            for old in [k for k, v in _renewed.items() if v == token]:
+                _renewed[old] = fresh
+            if token:
+                _renewed[token] = fresh
+            os.environ["GH_TOKEN"] = fresh
+            rc, out, err = _run_gh(args, fresh, input_text)
+    return rc, out, err
 
 
 def gh_api_rest(path: str, token: str | None) -> JSON | None:
