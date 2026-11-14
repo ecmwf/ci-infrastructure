@@ -104,3 +104,14 @@ def test_unknown_leg_lists_the_titles(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["--manifest", str(_repo(tmp_path)), "--leg", "build (nope)"])
     assert result.exit_code != 0
     assert "pkg/build (ubuntu-24.04, Debug)" in result.output
+
+
+def test_named_leg_goes_by_its_name(tmp_path: Path) -> None:
+    manifest = _repo(tmp_path)
+    text = manifest.read_text().replace('platform = "hpc-atos-gnu"', 'name = "atos-gcc"\nplatform = "hpc-atos-gnu"')
+    manifest.write_text(text)
+    assert _run("--manifest", str(manifest), "--list").splitlines()[-1] == "atos-gcc"
+    by_name = _run("--manifest", str(manifest), "--leg", "atos-gcc")
+    assert by_name.splitlines()[1].startswith("#SBATCH")
+    assert "# atos-gcc" in by_name.splitlines()
+    assert by_name == _run("--manifest", str(manifest), "--leg", "build-hpc (hpc-atos-gnu, g++)")
