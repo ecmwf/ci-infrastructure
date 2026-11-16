@@ -7,7 +7,8 @@ description: >
   For a workflow_run on a failed scheduled run: re-run its failed jobs, unless
   its branch has moved on since. The calling workflow limits the attempts. The
   re-run is started with an App token, so its completion triggers workflow_run
-  again, unlike one started with the job's own token.
+  again, unlike one started with the job's own token. The branch head is read
+  with github.token, so the calling workflow grants `contents: read`.
 
 inputs:
   client-id:
@@ -29,7 +30,6 @@ runs:
         repositories: ${{ github.event.repository.name }}
         permissions: actions:write
 
-    # The branch head with github.token (contents: read): the dispatcher reads no contents.
     - shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

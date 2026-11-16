@@ -5,10 +5,12 @@
 name: Mint an App token
 description: >
   The one way the CI mints a GitHub App token: for one of the CI Apps, on named
-  repositories of this owner, with named permissions, each within what that App
-  may grant. `reader` is read-only and the only App a job that runs repository
-  code may mint. The keys are the secrets CI_<APP>_APP_CLIENT_ID and
-  CI_<APP>_APP_PRIVATE_KEY, e.g. CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY.
+  repositories of this owner (synced-pr-links also on every repository it is
+  installed on), with named permissions, each within what that App may grant.
+  `reader` is read-only and the only App a job that runs repository code may
+  mint. The keys are the secrets CI_<APP>_APP_CLIENT_ID and
+  CI_<APP>_APP_PRIVATE_KEY, e.g. CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY; the job
+  fails unless the key's App is ecmwf-ci-<app>.
 
 inputs:
   app:
@@ -23,7 +25,7 @@ inputs:
   repositories:
     description: >
       Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes".
-      synced-pr-links alone may take '*': every repository it is installed on, as it walks the manifest graph.
+      synced-pr-links alone may take '*': every repository it is installed on.
     required: true
   permissions:
     description: >
@@ -73,25 +75,24 @@ runs:
         [ -n "$(printf '%s' "${levels[@]}")" ] || fail "permissions is empty"
 
         repos=()
-        if [ "$(tr -d ' ,\n' <<< "$REPOSITORIES")" = "*" ]; then
+        if [ "${REPOSITORIES//[[:space:]]/}" = "*" ]; then
+          # Empty `repositories` with `owner` mints on the whole installation.
           [ "$APP" = synced-pr-links ] || fail "only synced-pr-links may take repositories '*'"
-          for i in "${!names[@]}"; do echo "${names[$i]}=${levels[$i]}"; done >> "$GITHUB_OUTPUT"
-          echo "repositories=" >> "$GITHUB_OUTPUT"
-          exit 0
+        else
+          for repo in $(tr ',' ' ' <<< "$REPOSITORIES"); do
+            case "$repo" in
+              "$OWNER"/*) repo="${repo#"$OWNER"/}" ;;
+              */*) fail "'$repo' is not a repository of $OWNER" ;;
+            esac
+            [[ "$repo" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not a repository name"
+            repos+=("$repo")
+          done
+          [ "${#repos[@]}" -gt 0 ] || fail "repositories is empty"
         fi
-        for repo in $(tr ',' ' ' <<< "$REPOSITORIES"); do
-          case "$repo" in
-            "$OWNER"/*) repo="${repo#"$OWNER"/}" ;;
-            */*) fail "'$repo' is not a repository of $OWNER" ;;
-          esac
-          [[ "$repo" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not a repository name"
-          repos+=("$repo")
-        done
-        [ "${#repos[@]}" -gt 0 ] || fail "repositories is empty"
 
         {
           for i in "${!names[@]}"; do echo "${names[$i]}=${levels[$i]}"; done
-          echo "repositories=$(IFS=,; echo "${repos[*]}")"
+          echo "repositories=$(IFS=,; echo "${repos[*]-}")"
         } >> "$GITHUB_OUTPUT"
 
     - id: mint
@@ -106,3 +107,13 @@ runs:
         permission-checks: ${{ steps.check.outputs.checks }}
         permission-contents: ${{ steps.check.outputs.contents }}
         permission-pull-requests: ${{ steps.check.outputs.pull-requests }}
+
+    # `app` is the caller's word; the slug is the key's.
+    - id: slug
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        SLUG: ${{ steps.mint.outputs.app-slug }}
+      run: |
+        set -euo pipefail
+        [ "$SLUG" = "ecmwf-ci-$APP" ] || { echo "::error title=mint-token::app is $APP, but the key is ${SLUG}'s"; exit 1; }

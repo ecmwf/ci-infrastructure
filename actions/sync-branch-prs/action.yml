@@ -7,8 +7,10 @@ description: >
   For a pull request from a sync branch (sync/ or feature/), end the
   description of every open or merged pull request from that branch, across the
   repos reachable through the manifests, with the list of all of them in
-  dependency order. Payload only, so safe under pull_request_target. The App
-  needs pull-requests:write on those repos.
+  dependency order. Payload only, so safe under pull_request_target. The
+  token holds pull-requests:write on every repository the synced-pr-links App
+  is installed on, private ones included: walking the manifests, it cannot name
+  them beforehand, so that installation bounds it.
 
 inputs:
   client-id:

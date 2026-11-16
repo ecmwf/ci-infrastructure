@@ -2358,7 +2358,12 @@ def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytes
             "(startsWith(github.head_ref, 'sync/') || startsWith(github.head_ref, 'feature/')) "
             "&& github.event.pull_request.head.repo.full_name == github.repository"
         )
-        assert [s["uses"] for s in job["steps"]] == ["ecmwf/ci-infrastructure/actions/sync-branch-prs@main"]
+        (step,) = job["steps"]
+        assert step["uses"] == "ecmwf/ci-infrastructure/actions/sync-branch-prs@main"
+        assert step["with"] == {
+            "client-id": "${{ secrets.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
+            "app-private-key": "${{ secrets.CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY }}",
+        }
         assert check_ci_approval.check(wf) == []
 
 
@@ -2419,7 +2424,10 @@ def test_hpc_legs_come_with_the_hpc_label_workflow(tmp_path: Path, monkeypatch: 
     assert "run-hpc-ci" in gate["if"] and "hpc-ci-not-needed" in gate["if"]
     (step,) = gate["steps"]
     assert step["uses"] == "ecmwf/ci-infrastructure/actions/hpc-label-decision@main"
-    assert set(step["with"]) == {"client-id", "app-private-key"}
+    assert step["with"] == {
+        "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+        "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
+    }
     assert check_ci_approval.check(path) == []
 
 
@@ -2431,6 +2439,8 @@ def test_every_repo_retries_its_failed_nightly_twice(tmp_path: Path, monkeypatch
         path = tmp_path / repo / ".github" / "workflows" / "retry-nightly.yml"
         doc = yaml.safe_load(path.read_text())
         assert doc[True] == {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}}
+        # retry-scheduled-run reads the branch head with github.token.
+        assert doc["permissions"] == {"contents": "read"}
         retry = doc["jobs"]["retry"]
         assert retry["if"] == (
             "github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure' "
@@ -2438,6 +2448,10 @@ def test_every_repo_retries_its_failed_nightly_twice(tmp_path: Path, monkeypatch
         )
         (step,) = retry["steps"]
         assert step["uses"] == "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main"
+        assert step["with"] == {
+            "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+            "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
+        }
         assert check_ci_approval.check(path) == []
 
 

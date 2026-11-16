@@ -50,11 +50,31 @@ def test_the_dispatcher_may_write_actions(tmp_path: Path) -> None:
     assert got["actions"] == "write"
 
 
-def test_synced_pr_links_may_take_every_installed_repository(tmp_path: Path) -> None:
-    code, out, got = _check(tmp_path, "synced-pr-links", "*", "pull-requests:write")
+@pytest.mark.parametrize("repositories", ["*", " *\n"])
+def test_synced_pr_links_may_take_every_installed_repository(tmp_path: Path, repositories: str) -> None:
+    code, out, got = _check(tmp_path, "synced-pr-links", repositories, "pull-requests:write")
     assert code == 0, out
     assert got["repositories"] == ""
     assert got["pull-requests"] == "write"
+
+
+def _slug(app: str, slug: str) -> tuple[int, str]:
+    env = {**os.environ, "APP": app, "SLUG": slug}
+    proc = subprocess.run(
+        ["bash", "-c", action_run_body("mint-token", "slug")], env=env, capture_output=True, text=True, check=False
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_the_key_is_the_named_apps() -> None:
+    assert _slug("synced-pr-links", "ecmwf-ci-synced-pr-links")[0] == 0
+
+
+@pytest.mark.parametrize("slug", ["ecmwf-ci-reader", "ci-permissions", ""])
+def test_a_key_of_another_app_fails(slug: str) -> None:
+    code, out = _slug("synced-pr-links", slug)
+    assert code != 0
+    assert "app is synced-pr-links" in out
 
 
 @pytest.mark.parametrize(
@@ -71,6 +91,8 @@ def test_synced_pr_links_may_take_every_installed_repository(tmp_path: Path) -> 
         ("reader", "*", "contents:read", "only synced-pr-links may take"),
         ("dispatcher", "*", "actions:write", "only synced-pr-links may take"),
         ("synced-pr-links", "*", "", "permissions is empty"),
+        ("synced-pr-links", "* eckit", "pull-requests:write", "'*' is not a repository name"),
+        ("synced-pr-links", ",*,", "pull-requests:write", "'*' is not a repository name"),
     ],
 )
 def test_anything_else_fails(tmp_path: Path, app: str, repositories: str, permissions: str, message: str) -> None:
