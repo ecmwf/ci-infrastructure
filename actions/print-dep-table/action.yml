@@ -5,26 +5,20 @@
 name: Print dependency table
 description: >
   Render a Markdown table of the own package and its resolved dependencies,
-  linked to repo and commit, to the step summary: for one leg (`resolved`),
-  or for every leg resolve-deps resolved (`matrices`).
+  linked to repo and commit, to the log and the step summary.
 
 inputs:
   resolved:
     description: >
-      The matrix leg's _resolved block as JSON. Rejected when empty and
-      `matrices` is too, since an undeclared input also arrives empty.
-    required: false
-    default: ''
-  matrices:
-    description: "resolve-deps' `json` output; one table per leg, titled by kind and job name."
-    required: false
-    default: ''
+      The matrix leg's _resolved block as JSON. Rejected when empty, since an
+      undeclared input also arrives empty.
+    required: true
   own-repo:
     description: 'owner/repo of the own package (not in _resolved).'
     required: false
     default: ${{ github.repository }}
   own-source:
-    description: "How this job got the OWN artifact: 'built' (default) or 'artifact' when a cache-gated build skipped."
+    description: "How this job got the OWN artifact: 'built' (default), 'artifact' when a cache-gated build skipped, or '' before such a build."
     required: false
     default: 'built'
   title:
@@ -41,7 +35,6 @@ runs:
       shell: bash
       env:
         RESOLVED_INPUT: ${{ inputs.resolved }}
-        MATRICES_INPUT: ${{ inputs.matrices }}
         OWN_REPO_INPUT: ${{ inputs.own-repo }}
         OWN_SOURCE_INPUT: ${{ inputs.own-source }}
         TITLE_INPUT: ${{ inputs.title }}
@@ -49,7 +42,6 @@ runs:
         set -euo pipefail
         "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.print_dep_table \
           --resolved "$RESOLVED_INPUT" \
-          --matrices "$MATRICES_INPUT" \
           --own-repo "$OWN_REPO_INPUT" \
           --own-source "$OWN_SOURCE_INPUT" \
           --title "$TITLE_INPUT"

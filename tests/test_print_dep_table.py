@@ -159,20 +159,10 @@ def test_resolved_is_vetted_rather_than_rendered_blank(resolved_json: str, match
         print_dep_table.parse_resolved(resolved_json)
 
 
-def test_matrices_print_a_table_for_every_leg() -> None:
-    def leg(job: str) -> dict[str, Any]:
-        return {"_resolved": {**json.loads(_resolved([_dep(name="ecbuild")])), "job-name": job}}
-
-    matrices = {"build": {"include": [leg("gcc"), leg("clang")]}, "test": {"include": [leg("gcc")]}}
-    result = CliRunner().invoke(print_dep_table.main, ["--matrices", json.dumps(matrices)])
+def test_the_table_is_in_the_log_and_the_summary(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    result = CliRunner().invoke(print_dep_table.main, ["--resolved", _resolved([_dep(name="ecbuild")])])
     assert result.exit_code == 0
-    assert [line for line in result.output.splitlines() if line.startswith("## ")] == [
-        "## build (gcc)",
-        "## build (clang)",
-        "## test (gcc)",
-    ]
-
-
-def test_matrices_reject_a_leg_without_resolved() -> None:
-    result = CliRunner().invoke(print_dep_table.main, ["--matrices", json.dumps({"build": {"include": [{}]}})])
-    assert result.exit_code != 0
+    assert "[ecbuild]" in result.output
+    assert "[ecbuild]" in summary.read_text()

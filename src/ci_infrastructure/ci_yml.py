@@ -160,6 +160,12 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
     if hpc:
         fetch["stage-only"] = "true"
     steps.append({"name": "Fetch resolved deps", "id": "deps", "uses": f"{_ACTIONS}/fetch-deps@main", "with": fetch})
+    # Before the build, so a failed or lost build still shows what it built against.
+    table: dict[str, Any] = {"resolved": "${{ toJSON(matrix._resolved) }}"}
+    if hpc:
+        # A cache hit skips the build; only the build step knows.
+        table["own-source"] = ""
+    steps.append({"name": "Print dependency table", "uses": f"{_ACTIONS}/print-dep-table@main", "with": table})
     if hpc:
         steps.append(_hpc_build_step(mk))
         if len(mk.packages) > 1:
@@ -241,11 +247,6 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
         _reader_mint_step(repos),
         _checkout(m),
         {"id": "r", "uses": f"{_ACTIONS}/resolve-deps@main", "with": resolve_with},
-        {
-            "name": "Print dependency tables",
-            "uses": f"{_ACTIONS}/print-dep-table@main",
-            "with": {"matrices": "${{ steps.r.outputs.json }}"},
-        },
     ]
     # With rebuilds to start, the legs' fetch-deps waits instead, once rebuild-producers has started them.
     if runner_waited := [k for k in waited if k in runner_kinds]:

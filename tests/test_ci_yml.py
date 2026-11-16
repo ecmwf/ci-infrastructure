@@ -133,6 +133,8 @@ def test_the_generated_ci_yml_holds_only_the_reader_key_where_code_runs(tmp_path
         dispatch["if"] == "needs.resolve.outputs.dispatch-plans != '' && needs.resolve.outputs.dispatch-plans != '[]'"
     )
     assert "rebuild-producers" not in jobs["ci-result"]["needs"]
+    names = [s.get("name") for s in jobs["build"]["steps"]]
+    assert names.index("Fetch resolved deps") < names.index("Print dependency table") < names.index("Build")
 
 
 def test_a_repo_without_dependencies_rebuilds_and_waits_for_nothing(tmp_path: Path) -> None:
@@ -194,6 +196,10 @@ def test_hpc_kinds_wait_behind_the_hpc_gate(tmp_path: Path) -> None:
     assert jobs["build-hpc"]["if"] == jobs["wait-build-hpc"]["if"] == "needs.hpc-gate.outputs.run == 'true'"
     assert jobs["collect-result-hpc"]["needs"] == ["ci-approval", "hpc-gate", "wait-build-hpc", "build-hpc"]
     assert "build-hpc" not in jobs["ci-result"]["needs"]
+    names = [s.get("name") for s in jobs["build-hpc"]["steps"]]
+    assert names.index("Print dependency table") < names.index("Build on HPC")
+    [table] = [s for s in jobs["build-hpc"]["steps"] if s.get("name") == "Print dependency table"]
+    assert table["with"]["own-source"] == "" and "if" not in table
 
 
 def test_the_package_keys_shape_the_workflow(tmp_path: Path) -> None:
