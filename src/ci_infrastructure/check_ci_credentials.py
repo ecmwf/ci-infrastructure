@@ -13,10 +13,9 @@
     only with an explicit `ref:`), or builds, fetches deps or runs a local action.
     Only `schedule`, and `push` to main, master or develop or of tags, never run code under test;
     workflow_dispatch and workflow_call build against a pull request's artifacts downstream.
-  - R2: a reader mint names its repositories.
-  - R3: a token is minted with actions/mint-token only, never actions/create-github-app-token.
-  - R4: no secret in the workflow's `env:`, no toJSON(secrets), no `secrets: inherit` into a
+  - R2: no secret in the workflow's `env:`, no toJSON(secrets), no `secrets: inherit` into a
     workflow of another owner.
+  - R3: a token is minted with actions/mint-token only, never actions/create-github-app-token.
 
 Secrets are told apart by name; GITHUB_TOKEN is not counted. Exemptions go under `credentials:`
 in .github/ci-approval-allowlist.yml, each with a `reason:`.
@@ -45,7 +44,6 @@ TRUSTED_PUSH_BRANCHES: Final = frozenset({"main", "master", "develop"})
 # Their workflow is the default branch's: a plain checkout gets the base, not the pull request.
 BASE_CHECKOUT_TRIGGERS: Final = frozenset({"pull_request_target", "workflow_run"})
 
-MINT_TOKEN: Final = ("ecmwf/ci-infrastructure/actions/mint-token@", "./actions/mint-token")
 CREATE_APP_TOKEN: Final = "actions/create-github-app-token@"
 CHECKOUT: Final = "actions/checkout@"
 BUILD_ON_HPC: Final = ("ecmwf/ci-infrastructure/actions/build-on-hpc@", "./actions/build-on-hpc")
@@ -156,9 +154,9 @@ def check(workflow: Path) -> list[str]:
 
     exempt, problems = _load_exemptions(workflow)
     if _ALL_SECRETS.search(workflow.read_text(encoding="utf-8")):
-        problems.append(f"{workflow}: R4 toJSON(secrets) hands every secret to whatever reads it")
+        problems.append(f"{workflow}: R2 toJSON(secrets) hands every secret to whatever reads it")
     if leaked := sorted(n for n in _secrets_in(doc.get("env")) if secret_class(n) in ("privileged", "hpc")):
-        problems.append(f"{workflow}: R4 workflow-level `env:` gives every job {', '.join(leaked)}; set it per job")
+        problems.append(f"{workflow}: R2 workflow-level `env:` gives every job {', '.join(leaked)}; set it per job")
 
     triggers = untrusted_triggers(doc, workflow)
     for name, job in sorted(_jobs_of(doc).items()):
@@ -168,27 +166,17 @@ def check(workflow: Path) -> list[str]:
         uses = str(job.get("uses", ""))
         # A callee of this owner is checked in its own repository.
         if uses and not uses.startswith(("./", f"{OWNER}/")) and job.get("secrets") == "inherit":
-            problems.append(f"{where}: R4 `secrets: inherit` into {uses}, which this check cannot see")
+            problems.append(f"{where}: R2 `secrets: inherit` into {uses}, which this check cannot see")
         for step in job.get("steps") or []:
             if not isinstance(step, dict):
                 continue
-            step_uses, with_block = str(step.get("uses", "")), _with(step)
+            step_uses = str(step.get("uses", ""))
             if step_uses.startswith(CREATE_APP_TOKEN):
                 problems.append(f"{where}: R3 mint with actions/mint-token, not {step_uses.split('@')[0]}")
-            if step_uses.startswith(MINT_TOKEN) and with_block.get("app") == "reader":
-                if not str(with_block.get("repositories", "")).strip():
-                    problems.append(f"{where}: R2 a reader mint names its `repositories:`")
         if not triggers or environment(job) or not runs_code(job, triggers):
             continue
         allowed = {"reader", "s3", None} | ({"hpc"} if _uses(job, BUILD_ON_HPC) else set())
         held = sorted(n for n in _secrets_in(job) if secret_class(n) not in allowed)
-        held += sorted(
-            f"the {_with(step).get('app')} App"
-            for step in job.get("steps") or []
-            if isinstance(step, dict)
-            and str(step.get("uses", "")).startswith(MINT_TOKEN)
-            and _with(step).get("app") != "reader"
-        )
         if held:
             problems.append(
                 f"{where}: R1 runs repository code ({', '.join(sorted(triggers))}) and holds {', '.join(held)}; "

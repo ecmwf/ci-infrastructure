@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""mint-token's check step: what each App may grant, and the inputs handed to create-github-app-token."""
+"""mint-token's check step: the inputs handed to create-github-app-token, whichever App the key is."""
 
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ import pytest
 from conftest import action_run_body
 
 
-def _check(tmp_path: Path, app: str, repositories: str, permissions: str) -> tuple[int, str, dict[str, str]]:
+def _check(tmp_path: Path, repositories: str, permissions: str) -> tuple[int, str, dict[str, str]]:
     outputs = tmp_path / "outputs.txt"
     env = {
         **os.environ,
-        "APP": app,
         "OWNER": "ecmwf",
         "REPOSITORIES": repositories,
         "PERMISSIONS": permissions,
@@ -31,11 +30,11 @@ def _check(tmp_path: Path, app: str, repositories: str, permissions: str) -> tup
     return proc.returncode, proc.stdout + proc.stderr, dict(ln.split("=", 1) for ln in lines)
 
 
-def test_a_reader_token_names_its_repositories_and_permissions(tmp_path: Path) -> None:
-    code, out, got = _check(tmp_path, "reader", "eckit, ecmwf/eccodes\nfdb", "contents:read,actions:read")
+def test_a_token_names_its_repositories_and_permissions(tmp_path: Path) -> None:
+    code, out, got = _check(tmp_path, "eckit, ecmwf/eccodes\nfdb", "contents:read,actions:write")
     assert code == 0, out
     assert got == {
-        "actions": "read",
+        "actions": "write",
         "administration": "",
         "checks": "",
         "contents": "read",
@@ -44,27 +43,30 @@ def test_a_reader_token_names_its_repositories_and_permissions(tmp_path: Path) -
     }
 
 
-def test_the_dispatcher_may_write_actions(tmp_path: Path) -> None:
-    code, out, got = _check(tmp_path, "dispatcher", "atlas", "actions:write")
+@pytest.mark.parametrize("repositories", ["*", " *\n"])
+def test_a_star_takes_every_installed_repository(tmp_path: Path, repositories: str) -> None:
+    code, out, got = _check(tmp_path, repositories, "pull-requests:write")
     assert code == 0, out
-    assert got["actions"] == "write"
+    assert got["repositories"] == ""
+    assert got["pull-requests"] == "write"
 
 
 @pytest.mark.parametrize(
-    ("app", "repositories", "permissions", "message"),
+    ("repositories", "permissions", "message"),
     [
-        ("reader", "eckit", "contents:write", "reader may not grant 'contents:write'"),
-        ("reader", "eckit", "statuses:read", "may not grant 'statuses:read'"),
-        ("reporter", "eckit", "actions:write", "reporter may not grant"),
-        ("ci-permissions", "eckit", "contents:read", "app must be"),
-        ("reader", "eckit", "", "permissions is empty"),
-        ("reader", "", "contents:read", "repositories is empty"),
-        ("reader", "other/eckit", "contents:read", "not a repository of ecmwf"),
-        ("reader", "eck$it", "contents:read", "not a repository name"),
+        ("eckit", "statuses:read", "'statuses' is not one of"),
+        ("eckit", "contents:admin", "is not name:read or name:write"),
+        ("eckit", "contents", "is not name:read or name:write"),
+        ("eckit", "", "permissions is empty"),
+        ("", "contents:read", "repositories is empty"),
+        ("other/eckit", "contents:read", "not a repository of ecmwf"),
+        ("eck$it", "contents:read", "not a repository name"),
+        ("* eckit", "pull-requests:write", "'*' is not a repository name"),
+        (",*,", "pull-requests:write", "'*' is not a repository name"),
     ],
 )
-def test_anything_else_fails(tmp_path: Path, app: str, repositories: str, permissions: str, message: str) -> None:
-    code, out, got = _check(tmp_path, app, repositories, permissions)
+def test_anything_else_fails(tmp_path: Path, repositories: str, permissions: str, message: str) -> None:
+    code, out, got = _check(tmp_path, repositories, permissions)
     assert code != 0
     assert message in out
     assert got == {}

@@ -28,16 +28,17 @@ def _job(steps: str, on: str = PR, top: str = "") -> str:
 
 
 def _mint(app: str, extra: str = "          repositories: eckit\n") -> str:
+    key = app.upper().replace("-", "_")
     return (
         "      - uses: ecmwf/ci-infrastructure/actions/mint-token@main\n"
-        f"        with:\n          app: {app}\n"
-        f"          client-id: ${{{{ secrets.CI_{app.upper()}_APP_CLIENT_ID }}}}\n"
-        f"          private-key: ${{{{ secrets.CI_{app.upper()}_APP_PRIVATE_KEY }}}}\n{extra}"
+        "        with:\n"
+        f"          client-id: ${{{{ secrets.CI_{key}_APP_CLIENT_ID }}}}\n"
+        f"          private-key: ${{{{ secrets.CI_{key}_APP_PRIVATE_KEY }}}}\n{extra}"
     )
 
 
 def _rules(problems: list[str]) -> list[str]:
-    return [next(word for word in p.split() if word in ("R1", "R2", "R3", "R4")) for p in problems]
+    return [next(word for word in p.split() if word in ("R1", "R2", "R3")) for p in problems]
 
 
 def test_a_build_leg_may_hold_the_reader_key_and_s3(tmp_path: Path) -> None:
@@ -53,7 +54,7 @@ def test_a_build_leg_may_hold_the_reader_key_and_s3(tmp_path: Path) -> None:
 def test_a_build_leg_must_not_mint_another_app(tmp_path: Path) -> None:
     problems = check(_workflow(tmp_path, _job(_mint("dispatcher") + CHECKOUT)))
     assert _rules(problems) == ["R1"]
-    assert "CI_DISPATCHER_APP_PRIVATE_KEY" in problems[0] and "the dispatcher App" in problems[0]
+    assert "CI_DISPATCHER_APP_PRIVATE_KEY" in problems[0]
 
 
 def test_a_job_without_code_may_hold_any_key(tmp_path: Path) -> None:
@@ -125,10 +126,6 @@ def test_a_secret_named_in_plain_text_is_not_held(tmp_path: Path) -> None:
     assert check(_workflow(tmp_path, _job(steps))) == []
 
 
-def test_reader_mints_name_their_repositories(tmp_path: Path) -> None:
-    assert _rules(check(_workflow(tmp_path, _job(_mint("reader", extra=""))))) == ["R2"]
-
-
 def test_create_github_app_token_is_not_used_directly(tmp_path: Path) -> None:
     steps = "      - uses: actions/create-github-app-token@v3\n"
     assert _rules(check(_workflow(tmp_path, _job(steps, on="on:\n  schedule:\n    - cron: '0 3 * * *'\n")))) == ["R3"]
@@ -138,19 +135,19 @@ def test_workflow_level_env_holds_no_privileged_secret(tmp_path: Path) -> None:
     s3 = "env:\n  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}\n"
     assert check(_workflow(tmp_path, _job(CHECKOUT, top=s3))) == []
     key = "env:\n  TOKEN: ${{ secrets.PYPI_API_TOKEN }}\n"
-    assert _rules(check(_workflow(tmp_path, _job(CHECKOUT, top=key)))) == ["R4"]
+    assert _rules(check(_workflow(tmp_path, _job(CHECKOUT, top=key)))) == ["R2"]
 
 
 def test_no_job_gets_every_secret(tmp_path: Path) -> None:
     steps = "      - run: echo '${{ toJSON(secrets) }}'\n"
-    assert _rules(check(_workflow(tmp_path, _job(steps)))) == ["R4"]
+    assert _rules(check(_workflow(tmp_path, _job(steps)))) == ["R2"]
 
 
 @pytest.mark.parametrize(
     ("uses", "rules"),
     [
         ("ecmwf/eckit/.github/workflows/cross-repo-trigger.yml@develop", []),
-        ("other/repo/.github/workflows/x.yml@v1", ["R4"]),
+        ("other/repo/.github/workflows/x.yml@v1", ["R2"]),
     ],
 )
 def test_secrets_are_inherited_only_within_the_owner(tmp_path: Path, uses: str, rules: list[str]) -> None:
