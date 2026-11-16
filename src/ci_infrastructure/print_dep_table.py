@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render one leg's `_resolved` block (OWN package and deps) as a Markdown table in $GITHUB_STEP_SUMMARY."""
+"""Render a leg's `_resolved` block (OWN package and deps) as a Markdown table, to the log and $GITHUB_STEP_SUMMARY."""
 
 from __future__ import annotations
 
@@ -125,6 +125,14 @@ def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
     return resolved
 
 
+def _table(resolved: Mapping[str, Any], own_repo: str, own_source: str, title: str) -> str:
+    rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
+    # deps are upstream-first; list them nearest-first below the OWN row.
+    rows += [_row_from_dep(dep) for dep in reversed(resolved["deps"]) if isinstance(dep, dict)]
+    show_source = any(row.get("source") for row in rows)
+    return f"## {title}\n\n{_md_table(rows, show_source)}\n"
+
+
 @click.command(help="Print artifact dependency table to step summary.")
 @click.option(
     "--resolved",
@@ -136,25 +144,14 @@ def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
 @click.option("--own-source", default="built", help="How this job got the OWN artifact: built / artifact")
 @click.option("--title", default="Resolved dependencies", help="Table heading")
 def main(resolved_json: str, own_repo: str, own_source: str, title: str) -> None:
-    resolved = parse_resolved(resolved_json)
-    deps = resolved["deps"]
-
-    rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
-
-    # deps are upstream-first; list them nearest-first below the OWN row.
-    for dep in reversed(deps):
-        if isinstance(dep, dict):
-            rows.append(_row_from_dep(dep))
-
-    show_source = any(row.get("source") for row in rows)
-    table = f"## {title}\n\n{_md_table(rows, show_source)}\n"
+    table = _table(parse_resolved(resolved_json), own_repo, own_source, title)
+    # Also in the log: a lost runner never uploads the summary.
+    print(table)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
         with open(summary_file, "a") as f:
             f.write(table)
-    else:
-        print(table)
 
 
 if __name__ == "__main__":

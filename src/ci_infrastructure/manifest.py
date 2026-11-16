@@ -46,6 +46,23 @@ _VALID_TRIGGERS: Final = frozenset({TRIGGER_UPSTREAM_CHANGE, TRIGGER_REBUILD_REQ
 
 _ARTIFACT_PREFIX_RE: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 
+CiYml: TypeAlias = Literal["generated", "custom"]
+CI_YML_GENERATED: Final[CiYml] = "generated"
+FROM_DEPENDENCIES: Final = "from-dependencies"
+FROM_DEPENDENCIES_RE: Final = re.compile(rf"^{FROM_DEPENDENCIES}\+(\d+)$")
+_CRON_FIELD_RE: Final = re.compile(r"^[0-9*,/-]+$")
+
+
+def _check_ci_schedule(v: Any) -> str | bool:
+    if v is False or (isinstance(v, str) and FROM_DEPENDENCIES_RE.match(v)):
+        return v
+    fields = v.split() if isinstance(v, str) else []
+    if len(fields) == 5 and all(_CRON_FIELD_RE.match(f) for f in fields):
+        return " ".join(fields)
+    raise ValueError(
+        f"'ci-schedule' takes \"{FROM_DEPENDENCIES}+<minutes>\", false or a five-field cron string, got {v!r}"
+    )
+
 
 def _check_repo(v: str) -> str:
     if v.count("/") != 1 or not all(v.split("/", 1)):
@@ -132,6 +149,48 @@ class PackageTable(_Table):
         description="The default of `[[deps]].allow-stale` for the deps of `[package]`. "
         "Once set here or in any `[packages.<prefix>]`, every one of them sets it too, to the same value.",
     )
+    ci_yml: CiYml = Field(
+        default=CI_YML_GENERATED,
+        alias="ci-yml",
+        description="`generated`: the generator writes `.github/workflows/ci.yml`. `custom`: the repo writes "
+        "its own, which the generator never touches.",
+    )
+    ci_schedule: str | bool = Field(
+        default=f"{FROM_DEPENDENCIES}+15",
+        alias="ci-schedule",
+        description=f'When `ci.yml` runs on its own: `"{FROM_DEPENDENCIES}+<minutes>"`, that many minutes '
+        "after the latest schedule of the dependencies; `false` for never; or a cron string (UTC). A repo "
+        "without a dependency that has a schedule sets it.",
+    )
+    ci_pre_commit: bool = Field(
+        strict=True,
+        default=True,
+        alias="ci-pre-commit",
+        description="Run the repository's pre-commit hooks in `ci.yml`.",
+    )
+    full_history: bool = Field(
+        strict=True,
+        default=False,
+        alias="full-history",
+        description="Check the repository out with its whole history in `ci.yml`, e.g. for setuptools-scm.",
+    )
+    ci_paths_ignore: tuple[str, ...] = Field(
+        default=(),
+        alias="ci-paths-ignore",
+        description="`paths-ignore` of `ci.yml`'s `push` and `pull_request` triggers.",
+    )
+
+    @field_validator("ci_schedule", mode="before")
+    @classmethod
+    def _ci_schedule_shape(cls, v: Any) -> str | bool:
+        return _check_ci_schedule(v)
+
+    @field_validator("ci_paths_ignore")
+    @classmethod
+    def _ci_paths_ignore_shape(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not p.strip() or "\n" in p for p in v):
+            raise ValueError(f"'ci-paths-ignore' takes path patterns, got {list(v)!r}")
+        return v
 
     @field_validator("repo")
     @classmethod
@@ -428,6 +487,11 @@ class MatrixKindTable(_Table):
         default=False,
         alias="container-credentials",
         description="Pull the leg's `container` with registry credentials.",
+    )
+    ci: bool = Field(
+        strict=True,
+        default=True,
+        description="A job of the generated `ci.yml`; `false` for a kind only another workflow runs, e.g. publishing.",
     )
 
     @model_validator(mode="before")

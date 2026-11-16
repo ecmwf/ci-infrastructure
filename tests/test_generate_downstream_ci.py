@@ -341,8 +341,8 @@ def test_workflow_runs_the_job_script(tmp_path: Path) -> None:
         """,
     )
     assert "actions/run-job-script@main" in yaml
-    assert "Decode matrix-leg" in yaml
-    assert "command -v jq" in yaml
+    assert "deps-json: ${{ toJSON(matrix._resolved.deps) }}" in yaml
+    assert "artifact-name: ${{ matrix._resolved['own-artifact-name'] }}" in yaml
     assert "Fetch resolved deps" in yaml
     assert "actions/fetch-deps@main" in yaml
     assert "actions/publish-artifact@main" in yaml
@@ -834,8 +834,8 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert '["a/build"]' in yaml
     assert "  validate:\n" in yaml
     assert "actions/validate-generated-workflows@main" in yaml
-    assert "needs:\n    - ci-approval\n    - context\n    - label-gate\n    - validate\n" in yaml
-    assert "needs:\n    - ci-approval\n    - context\n    - label-gate\n    - validate\n    - b\n" in yaml
+    assert "needs: [ci-approval, context, label-gate, validate]\n" in yaml
+    assert "needs: [ci-approval, context, label-gate, validate, resolve, rebuild-producers, b]\n" in yaml
     assert "actions/create-github-app-token@v3" in yaml
     assert "  report-start:\n" in yaml
     assert "  report-result:\n" in yaml
@@ -874,6 +874,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         repo = "org/a"
         visibility = "{a_vis}"
         compiler-inputs = []
+        ci-schedule = "7 0 * * *"
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
@@ -1812,7 +1813,7 @@ def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: p
     assert "::warning::" not in capsys.readouterr().err
 
 
-def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) -> None:
+def test_no_script_takes_the_leg_inline(tmp_path: Path) -> None:
     """A quote in the leg must never become shell syntax."""
     rendered = render_single(
         tmp_path,
@@ -1828,15 +1829,10 @@ def test_decode_step_takes_the_leg_through_env_not_the_script(tmp_path: Path) ->
         platform = "ubuntu-24.04"
         """,
     )
-    decode = next(
-        s
-        for job in yaml.safe_load(rendered)["jobs"].values()
-        for s in job.get("steps", [])
-        if s.get("name") == "Decode matrix-leg"
-    )
-    assert decode["env"] == {"MATRIX_LEG": "${{ toJSON(matrix) }}"}
-    assert 'leg="$MATRIX_LEG"' in decode["run"]
-    assert "${{" not in decode["run"]
+    scripts = [
+        s["run"] for job in yaml.safe_load(rendered)["jobs"].values() for s in job.get("steps", []) if "run" in s
+    ]
+    assert not [r for r in scripts if "${{ matrix" in r or "toJSON(matrix)" in r]
 
 
 _GATE_UPSTREAM: Final = """

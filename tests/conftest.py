@@ -22,6 +22,7 @@ _DEFAULT_PACKAGE: Final = """
     prefix = "{name}"
     repo = "org/{name}"
     compiler-inputs = []
+    ci-schedule = "7 0 * * *"
 """
 
 

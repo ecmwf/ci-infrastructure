@@ -34,6 +34,7 @@ _PACKAGE: Final = """
     compiler-inputs = []
     visibility = "public"
     fork-pull-requests = {opt_in}
+    ci-schedule = "7 0 * * *"
 """
 
 _UPSTREAM: Final = """

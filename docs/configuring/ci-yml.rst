@@ -14,6 +14,31 @@ and keep the
 `workflow syntax <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax>`__
 at hand.
 
+Generated or your own
+---------------------
+
+A repository with a ``.ci/manifest.toml`` gets its ``ci.yml`` from
+:doc:`ci-infrastructure-generate <../reference/cli/ci-infrastructure-generate>`, like its downstream workflows:
+the approval gate, ``pre-commit``, ``resolve``, one job per ``[matrix.<kind>]``, and the ``ci-result`` jobs.
+The jobs that run the code under test hold only the reader App's key and the S3 key,
+and a missing upstream artifact is rebuilt from a job without a checkout, see `Keys in jobs that run code`_.
+A change to how ``ci.yml`` should look then reaches every such repository with the next regeneration.
+Build steps live in the recipes (:doc:`job-scripts`), legs and images in the manifest (:doc:`manifest`).
+
+Some ``[package]`` keys shape the file:
+``ci-schedule`` (see :ref:`nightly-builds`),
+``ci-pre-commit = false`` drops the ``pre-commit`` job,
+``full-history = true`` checks out the whole history, e.g. for setuptools-scm,
+``ci-paths-ignore`` sets ``paths-ignore`` on ``push`` and ``pull_request``,
+and ``fork-pull-requests`` (:doc:`fork-pull-requests`).
+A kind that only another workflow runs, such as publishing, sets ``ci = false``.
+
+``ci-yml = "custom"`` leaves ``ci.yml`` to the repository; the generator never touches it again.
+``ci-infrastructure-generate --print-ci-yml`` prints the generated one as a start.
+A custom ``ci.yml`` is held to the same pre-commit hooks as the generated one:
+``check-ci-approval``, ``check-ci-result``, and ``check-ci-credentials``.
+The rest of this page is about writing one.
+
 A minimal example
 -----------------
 

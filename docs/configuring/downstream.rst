@@ -98,22 +98,28 @@ The resolver records beside every artifact it resolves which dependencies it was
 (``<artifact-name>.deps.json`` in the artifact store);
 an artifact without this record is never used in place of another.
 
+.. _nightly-builds:
+
 Nightly builds
 --------------
 
 A repository that nobody pushes to keeps its artifacts built against old upstreams,
 so its consumers' pull requests fall back to them, or wait for a rebuild.
-A ``schedule`` among the triggers of its ``ci.yml`` builds the default branch every night against the current upstreams:
+A ``schedule`` among the triggers of its ``ci.yml`` builds the default branch every night against the current upstreams.
+Upstreams run first, so that a consumer finds their builds already in the store.
+In the generated ``ci.yml``, ``[package].ci-schedule`` sets it:
 
-.. code:: yaml
+.. code:: toml
 
-   on:
-     # ... the existing triggers ...
-     schedule:
-       - cron: "37 0 * * *"
+   [package]
+   ci-schedule = "from-dependencies+15"   # the default
 
-Schedule upstreams first, so that a consumer finds their builds already in the store;
-the ECMWF stack starts with ``ecbuild`` at 00:07 UTC and takes 15 minutes per level of the graph.
+``"from-dependencies+<minutes>"`` runs that many minutes after the latest schedule of the dependencies,
+``false`` never, and any other value is a cron string in UTC, such as ``"7 0 * * *"``.
+A repository without a dependency that has a schedule sets one,
+or the generator fails: in the ECMWF stack ``ecbuild`` starts at 00:07 UTC, and every level of the graph follows 15 minutes later.
+A custom ``ci.yml`` lists the ``schedule`` itself
+(`on.schedule <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule>`__).
 A scheduled run does not fan out to the consumers, which have nightly builds of their own.
 The generated ``retry-nightly.yml`` re-runs the failed jobs of a scheduled run up to twice,
 unless the branch has moved on since, see :action:`retry-scheduled-run`.

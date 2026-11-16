@@ -112,7 +112,7 @@ def main(
     if empty:
         raise CIError(
             f"check_artifact: required flag(s) empty: {', '.join(empty)}. "
-            "An upstream step (often a jq decode of matrix-leg) likely returned empty."
+            "The matrix leg likely lacks _resolved; check the resolve job."
         )
 
     try:

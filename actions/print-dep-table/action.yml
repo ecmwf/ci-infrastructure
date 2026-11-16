@@ -5,7 +5,7 @@
 name: Print dependency table
 description: >
   Render a Markdown table of the own package and its resolved dependencies,
-  linked to repo and commit, to the step summary.
+  linked to repo and commit, to the log and the step summary.
 
 inputs:
   resolved:
@@ -18,7 +18,7 @@ inputs:
     required: false
     default: ${{ github.repository }}
   own-source:
-    description: "How this job got the OWN artifact: 'built' (default) or 'artifact' when a cache-gated build skipped."
+    description: "How this job got the OWN artifact: 'built' (default), 'artifact' when a cache-gated build skipped, or '' before such a build."
     required: false
     default: 'built'
   title:

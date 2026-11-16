@@ -66,3 +66,10 @@ def test_the_table_has_one_row_per_upstream_run() -> None:
         "  o/eckit@aaaaaaaa  2          building  https://x/eckit/1",
         "  o/fdb@bbbbbbbb    1          no run",
     ]
+
+
+def test_the_json_output_is_narrowed_to_the_kinds() -> None:
+    raw = {"build": {"include": [{"n": 1}]}, "build-hpc": {"include": [{"n": 2}]}, "rust": {"include": [{"n": 3}]}}
+    assert wait_for_deps.select(raw, "build,rust") == {"include": [{"n": 1}, {"n": 3}]}
+    assert wait_for_deps.select(raw, "") == {"include": [{"n": 1}, {"n": 2}, {"n": 3}]}
+    assert wait_for_deps.select({"include": [{"n": 1}]}, "rust") == {"include": [{"n": 1}]}

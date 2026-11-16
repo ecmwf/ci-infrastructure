@@ -49,6 +49,7 @@ from ._github_api import (
 )
 from .hpc import jobscript
 from .manifest import (
+    CI_YML_GENERATED,
     TRIGGER_REBUILD_REQUEST,
     TRIGGER_UPSTREAM_CHANGE,
     VISIBILITY_PRIVATE,
@@ -82,6 +83,7 @@ GENERATED_WORKFLOWS: Final = (
     HPC_LABEL_WORKFLOW,
     SYNC_BRANCH_WORKFLOW,
     RETRY_NIGHTLY_WORKFLOW,
+    "ci.yml",
 )
 # Re-runs of a failed scheduled CI run, beyond its first attempt.
 NIGHTLY_RETRIES: Final = 2
@@ -114,7 +116,10 @@ class _BlockScalar(str):
 
 
 class _WorkflowDumper(yaml.SafeDumper):
-    """YAML 1.2 booleans, so `on:` is not quoted."""
+    """YAML 1.2 booleans, so `on:` is not quoted; sequences indented under their key."""
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        super().increase_indent(flow, False)
 
 
 class _WorkflowLoader(yaml.SafeLoader):
@@ -147,6 +152,45 @@ def _block_scalar_representer(dumper: _WorkflowDumper, data: _BlockScalar) -> ya
 
 
 _WorkflowDumper.add_representer(_BlockScalar, _block_scalar_representer)
+_FLOW_LIST_WIDTH: Final = 80
+
+
+def _list_representer(dumper: _WorkflowDumper, data: list[Any]) -> yaml.SequenceNode:
+    """Short lists of plain words on one line, e.g. `needs: [ci-approval, resolve]`."""
+    flow = (
+        bool(data)
+        and all(isinstance(x, str) and re.fullmatch(r"[\w.*/-]+", x) for x in data)
+        and len(", ".join(data)) <= _FLOW_LIST_WIDTH
+    )
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=flow)
+
+
+def _none_representer(dumper: _WorkflowDumper, _: None) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:null", "")
+
+
+def _str_representer(dumper: _WorkflowDumper, data: str) -> yaml.ScalarNode:
+    """Quoted when it holds a `*`, such as a cron string or a glob."""
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style='"' if "*" in data else None)
+
+
+_WorkflowDumper.add_representer(list, _list_representer)
+_WorkflowDumper.add_representer(str, _str_representer)
+_WorkflowDumper.add_representer(type(None), _none_representer)
+
+
+def _space_out(text: str) -> str:
+    """A blank line before each top-level key and each job."""
+    out: list[str] = []
+    in_jobs = False
+    for line in text.splitlines(keepends=True):
+        top = re.match(r"[A-Za-z_]", line) is not None
+        if top:
+            in_jobs = line.startswith("jobs:")
+        if out and out[-1] != "jobs:\n" and (top or (in_jobs and re.match(r"  [\w-]+:$", line))):
+            out.append("\n")
+        out.append(line)
+    return "".join(out)
 
 
 def _dump_workflow(doc: Mapping[str, Any]) -> str:
@@ -158,7 +202,7 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
         width=10**9,
         allow_unicode=True,
     )
-    return out
+    return _space_out(out)
 
 
 def _render_doc(m: Manifest, doc: Mapping[str, Any]) -> str:
@@ -195,6 +239,9 @@ class MatrixKind:
     artifact_prefix: str | None = None
     # The prefixes this kind publishes; empty when it publishes nothing.
     packages: tuple[str, ...] = ()
+    # What it builds: `packages`, or what it tests without publishing.
+    builds: tuple[str, ...] = ()
+    in_ci: bool = True
 
 
 @dataclass(frozen=True)
@@ -238,6 +285,11 @@ class Manifest:
     submodules: str | None = None
     git_read: tuple[str, ...] = ()
     fork_pull_requests: bool = False
+    ci_yml: str = "generated"
+    ci_schedule: str | bool = "from-dependencies+15"
+    ci_pre_commit: bool = True
+    full_history: bool = False
+    ci_paths_ignore: tuple[str, ...] = ()
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
@@ -300,6 +352,11 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         submodules=raw.package.submodules,
         git_read=raw.package.git_read,
         fork_pull_requests=raw.package.fork_pull_requests,
+        ci_yml=raw.package.ci_yml,
+        ci_schedule=raw.package.ci_schedule,
+        ci_pre_commit=raw.package.ci_pre_commit,
+        full_history=raw.package.full_history,
+        ci_paths_ignore=raw.package.ci_paths_ignore,
         deps=_distinct([d for info in packages.values() for d in info.deps]),
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
@@ -340,6 +397,8 @@ def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
             container_credentials=body.container_credentials,
             artifact_prefix=body.artifact_prefix,
             packages=published,
+            builds=raw.built_by(kind),
+            in_ci=body.ci,
         )
     return resolved
 
@@ -843,15 +902,18 @@ REBUILD_JOB_ID: Final = "rebuild-producers"
 
 
 def _rebuild_job(repos: Sequence[str], needs: Sequence[str] = ()) -> dict[str, Any]:
-    """Starts the producer rebuilds `resolve` planned, with the dispatcher key in a job without a checkout."""
+    """Starts the producer rebuilds `resolve` planned, with the dispatcher key in a job without a checkout.
+
+    With nothing to rebuild it passes at once instead of being skipped, so the jobs after it need no `if:`.
+    """
     plans = f"needs.{_RESOLVE_JOB_ID}.outputs.dispatch-plans"
     job: dict[str, Any] = {}
     if needs:
         job["needs"] = list(needs)
-    job["if"] = f"${{{{ {plans} != '' && {plans} != '[]' }}}}"
     job["runs-on"] = PACKAGE_RUNNER
     job["steps"] = [
         {
+            "if": f"{plans} != '' && {plans} != '[]'",
             "uses": "ecmwf/ci-infrastructure/actions/dispatch-producers@main",
             "with": {
                 "dispatch-plans": f"${{{{ {plans} }}}}",
@@ -922,45 +984,6 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef], 
     }
 
 
-def _decode_step() -> Step:
-    var_assignments = [
-        "deps_json=$(require '._resolved.deps | tojson' '_resolved.deps')",
-        "own_artifact_name=$(require '._resolved.\"own-artifact-name\"' '_resolved.own-artifact-name')",
-    ]
-    output_lines = ['  echo "deps-json=${deps_json}"', '  echo "own-artifact-name=${own_artifact_name}"']
-
-    body_lines = [
-        "set -euo pipefail",
-        "shopt -s inherit_errexit 2>/dev/null || true",
-        "command -v jq >/dev/null || {",
-        '  echo "::error::jq is required but not installed in this runner/image." >&2',
-        "  exit 1",
-        "}",
-        # Via env, never a `${{ }}` in the script: a quote in the leg would become shell.
-        'leg="$MATRIX_LEG"',
-        "require() {",
-        "  local val",
-        '  val=$(jq -r "$1" <<<"$leg")',
-        '  if [ -z "$val" ] || [ "$val" = "null" ]; then',
-        "    echo \"::error::matrix-leg field '$2' empty or null (jq -r '$1' returned '$val').\" >&2",
-        "    exit 1",
-        "  fi",
-        "  printf '%s' \"$val\"",
-        "}",
-        *var_assignments,
-        "{",
-        *output_lines,
-        '} >> "$GITHUB_OUTPUT"',
-    ]
-    return {
-        "name": "Decode matrix-leg",
-        "id": "m",
-        "shell": "bash",
-        "env": {"MATRIX_LEG": "${{ toJSON(matrix) }}"},
-        "run": _BlockScalar("\n".join(body_lines) + "\n"),
-    }
-
-
 def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
     """Render the leg's recipe and run it on the runner."""
     return {
@@ -983,7 +1006,7 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
         "site": "${{ matrix.site }}",
         "job-script": "${{ matrix.job-script }}",
         "matrix-leg": "${{ toJSON(matrix) }}",
-        "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
+        "artifact-name": "${{ matrix._resolved['own-artifact-name'] }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
         "work-dir": "${{ vars.HPC_CI_WORK_DIR }}",
         "remote-work-dir": "${{ vars.HPC_CI_REMOTE_WORK_DIR }}",
@@ -1096,11 +1119,10 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                 **({"submodules": m.submodules} if m.submodules else {}),
             },
         },
-        _decode_step(),
     ]
     is_hpc = mk.execution == EXECUTION_HPC_ATOS
     fetch_with = {
-        "deps-json": "${{ steps.m.outputs.deps-json }}",
+        "deps-json": "${{ toJSON(matrix._resolved.deps) }}",
         "token": "${{ steps.mint.outputs.token }}",
     }
     if is_hpc:
@@ -1131,7 +1153,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
                     "with": {
                         "install-path": "${{ steps.build.outputs.install-path }}",
-                        "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
+                        "artifact-name": "${{ matrix._resolved['own-artifact-name'] }}",
                     },
                 }
             )
@@ -2094,8 +2116,14 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     help="Read sibling manifests from clones under <root>/<repo-name> instead of GitHub, "
     "for a coordinated change still on branches.",
 )
-def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None) -> None:
-    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
+@click.option(
+    "--print-ci-yml",
+    "print_ci_yml",
+    is_flag=True,
+    help="Write nothing; print the ci.yml this manifest generates, e.g. to start a custom one from.",
+)
+def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None, print_ci_yml: bool) -> None:
+    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift, print_ci_yml=print_ci_yml)
 
 
 def _run(
@@ -2104,6 +2132,7 @@ def _run(
     sibling_root: Path | None = None,
     *,
     fail_on_drift: bool = False,
+    print_ci_yml: bool = False,
 ) -> None:
     if fail_on_drift and not check:
         raise CIError(
@@ -2123,6 +2152,11 @@ def _run(
         closures = compute_transitive_consumers(manifests)
         by_pkg = {m.package_name: m for m in manifests}
         by_repo = {m.repo: m for m in manifests}
+        if print_ci_yml:
+            from .ci_yml import render_ci_workflow
+
+            click.echo(render_ci_workflow(local, by_repo), nl=False)
+            return
         # Siblings only feed validation and the closure; render the local repo alone.
         changed = _render_one_repo(local, by_pkg, by_repo, closures, check)
     except SchemaError as e:
@@ -2156,6 +2190,10 @@ def _render_one_repo(
     rendered.append((HPC_LABEL_WORKFLOW, render_hpc_label_workflow(m)))
     rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
     rendered.append((RETRY_NIGHTLY_WORKFLOW, render_retry_nightly_workflow(m)))
+    if m.ci_yml == CI_YML_GENERATED:
+        from .ci_yml import CI_YML, render_ci_workflow
+
+        rendered.append((CI_YML, render_ci_workflow(m, by_repo)))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()

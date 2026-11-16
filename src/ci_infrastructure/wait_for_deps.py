@@ -59,10 +59,24 @@ def table(groups: dict[tuple[str, str], list[str]], probe: Callable[[str, str], 
     return ["  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
 
 
+def select(raw: dict[str, Any], kinds: str) -> dict[str, Any]:
+    """One matrix, or resolve-deps' `json` output narrowed to `kinds` (all when empty), as one matrix."""
+    if "include" in raw:
+        return raw
+    wanted = {k.strip() for k in kinds.split(",") if k.strip()}
+    return {"include": [leg for k, mx in raw.items() if not wanted or k in wanted for leg in mx.get("include") or []]}
+
+
 @click.command(help="Wait until the uncached deps of a resolved matrix are in the S3 store.")
-@click.option("--matrix-json", "matrix_json", required=True, help='A resolve-deps matrix, {"include": [...]}')
-def main(matrix_json: str) -> None:
-    deps = pending(json.loads(matrix_json or "{}"))
+@click.option(
+    "--matrix-json",
+    "matrix_json",
+    required=True,
+    help='A resolve-deps matrix, {"include": [...]}, or its json output, keyed by kind',
+)
+@click.option("--kinds", default="", help="With the json output: the kinds to wait for, comma-separated; default all")
+def main(matrix_json: str, kinds: str) -> None:
+    deps = pending(select(json.loads(matrix_json or "{}"), kinds))
     if not deps:
         print("wait_for_deps: every dep was cached at resolve time; nothing to wait for.")
         return

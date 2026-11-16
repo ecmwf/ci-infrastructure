@@ -157,3 +157,12 @@ def test_resolved_is_vetted_rather_than_rendered_blank(resolved_json: str, match
     """An empty table would read as "no dependencies"."""
     with pytest.raises(CIError, match=match):
         print_dep_table.parse_resolved(resolved_json)
+
+
+def test_the_table_is_in_the_log_and_the_summary(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    result = CliRunner().invoke(print_dep_table.main, ["--resolved", _resolved([_dep(name="ecbuild")])])
+    assert result.exit_code == 0
+    assert "[ecbuild]" in result.output
+    assert "[ecbuild]" in summary.read_text()
