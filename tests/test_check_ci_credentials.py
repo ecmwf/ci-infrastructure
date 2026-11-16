@@ -38,7 +38,7 @@ def _mint(app: str, extra: str = "          repositories: eckit\n") -> str:
 
 
 def _rules(problems: list[str]) -> list[str]:
-    return [next(word for word in p.split() if word in ("R1", "R3", "R4")) for p in problems]
+    return [next(word for word in p.split() if word in ("R1", "R2", "R3")) for p in problems]
 
 
 def test_a_build_leg_may_hold_the_reader_key_and_s3(tmp_path: Path) -> None:
@@ -135,19 +135,19 @@ def test_workflow_level_env_holds_no_privileged_secret(tmp_path: Path) -> None:
     s3 = "env:\n  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}\n"
     assert check(_workflow(tmp_path, _job(CHECKOUT, top=s3))) == []
     key = "env:\n  TOKEN: ${{ secrets.PYPI_API_TOKEN }}\n"
-    assert _rules(check(_workflow(tmp_path, _job(CHECKOUT, top=key)))) == ["R4"]
+    assert _rules(check(_workflow(tmp_path, _job(CHECKOUT, top=key)))) == ["R2"]
 
 
 def test_no_job_gets_every_secret(tmp_path: Path) -> None:
     steps = "      - run: echo '${{ toJSON(secrets) }}'\n"
-    assert _rules(check(_workflow(tmp_path, _job(steps)))) == ["R4"]
+    assert _rules(check(_workflow(tmp_path, _job(steps)))) == ["R2"]
 
 
 @pytest.mark.parametrize(
     ("uses", "rules"),
     [
         ("ecmwf/eckit/.github/workflows/cross-repo-trigger.yml@develop", []),
-        ("other/repo/.github/workflows/x.yml@v1", ["R4"]),
+        ("other/repo/.github/workflows/x.yml@v1", ["R2"]),
     ],
 )
 def test_secrets_are_inherited_only_within_the_owner(tmp_path: Path, uses: str, rules: list[str]) -> None:

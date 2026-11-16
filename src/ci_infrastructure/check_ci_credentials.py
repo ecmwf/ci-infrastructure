@@ -13,9 +13,9 @@
     only with an explicit `ref:`), or builds, fetches deps or runs a local action.
     Only `schedule`, and `push` to main, master or develop or of tags, never run code under test;
     workflow_dispatch and workflow_call build against a pull request's artifacts downstream.
-  - R3: a token is minted with actions/mint-token only, never actions/create-github-app-token.
-  - R4: no secret in the workflow's `env:`, no toJSON(secrets), no `secrets: inherit` into a
+  - R2: no secret in the workflow's `env:`, no toJSON(secrets), no `secrets: inherit` into a
     workflow of another owner.
+  - R3: a token is minted with actions/mint-token only, never actions/create-github-app-token.
 
 Secrets are told apart by name; GITHUB_TOKEN is not counted. Exemptions go under `credentials:`
 in .github/ci-approval-allowlist.yml, each with a `reason:`.
@@ -154,9 +154,9 @@ def check(workflow: Path) -> list[str]:
 
     exempt, problems = _load_exemptions(workflow)
     if _ALL_SECRETS.search(workflow.read_text(encoding="utf-8")):
-        problems.append(f"{workflow}: R4 toJSON(secrets) hands every secret to whatever reads it")
+        problems.append(f"{workflow}: R2 toJSON(secrets) hands every secret to whatever reads it")
     if leaked := sorted(n for n in _secrets_in(doc.get("env")) if secret_class(n) in ("privileged", "hpc")):
-        problems.append(f"{workflow}: R4 workflow-level `env:` gives every job {', '.join(leaked)}; set it per job")
+        problems.append(f"{workflow}: R2 workflow-level `env:` gives every job {', '.join(leaked)}; set it per job")
 
     triggers = untrusted_triggers(doc, workflow)
     for name, job in sorted(_jobs_of(doc).items()):
@@ -166,7 +166,7 @@ def check(workflow: Path) -> list[str]:
         uses = str(job.get("uses", ""))
         # A callee of this owner is checked in its own repository.
         if uses and not uses.startswith(("./", f"{OWNER}/")) and job.get("secrets") == "inherit":
-            problems.append(f"{where}: R4 `secrets: inherit` into {uses}, which this check cannot see")
+            problems.append(f"{where}: R2 `secrets: inherit` into {uses}, which this check cannot see")
         for step in job.get("steps") or []:
             if not isinstance(step, dict):
                 continue
