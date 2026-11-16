@@ -39,6 +39,7 @@ RESOLVE: Final = "resolve"
 HPC_GATE: Final = "hpc-gate"
 RESULT: Final = "ci-result"
 HPC_RESULT: Final = "collect-result-hpc"
+_HPC_RUNS: Final = f"needs.{HPC_GATE}.outputs.run == 'true'"
 _FIXED_JOBS: Final = frozenset({APPROVAL, PRE_COMMIT, RESOLVE, HPC_GATE, RESULT, HPC_RESULT, REBUILD_JOB_ID})
 _ACTIONS: Final = "ecmwf/ci-infrastructure/actions"
 _DAY: Final = 24 * 60
@@ -134,18 +135,6 @@ def _wait_step(kind: str, matrix: str, cond: str | None = None) -> Step:
     return step
 
 
-def _after(needs: Sequence[str], *, extra: str = "") -> str:
-    """Every need succeeded, except rebuild-producers, which is skipped when nothing is missing."""
-    parts = ["!cancelled()"]
-    for n in needs:
-        parts.append(
-            f"needs['{n}'].result != 'failure'" if n == REBUILD_JOB_ID else f"needs['{n}'].result == 'success'"
-        )
-    if extra:
-        parts.append(extra)
-    return "${{ " + " && ".join(parts) + " }}"
-
-
 def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[str, str]) -> dict[str, Any]:
     mk = m.matrices[kind]
     hpc = mk.execution == EXECUTION_HPC_ATOS
@@ -209,7 +198,7 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
     title = "build+test" if kind == "build" and "test" not in ci_kinds(m) else kind
     return {
         "needs": needs,
-        "if": _after(needs, extra=f"needs['{HPC_GATE}'].outputs.run == 'true'" if hpc else ""),
+        **({"if": _HPC_RUNS} if hpc else {}),
         "name": f"{title} (${{{{ matrix._resolved['job-name'] }}}})",
         "runs-on": "${{ matrix['runs-on'] }}",
         "container": container,
@@ -289,7 +278,7 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
             needs = [APPROVAL, RESOLVE, REBUILD_JOB_ID, HPC_GATE]
             wait: dict[str, Any] = {
                 "needs": needs,
-                "if": _after(needs, extra=f"needs['{HPC_GATE}'].outputs.run == 'true'"),
+                "if": _HPC_RUNS,
                 "runs-on": PACKAGE_RUNNER,
             }
             if m.visibility != VISIBILITY_PUBLIC:

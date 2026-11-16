@@ -902,15 +902,18 @@ REBUILD_JOB_ID: Final = "rebuild-producers"
 
 
 def _rebuild_job(repos: Sequence[str], needs: Sequence[str] = ()) -> dict[str, Any]:
-    """Starts the producer rebuilds `resolve` planned, with the dispatcher key in a job without a checkout."""
+    """Starts the producer rebuilds `resolve` planned, with the dispatcher key in a job without a checkout.
+
+    With nothing to rebuild it passes at once instead of being skipped, so the jobs after it need no `if:`.
+    """
     plans = f"needs.{_RESOLVE_JOB_ID}.outputs.dispatch-plans"
     job: dict[str, Any] = {}
     if needs:
         job["needs"] = list(needs)
-    job["if"] = f"${{{{ {plans} != '' && {plans} != '[]' }}}}"
     job["runs-on"] = PACKAGE_RUNNER
     job["steps"] = [
         {
+            "if": f"{plans} != '' && {plans} != '[]'",
             "uses": "ecmwf/ci-infrastructure/actions/dispatch-producers@main",
             "with": {
                 "dispatch-plans": f"${{{{ {plans} }}}}",

@@ -304,16 +304,19 @@ To rebuild a missing upstream artifact instead of failing the legs that need it,
 ``resolve`` sets ``rebuild-missing: true``,
 and a job without a checkout starts the rebuilds with :action:`dispatch-producers`,
 as it holds the dispatcher App's key.
-The build job waits for it, or goes ahead when nothing was missing:
+The condition sits on the step, not on the job,
+so the job passes at once when nothing was missing, and the build job after it needs no ``if:``;
+a skipped job would skip every job after it
+(`jobs.<job_id>.needs <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idneeds>`__):
 
 .. code:: yaml
 
    rebuild-producers:
      needs: resolve
-     if: ${{ needs.resolve.outputs.dispatch-plans != '[]' }}
      runs-on: ubuntu-latest
      steps:
-       - uses: ecmwf/ci-infrastructure/actions/dispatch-producers@main
+       - if: needs.resolve.outputs.dispatch-plans != '[]'
+         uses: ecmwf/ci-infrastructure/actions/dispatch-producers@main
          with:
            dispatch-plans: ${{ needs.resolve.outputs.dispatch-plans }}
            repositories: ecbuild
@@ -322,7 +325,6 @@ The build job waits for it, or goes ahead when nothing was missing:
 
    build:
      needs: [resolve, rebuild-producers]
-     if: ${{ !failure() && !cancelled() }}
 
 ``resolve`` passes ``dispatch-plans: ${{ steps.r.outputs.dispatch-plans }}`` on as a job output;
 ``repositories`` lists the upstream repositories a rebuild may start in.

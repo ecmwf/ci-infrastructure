@@ -125,7 +125,13 @@ def test_the_generated_ci_yml_holds_only_the_reader_key_where_code_runs(tmp_path
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
     assert mint["with"]["app"] == "reader" and mint["with"]["repositories"] == "a,b"
     assert jobs["build"]["needs"] == ["ci-approval", "resolve", "rebuild-producers", "pre-commit"]
-    assert "needs['rebuild-producers'].result != 'failure'" in jobs["build"]["if"]
+    # With nothing to rebuild, rebuild-producers passes at once, so the legs keep GitHub's default.
+    assert "if" not in jobs["build"]
+    assert "if" not in jobs["rebuild-producers"]
+    [dispatch] = jobs["rebuild-producers"]["steps"]
+    assert (
+        dispatch["if"] == "needs.resolve.outputs.dispatch-plans != '' && needs.resolve.outputs.dispatch-plans != '[]'"
+    )
     assert "rebuild-producers" not in jobs["ci-result"]["needs"]
 
 
@@ -185,7 +191,7 @@ def test_hpc_kinds_wait_behind_the_hpc_gate(tmp_path: Path) -> None:
     jobs = _doc(tmp_path, "b", {m.repo: m for m in parse_all(tmp_path)})["jobs"]
     assert jobs["wait-build-hpc"]["needs"] == ["ci-approval", "resolve", "rebuild-producers", "hpc-gate"]
     assert "wait-build-hpc" in jobs["build-hpc"]["needs"]
-    assert jobs["build-hpc"]["if"].endswith("&& needs['hpc-gate'].outputs.run == 'true' }}")
+    assert jobs["build-hpc"]["if"] == jobs["wait-build-hpc"]["if"] == "needs.hpc-gate.outputs.run == 'true'"
     assert jobs["collect-result-hpc"]["needs"] == ["ci-approval", "hpc-gate", "wait-build-hpc", "build-hpc"]
     assert "build-hpc" not in jobs["ci-result"]["needs"]
 
