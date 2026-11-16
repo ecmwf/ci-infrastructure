@@ -181,12 +181,6 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
                     },
                 }
             )
-    table: dict[str, Any] = {"resolved": "${{ toJSON(matrix._resolved) }}"}
-    if hpc:
-        table["own-source"] = "${{ steps.build.outputs.cache-hit == 'true' && 'artifact' || 'built' }}"
-    steps.append(
-        {"name": "Print dependency table", "if": "always()", "uses": f"{_ACTIONS}/print-dep-table@main", "with": table}
-    )
 
     container: dict[str, Any] = {"image": "${{ matrix.container || '' }}"}
     if mk.container_credentials:
@@ -247,6 +241,11 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
         _reader_mint_step(repos),
         _checkout(m),
         {"id": "r", "uses": f"{_ACTIONS}/resolve-deps@main", "with": resolve_with},
+        {
+            "name": "Print dependency tables",
+            "uses": f"{_ACTIONS}/print-dep-table@main",
+            "with": {"matrices": "${{ steps.r.outputs.json }}"},
+        },
     ]
     # With rebuilds to start, the legs' fetch-deps waits instead, once rebuild-producers has started them.
     resolve_steps += [

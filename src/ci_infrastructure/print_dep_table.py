@@ -4,7 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render one leg's `_resolved` block (OWN package and deps) as a Markdown table in $GITHUB_STEP_SUMMARY."""
+"""Render a leg's `_resolved` block (OWN package and deps) as a Markdown table in $GITHUB_STEP_SUMMARY.
+
+With `--matrices`, resolve-deps' `json` output, one table for every leg of every kind.
+"""
 
 from __future__ import annotations
 
@@ -125,6 +128,29 @@ def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
     return resolved
 
 
+def _table(resolved: Mapping[str, Any], own_repo: str, own_source: str, title: str) -> str:
+    rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
+    # deps are upstream-first; list them nearest-first below the OWN row.
+    rows += [_row_from_dep(dep) for dep in reversed(resolved["deps"]) if isinstance(dep, dict)]
+    show_source = any(row.get("source") for row in rows)
+    return f"## {title}\n\n{_md_table(rows, show_source)}\n"
+
+
+def _leg_tables(matrices_json: str, own_repo: str) -> str:
+    try:
+        matrices = json.loads(matrices_json)
+    except json.JSONDecodeError as exc:
+        raise CIError(f"--matrices is not valid JSON: {exc}") from exc
+    if not isinstance(matrices, dict):
+        raise CIError("--matrices must be a JSON object of matrices keyed by kind")
+    tables = []
+    for kind, matrix in matrices.items():
+        for leg in matrix.get("include", []):
+            resolved = parse_resolved(json.dumps(leg.get("_resolved", {})))
+            tables.append(_table(resolved, own_repo, "", f"{kind} ({resolved.get('job-name', '')})"))
+    return "\n".join(tables)
+
+
 @click.command(help="Print artifact dependency table to step summary.")
 @click.option(
     "--resolved",
@@ -132,22 +158,15 @@ def parse_resolved(resolved_json: str) -> Mapping[str, Any]:
     default="",
     help="The leg's _resolved block as JSON (matrix._resolved)",
 )
+@click.option("--matrices", "matrices_json", default="", help="resolve-deps' json output: a table for every leg")
 @click.option("--own-repo", default="", help="owner/repo of the OWN package; empty renders its name unlinked")
 @click.option("--own-source", default="built", help="How this job got the OWN artifact: built / artifact")
 @click.option("--title", default="Resolved dependencies", help="Table heading")
-def main(resolved_json: str, own_repo: str, own_source: str, title: str) -> None:
-    resolved = parse_resolved(resolved_json)
-    deps = resolved["deps"]
-
-    rows: list[Row] = [_row_from_dep(own_row_from_resolved(resolved, own_repo, own_source))]
-
-    # deps are upstream-first; list them nearest-first below the OWN row.
-    for dep in reversed(deps):
-        if isinstance(dep, dict):
-            rows.append(_row_from_dep(dep))
-
-    show_source = any(row.get("source") for row in rows)
-    table = f"## {title}\n\n{_md_table(rows, show_source)}\n"
+def main(resolved_json: str, matrices_json: str, own_repo: str, own_source: str, title: str) -> None:
+    if matrices_json.strip():
+        table = _leg_tables(matrices_json, own_repo)
+    else:
+        table = _table(parse_resolved(resolved_json), own_repo, own_source, title)
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
