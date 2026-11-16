@@ -42,7 +42,6 @@ runs:
       if: steps.check.outputs.repositories != ''
       uses: ecmwf/ci-infrastructure/actions/mint-token@main
       with:
-        app: dispatcher
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.app-private-key }}
         repositories: ${{ steps.check.outputs.repositories }}

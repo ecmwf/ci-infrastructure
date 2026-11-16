@@ -831,7 +831,6 @@ def _reader_mint_step(repos: Sequence[str]) -> Step:
         "id": "mint",
         "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
         "with": {
-            "app": "reader",
             "client-id": "${{ secrets.CI_READER_APP_CLIENT_ID }}",
             "private-key": "${{ secrets.CI_READER_APP_PRIVATE_KEY }}",
             "repositories": ",".join(r.split("/", 1)[1] for r in repos),

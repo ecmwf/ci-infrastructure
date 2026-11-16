@@ -2627,7 +2627,7 @@ def test_resolve_holds_the_reader_key_and_the_dispatcher_key_sits_in_its_own_job
     jobs = yaml.safe_load(_consumer(tmp_path, "c"))["jobs"]
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
     assert mint["uses"] == "ecmwf/ci-infrastructure/actions/mint-token@main"
-    assert mint["with"]["app"] == "reader"
+    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "a,b,c"
     [r] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "r"]
     assert r["with"]["rebuild-missing"] == "true"
@@ -2645,7 +2645,7 @@ def test_orchestrator_merges_the_plans_and_called_consumers_wait_for_the_rebuild
     _make_chain_abc(tmp_path)
     jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
-    assert mint["with"]["app"] == "reader"
+    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "a,b,c"
     [plans] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "plans"]
     assert "jq -cs 'add // []'" in plans["run"]
