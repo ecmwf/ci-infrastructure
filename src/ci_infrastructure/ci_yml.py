@@ -327,10 +327,12 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
         "steps": [{"uses": f"{_ACTIONS}/ci-result@main", "with": {"needs": "${{ toJSON(needs) }}"}}],
     }
 
-    paths = {"paths-ignore": list(m.ci_paths_ignore)} if m.ci_paths_ignore else {}
+    def paths() -> dict[str, list[str]]:
+        return {"paths-ignore": list(m.ci_paths_ignore)} if m.ci_paths_ignore else {}
+
     on: dict[str, Any] = {
-        "push": {"branches": ["develop", "master", "main"], **paths},
-        "pull_request": {"types": ["opened", "reopened", "synchronize"], **paths},
+        "push": {"branches": ["develop", "master", "main"], **paths()},
+        "pull_request": {"types": ["opened", "reopened", "synchronize"], **paths()},
         "workflow_dispatch": None,
     }
     if m.fork_pull_requests:

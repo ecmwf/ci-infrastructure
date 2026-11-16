@@ -199,6 +199,8 @@ def test_the_package_keys_shape_the_workflow(tmp_path: Path) -> None:
     doc = _doc(tmp_path, "a", _graph(tmp_path, a=(extra, ())))
     assert "schedule" not in doc[True]
     assert doc[True]["push"]["paths-ignore"] == ["docs/**"]
+    assert doc[True]["pull_request"]["paths-ignore"] == ["docs/**"]
+    assert "&id" not in (tmp_path / "a" / ".github" / "workflows" / "ci.yml").read_text()
     assert "workflow_call" in doc[True]
     assert "pre-commit" not in doc["jobs"]
     assert doc["jobs"]["ci-approval"]["steps"][0]["with"] == {"check-workflows": "true"}
