@@ -11,8 +11,12 @@ description: >
 
 inputs:
   matrix:
-    description: 'A resolve-deps matrix output, `{"include": [...]}`.'
+    description: 'A resolve-deps matrix output, `{"include": [...]}`, or its `json` output, keyed by kind.'
     required: true
+  kinds:
+    description: 'With the `json` output: the kinds to wait for, comma-separated; default all.'
+    required: false
+    default: ''
   token:
     description: 'GitHub token (App token preferred for higher rate limits)'
     required: false
@@ -28,5 +32,6 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token || github.token }}
         MATRIX_JSON: ${{ inputs.matrix }}
+        KINDS: ${{ inputs.kinds }}
       run: |
-        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.wait_for_deps --matrix-json "$MATRIX_JSON"
+        "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.wait_for_deps --matrix-json "$MATRIX_JSON" --kinds "$KINDS"

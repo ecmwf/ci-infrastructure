@@ -123,15 +123,15 @@ def _git_read_step(m: Manifest) -> Step:
 
 
 def _matrix(kind: str) -> str:
-    return f"${{{{ fromJSON(needs.{RESOLVE}.outputs.{kind}-matrix) }}}}"
+    return f"${{{{ fromJSON(needs.{RESOLVE}.outputs.matrices).{kind} }}}}"
 
 
-def _wait_step(kind: str, matrix: str, cond: str | None = None) -> Step:
-    step: Step = {"name": f"Wait for the deps of {kind}"}
+def _wait_step(kinds: Sequence[str], matrices: str, cond: str | None = None) -> Step:
+    step: Step = {"name": f"Wait for the deps of {', '.join(kinds)}"}
     if cond:
         step["if"] = cond
     step["uses"] = f"{_ACTIONS}/wait-for-deps@main"
-    step["with"] = {"matrix": matrix, "token": "${{ steps.mint.outputs.token }}"}
+    step["with"] = {"matrix": matrices, "kinds": ",".join(kinds), "token": "${{ steps.mint.outputs.token }}"}
     return step
 
 
@@ -232,7 +232,7 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
             "steps": [_checkout(m), {"uses": f"{_ACTIONS}/pre-commit@main"}],
         }
 
-    outputs = {f"{k}-matrix": f"${{{{ toJSON(fromJSON(steps.r.outputs.json)['{k}']) }}}}" for k in kinds}
+    outputs = {"matrices": "${{ steps.r.outputs.json }}"}
     resolve_with: dict[str, Any] = {"matrix": ",".join(kinds), "token": "${{ steps.mint.outputs.token }}"}
     if has_deps:
         outputs["dispatch-plans"] = "${{ steps.r.outputs.dispatch-plans }}"
@@ -248,13 +248,10 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
         },
     ]
     # With rebuilds to start, the legs' fetch-deps waits instead, once rebuild-producers has started them.
-    resolve_steps += [
-        _wait_step(
-            k, f"${{{{ toJSON(fromJSON(steps.r.outputs.json)['{k}']) }}}}", "steps.r.outputs.dispatch-plans == '[]'"
+    if runner_waited := [k for k in waited if k in runner_kinds]:
+        resolve_steps.append(
+            _wait_step(runner_waited, "${{ steps.r.outputs.json }}", "steps.r.outputs.dispatch-plans == '[]'")
         )
-        for k in waited
-        if k in runner_kinds
-    ]
     jobs[RESOLVE] = {"needs": APPROVAL, "runs-on": PACKAGE_RUNNER, "outputs": outputs, "steps": resolve_steps}
     if waited:
         jobs[RESOLVE]["name"] = "resolve + wait-build"
@@ -285,7 +282,7 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
                 wait["container"] = {"image": _PRIVATE_WAIT_IMAGE}
             wait["steps"] = [
                 _reader_mint_step(repos),
-                _wait_step(k, f"${{{{ needs.{RESOLVE}.outputs.{k}-matrix }}}}"),
+                _wait_step([k], f"${{{{ needs.{RESOLVE}.outputs.matrices }}}}"),
             ]
             jobs[waits[k]] = wait
 
