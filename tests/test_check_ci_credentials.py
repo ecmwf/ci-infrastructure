@@ -28,11 +28,12 @@ def _job(steps: str, on: str = PR, top: str = "") -> str:
 
 
 def _mint(app: str, extra: str = "          repositories: eckit\n") -> str:
+    key = app.upper().replace("-", "_")
     return (
         "      - uses: ecmwf/ci-infrastructure/actions/mint-token@main\n"
-        f"        with:\n          app: {app}\n"
-        f"          client-id: ${{{{ secrets.CI_{app.upper()}_APP_CLIENT_ID }}}}\n"
-        f"          private-key: ${{{{ secrets.CI_{app.upper()}_APP_PRIVATE_KEY }}}}\n{extra}"
+        "        with:\n"
+        f"          client-id: ${{{{ secrets.CI_{key}_APP_CLIENT_ID }}}}\n"
+        f"          private-key: ${{{{ secrets.CI_{key}_APP_PRIVATE_KEY }}}}\n{extra}"
     )
 
 
@@ -53,7 +54,7 @@ def test_a_build_leg_may_hold_the_reader_key_and_s3(tmp_path: Path) -> None:
 def test_a_build_leg_must_not_mint_another_app(tmp_path: Path) -> None:
     problems = check(_workflow(tmp_path, _job(_mint("dispatcher") + CHECKOUT)))
     assert _rules(problems) == ["R1"]
-    assert "CI_DISPATCHER_APP_PRIVATE_KEY" in problems[0] and "the dispatcher App" in problems[0]
+    assert "CI_DISPATCHER_APP_PRIVATE_KEY" in problems[0]
 
 
 def test_a_job_without_code_may_hold_any_key(tmp_path: Path) -> None:
@@ -170,3 +171,11 @@ def test_an_exemption_needs_a_reason(tmp_path: Path) -> None:
 def test_main_reports_and_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([str(_workflow(tmp_path, _job(_mint("dispatcher") + CHECKOUT)))]) == 1
     assert "R1" in capsys.readouterr().err
+
+
+def test_only_the_synced_pr_links_key_mints_on_every_repository(tmp_path: Path) -> None:
+    star = "          repositories: '*'\n"
+    assert check(_workflow(tmp_path, _job(_mint("synced-pr-links", extra=star)))) == []
+    for app in ("reader", "dispatcher"):
+        problems = check(_workflow(tmp_path, _job(_mint(app, extra=star))))
+        assert _rules(problems) == ["R2"] and "synced-pr-links" in problems[0], app

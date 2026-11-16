@@ -2,20 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Mint an App token
+name: Mint a token
 description: >
-  The one way the CI mints a GitHub App token: for one of the CI Apps, on named
-  repositories of this owner (synced-pr-links also on every repository it is
-  installed on), with named permissions, each within what that App may grant.
-  `reader` is read-only and the only App a job that runs repository code may
-  mint. The keys are the secrets CI_<APP>_APP_CLIENT_ID and
-  CI_<APP>_APP_PRIVATE_KEY, e.g. CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY; the job
-  fails unless the key's App is ecmwf-ci-<app>.
+  The one way the CI mints a token: from a GitHub App key, on named
+  repositories of this owner, with named permissions. It knows no App, so the
+  key decides what a token can reach; asking for more than the App grants
+  fails the mint. Callers depend only on the inputs below and the `token`
+  output, so the key inputs can give way to OIDC without touching anything else.
+  check-ci-credentials holds the workflows to which key may sit where.
 
 inputs:
-  app:
-    description: "'reader', 'dispatcher', 'reporter' or 'synced-pr-links'."
-    required: true
   client-id:
     description: "The App's client ID."
     required: true
@@ -24,14 +20,13 @@ inputs:
     required: true
   repositories:
     description: >
-      Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes".
-      synced-pr-links alone may take '*': every repository it is installed on.
+      Comma-, space- or newline-separated repository names of this owner, e.g. "eckit,eccodes";
+      '*' for every repository the App is installed on.
     required: true
   permissions:
     description: >
-      Comma-, space- or newline-separated `name:level` pairs, e.g. "contents:read actions:read".
-      reader: actions, administration, contents and pull-requests, read only.
-      dispatcher: actions. reporter: checks. synced-pr-links: pull-requests, and contents read.
+      Comma-, space- or newline-separated `name:level` pairs, e.g. "contents:read actions:read";
+      names: actions, administration, checks, contents, pull-requests; levels: read, write.
     required: true
 
 outputs:
@@ -48,37 +43,30 @@ runs:
     - id: check
       shell: bash
       env:
-        APP: ${{ inputs.app }}
         OWNER: ${{ github.repository_owner }}
         REPOSITORIES: ${{ inputs.repositories }}
         PERMISSIONS: ${{ inputs.permissions }}
       run: |
         set -euo pipefail -f
         fail() { echo "::error title=mint-token::$*"; exit 1; }
-        case "$APP" in
-          reader) allowed="actions:read administration:read contents:read pull-requests:read" ;;
-          dispatcher) allowed="actions:read actions:write" ;;
-          reporter) allowed="checks:read checks:write" ;;
-          synced-pr-links) allowed="contents:read pull-requests:read pull-requests:write" ;;
-          *) fail "app must be reader, dispatcher, reporter or synced-pr-links, not '$APP'" ;;
-        esac
 
         names=(actions administration checks contents pull-requests)
         levels=("" "" "" "" "")
         for pair in $(tr ',' ' ' <<< "$PERMISSIONS"); do
-          [[ " $allowed " == *" $pair "* ]] || fail "$APP may not grant '$pair'; it grants $allowed"
+          name="${pair%%:*}" level="${pair#*:}"
+          [[ "$level" == read || "$level" == write ]] || fail "'$pair' is not name:read or name:write"
+          known=false
           for i in "${!names[@]}"; do
-            [ "${names[$i]}" != "${pair%%:*}" ] || levels[i]="${pair#*:}"
+            if [ "${names[$i]}" = "$name" ]; then levels[i]="$level"; known=true; fi
           done
+          [ "$known" = true ] || fail "'$name' is not one of: ${names[*]}"
         done
         # No permission-* at all would give the token every permission of the App.
         [ -n "$(printf '%s' "${levels[@]}")" ] || fail "permissions is empty"
 
         repos=()
-        if [ "${REPOSITORIES//[[:space:]]/}" = "*" ]; then
-          # Empty `repositories` with `owner` mints on the whole installation.
-          [ "$APP" = synced-pr-links ] || fail "only synced-pr-links may take repositories '*'"
-        else
+        # Empty `repositories` with `owner` mints on the whole installation.
+        if [ "${REPOSITORIES//[[:space:]]/}" != "*" ]; then
           for repo in $(tr ',' ' ' <<< "$REPOSITORIES"); do
             case "$repo" in
               "$OWNER"/*) repo="${repo#"$OWNER"/}" ;;
@@ -107,13 +95,3 @@ runs:
         permission-checks: ${{ steps.check.outputs.checks }}
         permission-contents: ${{ steps.check.outputs.contents }}
         permission-pull-requests: ${{ steps.check.outputs.pull-requests }}
-
-    # `app` is the caller's word; the slug is the key's.
-    - id: slug
-      shell: bash
-      env:
-        APP: ${{ inputs.app }}
-        SLUG: ${{ steps.mint.outputs.app-slug }}
-      run: |
-        set -euo pipefail
-        [ "$SLUG" = "ecmwf-ci-$APP" ] || { echo "::error title=mint-token::app is $APP, but the key is ${SLUG}'s"; exit 1; }
