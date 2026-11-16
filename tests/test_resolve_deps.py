@@ -493,7 +493,6 @@ def test_a_leg_without_its_dep_is_emitted_to_fail_while_the_others_resolve(
     manifest.write_text(_PY_LEGS_PRODUCER)
     out = tmp_path / "out"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    monkeypatch.delenv("DISPATCH_TOKEN", raising=False)
     monkeypatch.setattr(resolve_deps, "select_token", lambda: None)
     monkeypatch.setattr(resolve_deps, "bfs_load_manifests", lambda **kw: ({}, {}))
     real = resolve_deps.resolve_packages

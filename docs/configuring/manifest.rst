@@ -300,6 +300,33 @@ The environment variables point the actions at the artifact store.
 ``eckit`` additionally mints a GitHub App token for :action:`resolve-deps` and :action:`fetch-deps`,
 which raises the API rate limit and gives access to private repositories.
 
+To rebuild a missing upstream artifact instead of failing the legs that need it,
+``resolve`` sets ``rebuild-missing: true``,
+and a job without a checkout starts the rebuilds with :action:`dispatch-producers`,
+as it holds the dispatcher App's key.
+The build job waits for it, or goes ahead when nothing was missing:
+
+.. code:: yaml
+
+   rebuild-producers:
+     needs: resolve
+     if: ${{ needs.resolve.outputs.dispatch-plans != '[]' }}
+     runs-on: ubuntu-latest
+     steps:
+       - uses: ecmwf/ci-infrastructure/actions/dispatch-producers@main
+         with:
+           dispatch-plans: ${{ needs.resolve.outputs.dispatch-plans }}
+           repositories: ecbuild
+           client-id: ${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}
+           app-private-key: ${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}
+
+   build:
+     needs: [resolve, rebuild-producers]
+     if: ${{ !failure() && !cancelled() }}
+
+``resolve`` passes ``dispatch-plans: ${{ steps.r.outputs.dispatch-plans }}`` on as a job output;
+``repositories`` lists the upstream repositories a rebuild may start in.
+
 Waiting for upstream builds
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

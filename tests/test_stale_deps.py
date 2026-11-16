@@ -316,7 +316,6 @@ def test_only_pull_requests_fall_back(
     manifest.write_text(_TOP_MANIFEST)
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
     monkeypatch.setenv("GITHUB_EVENT_NAME", event)
-    monkeypatch.delenv("DISPATCH_TOKEN", raising=False)
     monkeypatch.setattr(resolve_deps, "select_token", lambda: None)
     monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("d" * 40))
     monkeypatch.setattr(resolve_deps, "bfs_load_manifests", lambda **kw: ({}, {}))
@@ -514,18 +513,16 @@ def test_a_sibling_is_built_without_fallbacks_when_its_consumer_drops_them(
     out = tmp_path / "out"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("DISPATCH_TOKEN", "t")
     monkeypatch.setattr(resolve_deps, "select_token", lambda: None)
     monkeypatch.setattr(
         resolve_deps,
         "bfs_load_manifests",
         lambda **kw: ({(Repo("o/middle"), Ref("main")): parse_manifest(_MIDDLE_MANIFEST)}, {}),
     )
-    monkeypatch.setattr(resolve_deps, "dispatch_producer_workflow", lambda **kw: None)
     monkeypatch.setattr(s3_store, "ArtifactIndex", lambda: store)
     monkeypatch.setattr(_Store, "flush_sidecars", lambda self: 0)
 
-    resolve_deps._run(str(manifest), "feature", "build,python", "", ".ci/manifest.toml")
+    resolve_deps._run(str(manifest), "feature", "build,python", "", ".ci/manifest.toml", rebuild_missing=True)
 
     matrices = json.loads(out.read_text().split("json=", 1)[1].splitlines()[0])
     [build] = matrices["build"]["include"]
@@ -533,6 +530,8 @@ def test_a_sibling_is_built_without_fallbacks_when_its_consumer_drops_them(
     awaited = {d["name"]: d for d in python["_resolved"]["deps"]}["p1"]
     assert awaited["artifact-name"] == build["_resolved"]["own-artifact-name"]
     assert {d["name"]: d for d in build["_resolved"]["deps"]}["middle"]["source"] == "triggered rebuild"
+    [plan] = json.loads(out.read_text().split("dispatch-plans=", 1)[1].splitlines()[0])
+    assert plan["repo"] == "o/middle" and plan["branch"] == "feature"
 
 
 def test_direct_deps_on_a_shared_upstream_fall_back_together(base_sha: list[Sha]) -> None:
