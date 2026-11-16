@@ -116,7 +116,10 @@ class _BlockScalar(str):
 
 
 class _WorkflowDumper(yaml.SafeDumper):
-    """YAML 1.2 booleans, so `on:` is not quoted."""
+    """YAML 1.2 booleans, so `on:` is not quoted; sequences indented under their key."""
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        super().increase_indent(flow, False)
 
 
 class _WorkflowLoader(yaml.SafeLoader):
@@ -149,6 +152,45 @@ def _block_scalar_representer(dumper: _WorkflowDumper, data: _BlockScalar) -> ya
 
 
 _WorkflowDumper.add_representer(_BlockScalar, _block_scalar_representer)
+_FLOW_LIST_WIDTH: Final = 80
+
+
+def _list_representer(dumper: _WorkflowDumper, data: list[Any]) -> yaml.SequenceNode:
+    """Short lists of plain words on one line, e.g. `needs: [ci-approval, resolve]`."""
+    flow = (
+        bool(data)
+        and all(isinstance(x, str) and re.fullmatch(r"[\w.*/-]+", x) for x in data)
+        and len(", ".join(data)) <= _FLOW_LIST_WIDTH
+    )
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=flow)
+
+
+def _none_representer(dumper: _WorkflowDumper, _: None) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:null", "")
+
+
+def _str_representer(dumper: _WorkflowDumper, data: str) -> yaml.ScalarNode:
+    """Quoted when it holds a `*`, such as a cron string or a glob."""
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style='"' if "*" in data else None)
+
+
+_WorkflowDumper.add_representer(list, _list_representer)
+_WorkflowDumper.add_representer(str, _str_representer)
+_WorkflowDumper.add_representer(type(None), _none_representer)
+
+
+def _space_out(text: str) -> str:
+    """A blank line before each top-level key and each job."""
+    out: list[str] = []
+    in_jobs = False
+    for line in text.splitlines(keepends=True):
+        top = re.match(r"[A-Za-z_]", line) is not None
+        if top:
+            in_jobs = line.startswith("jobs:")
+        if out and out[-1] != "jobs:\n" and (top or (in_jobs and re.match(r"  [\w-]+:$", line))):
+            out.append("\n")
+        out.append(line)
+    return "".join(out)
 
 
 def _dump_workflow(doc: Mapping[str, Any]) -> str:
@@ -160,7 +202,7 @@ def _dump_workflow(doc: Mapping[str, Any]) -> str:
         width=10**9,
         allow_unicode=True,
     )
-    return out
+    return _space_out(out)
 
 
 def _render_doc(m: Manifest, doc: Mapping[str, Any]) -> str:
@@ -939,45 +981,6 @@ def _resolve_job(m: Manifest, runnable: Sequence[str], cross: Sequence[JobRef], 
     }
 
 
-def _decode_step() -> Step:
-    var_assignments = [
-        "deps_json=$(require '._resolved.deps | tojson' '_resolved.deps')",
-        "own_artifact_name=$(require '._resolved.\"own-artifact-name\"' '_resolved.own-artifact-name')",
-    ]
-    output_lines = ['  echo "deps-json=${deps_json}"', '  echo "own-artifact-name=${own_artifact_name}"']
-
-    body_lines = [
-        "set -euo pipefail",
-        "shopt -s inherit_errexit 2>/dev/null || true",
-        "command -v jq >/dev/null || {",
-        '  echo "::error::jq is required but not installed in this runner/image." >&2',
-        "  exit 1",
-        "}",
-        # Via env, never a `${{ }}` in the script: a quote in the leg would become shell.
-        'leg="$MATRIX_LEG"',
-        "require() {",
-        "  local val",
-        '  val=$(jq -r "$1" <<<"$leg")',
-        '  if [ -z "$val" ] || [ "$val" = "null" ]; then',
-        "    echo \"::error::matrix-leg field '$2' empty or null (jq -r '$1' returned '$val').\" >&2",
-        "    exit 1",
-        "  fi",
-        "  printf '%s' \"$val\"",
-        "}",
-        *var_assignments,
-        "{",
-        *output_lines,
-        '} >> "$GITHUB_OUTPUT"',
-    ]
-    return {
-        "name": "Decode matrix-leg",
-        "id": "m",
-        "shell": "bash",
-        "env": {"MATRIX_LEG": "${{ toJSON(matrix) }}"},
-        "run": _BlockScalar("\n".join(body_lines) + "\n"),
-    }
-
-
 def _job_script_step(m: Manifest, mk: MatrixKind) -> Step:
     """Render the leg's recipe and run it on the runner."""
     return {
@@ -1000,7 +1003,7 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
         "site": "${{ matrix.site }}",
         "job-script": "${{ matrix.job-script }}",
         "matrix-leg": "${{ toJSON(matrix) }}",
-        "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
+        "artifact-name": "${{ matrix._resolved['own-artifact-name'] }}",
         "cmake-prefix-path": "${{ steps.deps.outputs.cmake-prefix-path }}",
         "work-dir": "${{ vars.HPC_CI_WORK_DIR }}",
         "remote-work-dir": "${{ vars.HPC_CI_REMOTE_WORK_DIR }}",
@@ -1113,11 +1116,10 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                 **({"submodules": m.submodules} if m.submodules else {}),
             },
         },
-        _decode_step(),
     ]
     is_hpc = mk.execution == EXECUTION_HPC_ATOS
     fetch_with = {
-        "deps-json": "${{ steps.m.outputs.deps-json }}",
+        "deps-json": "${{ toJSON(matrix._resolved.deps) }}",
         "token": "${{ steps.mint.outputs.token }}",
     }
     if is_hpc:
@@ -1148,7 +1150,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     "uses": "ecmwf/ci-infrastructure/actions/publish-artifact@main",
                     "with": {
                         "install-path": "${{ steps.build.outputs.install-path }}",
-                        "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
+                        "artifact-name": "${{ matrix._resolved['own-artifact-name'] }}",
                     },
                 }
             )

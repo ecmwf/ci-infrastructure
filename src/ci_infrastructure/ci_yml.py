@@ -22,7 +22,6 @@ from .generate_downstream_ci import (
     Manifest,
     SchemaError,
     Step,
-    _decode_step,
     _hpc_build_step,
     _job_script_step,
     _publish_steps,
@@ -123,7 +122,7 @@ def _git_read_step(m: Manifest) -> Step:
 
 
 def _matrix(kind: str) -> str:
-    return f"${{{{ fromJSON(needs.{RESOLVE}.outputs['{kind}-matrix']) }}}}"
+    return f"${{{{ fromJSON(needs.{RESOLVE}.outputs.{kind}-matrix) }}}}"
 
 
 def _wait_step(kind: str, matrix: str, cond: str | None = None) -> Step:
@@ -164,10 +163,9 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
         {"name": "Announce image", "uses": f"{_ACTIONS}/announce-image@main"},
         _reader_mint_step(repos),
         _checkout(m),
-        _decode_step(),
     ]
     fetch: dict[str, Any] = {
-        "deps-json": "${{ steps.m.outputs.deps-json }}",
+        "deps-json": "${{ toJSON(matrix._resolved.deps) }}",
         "token": "${{ steps.mint.outputs.token }}",
     }
     if hpc:
@@ -190,7 +188,7 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
                     "uses": f"{_ACTIONS}/publish-artifact@main",
                     "with": {
                         "install-path": "${{ steps.build.outputs.install-path }}",
-                        "artifact-name": "${{ steps.m.outputs.own-artifact-name }}",
+                        "artifact-name": "${{ matrix._resolved['own-artifact-name'] }}",
                     },
                 }
             )
@@ -207,7 +205,8 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
             "username": "${{ secrets.ECCR_PULL_ROBOT_NAME }}",
             "password": "${{ secrets.ECCR_PULL_ROBOT_TOKEN }}",
         }
-    title = "build+test" if kind == "build" else kind
+    # `build` runs the tests too, unless a `test` kind does.
+    title = "build+test" if kind == "build" and "test" not in ci_kinds(m) else kind
     return {
         "needs": needs,
         "if": _after(needs, extra=f"needs['{HPC_GATE}'].outputs.run == 'true'" if hpc else ""),
@@ -269,6 +268,8 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
         if k in runner_kinds
     ]
     jobs[RESOLVE] = {"needs": APPROVAL, "runs-on": PACKAGE_RUNNER, "outputs": outputs, "steps": resolve_steps}
+    if waited:
+        jobs[RESOLVE]["name"] = "resolve + wait-build"
     if has_deps:
         jobs[REBUILD_JOB_ID] = _rebuild_job(repos, [APPROVAL, RESOLVE])
 
@@ -296,7 +297,7 @@ def render_ci_workflow(m: Manifest, by_repo: Mapping[str, Manifest]) -> str:
                 wait["container"] = {"image": _PRIVATE_WAIT_IMAGE}
             wait["steps"] = [
                 _reader_mint_step(repos),
-                _wait_step(k, f"${{{{ needs.{RESOLVE}.outputs['{k}-matrix'] }}}}"),
+                _wait_step(k, f"${{{{ needs.{RESOLVE}.outputs.{k}-matrix }}}}"),
             ]
             jobs[waits[k]] = wait
 
