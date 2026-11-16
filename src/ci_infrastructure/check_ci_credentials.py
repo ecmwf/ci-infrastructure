@@ -100,7 +100,7 @@ def _trusted_push(on: Any) -> bool:
     branches = push.get("branches")
     if branches is None:
         return bool(push.get("tags")) and "branches-ignore" not in push
-    return isinstance(branches, list) and bool(branches) and set(map(str, branches)) <= TRUSTED_PUSH_BRANCHES
+    return isinstance(branches, list) and bool(branches) and {str(b) for b in branches} <= TRUSTED_PUSH_BRANCHES
 
 
 def untrusted_triggers(doc: dict[Any, Any], workflow: Path) -> set[str]:
