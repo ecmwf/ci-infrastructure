@@ -38,7 +38,7 @@ def _mint(app: str, extra: str = "          repositories: eckit\n") -> str:
 
 
 def _rules(problems: list[str]) -> list[str]:
-    return [next(word for word in p.split() if word in ("R1", "R2", "R3", "R4")) for p in problems]
+    return [next(word for word in p.split() if word in ("R1", "R3", "R4")) for p in problems]
 
 
 def test_a_build_leg_may_hold_the_reader_key_and_s3(tmp_path: Path) -> None:
@@ -124,10 +124,6 @@ def test_hpc_secrets_only_beside_build_on_hpc(tmp_path: Path) -> None:
 def test_a_secret_named_in_plain_text_is_not_held(tmp_path: Path) -> None:
     steps = CHECKOUT + "      - run: curl https://secrets.ecmwf.int\n"
     assert check(_workflow(tmp_path, _job(steps))) == []
-
-
-def test_reader_mints_name_their_repositories(tmp_path: Path) -> None:
-    assert _rules(check(_workflow(tmp_path, _job(_mint("reader", extra=""))))) == ["R2"]
 
 
 def test_create_github_app_token_is_not_used_directly(tmp_path: Path) -> None:

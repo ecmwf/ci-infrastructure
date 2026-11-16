@@ -290,9 +290,8 @@ The environment must be named literally, not by an expression.
 A repository or organisation secret of the same name would still reach the job from any ref,
 so the key must exist only in the environment.
 
-The ``check-ci-credentials`` pre-commit hook checks this, and three more rules:
-a token is minted with ``actions/mint-token``, never with ``actions/create-github-app-token`` itself;
-a mint with the reader key names its ``repositories``;
+The ``check-ci-credentials`` pre-commit hook checks this, and two more rules:
+a token is minted with ``actions/mint-token``, never with ``actions/create-github-app-token`` itself,
 and no secret is handed to every job, through the workflow's ``env:``, ``toJSON(secrets)``, or ``secrets: inherit`` into another owner's workflow.
 A job it should not check goes under ``credentials:`` in ``.github/ci-approval-allowlist.yml``, with a reason:
 
