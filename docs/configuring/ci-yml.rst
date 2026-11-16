@@ -292,7 +292,7 @@ so the key must exist only in the environment.
 
 The ``check-ci-credentials`` pre-commit hook checks this, and three more rules:
 a token is minted with ``actions/mint-token``, never with ``actions/create-github-app-token`` itself;
-a mint with the reader key names its ``repositories``, and only the synced-pr-links key may mint on ``'*'``;
+a mint with the reader key names its ``repositories``;
 and no secret is handed to every job, through the workflow's ``env:``, ``toJSON(secrets)``, or ``secrets: inherit`` into another owner's workflow.
 A job it should not check goes under ``credentials:`` in ``.github/ci-approval-allowlist.yml``, with a reason:
 

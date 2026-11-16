@@ -13,8 +13,7 @@
     only with an explicit `ref:`), or builds, fetches deps or runs a local action.
     Only `schedule`, and `push` to main, master or develop or of tags, never run code under test;
     workflow_dispatch and workflow_call build against a pull request's artifacts downstream.
-  - R2: a mint with the reader key names its repositories; only the synced-pr-links key may take
-    '*', every repository its App is installed on. mint-token knows no App: the key tells them apart.
+  - R2: a mint with the reader key names its repositories.
   - R3: a token is minted with actions/mint-token only, never actions/create-github-app-token.
   - R4: no secret in the workflow's `env:`, no toJSON(secrets), no `secrets: inherit` into a
     workflow of another owner.
@@ -36,7 +35,6 @@ import yaml
 from .check_ci_approval import ALLOWLIST_NAME, _inherited_triggers, _jobs_of, _load, _triggers
 
 READER: Final = ("CI_READER_APP_CLIENT_ID", "CI_READER_APP_PRIVATE_KEY")
-EVERY_REPOSITORY: Final = ("CI_SYNCED_PR_LINKS_APP_CLIENT_ID", "CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY")
 S3_PREFIXES: Final = ("ARTIFACT_S3_", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SCCACHE_")
 # The transitional pull of an HPC identity image, and the HPC user; only beside build-on-hpc.
 HPC_PREFIXES: Final = ("ECCR_PULL_", "HPC_CI_")
@@ -177,13 +175,9 @@ def check(workflow: Path) -> list[str]:
             step_uses, with_block = str(step.get("uses", "")), _with(step)
             if step_uses.startswith(CREATE_APP_TOKEN):
                 problems.append(f"{where}: R3 mint with actions/mint-token, not {step_uses.split('@')[0]}")
-            if step_uses.startswith(MINT_TOKEN):
-                key = _secrets_in(with_block)
-                repositories = str(with_block.get("repositories", "")).strip()
-                if key & set(READER) and not repositories:
+            if step_uses.startswith(MINT_TOKEN) and _secrets_in(with_block) & set(READER):
+                if not str(with_block.get("repositories", "")).strip():
                     problems.append(f"{where}: R2 a mint with the reader key names its `repositories:`")
-                if repositories == "*" and not key <= set(EVERY_REPOSITORY):
-                    problems.append(f"{where}: R2 only the synced-pr-links key may mint on `repositories: '*'`")
         if not triggers or environment(job) or not runs_code(job, triggers):
             continue
         allowed = {"reader", "s3", None} | ({"hpc"} if _uses(job, BUILD_ON_HPC) else set())

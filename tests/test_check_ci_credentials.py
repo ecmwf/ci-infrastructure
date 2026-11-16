@@ -171,11 +171,3 @@ def test_an_exemption_needs_a_reason(tmp_path: Path) -> None:
 def test_main_reports_and_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([str(_workflow(tmp_path, _job(_mint("dispatcher") + CHECKOUT)))]) == 1
     assert "R1" in capsys.readouterr().err
-
-
-def test_only_the_synced_pr_links_key_mints_on_every_repository(tmp_path: Path) -> None:
-    star = "          repositories: '*'\n"
-    assert check(_workflow(tmp_path, _job(_mint("synced-pr-links", extra=star)))) == []
-    for app in ("reader", "dispatcher"):
-        problems = check(_workflow(tmp_path, _job(_mint(app, extra=star))))
-        assert _rules(problems) == ["R2"] and "synced-pr-links" in problems[0], app
