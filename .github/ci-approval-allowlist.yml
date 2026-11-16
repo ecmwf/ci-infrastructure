@@ -14,3 +14,10 @@ exempt:
   # Reads only the pull request description; its checkout is the base branch.
   - workflow: check-pr-declaration.yml
     jobs: [contributor-declaration]
+
+credentials:
+  # The scratch robot reaches only the public scratch project; whatever a build
+  # job pushes there is pulled again by digest, never by tag.
+  - workflow: images.yml
+    jobs: [build-base, build-dependents]
+    reason: "scratch robot only, limited to the scratch project; consumers pull by the recorded digest"

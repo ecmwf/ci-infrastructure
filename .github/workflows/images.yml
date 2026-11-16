@@ -7,23 +7,27 @@ name: Images
 # Build and push the CI images under public-images/ (see public-images/README.md).
 # An image is rebuilt exactly when scripts/build_image.py finds its tag missing
 # from the registry, so there is no `paths:` filter or image list here. Pull
-# requests push nothing.
+# requests push nothing: the build jobs only reach the scratch registry, and the
+# push job, which runs no Dockerfile, holds the public robot in the `main`-only
+# environment `eccr-push`.
 on:
   workflow_call:
     # Named, not `secrets: inherit`: this workflow runs PR-authored Dockerfiles
     # and must not see the other credentials.
     secrets:
-      PUBLIC_ECCR_ROBOT_NAME:
-        required: false
-      PUBLIC_ECCR_ROBOT_TOKEN:
-        required: false
       SCRATCH_ECCR_ROBOT_NAME:
         required: false
       SCRATCH_ECCR_ROBOT_TOKEN:
         required: false
-      CI_PERMISSIONS_APP_CLIENT_ID:
+      CI_DISPATCHER_APP_CLIENT_ID:
         required: false
-      CI_PERMISSIONS_APP_PRIVATE_KEY:
+      CI_DISPATCHER_APP_PRIVATE_KEY:
+        required: false
+      # Never passed: the push job reads them from its environment `eccr-push`,
+      # which wins over these. Declared so linters know the names.
+      PUBLIC_ECCR_ROBOT_NAME:
+        required: false
+      PUBLIC_ECCR_ROBOT_TOKEN:
         required: false
     inputs:
       dependents:
@@ -50,6 +54,9 @@ concurrency:
   # Never cancel a run mid-push; a pull request pushes nothing.
   group: images-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
@@ -101,27 +108,33 @@ jobs:
         run: ./build-image.sh --test "$IMAGE"
       # Through the scratch registry rather than an Actions artifact: unchanged
       # layers are not uploaded again, and nothing counts against Actions storage.
-      - name: Hand ${{ matrix.name }} to its dependents
-        if: ${{ matrix.export }}
+      # Only a tested image gets here, so that is all the push job can publish.
+      - name: Hand ${{ matrix.name }} to its dependents and the push job
+        if: ${{ matrix.export || env.PUSH == 'true' }}
         env:
           REF: ${{ matrix.ref }}
-          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.flat }}:base
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.flat }}:built
           SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
           SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
+          FLAT: ${{ matrix.flat }}
         run: |
           set -euo pipefail
           printf '%s' "$SCRATCH_ECCR_ROBOT_TOKEN" | docker login "${SCRATCH%%/*}" -u "$SCRATCH_ECCR_ROBOT_NAME" --password-stdin
           docker tag "$REF" "$SCRATCH"
           docker push "$SCRATCH"
           docker logout "${SCRATCH%%/*}"
-      - name: Push ${{ matrix.name }}
-        if: ${{ env.PUSH == 'true' }}
-        env:
-          # Step-scoped so nothing the image or tests run can see them.
-          PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
-          PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
-        # The tag is a function of committed content, so publish only a clean tree.
-        run: ./build-image.sh --push-built "$IMAGE" --require-clean
+          # Pull requests can write to the scratch registry too, so the push job
+          # takes the digest pushed here, from this run's artifacts, not the tag.
+          mkdir -p handoff
+          docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$SCRATCH" \
+            | grep -m1 "^${SCRATCH%:*}@" > "handoff/$FLAT"
+      - if: ${{ matrix.export || env.PUSH == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: handoff-${{ matrix.flat }}
+          path: handoff/${{ matrix.flat }}
+          retention-days: 1
+          overwrite: true
 
   build-dependents:
     needs: [discover, build-base]
@@ -146,43 +159,122 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # The scratch project is public: pulling needs no credentials.
+      - if: ${{ matrix.base_ref != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: handoff-${{ matrix.base }}
+          path: handoff
+      # The scratch project is public: pulling needs no credentials. By the digest
+      # the base's build job recorded, since pull requests can write there too.
       - name: Load base ${{ matrix.base }}
         if: ${{ matrix.base_ref != '' }}
         env:
-          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.base }}:base
+          BASE: ${{ matrix.base }}
         run: |
           set -euo pipefail
-          docker pull "$SCRATCH"
-          docker tag "$SCRATCH" "$BASE_IMAGE"
+          built=$(cat "handoff/$BASE")
+          docker pull "$built"
+          docker tag "$built" "$BASE_IMAGE"
           docker image inspect "$BASE_IMAGE" >/dev/null
       - name: Build ${{ matrix.name }}
         run: ./build-image.sh "$IMAGE"
       - name: Test ${{ matrix.name }}
         run: ./build-image.sh --test "$IMAGE"
-      - name: Push ${{ matrix.name }}
+      - name: Hand ${{ matrix.name }} to the push job
         if: ${{ env.PUSH == 'true' }}
         env:
+          REF: ${{ matrix.ref }}
+          SCRATCH: ${{ vars.SCRATCH_REGISTRY }}/run-${{ github.run_id }}/${{ matrix.flat }}:built
+          SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
+          SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
+          FLAT: ${{ matrix.flat }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$SCRATCH_ECCR_ROBOT_TOKEN" | docker login "${SCRATCH%%/*}" -u "$SCRATCH_ECCR_ROBOT_NAME" --password-stdin
+          docker tag "$REF" "$SCRATCH"
+          docker push "$SCRATCH"
+          docker logout "${SCRATCH%%/*}"
+          # Pull requests can write to the scratch registry too, so the push job
+          # takes the digest pushed here, from this run's artifacts, not the tag.
+          mkdir -p handoff
+          docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$SCRATCH" \
+            | grep -m1 "^${SCRATCH%:*}@" > "handoff/$FLAT"
+      - if: ${{ env.PUSH == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: handoff-${{ matrix.flat }}
+          path: handoff/${{ matrix.flat }}
+          retention-days: 1
+          overwrite: true
+
+  # The only job with the public robot: it runs no Dockerfile and checks out
+  # nothing, and copies from the scratch registry only the digests the build jobs
+  # of this run tested and recorded.
+  # Bases come first, so a dependent never lands before its base.
+  push:
+    needs: [discover, build-base, build-dependents]
+    if: ${{ !cancelled()
+            && needs.discover.result == 'success'
+            && !startsWith(github.event_name, 'pull_request')
+            && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: eccr-push
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: handoff-*
+          path: handoff
+          merge-multiple: true
+      - name: Push the tested images
+        env:
+          BASE_MATRIX: ${{ needs.discover.outputs.base-matrix }}
+          DEPENDENT_MATRIX: ${{ needs.discover.outputs.dependent-matrix }}
           PUBLIC_ECCR_ROBOT_NAME: ${{ secrets.PUBLIC_ECCR_ROBOT_NAME }}
           PUBLIC_ECCR_ROBOT_TOKEN: ${{ secrets.PUBLIC_ECCR_ROBOT_TOKEN }}
-        run: ./build-image.sh --push-built "$IMAGE" --require-clean
+        run: |
+          set -euo pipefail
+          images=$(jq -rn --argjson b "$BASE_MATRIX" --argjson d "$DEPENDENT_MATRIX" \
+            '($b.include + $d.include)[] | "\(.flat) \(.ref)"')
+          [ -n "$images" ] || exit 0
+          registry="${images#* }"; registry="${registry%%/*}"
+          printf '%s' "$PUBLIC_ECCR_ROBOT_TOKEN" | docker login "$registry" -u "$PUBLIC_ECCR_ROBOT_NAME" --password-stdin
+          while read -r flat ref; do
+            if [ ! -s "handoff/$flat" ]; then
+              echo "::warning::$ref failed to build or test in this run; not pushed"
+              continue
+            fi
+            built=$(cat "handoff/$flat")
+            docker pull -q "$built" >/dev/null
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "::notice::$ref already exists; not pushed"
+              continue
+            fi
+            docker tag "$built" "$ref"
+            docker tag "$built" "${ref%:*}:latest"
+            docker push -q "$ref"
+            docker push -q "${ref%:*}:latest"
+            echo "::notice::pushed $ref and ${ref%:*}:latest"
+          done <<<"$images"
+          docker logout "$registry"
 
   # After a green or cancelled run: a failed one keeps its bases for re-running the
   # failed jobs. The scratch project's retention rule removes whatever is left.
   # Each run has repositories of its own, so deleting them cannot touch another run's.
   delete-scratch-images:
-    needs: [discover, build-base, build-dependents]
+    needs: [discover, build-base, build-dependents, push]
     if: ${{ always()
             && needs.discover.result == 'success'
             && (cancelled()
                 || (needs.build-base.result == 'success'
-                    && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped'))) }}
+                    && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped')
+                    && (needs.push.result == 'success' || needs.push.result == 'skipped'))) }}
     runs-on: ubuntu-latest
     steps:
       - name: Delete this run's bases from the scratch registry
         env:
           SCRATCH_REGISTRY: ${{ vars.SCRATCH_REGISTRY }}
           BASE_MATRIX: ${{ needs.discover.outputs.base-matrix }}
+          DEPENDENT_MATRIX: ${{ needs.discover.outputs.dependent-matrix }}
           RUN: run-${{ github.run_id }}
           SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
           SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
@@ -190,34 +282,36 @@ jobs:
           set -euo pipefail
           host="${SCRATCH_REGISTRY%%/*}"
           project="${SCRATCH_REGISTRY#*/}"
-          for base in $(jq -r '.include[] | select(.export) | .flat' <<<"$BASE_MATRIX"); do
+          # What the build jobs handed off: exported bases, and on main every image.
+          for image in $(jq -rn --argjson b "$BASE_MATRIX" --argjson d "$DEPENDENT_MATRIX" --argjson push "$PUSH" \
+                           '($b.include[] | select(.export or $push)), ($d.include[] | select($push)) | .flat'); do
             # Harbor wants the slash in a repository name encoded twice.
             curl -fsS -X DELETE -u "$SCRATCH_ECCR_ROBOT_NAME:$SCRATCH_ECCR_ROBOT_TOKEN" \
-              "https://$host/api/v2.0/projects/$project/repositories/$RUN%252F$base" \
-              || echo "::warning::could not delete $SCRATCH_REGISTRY/$RUN/$base; the retention rule will"
+              "https://$host/api/v2.0/projects/$project/repositories/$RUN%252F$image" \
+              || echo "::warning::could not delete $SCRATCH_REGISTRY/$RUN/$image; the retention rule will"
           done
 
   # The private images in ecmwf/ci-container-images FROM our base and rebuild on
   # any trigger, so a bare dispatch is enough.
   notify-container-images:
-    needs: [discover, build-base, build-dependents]
+    needs: [discover, build-base, build-dependents, push]
     if: ${{ !cancelled()
             && !startsWith(github.event_name, 'pull_request')
             && github.ref == 'refs/heads/main'
             && needs.discover.outputs.base-in-set == 'true'
             && needs.build-base.result == 'success'
-            && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped') }}
+            && (needs.build-dependents.result == 'success' || needs.build-dependents.result == 'skipped')
+            && needs.push.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       # github.token cannot dispatch into another repo.
       - id: mint
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        uses: ecmwf/ci-infrastructure/actions/mint-token@main
         with:
-          client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          client-id: ${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}
           repositories: ci-container-images
-          permission-actions: write
+          permissions: actions:write
       - name: Dispatch the private image rebuild
         env:
           GH_TOKEN: ${{ steps.mint.outputs.token }}

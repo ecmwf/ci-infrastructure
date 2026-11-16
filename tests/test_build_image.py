@@ -100,6 +100,9 @@ def test_validate_hands_a_rebuilt_base_to_its_dependents(tmp_path: Path) -> None
     assert base["ref"] == f"{PREFIX}/rocky8-base:{base['tag']}"
     assert dependent["base"] == "rocky8-base"
     assert dependent["base_ref"] == base["ref"]
+    # The push job copies every tested image from the scratch registry by these.
+    assert dependent["flat"] == "rocky8-gcc8-gfortran8"
+    assert dependent["ref"] == f"{PREFIX}/rocky8-gcc8-gfortran8:{dependent['tag']}"
 
 
 @needs_git
