@@ -49,6 +49,7 @@ from ._github_api import (
 )
 from .hpc import jobscript
 from .manifest import (
+    CI_YML_GENERATED,
     TRIGGER_REBUILD_REQUEST,
     TRIGGER_UPSTREAM_CHANGE,
     VISIBILITY_PRIVATE,
@@ -82,6 +83,7 @@ GENERATED_WORKFLOWS: Final = (
     HPC_LABEL_WORKFLOW,
     SYNC_BRANCH_WORKFLOW,
     RETRY_NIGHTLY_WORKFLOW,
+    "ci.yml",
 )
 # Re-runs of a failed scheduled CI run, beyond its first attempt.
 NIGHTLY_RETRIES: Final = 2
@@ -195,6 +197,9 @@ class MatrixKind:
     artifact_prefix: str | None = None
     # The prefixes this kind publishes; empty when it publishes nothing.
     packages: tuple[str, ...] = ()
+    # What it builds: `packages`, or what it tests without publishing.
+    builds: tuple[str, ...] = ()
+    in_ci: bool = True
 
 
 @dataclass(frozen=True)
@@ -238,6 +243,11 @@ class Manifest:
     submodules: str | None = None
     git_read: tuple[str, ...] = ()
     fork_pull_requests: bool = False
+    ci_yml: str = "generated"
+    ci_schedule: str | bool = "from-dependencies+15"
+    ci_pre_commit: bool = True
+    full_history: bool = False
+    ci_paths_ignore: tuple[str, ...] = ()
     deps: list[DepRef] = field(default_factory=list)
     triggers: list[TriggerDownstream] = field(default_factory=list)
     matrices: dict[str, MatrixKind] = field(default_factory=dict)
@@ -300,6 +310,11 @@ def _build_manifest(path: Path, raw_dict: dict[str, Any]) -> Manifest:
         submodules=raw.package.submodules,
         git_read=raw.package.git_read,
         fork_pull_requests=raw.package.fork_pull_requests,
+        ci_yml=raw.package.ci_yml,
+        ci_schedule=raw.package.ci_schedule,
+        ci_pre_commit=raw.package.ci_pre_commit,
+        full_history=raw.package.full_history,
+        ci_paths_ignore=raw.package.ci_paths_ignore,
         deps=_distinct([d for info in packages.values() for d in info.deps]),
         triggers=[TriggerDownstream(repo=t.repo, ref=t.ref) for t in raw.trigger_downstream],
         matrices=matrices,
@@ -340,6 +355,8 @@ def _resolve_matrices(path: Path, raw: ManifestFile) -> dict[str, MatrixKind]:
             container_credentials=body.container_credentials,
             artifact_prefix=body.artifact_prefix,
             packages=published,
+            builds=raw.built_by(kind),
+            in_ci=body.ci,
         )
     return resolved
 
@@ -2094,8 +2111,14 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     help="Read sibling manifests from clones under <root>/<repo-name> instead of GitHub, "
     "for a coordinated change still on branches.",
 )
-def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None) -> None:
-    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift)
+@click.option(
+    "--print-ci-yml",
+    "print_ci_yml",
+    is_flag=True,
+    help="Write nothing; print the ci.yml this manifest generates, e.g. to start a custom one from.",
+)
+def main(manifest_path: str, check: bool, fail_on_drift: bool, sibling_root: Path | None, print_ci_yml: bool) -> None:
+    _run(manifest_path, check, sibling_root, fail_on_drift=fail_on_drift, print_ci_yml=print_ci_yml)
 
 
 def _run(
@@ -2104,6 +2127,7 @@ def _run(
     sibling_root: Path | None = None,
     *,
     fail_on_drift: bool = False,
+    print_ci_yml: bool = False,
 ) -> None:
     if fail_on_drift and not check:
         raise CIError(
@@ -2123,6 +2147,11 @@ def _run(
         closures = compute_transitive_consumers(manifests)
         by_pkg = {m.package_name: m for m in manifests}
         by_repo = {m.repo: m for m in manifests}
+        if print_ci_yml:
+            from .ci_yml import render_ci_workflow
+
+            click.echo(render_ci_workflow(local, by_repo), nl=False)
+            return
         # Siblings only feed validation and the closure; render the local repo alone.
         changed = _render_one_repo(local, by_pkg, by_repo, closures, check)
     except SchemaError as e:
@@ -2156,6 +2185,10 @@ def _render_one_repo(
     rendered.append((HPC_LABEL_WORKFLOW, render_hpc_label_workflow(m)))
     rendered.append((SYNC_BRANCH_WORKFLOW, render_sync_branch_workflow(m)))
     rendered.append((RETRY_NIGHTLY_WORKFLOW, render_retry_nightly_workflow(m)))
+    if m.ci_yml == CI_YML_GENERATED:
+        from .ci_yml import CI_YML, render_ci_workflow
+
+        rendered.append((CI_YML, render_ci_workflow(m, by_repo)))
     for basename, content in rendered:
         path = wf_dir / basename
         existed = path.exists()

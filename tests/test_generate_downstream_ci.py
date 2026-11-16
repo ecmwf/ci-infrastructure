@@ -874,6 +874,7 @@ def _make_chain_ab(tmp_path: Path, *, a_vis: str = "public", b_vis: str = "publi
         repo = "org/a"
         visibility = "{a_vis}"
         compiler-inputs = []
+        ci-schedule = "7 0 * * *"
         [[trigger-downstream]]
         repo = "org/b"
         ref = "main"
