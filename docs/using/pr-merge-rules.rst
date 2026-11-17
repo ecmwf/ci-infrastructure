@@ -12,7 +12,8 @@ PR merge rules for the protected branches
 These rules are the default setting; the admins (gatekeepers) of a repository can adjust them.
 They protect only ``main``, ``develop``, ``master`` and the default branch, if it is named otherwise,
 and PRs into them. Other branches are unrestricted.
-``scripts/apply-pr-rules.sh`` applies them to a repository.
+``scripts/apply-pr-rules.sh`` applies them to a repository;
+with ``--no-ci-checks``, for a repository without the new CI, everything but the required checks, the CI labels and auto-merge.
 
 Everyone, on a protected branch
 -------------------------------

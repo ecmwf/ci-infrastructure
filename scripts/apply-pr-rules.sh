@@ -9,27 +9,31 @@
 # creates the downstream-CI and HPC-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
-#   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
+#   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] [--no-ci-checks] ecmwf/eckit ecmwf/fdb ...
 #
 # --bot-app-id: a GitHub App whose own PRs need no review (e.g. the workflow
 # regenerator, so it can auto-merge). CI still has to pass.
 # --delete-existing: also delete the repo's other branch rulesets and the classic
 # protection on those branches. Tag and organization rulesets are never touched.
+# --no-ci-checks: for repos without the new CI: only the integrity and approval rulesets,
+# no required checks, CI labels or auto-merge.
 set -euo pipefail
 
 dry=false
 bot_app_id=""
 delete_existing=false
+ci_checks=true
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=true; shift ;;
     --bot-app-id) bot_app_id="${2:?--bot-app-id needs an App id}"; shift 2 ;;
     --delete-existing) delete_existing=true; shift ;;
+    --no-ci-checks) ci_checks=false; shift ;;
     --*) echo "unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || { echo "usage: $0 [--dry-run] [--bot-app-id <id>] [--delete-existing] owner/repo..." >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: $0 [--dry-run] [--bot-app-id <id>] [--delete-existing] [--no-ci-checks] owner/repo..." >&2; exit 2; }
 [[ -z "$bot_app_id" || "$bot_app_id" =~ ^[0-9]+$ ]] || { echo "--bot-app-id must be numeric" >&2; exit 2; }
 
 # gh with a JSON body on stdin; in a dry run, only print it.
@@ -93,54 +97,61 @@ EOF
 failed=false
 for repo in "$@"; do
   echo "$repo"
-  # The label gate posts each lane's downstream/<lane> status (at once for a lane without consumers),
-  # which the lane's orchestrator settles; without it nothing posts them.
-  if ! gh api "repos/$repo/contents/.github/workflows/pr-label-downstream-ci.yml" --silent 2>/dev/null; then
-    echo "  error: no pr-label-downstream-ci.yml; merge the regenerate bot's PR first" >&2
-    failed=true
-    continue
-  fi
-
-  settings='{"allow_auto_merge": true, "delete_branch_on_merge": true, "allow_update_branch": true}'
-  show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
-  call api -X PATCH "repos/$repo" --input - <<< "$settings"
-
-  # Before the checks: a repo not yet ready for them still gets its labels.
-  have=$(gh label list -R "$repo" -L 1000 --json name --jq '.[].name')
-  while IFS=$'\t' read -r name color description; do
-    if ! grep -qxF "$name" <<< "$have"; then
-      call label create "$name" -R "$repo" --color "$color" --description "$description" < /dev/null
-      echo "  created label $name"
-    fi
-  done <<< "$labels"
-
-  checks='["ci-result", "downstream/runner", "downstream/hpc-atos"]'
-  # HPC legs report their own status, run with run-hpc-ci or waived with hpc-ci-not-needed (actions/hpc-gate).
-  if grep -Eq "^[[:space:]]*execution[[:space:]]*=[[:space:]]*[\"']hpc-atos[\"']" <<< "$(raw .ci/manifest.toml)"; then
-    if ! grep -qF "ci-result/hpc-atos" <<< "$(raw .github/workflows/ci.yml)"; then
-      echo "  error: the manifest has HPC legs, but ci.yml posts no ci-result/hpc-atos; add hpc-gate and collect-result-hpc first" >&2
-      failed=true
-      continue
-    fi
-    if ! gh api "repos/$repo/contents/.github/workflows/pr-label-hpc-ci.yml" --silent 2>/dev/null; then
-      echo "  error: no pr-label-hpc-ci.yml, so run-hpc-ci would not start the HPC legs; merge the regenerate bot's PR first" >&2
-      failed=true
-      continue
-    fi
-    checks=$(jq -c '. + ["ci-result/hpc-atos"]' <<< "$checks")
-  fi
-  echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
-
-  # 15368 = GitHub Actions, which posts all of them.
-  status_checks=$(jq -n --argjson c "$checks" '{type: "required_status_checks", parameters: {
-    strict_required_status_checks_policy: false, do_not_enforce_on_create: true,
-    required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
-
   bodies=(
     "$(ruleset default-branch-integrity "$(jq -n --argjson p "$(pull_request 0 false)" '[{type: "deletion"}, {type: "non_fast_forward"}, $p]')" '[]')"
     "$(ruleset default-branch-approval "[$(pull_request 1 true)]" "$(approval_bypass)")"
-    "$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")"
   )
+  if $ci_checks; then
+    # The label gate posts each lane's downstream/<lane> status (at once for a lane without consumers),
+    # which the lane's orchestrator settles; without it nothing posts them.
+    if ! gh api "repos/$repo/contents/.github/workflows/pr-label-downstream-ci.yml" --silent 2>/dev/null; then
+      echo "  error: no pr-label-downstream-ci.yml; merge the regenerate bot's PR first" >&2
+      failed=true
+      continue
+    fi
+
+    settings='{"allow_auto_merge": true, "delete_branch_on_merge": true, "allow_update_branch": true}'
+    show_diff "repo settings" "$(gh api "repos/$repo" --jq '{allow_auto_merge, delete_branch_on_merge, allow_update_branch}')" "$settings"
+    call api -X PATCH "repos/$repo" --input - <<< "$settings"
+
+    # Before the checks: a repo not yet ready for them still gets its labels.
+    have=$(gh label list -R "$repo" -L 1000 --json name --jq '.[].name')
+    while IFS=$'\t' read -r name color description; do
+      if ! grep -qxF "$name" <<< "$have"; then
+        call label create "$name" -R "$repo" --color "$color" --description "$description" < /dev/null
+        echo "  created label $name"
+      fi
+    done <<< "$labels"
+
+    checks='["ci-result", "downstream/runner", "downstream/hpc-atos"]'
+    # HPC legs report their own status, run with run-hpc-ci or waived with hpc-ci-not-needed (actions/hpc-gate).
+    if grep -Eq "^[[:space:]]*execution[[:space:]]*=[[:space:]]*[\"']hpc-atos[\"']" <<< "$(raw .ci/manifest.toml)"; then
+      if ! grep -qF "ci-result/hpc-atos" <<< "$(raw .github/workflows/ci.yml)"; then
+        echo "  error: the manifest has HPC legs, but ci.yml posts no ci-result/hpc-atos; add hpc-gate and collect-result-hpc first" >&2
+        failed=true
+        continue
+      fi
+      if ! gh api "repos/$repo/contents/.github/workflows/pr-label-hpc-ci.yml" --silent 2>/dev/null; then
+        echo "  error: no pr-label-hpc-ci.yml, so run-hpc-ci would not start the HPC legs; merge the regenerate bot's PR first" >&2
+        failed=true
+        continue
+      fi
+      checks=$(jq -c '. + ["ci-result/hpc-atos"]' <<< "$checks")
+    fi
+    echo "  required checks: $(jq -r 'join(", ")' <<< "$checks")"
+
+    # 15368 = GitHub Actions, which posts all of them.
+    status_checks=$(jq -n --argjson c "$checks" '{type: "required_status_checks", parameters: {
+      strict_required_status_checks_policy: false, do_not_enforce_on_create: true,
+      required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
+
+    bodies+=("$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")")
+  else
+    settings='{"delete_branch_on_merge": true, "allow_update_branch": true}'
+    show_diff "repo settings" "$(gh api "repos/$repo" --jq '{delete_branch_on_merge, allow_update_branch}')" "$settings"
+    call api -X PATCH "repos/$repo" --input - <<< "$settings"
+    echo "  no required checks"
+  fi
 
   existing=$(gh api "repos/$repo/rulesets?includes_parents=false" --jq '[.[] | select(.source_type == "Repository" and .target == "branch") | {(.name): .id}] | add // {}')
   for body in "${bodies[@]}"; do
