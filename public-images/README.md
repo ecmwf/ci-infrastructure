@@ -81,7 +81,7 @@ The build context is the repo root. `docker buildx` is required.
 | Secret | Used for |
 |---|---|
 | `PUBLIC_ECCR_ROBOT_NAME` / `_TOKEN` | pushing; secrets of the environment `eccr-push` (`main` only), used by the push job alone |
-| `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `_TOKEN` | registry cleanup (delete rights, no push) |
+| `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `_TOKEN` | registry cleanup (delete rights, no push); secrets of the environment `eccr-cleanup` (`main` only) |
 | `CI_DISPATCHER_APP_CLIENT_ID` / `_PRIVATE_KEY` | dispatching the private image rebuild |
 | `SCRATCH_ECCR_ROBOT_NAME` / `_TOKEN` | handing tested images to the variants and the push job through the scratch registry (push and delete repositories, in that project only) |
 
