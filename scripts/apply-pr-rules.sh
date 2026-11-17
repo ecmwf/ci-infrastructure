@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
-# one approval (from a code owner where CODEOWNERS covers a changed file), and the required CI checks;
+# one approval (from a code owner where CODEOWNERS covers a changed file; a new push dismisses it), and the required CI checks;
 # creates the downstream-CI and HPC-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
@@ -69,7 +69,7 @@ approval_bypass() {
 }
 pull_request() {
   jq -n --argjson n "$1" --argjson owners "$2" '{type: "pull_request", parameters: {
-    required_approving_review_count: $n, dismiss_stale_reviews_on_push: false,
+    required_approving_review_count: $n, dismiss_stale_reviews_on_push: ($n > 0),
     require_code_owner_review: $owners, require_last_push_approval: false,
     required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
