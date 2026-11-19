@@ -13,6 +13,8 @@ These rules are the default setting; the admins (gatekeepers) of a repository ca
 They protect only ``main``, ``develop``, ``master`` and the default branch, if it is named otherwise,
 and PRs into them. Other branches are unrestricted.
 ``scripts/apply-pr-rules.sh`` applies them to a repository.
+With ``--integrity-only`` it applies only "no direct push, no force-push, no deletion",
+for repositories without the new CI.
 
 Everyone, on a protected branch
 -------------------------------
