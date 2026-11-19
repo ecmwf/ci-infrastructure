@@ -73,7 +73,7 @@ Notes
 -----
 
 - Organisation baseline: ``scripts/apply-org-rules.sh`` applies rules to every repository that a repository cannot relax:
-  no direct push, force-push, or deletion; PR with one approval, not from the last pusher and dismissed by a new push
+  no direct push, force-push, or deletion; PR with one approval, not from the last pusher, dismissed by a new push, and from a code owner where ``CODEOWNERS`` applies
   (admins and maintainers may merge without);
   workflow changes approved by a team
 - Who can approve: Settings > Collaborators and teams (Write or higher)
