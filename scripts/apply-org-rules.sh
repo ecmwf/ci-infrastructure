@@ -6,33 +6,30 @@
 
 # Apply the organisation baseline to develop, main, master and the default branch of every repo:
 # no deletion or force-push, changes via PR with one approval (dismissed by a new push, never from the
-# last pusher; from a code owner where CODEOWNERS covers a changed file), and workflow changes approved by a team.
+# last pusher; from a code owner where CODEOWNERS covers a changed file). The code owners themselves are
+# set per repo.
 # Nobody pushes directly; admins and maintainers may merge a PR without approval.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #
-#   scripts/apply-org-rules.sh [--dry-run] [--evaluate] [--admin-role <id>]... [--workflow-team <slug>] ecmwf
+#   scripts/apply-org-rules.sh [--dry-run] [--evaluate] [--admin-role <id>]... ecmwf
 #
 # --evaluate: create the rulesets in evaluate mode (logged in Rule insights, not enforced).
 # --admin-role: a custom repository role treated as admin (e.g. GateKeeper); repeatable.
-# --workflow-team: the team whose approval changes to .github/workflows and .github/actions need;
-# without it, that ruleset is not created.
 set -euo pipefail
 
 dry=false
 enforcement=active
 admin_roles=(5)
-workflow_team=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=true; shift ;;
     --evaluate) enforcement=evaluate; shift ;;
     --admin-role) admin_roles+=("${2:?--admin-role needs a role id}"); shift 2 ;;
-    --workflow-team) workflow_team="${2:?--workflow-team needs a team slug}"; shift 2 ;;
     --*) echo "unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -eq 1 ] || { echo "usage: $0 [--dry-run] [--evaluate] [--admin-role <id>]... [--workflow-team <slug>] org" >&2; exit 2; }
+[ $# -eq 1 ] || { echo "usage: $0 [--dry-run] [--evaluate] [--admin-role <id>]... org" >&2; exit 2; }
 org=$1
 for id in "${admin_roles[@]}"; do
   [[ "$id" =~ ^[0-9]+$ ]] || { echo "role ids must be numeric: $id" >&2; exit 2; }
@@ -65,11 +62,10 @@ admins() {
     + ($ids | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m}))'
 }
 pull_request() {
-  jq -n --argjson n "$1" --argjson reviewers "$2" '{type: "pull_request", parameters: ({
-    required_approving_review_count: $n, dismiss_stale_reviews_on_push: true,
+  jq -n '{type: "pull_request", parameters: {
+    required_approving_review_count: 1, dismiss_stale_reviews_on_push: true,
     require_code_owner_review: true, require_last_push_approval: true,
-    required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}
-    + if $reviewers == [] then {} else {required_reviewers: $reviewers} end)}'
+    required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
 ruleset() {
   jq -n --arg name "$1" --arg e "$enforcement" --argjson rules "$2" --argjson bypass "$3" '{name: $name, target: "branch",
@@ -81,17 +77,8 @@ ruleset() {
 pr_bypass=$(jq -s 'add' <(admins pull_request) <(jq -n '[{actor_type: "RepositoryRole", actor_id: 2, bypass_mode: "pull_request"}]'))
 bodies=(
   "$(ruleset org-branch-integrity '[{"type": "deletion"}, {"type": "non_fast_forward"}]' '[]')"
-  "$(ruleset org-branch-pr "[$(pull_request 1 '[]')]" "$pr_bypass")"
+  "$(ruleset org-branch-pr "[$(pull_request)]" "$pr_bypass")"
 )
-if [ -n "$workflow_team" ]; then
-  team_id=$(gh api "orgs/$org/teams/$workflow_team" --jq .id)
-  reviewers=$(jq -n --argjson id "$team_id" '[{file_patterns: [".github/workflows/**", ".github/actions/**"],
-    minimum_approvals: 1, reviewer: {type: "Team", id: $id}}]')
-  # Admins of the repo merge a workflow PR through the bypass, but cannot push one.
-  bodies+=("$(ruleset org-workflow-review "[$(pull_request 0 "$reviewers")]" "$(admins pull_request)")")
-else
-  echo "note: no --workflow-team, so org-workflow-review is not created or updated"
-fi
 
 echo "$org ($enforcement)"
 existing=$(gh api "orgs/$org/rulesets" --paginate --jq '[.[] | select(.source_type == "Organization") | {(.name): .id}] | add // {}' | jq -s 'add // {}')
@@ -108,5 +95,5 @@ for body in "${bodies[@]}"; do
     echo "  created $name"
   fi
 done
-others=$(jq -r 'keys - ["org-branch-integrity", "org-branch-pr", "org-workflow-review"] | join(", ")' <<< "$existing")
+others=$(jq -r 'keys - ["org-branch-integrity", "org-branch-pr"] | join(", ")' <<< "$existing")
 [ -z "$others" ] || echo "  note: other org rulesets left untouched: $others"
