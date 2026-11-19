@@ -118,6 +118,11 @@ for repo in "${repos[@]}"; do
     printf '%s\t-\t-\tskipped (empty or unreadable)\t-\n' "$repo"
     continue
   fi
+  # A PR from an earlier run is left for its review.
+  if url=$(gh pr list -R "$repo" --head "$branch" --state open --json url --jq '.[0].url // empty') && [ -n "$url" ]; then
+    printf '%s\t-\t-\tPR exists %s\t-\n' "$repo" "$url"
+    continue
+  fi
   owners=$(maintainers)
   source=maintainers
   [ -n "$owners" ] || { owners=$fallback; source=fallback; }
@@ -144,6 +149,8 @@ for repo in "${repos[@]}"; do
        url=$(gh pr create -R "$repo" --base "$default" --head "$branch" \
          --title "CODEOWNERS: maintainers own .github/ and CODEOWNERS" --body "$pr_body"); then
       action="PR $url"
+      # GitHub allows about 500 content-creating requests an hour; a PR takes three.
+      sleep 24
     else
       action="FAILED (branch $branch may exist already)"
       failed=true
