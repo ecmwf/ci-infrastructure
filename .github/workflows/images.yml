@@ -197,6 +197,36 @@ jobs:
               || echo "::warning::could not delete $SCRATCH_REGISTRY/$RUN/$base; the retention rule will"
           done
 
+  # For pinning by digest, e.g. in an org variable read with fromJSON.
+  latest-digests:
+    needs: [build-base, build-dependents]
+    if: ${{ !cancelled()
+            && !startsWith(github.event_name, 'pull_request')
+            && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print the digest of every :latest
+        run: |
+          set -euo pipefail
+          api="https://eccr.ecmwf.int/api/v2.0/projects/public-ci-images/repositories"
+          names=""
+          page=1
+          while :; do
+            page_names=$(curl -fsS "$api?page_size=100&page=$page" | jq -r '.[].name | sub("^public-ci-images/"; "")')
+            [ -n "$page_names" ] || break
+            names+="$page_names"$'\n'
+            page=$((page + 1))
+          done
+          json=$(for name in $names; do
+            if digest=$(curl -fsS "$api/$name/artifacts/latest" 2>/dev/null | jq -r .digest); then
+              printf '%s\t%s\n' "$name" "$digest"
+            else
+              echo "::warning::no :latest for $name" >&2
+            fi
+          done | jq -RnS '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}')
+          echo "$json"
+          printf '### Digests of :latest\n\n~~~json\n%s\n~~~\n' "$json" >> "$GITHUB_STEP_SUMMARY"
+
   # The private images in ecmwf/ci-container-images FROM our base and rebuild on
   # any trigger, so a bare dispatch is enough.
   notify-container-images:
