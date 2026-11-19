@@ -309,6 +309,8 @@ def discover(mode: Mode, rebuild: str, since: str = "") -> dict[str, object]:
             {
                 "name": n,
                 "tag": compute_tag(n),
+                "flat": flat_name(n),
+                "ref": image_ref(n, compute_tag(n)),
                 "base": flat_name(b),
                 "base_ref": image_ref(b, compute_tag(b)) if b in bases else "",
             }
