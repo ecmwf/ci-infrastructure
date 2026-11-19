@@ -5,7 +5,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Apply the organisation baseline to develop, main, master and the default branch of every repo:
-# no deletion or force-push, changes via PR with one approval, and workflow changes approved by a team.
+# no deletion or force-push, changes via PR with one approval (dismissed by a new push, never from the
+# last pusher), and workflow changes approved by a team.
 # Nobody pushes directly; admins and maintainers may merge a PR without approval.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #
@@ -65,8 +66,8 @@ admins() {
 }
 pull_request() {
   jq -n --argjson n "$1" --argjson reviewers "$2" '{type: "pull_request", parameters: ({
-    required_approving_review_count: $n, dismiss_stale_reviews_on_push: false,
-    require_code_owner_review: false, require_last_push_approval: false,
+    required_approving_review_count: $n, dismiss_stale_reviews_on_push: true,
+    require_code_owner_review: false, require_last_push_approval: true,
     required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}
     + if $reviewers == [] then {} else {required_reviewers: $reviewers} end)}'
 }
