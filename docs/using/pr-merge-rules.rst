@@ -72,10 +72,114 @@ By role, on a protected branch
 Notes
 -----
 
+- The organisation baseline below applies on top; a repository cannot relax it
 - Who can approve: Settings > Collaborators and teams (Write or higher)
 - Code owners: if a ``CODEOWNERS`` file covers a changed file, the approval must come from one of its owners; without one, any approval counts
 - ``ci-result`` is a status from the ``collect results`` job in ``ci.yml``; skipped counts as failed
 - Fork PRs: ``ci-result`` comes from ``ci-fork.yml`` (see :doc:`fork-pull-requests`), else a maintainer bypasses
+
+Organisation baseline
+---------------------
+
+``scripts/apply-org-rules.sh`` applies two `organisation rulesets <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets>`_
+to the same branches of every repository, with or without the new CI.
+They protect against malicious or compromised accounts; the repository rules above add the CI checks.
+
+- ``org-branch-integrity``: no deletion, no force-push; no bypass, not even for organisation owners
+- ``org-branch-pr``: changes only via PR, with one approval that
+
+  - does not come from the last pusher,
+  - is dismissed by a new push, and
+  - comes from a code owner where the repository's ``CODEOWNERS`` covers a changed file
+    (`code owners <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_
+    are set per repository; ``scripts/apply-codeowners.sh`` makes its maintainers the code owners of ``.github/`` and ``CODEOWNERS``,
+    or a fallback where it has none)
+
+  Organisation owners, admins, gatekeepers, and maintainers may merge a PR without that approval (bypass tick),
+  but nobody pushes directly.
+
+.. list-table::
+   :header-rows: 1
+
+   * -
+     - organisation owners
+     - admins
+     - gatekeepers [#gk]_
+     - maintainers
+     - write
+     - read, forks
+     - bot apps [#bots]_
+   * - push to / force-push / delete protected branch
+     -
+     -
+     -
+     -
+     -
+     -
+     -
+   * - open a PR from a branch in the repository
+     - X
+     - X
+     - X
+     - X
+     - X
+     -
+     - X
+   * - open a PR from a fork
+     - X
+     - X
+     - X
+     - X
+     - X
+     - X
+     -
+   * - merge after a valid approval
+     - X
+     - X
+     - X
+     - X
+     - X
+     -
+     - X
+   * - merge without a valid approval (bypass tick)
+     - X
+     - X
+     - X
+     - X
+     -
+     -
+     -
+   * - give an approval that counts [#approval]_
+     - X
+     - X
+     - X
+     - X
+     - X
+     -
+     -
+   * - edit or disable the organisation rulesets
+     - X
+     -
+     -
+     -
+     -
+     -
+     -
+   * - add stricter repository rules
+     - X
+     - X
+     -
+     -
+     -
+     -
+     -
+
+.. [#gk] The ``GateKeeper`` custom role, if the script runs with ``--admin-role`` and its id;
+   a custom role does not inherit the maintainers' bypass.
+.. [#bots] The workflow regenerator, Dependabot, and ``GITHUB_TOKEN``: no bypass, so their PRs need a human approval.
+.. [#approval] Not from the PR's author or its last pusher, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
+
+Not covered: other branches (unrestricted), tags (a separate organisation ruleset), and required checks (repository rules above).
 
 Limitation: write and approval are tied
 ---------------------------------------
