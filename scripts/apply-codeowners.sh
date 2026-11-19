@@ -111,7 +111,8 @@ put() {
 failed=false
 printf 'repo\towners from\tfile\taction\towners\n'
 for repo in "${repos[@]}"; do
-  if ! default=$(gh api "repos/$repo" --jq 'if .size == 0 then error("empty") else .default_branch end' 2>/dev/null); then
+  if ! default=$(gh api "repos/$repo" --jq .default_branch 2>/dev/null) ||
+     ! gh api "repos/$repo/branches/$default" --silent 2>/dev/null; then
     printf '%s\t-\t-\tskipped (empty or unreadable)\t-\n' "$repo"
     continue
   fi
