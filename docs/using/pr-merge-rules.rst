@@ -72,6 +72,9 @@ By role, on a protected branch
 Notes
 -----
 
+- Organisation baseline: ``scripts/apply-org-rules.sh`` applies rules to every repository that a repository cannot relax:
+  no direct push, force-push, or deletion; PR with one approval (admins and maintainers may merge without);
+  workflow changes approved by a team
 - Who can approve: Settings > Collaborators and teams (Write or higher)
 - Code owners: if a ``CODEOWNERS`` file covers a changed file, the approval must come from one of its owners; without one, any approval counts
 - ``ci-result`` is a status from the ``collect results`` job in ``ci.yml``; skipped counts as failed
