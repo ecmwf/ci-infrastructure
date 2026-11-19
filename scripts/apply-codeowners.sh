@@ -10,16 +10,17 @@
 # a repo without any gets the --fallback owners.
 # The owners go in a marked block at the end of the repo's CODEOWNERS (the last matching line wins);
 # a re-run replaces only that block. The block is committed to the default branch; where rules
-# block that, a PR is opened instead (merging it is left to a person). Archived repos and forks are skipped.
+# block that, or with --pr, a PR is opened instead (merging it is left to a person). Archived repos and forks are skipped.
 # Needs admin on each repo.
 #
-#   scripts/apply-codeowners.sh [--dry-run] --fallback '@a @b' [--role <name>]... [--exclude-user <login>]... (--all <org> | owner/repo...)
+#   scripts/apply-codeowners.sh [--dry-run] [--pr] --fallback '@a @b' [--role <name>]... [--exclude-user <login>]... (--all <org> | owner/repo...)
 #
 # --role: a custom repository role that counts as maintainer (e.g. GateKeeper); repeatable.
 # --exclude-user: a machine user that must not be a code owner (it could approve alone); repeatable.
 set -euo pipefail
 
 dry=false
+always_pr=false
 fallback=""
 roles=(admin maintain)
 excluded=()
@@ -27,6 +28,7 @@ all_org=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=true; shift ;;
+    --pr) always_pr=true; shift ;;
     --fallback) fallback="${2:?--fallback needs owners}"; shift 2 ;;
     --role) roles+=("${2:?--role needs a role name}"); shift 2 ;;
     --exclude-user) excluded+=("${2:?--exclude-user needs a login}"); shift 2 ;;
@@ -35,7 +37,7 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-usage="usage: $0 [--dry-run] --fallback '@a @b' [--role <name>]... [--exclude-user <login>]... (--all <org> | owner/repo...)"
+usage="usage: $0 [--dry-run] [--pr] --fallback '@a @b' [--role <name>]... [--exclude-user <login>]... (--all <org> | owner/repo...)"
 [ -n "$fallback" ] || { echo "$usage" >&2; exit 2; }
 if [ -n "$all_org" ]; then
   [ $# -eq 0 ] || { echo "$usage" >&2; exit 2; }
@@ -132,10 +134,10 @@ for repo in "${repos[@]}"; do
   elif $dry; then
     action=$([ -n "$sha" ] && echo "would update" || echo "would create")
     diff -u --label "$repo/$path (current)" --label "$repo/$path (new)" <(printf '%s' "${old:+$old$'\n'}") <(printf '%s\n' "$new") | sed 's/^/    /' >&2 || true
-  elif put "$default" 2>/dev/null; then
+  elif ! $always_pr && put "$default" 2>/dev/null; then
     action=$([ -n "$sha" ] && echo updated || echo created)
   else
-    # A rule rejected the direct commit: the same change as a PR.
+    # A rule rejected the direct commit, or --pr: the same change as a PR.
     head=$(gh api "repos/$repo/git/ref/heads/$default" --jq .object.sha)
     if gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$head" >/dev/null 2>&1 &&
        put "$branch" &&
