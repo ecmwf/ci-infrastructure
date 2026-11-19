@@ -9,7 +9,8 @@
 # Maintainers = visible teams and direct collaborators with the admin or maintain role, or a --role;
 # a repo without any gets the --fallback owners.
 # The owners go in a marked block at the end of the repo's CODEOWNERS (the last matching line wins);
-# a re-run replaces only that block. The block is committed to the default branch; where rules
+# a re-run replaces only that block. On the lines under .github/ that the block overrides, the
+# --fallback owners are dropped (and a line left without owners), so they are not named needlessly. The block is committed to the default branch; where rules
 # block that, or with --pr, a PR is opened instead (merging it is left to a person). Archived repos and forks are skipped.
 # Needs admin on each repo.
 #
@@ -90,6 +91,17 @@ active_codeowners() {
   done
 }
 
+# $1 without the --fallback owners on lines outside the block that the block overrides.
+without_fallback() {
+  FALLBACK=$fallback awk -v b="$begin" -v e="$end" '
+    BEGIN { n = split(ENVIRON["FALLBACK"], f, " "); for (i = 1; i <= n; i++) drop[f[i]] = 1 }
+    $0 == b { inblock = 1 } $0 == e { inblock = 0; print; next }
+    inblock || $1 !~ /^\/?\.github\// { print; next }
+    { line = $1; owners = 0
+      for (i = 2; i <= NF; i++) if (!($i in drop)) { line = line " " $i; owners++ }
+      if (owners) print line }' <<< "$1"
+}
+
 # $1 with the block replaced, or appended after a blank line.
 with_block() {
   local block
@@ -132,7 +144,7 @@ for repo in "${repos[@]}"; do
     IFS=$'\t' read -r path sha <<< "$found"
     old=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$path")
   fi
-  new=$(with_block "$old")
+  new=$(with_block "$(without_fallback "$old")")
 
   if [ "$new" == "$old" ]; then
     action=unchanged
