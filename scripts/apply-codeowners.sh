@@ -99,7 +99,7 @@ without_fallback() {
     inblock || $1 !~ /^\/?\.github\// { print; next }
     { line = $1; owners = 0
       for (i = 2; i <= NF; i++) if (!($i in drop)) { line = line " " $i; owners++ }
-      if (owners) print line }' <<< "$1"
+      if (owners == NF - 1) print; else if (owners) print line }' <<< "$1"
 }
 
 # $1 with the block replaced, or appended after a blank line.
