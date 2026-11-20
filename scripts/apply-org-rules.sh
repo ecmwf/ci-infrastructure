@@ -7,7 +7,7 @@
 # Apply the organisation baseline to develop, main, master and the default branch of every repo:
 # no deletion or force-push, changes via PR with one approval (dismissed by a new push, never from the
 # last pusher; from a code owner where CODEOWNERS covers a changed file). The code owners themselves are
-# set per repo (apply-codeowners.sh).
+# set per repo.
 # Nobody pushes directly; admins and maintainers may merge a PR without approval.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #

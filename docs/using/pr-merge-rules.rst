@@ -92,8 +92,7 @@ They protect against malicious or compromised accounts; the repository rules abo
   - is dismissed by a new push, and
   - comes from a code owner where the repository's ``CODEOWNERS`` covers a changed file
     (`code owners <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_
-    are set per repository; ``scripts/apply-codeowners.sh`` makes its maintainers the code owners of ``.github/`` and ``CODEOWNERS``,
-    or a fallback where it has none)
+    are set per repository; its maintainers own ``.github/`` and ``CODEOWNERS``)
 
   Organisation owners, admins, gatekeepers, and maintainers may merge a PR without that approval (bypass tick),
   but nobody pushes directly.
