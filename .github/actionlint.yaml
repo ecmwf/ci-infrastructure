@@ -11,3 +11,10 @@ self-hosted-runner:
     - arc-runner-very-large
     - hpc-submit
     - hpc
+
+paths:
+  # The push job reads the public robot from its environment `eccr-push`;
+  # declaring the names under workflow_call would shadow it with empty values.
+  .github/workflows/images.yml:
+    ignore:
+      - 'property "public_eccr_robot_(name|token)" is not defined'

@@ -23,12 +23,6 @@ on:
         required: false
       CI_DISPATCHER_APP_PRIVATE_KEY:
         required: false
-      # Never passed: the push job reads them from its environment `eccr-push`,
-      # which wins over these. Declared so linters know the names.
-      PUBLIC_ECCR_ROBOT_NAME:
-        required: false
-      PUBLIC_ECCR_ROBOT_TOKEN:
-        required: false
     inputs:
       dependents:
         description: 'On a pull request, also build the images whose base it rebuilds.'
