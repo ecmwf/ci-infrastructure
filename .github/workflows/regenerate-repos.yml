@@ -45,7 +45,9 @@ jobs:
         run: |
           set -euo pipefail
           targets=$("$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.regenerate_targets --repos "$REPOS")
-          { echo "targets=$targets"; echo "names=$(jq -r 'map(.repo) | join(",")' <<< "$targets")"; } >> "$GITHUB_OUTPUT"
+          # The generator reads every sibling's manifest, so a subset still fetches them all.
+          all=$("$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.regenerate_targets)
+          { echo "targets=$targets"; echo "names=$(jq -r 'map(.repo) | join(",")' <<< "$all")"; } >> "$GITHUB_OUTPUT"
 
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -63,6 +65,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           OWNER: ${{ github.repository_owner }}
           TARGETS: ${{ steps.targets.outputs.targets }}
+          NAMES: ${{ steps.targets.outputs.names }}
           TREES: ${{ runner.temp }}/trees
         run: |
           set -euo pipefail
@@ -73,7 +76,7 @@ jobs:
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
           mkdir -p "$TREES"
           heads='{}'
-          for repo in $(jq -r '.[].repo' <<< "$TARGETS"); do
+          for repo in ${NAMES//,/ }; do
             base=$(gh api "repos/$OWNER/$repo" --jq .default_branch)
             git clone -q --depth 1 --filter=blob:none --sparse --branch "$base" \
               "https://github.com/$OWNER/$repo.git" "$TREES/$repo"

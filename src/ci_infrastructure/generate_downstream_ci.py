@@ -2008,12 +2008,17 @@ def _fetch_sibling_manifests(
     manifest_path: str,
     sibling_root: Path | None = None,
 ) -> list[Manifest]:
-    """`local` first, then every manifest reachable via deps and triggers; missing ones are skipped."""
+    """`local` first, then every manifest reachable via deps and triggers.
+
+    From GitHub a missing one is skipped (it may not be on that ref yet); under `sibling_root` it is an
+    error, since a missing clone would silently drop consumers from the orchestrator.
+    """
 
     def neighbours(m: Manifest) -> list[tuple[str, str]]:
         return [(d.repo, "HEAD") for d in m.deps] + [(t.repo, t.ref or "HEAD") for t in m.triggers]
 
     seen: dict[str, Manifest] = {local.repo: local}
+    missing: set[str] = set()
     queue = neighbours(local)
 
     for _ in range(_FETCH_DEPTH_CAP):
@@ -2027,20 +2032,26 @@ def _fetch_sibling_manifests(
         next_q: list[tuple[str, str]] = []
         for (repo, ref), (text, _sync) in results.items():
             if text is None:
+                missing.add(repo)
                 continue
             m = parse_manifest_text(text, Path(f"github://{repo}@{ref}/{manifest_path}"))
             seen[repo] = m
             next_q.extend(neighbours(m))
         queue = next_q
 
+    if sibling_root is not None and missing:
+        raise CIError(
+            f"no {manifest_path} under {sibling_root} for: {', '.join(sorted(missing))}. "
+            "--sibling-root must hold a clone of every repo reachable via deps and trigger-downstream."
+        )
+
     # An unreadable trigger target silently shrinks the fan-out; warn.
     unresolved = sorted({t.repo for t in local.triggers if t.repo not in seen})
     if unresolved:
-        where = f"under {sibling_root}" if sibling_root is not None else "at the ref it declares"
         for repo in unresolved:
             print(
                 f"::warning::[[trigger-downstream]] target {repo} has no readable "
-                f"{manifest_path} {where}, so it contributes no jobs to this repo's "
+                f"{manifest_path} at the ref it declares, so it contributes no jobs to this repo's "
                 "orchestrator. Check the repo name; if the manifest simply is not on "
                 "that ref yet (a coordinated change still on branches), pass "
                 "--sibling-root <dir> to read the sibling clones instead.",
@@ -2142,7 +2153,7 @@ def _write_or_check_path(out: Path, content: str | None, check: bool) -> tuple[b
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     default=None,
     help="Read sibling manifests from clones under <root>/<repo-name> instead of GitHub, "
-    "for a coordinated change still on branches.",
+    "for a coordinated change still on branches. Every repo reachable via deps and triggers needs a clone there.",
 )
 @click.option(
     "--print-ci-yml",
