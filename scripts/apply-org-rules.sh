@@ -8,7 +8,7 @@
 # no deletion or force-push, changes via PR; a PR touching CI files (.github/, .ci/, CODEOWNERS) needs one
 # approval from the --ci-reviewers team (dismissed by a new push, never from the last pusher). Approvals
 # for everything else, and code owners, are repo rules.
-# Nobody pushes directly; admins and maintainers may merge a PR without that approval.
+# Nobody pushes directly; only admins may merge a CI-file PR without that approval.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #
 #   scripts/apply-org-rules.sh [--dry-run] [--evaluate] [--admin-role <id>]... --ci-reviewers <team> ecmwf
@@ -60,7 +60,7 @@ current_ruleset() {
       if $k == null or .parameters == null then . else .parameters |= with_entries(select(.key | IN($k[]))) end]}'
 }
 
-# Admins: organisation owners, the admin role (5) and any --admin-role; maintain is 2.
+# Admins: organisation owners, the admin role (5) and any --admin-role; maintainers (2) get no bypass.
 admins() {
   jq -n --arg m "$1" --argjson ids "$(printf '%s\n' "${admin_roles[@]}" | jq -s .)" '
     [{actor_type: "OrganizationAdmin", actor_id: null, bypass_mode: $m}]
@@ -82,7 +82,7 @@ ruleset() {
     rules: $rules, bypass_actors: $bypass}'
 }
 
-pr_bypass=$(jq -s 'add' <(admins pull_request) <(jq -n '[{actor_type: "RepositoryRole", actor_id: 2, bypass_mode: "pull_request"}]'))
+pr_bypass=$(admins pull_request)
 bodies=(
   "$(ruleset org-branch-integrity '[{"type": "deletion"}, {"type": "non_fast_forward"}]' '[]')"
   "$(ruleset org-branch-pr "[$(pull_request)]" "$pr_bypass")"

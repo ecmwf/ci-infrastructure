@@ -95,8 +95,8 @@ They protect against malicious or compromised accounts; the repository rules abo
   Other PRs need no approval at this level; the repository rules above require it from everyone but maintainers and admins,
   and `code owners <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_
   are set per repository.
-  Organisation owners, admins, gatekeepers, and maintainers may merge a CI-file PR without that approval (bypass tick),
-  but nobody pushes directly; for any other PR they need no bypass, so the tick stays the exception.
+  Only organisation owners, admins, and gatekeepers may merge a CI-file PR without that approval (bypass tick);
+  nobody pushes directly. Other PRs need no bypass, so the tick stays the exception.
 
 .. list-table::
    :header-rows: 1
@@ -145,7 +145,7 @@ They protect against malicious or compromised accounts; the repository rules abo
      - X
      - X
      - X
-     - X
+     -
      -
      -
      -
@@ -175,7 +175,7 @@ They protect against malicious or compromised accounts; the repository rules abo
      -
 
 .. [#gk] The ``GateKeeper`` custom role, if the script runs with ``--admin-role`` and its id;
-   a custom role does not inherit the maintainers' bypass.
+   a custom role does not inherit the admins' bypass.
 .. [#bots] The workflow regenerator, Dependabot, and ``GITHUB_TOKEN``: no bypass, so their PRs need a human approval.
 .. [#approval] Not from the PR's author or its last pusher, with no push after it; for CI files from the CI reviewers team,
    elsewhere from a code owner where the repository's ``CODEOWNERS`` applies.
