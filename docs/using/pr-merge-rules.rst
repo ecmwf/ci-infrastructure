@@ -81,24 +81,24 @@ Notes
 Organisation baseline
 ---------------------
 
-``scripts/apply-org-rules.sh`` applies two `organisation rulesets <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets>`_
+``scripts/apply-org-rules.sh`` applies three `organisation rulesets <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets>`_
 to the same branches of every repository, with or without the new CI.
 They protect against malicious or compromised accounts; the repository rules above add the CI checks.
 
 - ``org-branch-integrity``: no deletion, no force-push; no bypass, not even for organisation owners
-- ``org-branch-pr``: changes only via PR; a PR that touches a file the repository's ``CODEOWNERS`` covers
-  needs one approval from a `code owner <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_ that
+- ``org-branch-pr``: changes only via PR, with one approval that does not come from the last pusher
+  and is dismissed by a new push.
+  Organisation owners, admins, gatekeepers, and maintainers are exempt: they merge without it and without a bypass tick.
+- ``org-branch-codeowners``: a PR that touches a file the repository's ``CODEOWNERS`` covers
+  also needs the approval of a `code owner <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_,
+  dismissed by a new push. Maintainers are not exempt here;
+  only organisation owners, admins, and gatekeepers may merge without it (bypass tick).
+  Since it also requires a PR, nobody pushes directly, the exempt roles included.
 
-  - does not come from the PR's author, and
-  - is dismissed by a new push.
-
-  It does not require approval of the last push: that would demand an approval on every PR.
-
-  Each repository's ``CODEOWNERS`` gives ``/.github/``, ``/.ci/``, and ``CODEOWNERS`` to its maintainers,
-  so a maintainer needs a second one for those; a catch-all ``*`` line makes every PR code-owned.
-  Other PRs need no approval at this level; the repository rules above require it from everyone but maintainers, gatekeepers, and admins.
-  Only organisation owners, admins, and gatekeepers may merge without the code owner's approval (bypass tick);
-  nobody pushes directly. Other PRs need no bypass, so the tick stays the exception.
+A bypass covers a whole ruleset, hence two: the tick stays the exception for code-owned files,
+while normal PRs of maintainers and admins need none.
+Each repository's ``CODEOWNERS`` gives ``/.github/``, ``/.ci/``, and ``CODEOWNERS`` to its maintainers,
+so a maintainer needs a second one for those; a catch-all ``*`` line makes every PR code-owned.
 
 .. list-table::
    :header-rows: 1
@@ -134,6 +134,14 @@ They protect against malicious or compromised accounts; the repository rules abo
      - X
      - X
      - X
+     -
+   * - merge a PR without approval, no bypass tick, unless code-owned
+     - X
+     - X
+     - X
+     - X
+     -
+     -
      -
    * - merge after a valid approval
      - X
@@ -179,7 +187,7 @@ They protect against malicious or compromised accounts; the repository rules abo
 .. [#gk] The ``GateKeeper`` custom role, if both scripts run with ``--admin-role`` and its id;
    a custom role inherits neither the admins' bypass nor the maintainers' exemption.
 .. [#bots] The workflow regenerator, Dependabot, and ``GITHUB_TOKEN``: no bypass, so their PRs need a human approval.
-.. [#approval] Not from the PR's author, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
+.. [#approval] Not from the PR's author or its last pusher, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
 
 Not covered: other branches (unrestricted), tags (a separate organisation ruleset), and required checks (repository rules above).
 
