@@ -700,7 +700,15 @@ def render_workflow(m: Manifest, by_pkg: Mapping[str, Manifest], *, lane: Execut
     }
     for kind in runnable:
         jid = job_id(m.package_name, kind)
-        jobs[jid] = _kind_job(m, kind, cross_needs_per_kind[kind])
+        jobs[jid] = _kind_job(m, kind, cross_needs_per_kind[kind], repos)
+        jobs.update(
+            _check_run_jobs(
+                f"{m.package_name}/{kind}",
+                kind,
+                jid,
+                _render_kind_filter(cross_needs_per_kind[kind], m.matrices[kind].triggers),
+            )
+        )
 
     doc: dict[str, Any] = {
         "name": f"Cross-repo trigger ({m.package_name})",
@@ -839,37 +847,6 @@ def _render_kind_filter(refs: Sequence[JobRef], triggers: Iterable[str]) -> str:
     return " || ".join(clauses) if clauses else "false"
 
 
-# A build leg runs PR-built code: checkout, fetch-deps' run lookup and the check-run report need no more.
-_BUILD_LEG_PERMISSIONS: Final = {"contents": "read", "actions": "read", "checks": "write"}
-
-
-def _mint_step(permissions: Mapping[str, str] | None = None) -> Step:
-    """App token, minted per job: masked values do not survive job outputs."""
-    with_block = {
-        "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-        "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
-        "owner": "${{ github.repository_owner }}",
-    }
-    for scope, level in (permissions or {}).items():
-        with_block[f"permission-{scope}"] = level
-    return {"id": "mint", "uses": "actions/create-github-app-token@v3", "with": with_block}
-
-
-def _git_read_mint_step(m: Manifest) -> Step:
-    """A second token, read-only on `git-read` alone: the job script runs the PR's code."""
-    return {
-        "id": "git-read",
-        "uses": "actions/create-github-app-token@v3",
-        "with": {
-            "client-id": "${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}",
-            "private-key": "${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}",
-            "owner": "${{ github.repository_owner }}",
-            "repositories": ",".join(r.split("/", 1)[1] for r in m.git_read),
-            "permission-contents": "read",
-        },
-    }
-
-
 def upstream_repos(m: Manifest, by_repo: Mapping[str, Manifest]) -> list[str]:
     """`m`'s repo and every repo it depends on, transitively, as far as the fetched manifests tell."""
     seen: dict[str, None] = {m.repo: None}
@@ -884,18 +861,26 @@ def upstream_repos(m: Manifest, by_repo: Mapping[str, Manifest]) -> list[str]:
     return sorted(seen)
 
 
-def _reader_mint_step(repos: Sequence[str]) -> Step:
-    """Read-only, on the repos the job resolves: the job checks out code under test."""
+def _reader_mint_step(repos: Sequence[str] | str) -> Step:
+    """Read-only, on the repos the job resolves (or '*'): the job checks out code under test."""
     return {
         "id": "mint",
         "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
         "with": {
             "client-id": "${{ secrets.CI_READER_APP_CLIENT_ID }}",
             "private-key": "${{ secrets.CI_READER_APP_PRIVATE_KEY }}",
-            "repositories": ",".join(r.split("/", 1)[1] for r in repos),
+            "repositories": repos if isinstance(repos, str) else ",".join(r.split("/", 1)[1] for r in repos),
             "permissions": "contents:read actions:read",
         },
     }
+
+
+def _git_read_mint_step(m: Manifest) -> Step:
+    """A second reader token, on `git-read` alone, for the job script."""
+    step = _reader_mint_step(m.git_read)
+    step["id"] = "git-read"
+    step["with"]["permissions"] = "contents:read"
+    return step
 
 
 REBUILD_JOB_ID: Final = "rebuild-producers"
@@ -1025,7 +1010,7 @@ def _hpc_build_step(mk: MatrixKind) -> Step:
 # Only a public upstream's dispatch (workflow_dispatch with from-jobs) posts check
 # runs; reusable-workflow calls already show on the PR.
 _CHECK_RUN_WHEN: Final = "github.event_name == 'workflow_dispatch' && inputs.from-jobs != '[]'"
-_REPORT_CHECK_RUN_ACTION: Final = "ecmwf/ci-infrastructure/actions/report-check-run@main"
+_REPORT_CHECK_RUNS_ACTION: Final = "ecmwf/ci-infrastructure/actions/report-check-runs@main"
 _ANNOUNCE_IMAGE_ACTION: Final = "ecmwf/ci-infrastructure/actions/announce-image@main"
 _RUN_URL: Final = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
@@ -1038,22 +1023,58 @@ def _announce_image_step() -> Step:
     }
 
 
-def _check_run_step(check_name: str, phase: Literal["start", "finish"]) -> Step:
-    step: Step = {"id": "check_start"} if phase == "start" else {"name": "Report check-run conclusion"}
-    step["if"] = "${{ " + ("always() && " if phase == "finish" else "") + _CHECK_RUN_WHEN + " }}"
-    step["uses"] = _REPORT_CHECK_RUN_ACTION
-    step["with"] = {
-        "token": "${{ steps.mint.outputs.token }}",
+def _kind_matrix(kind: str) -> str:
+    return f"fromJSON(inputs.resolved || needs.{_RESOLVE_JOB_ID}.outputs.json)['{kind}']"
+
+
+def _check_run_jobs(display: str, kind: str, jid: str, kind_filter: str) -> dict[str, dict[str, Any]]:
+    """The kind's check runs on the dispatcher's commit, from two jobs beside its legs: no reporter key in a leg."""
+    start, finish = f"check-start__{jid}", f"check-finish__{jid}"
+    report = {
+        "client-id": "${{ secrets.CI_REPORTER_APP_CLIENT_ID }}",
+        "private-key": "${{ secrets.CI_REPORTER_APP_PRIVATE_KEY }}",
         "head-repo": "${{ inputs.from-repo }}",
         "head-sha": "${{ inputs.from-sha }}",
-        "name": check_name,
-        "details-url": _RUN_URL,
-        "phase": phase,
     }
-    if phase == "finish":
-        step["with"]["conclusion"] = "${{ job.status }}"
-        step["with"]["check-run-id"] = "${{ steps.check_start.outputs.check-run-id }}"
-    return step
+    runs = f"needs.{start}.outputs.check-runs"
+    return {
+        start: {
+            "needs": [_RESOLVE_JOB_ID],
+            "if": f"${{{{ !failure() && !cancelled() && ({kind_filter}) && {_CHECK_RUN_WHEN} }}}}",
+            "runs-on": PACKAGE_RUNNER,
+            "permissions": {},
+            "outputs": {"check-runs": "${{ steps.report.outputs.check-runs }}"},
+            "steps": [
+                {
+                    "id": "report",
+                    "uses": _REPORT_CHECK_RUNS_ACTION,
+                    "with": {
+                        **report,
+                        "phase": "start",
+                        "job-name": display,
+                        "matrix": f"${{{{ toJSON({_kind_matrix(kind)}) }}}}",
+                    },
+                }
+            ],
+        },
+        finish: {
+            "needs": [start, jid],
+            "if": f"${{{{ always() && {runs} != '' && {runs} != '{{}}' }}}}",
+            "runs-on": PACKAGE_RUNNER,
+            "permissions": {"actions": "read"},
+            "steps": [
+                {
+                    "uses": _REPORT_CHECK_RUNS_ACTION,
+                    "with": {
+                        **report,
+                        "phase": "finish",
+                        "check-runs": f"${{{{ {runs} }}}}",
+                        "job-result": f"${{{{ needs.{jid}.result }}}}",
+                    },
+                }
+            ],
+        },
+    }
 
 
 def _publish_steps(m: Manifest, kind: str, root_output: str, found: str | None = None) -> list[Step]:
@@ -1079,7 +1100,7 @@ def _publish_steps(m: Manifest, kind: str, root_output: str, found: str | None =
 _RESOLVED_REF: Final = "${{ inputs.resolved-ref || needs.resolve.outputs.ref }}"
 
 
-def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]:
+def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef], repos: Sequence[str]) -> dict[str, Any]:
     mk = m.matrices[kind]
     display = f"{m.package_name}/{kind}"
 
@@ -1105,8 +1126,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     job_name = f"{display} (${{{{ matrix._resolved['job-name'] }}}})"
 
     steps: list[Step] = [
-        _mint_step(_BUILD_LEG_PERMISSIONS),
-        _check_run_step(job_name, "start"),
+        _reader_mint_step(repos),
         # Before checkout, so an early failure still names the image.
         _announce_image_step(),
         {
@@ -1157,7 +1177,6 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
                     },
                 }
             )
-    steps.append(_check_run_step(job_name, "finish"))
 
     job: dict[str, Any] = {
         "needs": needs_list,
@@ -1175,7 +1194,7 @@ def _kind_job(m: Manifest, kind: str, cross: Sequence[JobRef]) -> dict[str, Any]
     job["container"] = container
     job["strategy"] = {
         "fail-fast": False,
-        "matrix": f"${{{{ fromJSON(inputs.resolved || needs.resolve.outputs.json)['{kind}'] }}}}",
+        "matrix": f"${{{{ {_kind_matrix(kind)} }}}}",
     }
     job["steps"] = steps
     return job
@@ -1683,7 +1702,7 @@ def _validate_job() -> dict[str, Any]:
         "if": _SUCCESS_GATE,
         "runs-on": PACKAGE_RUNNER,
         "steps": [
-            _mint_step(),
+            _reader_mint_step("*"),
             {
                 "uses": "actions/checkout@v6",
                 "with": {
@@ -1905,7 +1924,16 @@ def _orchestrator_dispatch_job(
         "needs": ["validate", _RESOLVE_JOB_ID, *dep_job_ids],
         "runs-on": SLIM_RUNNER,
         "steps": [
-            _mint_step(),
+            {
+                "id": "mint",
+                "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
+                "with": {
+                    "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                    "private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
+                    "repositories": crepo.split("/", 1)[1],
+                    "permissions": "actions:write",
+                },
+            },
             {
                 "name": f"Dispatch {cpkg} (private consumer)",
                 "uses": "ecmwf/ci-infrastructure/actions/dispatch-and-wait@main",

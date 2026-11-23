@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Report check runs back to the dispatcher
+description: >
+  Post one check run per build leg on the dispatcher's commit, so a dispatched run reports
+  pass/fail on the upstream PR. phase=start creates them in progress before the legs run;
+  phase=finish completes them from this run's job conclusions. Run it in its own job without a
+  checkout: the reporter key must not sit beside the code under test. Best-effort: bookkeeping
+  never changes a result.
+
+inputs:
+  client-id:
+    description: 'Client ID of the reporter App.'
+    required: true
+  private-key:
+    description: 'Private key of the reporter App (PEM).'
+    required: true
+  head-repo:
+    description: 'owner/repo whose commit the check runs are attached to (from-repo).'
+    required: true
+  head-sha:
+    description: 'Commit SHA on head-repo (from-sha).'
+    required: true
+  phase:
+    description: 'start | finish'
+    required: true
+  job-name:
+    description: "For phase=start: the legs' job name up to the matrix part, e.g. 'cxxmath/build'."
+    required: false
+    default: ''
+  matrix:
+    description: "For phase=start: the kind's resolved matrix, {\"include\": [...]}; each leg's `_resolved.job-name` completes its name."
+    required: false
+    default: ''
+  check-runs:
+    description: 'For phase=finish: the check-runs output of phase=start.'
+    required: false
+    default: ''
+  job-result:
+    description: "For phase=finish: the legs' needs.<job>.result, for a leg that never ran."
+    required: false
+    default: ''
+
+outputs:
+  check-runs:
+    description: 'phase=start: JSON object, check-run name to id.'
+    value: ${{ steps.start.outputs.check-runs }}
+
+runs:
+  using: composite
+  steps:
+    - id: repo
+      shell: bash
+      env:
+        HEAD_REPO: ${{ inputs.head-repo }}
+        OWNER: ${{ github.repository_owner }}
+      run: |
+        set -euo pipefail
+        if [[ "$HEAD_REPO" =~ ^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]] && [ "${BASH_REMATCH[1]}" = "$OWNER" ]; then
+          echo "name=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning title=check-run::'$HEAD_REPO' is not a repository of $OWNER; no check runs."
+        fi
+
+    - id: mint
+      if: steps.repo.outputs.name != ''
+      continue-on-error: true
+      uses: ecmwf/ci-infrastructure/actions/mint-token@main
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        repositories: ${{ steps.repo.outputs.name }}
+        permissions: checks:write
+
+    - id: start
+      if: inputs.phase == 'start' && steps.mint.outputs.token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+        HEAD_REPO: ${{ inputs.head-repo }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        JOB_NAME: ${{ inputs.job-name }}
+        MATRIX: ${{ inputs.matrix }}
+        DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -uo pipefail
+        ids='{}'
+        while IFS= read -r leg; do
+          name="$JOB_NAME ($leg)"
+          id=$(gh api -X POST "repos/$HEAD_REPO/check-runs" -f name="$name" -f head_sha="$HEAD_SHA" \
+                 -f status=in_progress -f details_url="$DETAILS_URL" --jq .id 2>/dev/null) || id=""
+          if [ -n "$id" ]; then
+            ids=$(jq -c --arg n "$name" --argjson i "$id" '. + {($n): $i}' <<< "$ids")
+          else
+            echo "::warning title=check-run::Could not create in-progress check '$name' on $HEAD_REPO."
+          fi
+        done < <(jq -r '(.include // [])[]._resolved["job-name"]' <<< "${MATRIX:-null}")
+        echo "check-runs=$ids" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.phase == 'finish' && steps.mint.outputs.token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+        RUN_TOKEN: ${{ github.token }}
+        HEAD_REPO: ${{ inputs.head-repo }}
+        CHECK_RUNS: ${{ inputs.check-runs }}
+        JOB_RESULT: ${{ inputs.job-result }}
+      run: |
+        set -uo pipefail
+        # The job needs `actions: read` for its own run's jobs.
+        jobs=$(GH_TOKEN="$RUN_TOKEN" gh api --paginate \
+                 "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+                 --jq '.jobs[] | {(.name): .conclusion}' 2>/dev/null | jq -cs 'add // {}') || jobs='{}'
+        case "$JOB_RESULT" in
+          success|failure|cancelled|skipped) fallback="$JOB_RESULT" ;;
+          *) fallback=cancelled ;;
+        esac
+        while IFS=$'\t' read -r name id; do
+          conclusion=$(jq -r --arg n "$name" '.[$n] // empty' <<< "$jobs")
+          case "$conclusion" in
+            success|failure|cancelled|skipped|timed_out|neutral|action_required) ;;
+            *) conclusion="$fallback" ;;
+          esac
+          gh api -X PATCH "repos/$HEAD_REPO/check-runs/$id" -f status=completed -f conclusion="$conclusion" \
+            >/dev/null 2>&1 || echo "::warning title=check-run::Could not complete check '$name' on $HEAD_REPO."
+        done < <(jq -r '(. // {}) | to_entries[] | [.key, (.value | tostring)] | @tsv' <<< "${CHECK_RUNS:-null}")

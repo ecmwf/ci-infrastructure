@@ -377,17 +377,16 @@ A ``ci.yml`` does the same before its build step:
 .. code:: yaml
 
    - id: git-read
-     uses: actions/create-github-app-token@v3
+     uses: ecmwf/ci-infrastructure/actions/mint-token@main
      with:
-       client-id: ${{ secrets.CI_PERMISSIONS_APP_CLIENT_ID }}
-       private-key: ${{ secrets.CI_PERMISSIONS_APP_PRIVATE_KEY }}
-       owner: ${{ github.repository_owner }}
+       client-id: ${{ secrets.CI_READER_APP_CLIENT_ID }}
+       private-key: ${{ secrets.CI_READER_APP_PRIVATE_KEY }}
        repositories: bindman
-       permission-contents: read
+       permissions: contents:read
    - id: build
      uses: ecmwf/ci-infrastructure/actions/run-job-script@main
      with:
        # ... as above
        git-token: ${{ steps.git-read.outputs.token }}
 
-The GitHub App must be installed on the listed repositories.
+The reader App must be installed on the listed repositories.
