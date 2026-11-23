@@ -9,8 +9,9 @@
 # creates the downstream-CI and HPC-CI labels where missing.
 # Needs admin on each repo. Re-runnable: rulesets are updated by name.
 #
-#   scripts/apply-pr-rules.sh [--dry-run] [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
+#   scripts/apply-pr-rules.sh [--dry-run] [--admin-role <id>]... [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
 #
+# --admin-role: a custom repository role treated like maintainers and admins (e.g. GateKeeper); repeatable.
 # --bot-app-id: a GitHub App whose own PRs need no review (e.g. the workflow
 # regenerator, so it can auto-merge). CI still has to pass.
 # --delete-existing: also delete the repo's other branch rulesets and the classic
@@ -19,17 +20,23 @@ set -euo pipefail
 
 dry=false
 bot_app_id=""
+admin_roles=(2 5)
 delete_existing=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=true; shift ;;
+    --admin-role) admin_roles+=("${2:?--admin-role needs a role id}"); shift 2 ;;
     --bot-app-id) bot_app_id="${2:?--bot-app-id needs an App id}"; shift 2 ;;
     --delete-existing) delete_existing=true; shift ;;
     --*) echo "unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || { echo "usage: $0 [--dry-run] [--bot-app-id <id>] [--delete-existing] owner/repo..." >&2; exit 2; }
+[ $# -gt 0 ] ||
+  { echo "usage: $0 [--dry-run] [--admin-role <id>]... [--bot-app-id <id>] [--delete-existing] owner/repo..." >&2; exit 2; }
+for id in "${admin_roles[@]}"; do
+  [[ "$id" =~ ^[0-9]+$ ]] || { echo "role ids must be numeric: $id" >&2; exit 2; }
+done
 [[ -z "$bot_app_id" || "$bot_app_id" =~ ^[0-9]+$ ]] || { echo "--bot-app-id must be numeric" >&2; exit 2; }
 
 # gh with a JSON body on stdin; in a dry run, only print it.
@@ -57,8 +64,11 @@ current_ruleset() {
 # A file on the default branch, empty if missing.
 raw() { gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$1" 2>/dev/null || true; }
 
-# RepositoryRole ids: 2 = maintain, 5 = admin.
-roles() { jq -n --arg m "$1" '[2, 5] | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m})'; }
+# RepositoryRole ids: 2 = maintain, 5 = admin, plus any --admin-role.
+roles() {
+  jq -n --arg m "$1" --argjson ids "$(printf '%s\n' "${admin_roles[@]}" | jq -s .)" \
+    '$ids | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m})'
+}
 # The roles, plus the bot App. Exempt, not pull_request: auto-merge never takes a bypass, it waits for the review.
 approval_bypass() {
   if [ -n "$bot_app_id" ]; then
