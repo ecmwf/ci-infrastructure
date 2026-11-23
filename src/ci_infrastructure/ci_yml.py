@@ -22,6 +22,7 @@ from .generate_downstream_ci import (
     Manifest,
     SchemaError,
     Step,
+    _git_read_mint_step,
     _hpc_build_step,
     _job_script_step,
     _publish_steps,
@@ -114,14 +115,6 @@ def _checkout(m: Manifest) -> Step:
     return {"uses": f"{_ACTIONS}/checkout-under-test@main", "with": with_}
 
 
-def _git_read_step(m: Manifest) -> Step:
-    """A second reader token, on `git-read` alone, for the job script."""
-    step = _reader_mint_step(m.git_read)
-    step["id"] = "git-read"
-    step["with"]["permissions"] = "contents:read"
-    return step
-
-
 def _matrix(kind: str) -> str:
     return f"${{{{ fromJSON(needs.{RESOLVE}.outputs.matrices).{kind} }}}}"
 
@@ -172,7 +165,7 @@ def _kind_job(m: Manifest, kind: str, *, repos: Sequence[str], waits: Mapping[st
             steps += _publish_steps(m, kind, "install-path", found="${{ steps.build.outputs.cache-hit }}")
     else:
         if m.git_read:
-            steps.append(_git_read_step(m))
+            steps.append(_git_read_mint_step(m))
         steps.append(_job_script_step(m, mk))
         if len(mk.packages) > 1:
             steps += _publish_steps(m, kind, "install-root")

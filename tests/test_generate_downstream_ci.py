@@ -322,8 +322,7 @@ def test_job_name_defers_to_the_resolved_slot(tmp_path: Path) -> None:
         runs-on = "ubuntu-latest"
         """,
     )
-    # The job and both check-run steps carry the same title.
-    assert yaml.count("name: a/build (${{ matrix._resolved['job-name'] }})") == 3
+    assert yaml.count("name: a/build (${{ matrix._resolved['job-name'] }})") == 1
 
 
 def test_workflow_runs_the_job_script(tmp_path: Path) -> None:
@@ -788,14 +787,12 @@ def test_build_leg_token_is_scoped_and_not_left_for_the_job_script(tmp_path: Pat
         for step in steps:
             if step.get("uses", "").startswith("actions/checkout@"):
                 assert step["with"]["persist-credentials"] is False, jid
-        if jid in ("resolve", "rebuild-producers"):
+        if jid in ("resolve", "rebuild-producers") or jid.startswith("check-"):
             continue
         [mint] = [s for s in steps if s.get("id") == "mint"]
-        assert {k: v for k, v in mint["with"].items() if k.startswith("permission-")} == {
-            "permission-contents": "read",
-            "permission-actions": "read",
-            "permission-checks": "write",
-        }, jid
+        assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}", jid
+        assert mint["with"]["permissions"] == "contents:read actions:read", jid
+        assert "CI_REPORTER_APP" not in str(steps), jid
 
 
 def test_workflow_uses_pick_ref(tmp_path: Path) -> None:
@@ -836,7 +833,7 @@ def test_orchestrator_basic(tmp_path: Path) -> None:
     assert "actions/validate-generated-workflows@main" in yaml
     assert "needs: [ci-approval, context, label-gate, validate]\n" in yaml
     assert "needs: [ci-approval, context, label-gate, validate, resolve, rebuild-producers, b]\n" in yaml
-    assert "actions/create-github-app-token@v3" in yaml
+    assert "create-github-app-token" not in yaml
     assert "  report-start:\n" in yaml
     assert "  report-result:\n" in yaml
     assert "downstream/runner" in yaml
@@ -957,7 +954,7 @@ def test_git_read_mints_a_read_only_token_for_the_runner_script(tmp_path: Path, 
         assert not mints
         return
     assert mints and all(
-        m["with"]["repositories"] == "bindman,tools" and m["with"]["permission-contents"] == "read" for m in mints
+        m["with"]["repositories"] == "bindman,tools" and m["with"]["permissions"] == "contents:read" for m in mints
     )
     assert scripts and all(s["with"]["git-token"] == "${{ steps.git-read.outputs.token }}" for s in scripts)
 
@@ -992,17 +989,25 @@ def test_private_upstream_uses_workflow_call(tmp_path: Path, a_vis: str, b_vis: 
     assert "dispatch-and-wait" not in yaml
 
 
-def test_kind_job_posts_check_run_on_dispatch(tmp_path: Path) -> None:
-    """Only a workflow_dispatch with from-jobs reports a check run to the dispatcher."""
+def test_check_runs_are_reported_beside_the_legs(tmp_path: Path) -> None:
+    """Only a workflow_dispatch with from-jobs reports check runs, from jobs that hold the reporter key and no code."""
     _make_chain_ab(tmp_path, a_vis="public", b_vis="private")
-    yaml = _consumer(tmp_path, "b")
-    assert "actions/report-check-run@main" in yaml
-    assert "phase: start" in yaml
-    assert "phase: finish" in yaml
-    assert "conclusion: ${{ job.status }}" in yaml
-    assert "github.event_name == 'workflow_dispatch' && inputs.from-jobs != '[]'" in yaml
-    assert "head-repo: ${{ inputs.from-repo }}" in yaml
-    assert "details-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" in yaml
+    jobs = yaml.safe_load(_consumer(tmp_path, "b"))["jobs"]
+    start, finish = jobs["check-start__b__build"], jobs["check-finish__b__build"]
+
+    assert "github.event_name == 'workflow_dispatch' && inputs.from-jobs != '[]'" in start["if"]
+    assert start["needs"] == ["resolve"]
+    assert finish["needs"] == ["check-start__b__build", "b__build"]
+    assert finish["permissions"] == {"actions": "read"}
+    for job, phase in ((start, "start"), (finish, "finish")):
+        (step,) = job["steps"]
+        assert step["uses"] == "ecmwf/ci-infrastructure/actions/report-check-runs@main"
+        assert step["with"]["phase"] == phase
+        assert step["with"]["client-id"] == "${{ secrets.CI_REPORTER_APP_CLIENT_ID }}"
+        assert step["with"]["head-repo"] == "${{ inputs.from-repo }}"
+    assert start["steps"][0]["with"]["job-name"] == "b/build"
+    assert finish["steps"][0]["with"]["job-result"] == "${{ needs.b__build.result }}"
+    assert "check-start__b__build" not in jobs["b__build"]["needs"]
 
 
 def test_kind_job_announces_its_image_before_the_checkout(tmp_path: Path) -> None:
@@ -1934,11 +1939,14 @@ def test_status_jobs_post_to_their_own_repo_with_the_plain_token(tmp_path: Path,
     assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
 
 
-def test_cross_repo_jobs_keep_the_app_token(tmp_path: Path) -> None:
+def test_validate_reads_sibling_repos_with_the_reader(tmp_path: Path) -> None:
     """validate reads sibling repos, which github.token cannot."""
     job = _render_gate(tmp_path, _GATE_UPSTREAM)["jobs"]["validate"]
 
-    assert any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
+    [mint] = [s for s in job["steps"] if s.get("id") == "mint"]
+    assert mint["uses"] == "ecmwf/ci-infrastructure/actions/mint-token@main"
+    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
+    assert mint["with"]["repositories"] == "*"
     assert "permissions" not in job
 
 
