@@ -89,8 +89,10 @@ They protect against malicious or compromised accounts; the repository rules abo
 - ``org-branch-pr``: changes only via PR; a PR that touches a file the repository's ``CODEOWNERS`` covers
   needs one approval from a `code owner <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_ that
 
-  - does not come from the last pusher, and
+  - does not come from the PR's author, and
   - is dismissed by a new push.
+
+  It does not require approval of the last push: that would demand an approval on every PR.
 
   Each repository's ``CODEOWNERS`` gives ``/.github/``, ``/.ci/``, and ``CODEOWNERS`` to its maintainers,
   so a maintainer needs a second one for those; a catch-all ``*`` line makes every PR code-owned.
@@ -177,7 +179,7 @@ They protect against malicious or compromised accounts; the repository rules abo
 .. [#gk] The ``GateKeeper`` custom role, if both scripts run with ``--admin-role`` and its id;
    a custom role inherits neither the admins' bypass nor the maintainers' exemption.
 .. [#bots] The workflow regenerator, Dependabot, and ``GITHUB_TOKEN``: no bypass, so their PRs need a human approval.
-.. [#approval] Not from the PR's author or its last pusher, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
+.. [#approval] Not from the PR's author, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
 
 Not covered: other branches (unrestricted), tags (a separate organisation ruleset), and required checks (repository rules above).
 

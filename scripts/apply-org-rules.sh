@@ -6,7 +6,7 @@
 
 # Apply the organisation baseline to develop, main, master and the default branch of every repo:
 # no deletion or force-push, changes via PR; a PR touching a file that CODEOWNERS covers needs one approval
-# from a code owner (dismissed by a new push, never from the last pusher). Other approvals are repo rules.
+# from a code owner (dismissed by a new push). Other approvals are repo rules.
 # Nobody pushes directly; only admins may merge without the code owner's approval.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #
@@ -60,11 +60,12 @@ admins() {
     [{actor_type: "OrganizationAdmin", actor_id: null, bypass_mode: $m}]
     + ($ids | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m}))'
 }
-# Only code-owned files need an approval here, so maintainers do not get used to the bypass tick.
+# Only code-owned files need an approval here, so maintainers do not get used to the bypass tick;
+# last-push approval would demand one on every PR, dismissing stale approvals covers code-owned files.
 pull_request() {
   jq -n '{type: "pull_request", parameters: {
     required_approving_review_count: 0, dismiss_stale_reviews_on_push: true,
-    require_code_owner_review: true, require_last_push_approval: true,
+    require_code_owner_review: true, require_last_push_approval: false,
     required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
 ruleset() {
