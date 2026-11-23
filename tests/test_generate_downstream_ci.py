@@ -17,7 +17,7 @@ import pytest
 import yaml
 from conftest import parse_all, render_single, write_repo
 
-from ci_infrastructure import check_ci_approval
+from ci_infrastructure import check_ci_approval, generate_downstream_ci
 from ci_infrastructure._errors import CIError
 from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, Execution
 from ci_infrastructure.generate_downstream_ci import (
@@ -1797,15 +1797,32 @@ def _trigger_manifest(name: str, repo: str, targets: list[str]) -> str:
     )
 
 
-def test_warns_when_a_trigger_target_manifest_is_unreadable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_warns_when_a_trigger_target_manifest_is_unreadable_on_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     local = parse_manifest_text(_trigger_manifest("up", "ecmwf/up", ["ecmwf/absent"]), tmp_path / ".ci/manifest.toml")
+    monkeypatch.setattr(
+        generate_downstream_ci, "fetch_manifests_layer", lambda layer, **_: {rr: (None, False) for rr in layer}
+    )
 
-    _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
+    _fetch_sibling_manifests(local, None, ".ci/manifest.toml")
 
     err = capsys.readouterr().err
     assert "::warning::" in err
     assert "ecmwf/absent" in err
     assert "--sibling-root" in err
+
+
+@pytest.mark.parametrize("missing", ["trigger", "dep"])
+def test_a_missing_clone_under_sibling_root_is_an_error(tmp_path: Path, missing: str) -> None:
+    """A missing consumer would drop its jobs from the orchestrator, or delete it outright."""
+    text = _trigger_manifest("up", "ecmwf/up", ["ecmwf/absent"] if missing == "trigger" else [])
+    if missing == "dep":
+        text += '\n[[deps]]\nrepo = "ecmwf/absent"\npackage = "absent"\nref = "main"\ncompiler-inputs = []\n'
+    local = parse_manifest_text(text, tmp_path / ".ci/manifest.toml")
+
+    with pytest.raises(CIError, match="ecmwf/absent"):
+        _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
 
 
 def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

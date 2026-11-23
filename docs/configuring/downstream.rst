@@ -154,7 +154,8 @@ resolves in its own run, pinned to the same commits.
 The generated files must follow the manifests, also those of the other repositories.
 :action:`validate-generated-workflows` reports when they have drifted.
 The workflow ``regenerate-repos.yml`` in ci-infrastructure regenerates them nightly,
-and on a manual run for the repositories it is given,
+and on a manual run for the repositories it is given
+(it still reads the manifests of all listed repositories, since each one's workflows depend on its neighbours),
 and opens a pull request with the regenerated workflows.
 It reads the default branches with a read-only token, runs the generator in a job without any token,
 and writes only the generated files, in a job that runs no code of the repository;
