@@ -86,16 +86,17 @@ to the same branches of every repository, with or without the new CI.
 They protect against malicious or compromised accounts; the repository rules above add the CI checks.
 
 - ``org-branch-integrity``: no deletion, no force-push; no bypass, not even for organisation owners
-- ``org-branch-pr``: changes only via PR, with one approval that
+- ``org-branch-pr``: changes only via PR; a PR that touches ``.github/``, ``.ci/``, or ``CODEOWNERS``
+  needs one approval from the CI reviewers team (``--ci-reviewers``) that
 
-  - does not come from the last pusher,
-  - is dismissed by a new push, and
-  - comes from a code owner where the repository's ``CODEOWNERS`` covers a changed file
-    (`code owners <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_
-    are set per repository; its maintainers own ``.github/`` and ``CODEOWNERS``)
+  - does not come from the last pusher, and
+  - is dismissed by a new push.
 
-  Organisation owners, admins, gatekeepers, and maintainers may merge a PR without that approval (bypass tick),
-  but nobody pushes directly.
+  Other PRs need no approval at this level; the repository rules above require it from everyone but maintainers and admins,
+  and `code owners <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>`_
+  are set per repository.
+  Organisation owners, admins, gatekeepers, and maintainers may merge a CI-file PR without that approval (bypass tick),
+  but nobody pushes directly; for any other PR they need no bypass, so the tick stays the exception.
 
 .. list-table::
    :header-rows: 1
@@ -140,7 +141,7 @@ They protect against malicious or compromised accounts; the repository rules abo
      - X
      -
      - X
-   * - merge without a valid approval (bypass tick)
+   * - merge a CI-file PR without a valid approval (bypass tick)
      - X
      - X
      - X
@@ -176,7 +177,8 @@ They protect against malicious or compromised accounts; the repository rules abo
 .. [#gk] The ``GateKeeper`` custom role, if the script runs with ``--admin-role`` and its id;
    a custom role does not inherit the maintainers' bypass.
 .. [#bots] The workflow regenerator, Dependabot, and ``GITHUB_TOKEN``: no bypass, so their PRs need a human approval.
-.. [#approval] Not from the PR's author or its last pusher, with no push after it, and from a code owner where ``CODEOWNERS`` applies.
+.. [#approval] Not from the PR's author or its last pusher, with no push after it; for CI files from the CI reviewers team,
+   elsewhere from a code owner where the repository's ``CODEOWNERS`` applies.
 
 Not covered: other branches (unrestricted), tags (a separate organisation ruleset), and required checks (repository rules above).
 
