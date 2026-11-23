@@ -5,10 +5,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Apply the organisation baseline to develop, main, master and the default branch of every repo:
-# no deletion or force-push, changes via PR with one approval (dismissed by a new push, never from the
-# last pusher; from a code owner where CODEOWNERS covers a changed file). The code owners themselves are
-# set per repo.
-# Nobody pushes directly; admins and maintainers may merge a PR without approval.
+# no deletion or force-push, changes via PR with one approval (dismissed by a new push, never from the last
+# pusher); maintainers and admins are exempt. A PR touching a file that CODEOWNERS covers also needs a code
+# owner's approval; only admins may merge without it (bypass tick). Nobody pushes directly.
 # Needs organisation owner. Re-runnable: rulesets are updated by name; other org rulesets are left alone.
 #
 #   scripts/apply-org-rules.sh [--dry-run] [--evaluate] [--admin-role <id>]... ecmwf
@@ -61,10 +60,11 @@ admins() {
     [{actor_type: "OrganizationAdmin", actor_id: null, bypass_mode: $m}]
     + ($ids | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m}))'
 }
+# pull_request <approvals> <code owners> <last-push approval>
 pull_request() {
-  jq -n '{type: "pull_request", parameters: {
-    required_approving_review_count: 1, dismiss_stale_reviews_on_push: true,
-    require_code_owner_review: true, require_last_push_approval: true,
+  jq -n --argjson n "$1" --argjson owners "$2" --argjson last "$3" '{type: "pull_request", parameters: {
+    required_approving_review_count: $n, dismiss_stale_reviews_on_push: true,
+    require_code_owner_review: $owners, require_last_push_approval: $last,
     required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
 ruleset() {
@@ -74,10 +74,13 @@ ruleset() {
     rules: $rules, bypass_actors: $bypass}'
 }
 
-pr_bypass=$(jq -s 'add' <(admins pull_request) <(jq -n '[{actor_type: "RepositoryRole", actor_id: 2, bypass_mode: "pull_request"}]'))
+# Two rulesets, since a bypass covers a whole ruleset: maintainers and admins are exempt (no tick) from the
+# general approval, but only admins may bypass the code owners. The second one keeps everyone on PRs.
+pr_exempt=$(jq -s 'add' <(admins exempt) <(jq -n '[{actor_type: "RepositoryRole", actor_id: 2, bypass_mode: "exempt"}]'))
 bodies=(
   "$(ruleset org-branch-integrity '[{"type": "deletion"}, {"type": "non_fast_forward"}]' '[]')"
-  "$(ruleset org-branch-pr "[$(pull_request)]" "$pr_bypass")"
+  "$(ruleset org-branch-pr "[$(pull_request 1 false true)]" "$pr_exempt")"
+  "$(ruleset org-branch-codeowners "[$(pull_request 0 true false)]" "$(admins pull_request)")"
 )
 
 echo "$org ($enforcement)"
@@ -95,5 +98,5 @@ for body in "${bodies[@]}"; do
     echo "  created $name"
   fi
 done
-others=$(jq -r 'keys - ["org-branch-integrity", "org-branch-pr"] | join(", ")' <<< "$existing")
+others=$(jq -r 'keys - ["org-branch-integrity", "org-branch-pr", "org-branch-codeowners"] | join(", ")' <<< "$existing")
 [ -z "$others" ] || echo "  note: other org rulesets left untouched: $others"
