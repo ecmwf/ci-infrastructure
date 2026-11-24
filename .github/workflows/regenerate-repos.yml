@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       repos:
-        description: 'Space-separated repos to regenerate, e.g. eckit atlas. Empty: every repo in .github/regenerate-repos.toml.'
+        description: 'Space-separated repos to regenerate, e.g. eckit atlas. Empty: every repo in .github/rolled-out-repos.toml.'
         required: false
         default: ''
 

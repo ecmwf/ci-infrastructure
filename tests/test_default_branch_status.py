@@ -166,8 +166,8 @@ def _repo_node(manifest: str | None) -> dict[str, Any]:
     }
 
 
-def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ecbuild names eckit downstream; eckit needs stack-deps; atlas is found from eckit; mir has no manifest yet."""
+def test_discovery_reads_only_the_listed_repos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """eckit names atlas downstream, but only listed repos are read; mir has no manifest yet."""
 
     def pkg(name: str, body: str = "") -> str:
         return f'[package]\nname = "{name}"\nrepo = "o/{name}"\nvisibility = "private"\ncompiler-inputs = []\n{body}'
@@ -180,9 +180,8 @@ def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch:
 
     manifests = {
         "o/ecbuild": pkg("ecbuild", trigger("o/eckit")),
-        "o/eckit": pkg("eckit", dep("o/ecbuild") + dep("o/stack") + trigger("o/atlas") + trigger("elsewhere/x")),
-        "o/stack": pkg("stack"),
-        "o/atlas": pkg("atlas", dep("o/eckit") + trigger("o/mir")),
+        "o/eckit": pkg("eckit", dep("o/ecbuild") + trigger("o/atlas")),
+        "o/atlas": pkg("atlas", dep("o/eckit")),
         "o/mir": None,
     }
     asked: list[str] = []
@@ -195,12 +194,11 @@ def test_discovery_follows_deps_and_triggers_but_stays_in_the_owner(monkeypatch:
     monkeypatch.setattr(dbs, "gh_api_graphql", graphql)
     monkeypatch.setattr(dbs, "_runs", lambda repo, branch, token: ())
 
-    states = dbs.fetch(("o/ecbuild",), None)
+    states = dbs.fetch(("o/ecbuild", "o/eckit", "o/mir"), None)
 
-    assert sorted(states) == ["o/atlas", "o/ecbuild", "o/eckit", "o/stack"]
-    assert sorted(asked) == ["o/atlas", "o/ecbuild", "o/eckit", "o/mir", "o/stack"]
-    assert states["o/eckit"].upstream == ("o/ecbuild", "o/stack")
-    assert states["o/atlas"].upstream == ("o/eckit",)
+    assert sorted(states) == ["o/ecbuild", "o/eckit"]
+    assert asked == ["o/ecbuild", "o/eckit", "o/mir"]
+    assert states["o/eckit"].upstream == ("o/ecbuild",)
 
 
 def test_summary_flags_direct_pushes_and_opens_failing_repos() -> None:

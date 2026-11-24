@@ -7,8 +7,8 @@
 """Dashboard of the default branches of the rolled-out repos: their CI, who broke it, who pushed without a PR
 or merged one without green CI.
 
-The repos are found from ecbuild and anemoi-utils along the manifests' `[[deps]]` and `[[trigger-downstream]]`;
-each group of connected repos gets its own table.
+The repos are those in `.github/rolled-out-repos.toml`; each group of repos connected through their manifests'
+`[[deps]]` and `[[trigger-downstream]]` gets its own table.
 Writes the dashboard to $GITHUB_STEP_SUMMARY and fails when a repo's default branch is red or blocked.
 """
 
@@ -29,9 +29,9 @@ import click
 from . import manifest
 from ._errors import CIError
 from ._github_api import IN_PROGRESS_STATUSES, ManifestSchemaError, _alias, gh_api_graphql, gh_api_rest, select_token
+from .regenerate_targets import targets
 
-#: Where discovery starts: the bottom of each stack, whose manifest names its consumers.
-SEEDS: Final = ("ecmwf/ecbuild", "ecmwf/anemoi-utils")
+ROLLED_OUT: Final = Path(".github/rolled-out-repos.toml")
 CI_WORKFLOW: Final = "ci.yml"
 CI_RESULT: Final = "ci-result"  # the commit status a ci.yml run sets on what it built
 _HISTORY: Final = 100  # commits fetched to walk the first-parent chain
@@ -252,19 +252,21 @@ def repo_state(repo: str, data: Mapping[str, Any], runs: tuple[Run, ...], upstre
     return RepoState(repo, branch, upstream, commits, runs)
 
 
+def rolled_out() -> list[str]:
+    """The `owner/repo` of every repo in `ROLLED_OUT`, relative to a ci-infrastructure checkout."""
+    return [f"ecmwf/{t['repo']}" for t in targets(tomllib.loads(ROLLED_OUT.read_text(encoding="utf-8")))]
+
+
 def discover(
-    seeds: Sequence[str], token: str | None, query: Callable[[Sequence[str]], str] = _query
+    repos: Sequence[str], token: str | None, query: Callable[[Sequence[str]], str] = _query
 ) -> tuple[dict[str, Mapping[str, Any]], dict[str, Edges]]:
-    """Every repo with a manifest reachable from `seeds`, with its `query` node and edges.
+    """Each of `repos` that has a manifest, with its `query` node and edges.
 
     `query` must select `manifest` and `defaultBranchRef` like `_query`.
     """
-    owner = seeds[0].split("/", 1)[0]
     nodes: dict[str, Mapping[str, Any]] = {}
     edges: dict[str, Edges] = {}
-    queue, seen = list(seeds), set(seeds)
-    while queue:
-        repo = queue.pop(0)
+    for repo in repos:
         # one query per repo: all of them in one exceeds what GitHub answers (HTTP 502)
         result = gh_api_graphql(query([repo]), token)
         data = result.get("data") if isinstance(result, dict) else None
@@ -279,10 +281,6 @@ def discover(
             print(f"::notice::{repo}: no .ci/manifest.toml on the default branch yet; skipped", file=sys.stderr)
             continue
         nodes[repo], edges[repo] = node, edges_of(text, repo)
-        for nxt in (*edges[repo].upstream, *edges[repo].downstream):
-            if nxt not in seen and nxt.split("/", 1)[0] == owner:
-                seen.add(nxt)
-                queue.append(nxt)
     return nodes, edges
 
 
@@ -406,14 +404,14 @@ def window(now: datetime, since: date | None = None, until: date | None = None) 
 
 
 def fetch(
-    seeds: Sequence[str],
+    repos: Sequence[str],
     token: str | None,
     start: datetime | None = None,
     end: datetime | None = None,
     now: datetime | None = None,
 ) -> dict[str, RepoState]:
-    """The state of every repo `discover` finds; with `start` and `end`, also `with_ci_before`."""
-    nodes, edges = discover(seeds, token)
+    """The state of each of `repos`; with `start` and `end`, also `with_ci_before`."""
+    nodes, edges = discover(repos, token)
     states = {
         repo: repo_state(
             repo,
@@ -526,7 +524,7 @@ def render_summary(
     for group in groups(states):
         lines += [
             "",
-            f"## From {states[next((r for r in group if r in SEEDS), group[0])].name}",
+            f"## From {states[group[0]].name}",
             "",
             "| | Repo | Branch | Last completed run | Upstream | Status |",
             "|---|---|---|---|---|---|",
@@ -680,7 +678,7 @@ def main(exclude: tuple[str, ...], since: datetime | None, until: datetime | Non
         now = datetime.now(UTC)
         days = (since.date() if since else None, until.date() if until else None)
         start, end = window(now, *days) if pushes else (None, None)
-        states = fetch(SEEDS, select_token(), start, end, now)
+        states = fetch(rolled_out(), select_token(), start, end, now)
         summary = render_summary(states, now, frozenset(exclude), *days, pushes=pushes)
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc

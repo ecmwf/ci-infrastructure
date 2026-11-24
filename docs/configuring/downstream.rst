@@ -163,7 +163,7 @@ the key of the bot App is an environment secret that only ``main`` of ci-infrast
 It also pins the ``rev`` of the ci-infrastructure hooks in ``.pre-commit-config.yaml`` to the commit that generated them,
 so the pull request is checked by the hooks that match its files.
 
-The repositories and their settings are listed in ``.github/regenerate-repos.toml`` of ci-infrastructure;
+The repositories and their settings are listed in ``.github/rolled-out-repos.toml`` of ci-infrastructure;
 the bot App must be installed on each of them.
 ``labels`` are set on a new pull request, by default ``downstream-ci-not-needed`` and ``hpc-ci-not-needed``, since it changes only generated workflows.
 ``title`` sets the pull request's title and commit subject, e.g. ``chore: Regenerate downstream-CI workflows`` where pull request titles must follow conventional commits.

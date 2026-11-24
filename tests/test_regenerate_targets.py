@@ -14,7 +14,7 @@ from click.testing import CliRunner
 from ci_infrastructure._errors import CIError
 from ci_infrastructure.regenerate_targets import main, targets
 
-CONFIG = Path(__file__).parents[1] / ".github" / "regenerate-repos.toml"
+CONFIG = Path(__file__).parents[1] / ".github" / "rolled-out-repos.toml"
 DEFAULTS = {"mode": "pr", "labels": ["x"], "title": "t"}
 
 

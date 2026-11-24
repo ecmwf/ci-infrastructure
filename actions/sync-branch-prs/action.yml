@@ -37,6 +37,7 @@ runs:
       env:
         GH_TOKEN: ${{ steps.token.outputs.token }}
         BRANCH: ${{ github.event.pull_request.head.ref }}
+      working-directory: ${{ github.action_path }}/../..
       run: |
         set -euo pipefail
         "$CI_INFRASTRUCTURE_PYTHON" -I -u -m ci_infrastructure.sync_branch_prs --branch "$BRANCH"
