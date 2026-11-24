@@ -26,7 +26,7 @@ inputs:
   permissions:
     description: >
       Comma-, space- or newline-separated `name:level` pairs, e.g. "contents:read actions:read";
-      names: actions, administration, checks, contents, pull-requests; levels: read, write.
+      names: actions, administration, checks, contents, issues, pull-requests; levels: read, write.
     required: true
 
 outputs:
@@ -50,8 +50,8 @@ runs:
         set -euo pipefail -f
         fail() { echo "::error title=mint-token::$*"; exit 1; }
 
-        names=(actions administration checks contents pull-requests)
-        levels=("" "" "" "" "")
+        names=(actions administration checks contents issues pull-requests)
+        levels=("" "" "" "" "" "")
         for pair in $(tr ',' ' ' <<< "$PERMISSIONS"); do
           name="${pair%%:*}" level="${pair#*:}"
           [[ "$level" == read || "$level" == write ]] || fail "'$pair' is not name:read or name:write"
@@ -94,4 +94,5 @@ runs:
         permission-administration: ${{ steps.check.outputs.administration }}
         permission-checks: ${{ steps.check.outputs.checks }}
         permission-contents: ${{ steps.check.outputs.contents }}
+        permission-issues: ${{ steps.check.outputs.issues }}
         permission-pull-requests: ${{ steps.check.outputs.pull-requests }}
