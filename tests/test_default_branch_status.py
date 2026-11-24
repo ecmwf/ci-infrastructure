@@ -167,7 +167,7 @@ def _repo_node(manifest: str | None) -> dict[str, Any]:
 
 
 def test_discovery_reads_only_the_listed_repos(monkeypatch: pytest.MonkeyPatch) -> None:
-    """eckit names atlas downstream, but only listed repos are read; mir has no manifest yet."""
+    """eckit names atlas downstream, but only listed repos are read; mir has no manifest yet; down does not answer."""
 
     def pkg(name: str, body: str = "") -> str:
         return f'[package]\nname = "{name}"\nrepo = "o/{name}"\nvisibility = "private"\ncompiler-inputs = []\n{body}'
@@ -183,21 +183,22 @@ def test_discovery_reads_only_the_listed_repos(monkeypatch: pytest.MonkeyPatch) 
         "o/eckit": pkg("eckit", dep("o/ecbuild") + trigger("o/atlas")),
         "o/atlas": pkg("atlas", dep("o/eckit")),
         "o/mir": None,
+        "o/down": None,
     }
     asked: list[str] = []
 
-    def graphql(query: str, token: str | None) -> dict[str, Any]:
+    def graphql(query: str, token: str | None) -> dict[str, Any] | None:
         repo = next(r for r in manifests if f'name: "{r.split("/")[1]}"' in query)
         asked.append(repo)
-        return {"data": {f"r_{_alias(repo)}": _repo_node(manifests[repo])}}
+        return None if repo == "o/down" else {"data": {f"r_{_alias(repo)}": _repo_node(manifests[repo])}}
 
     monkeypatch.setattr(dbs, "gh_api_graphql", graphql)
     monkeypatch.setattr(dbs, "_runs", lambda repo, branch, token: ())
 
-    states = dbs.fetch(("o/ecbuild", "o/eckit", "o/mir"), None)
+    states = dbs.fetch(("o/ecbuild", "o/eckit", "o/mir", "o/down"), None)
 
     assert sorted(states) == ["o/ecbuild", "o/eckit"]
-    assert asked == ["o/ecbuild", "o/eckit", "o/mir"]
+    assert asked == ["o/ecbuild", "o/eckit", "o/mir", "o/down"]
     assert states["o/eckit"].upstream == ("o/ecbuild",)
 
 
