@@ -52,7 +52,7 @@ def targets(config: Mapping[str, Any], only: Sequence[str] = ()) -> list[dict[st
     "--config",
     "path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=Path(".github/regenerate-repos.toml"),
+    default=Path(".github/rolled-out-repos.toml"),
 )
 @click.option("--repos", default="", help="Space- or comma-separated subset of the configured repos.")
 def main(path: Path, repos: str) -> None:

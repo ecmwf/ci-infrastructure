@@ -25,7 +25,7 @@ import click
 
 from ._errors import CIError
 from ._github_api import _alias, _gh, select_token
-from .default_branch_status import SEEDS, Edges, discover, ordered
+from .default_branch_status import Edges, discover, ordered, rolled_out
 from .sync_branch import is_sync_branch
 
 BEGIN: Final = "<!-- SYNC-BRANCH_BEGIN -->"
@@ -126,7 +126,7 @@ def main(branch: str, dry_run: bool) -> None:
         return
     token = select_token()
     try:
-        prs = involved(*discover(SEEDS, token, query_for(branch)))
+        prs = involved(*discover(rolled_out(), token, query_for(branch)))
     except CIError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"{branch}: " + (", ".join(p.url for p in prs) or "no pull requests"))

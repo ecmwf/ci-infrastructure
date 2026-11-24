@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# The repos regenerate-repos.yml writes to; the regenerator App must be installed on each.
+# The rolled-out repos: regenerate-repos.yml writes to them, default-branch-status.yml shows them.
+# The regenerator App must be installed on each.
 # mode: 'pr', 'pr-auto-merge' or 'auto-commit'.
 
 [defaults]
