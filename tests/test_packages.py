@@ -18,7 +18,7 @@ import yaml
 from conftest import parse_all, render_single, write_repo
 
 from ci_infrastructure import resolve_deps, s3_store
-from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, ManifestSchemaError
+from ci_infrastructure._github_api import EXECUTION_HPC_ATOS, EXECUTION_RUNNER, ManifestSchemaError, WorkflowRuns
 from ci_infrastructure.generate_downstream_ci import derive_cross_repo_needs, validate_graph
 from ci_infrastructure.hpc import jobscript
 from ci_infrastructure.hpc.orchestrate import batch_packages
@@ -511,11 +511,8 @@ def test_a_sibling_another_kind_of_this_run_publishes_is_awaited(monkeypatch: py
 
 
 def test_a_sibling_no_kind_of_this_run_publishes_fails_instead_of_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _NotInFlight:
-        in_flight = False
-
     monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
-    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: _NotInFlight())
+    monkeypatch.setattr(resolve_deps, "probe_workflow_runs", lambda repo, sha, token, **_: WorkflowRuns("none"))
     with pytest.raises(ResolveError, match="is pinned to"):
         _resolve_fork_sibling(frozenset())
 

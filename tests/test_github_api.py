@@ -16,6 +16,7 @@ from conftest import write_repo
 from ci_infrastructure import _github_api
 from ci_infrastructure._github_api import (
     ManifestSchemaError,
+    WorkflowRuns,
     make_artifact_name,
     probe_workflow_runs,
     resolve_reuse_matrix,
@@ -48,7 +49,7 @@ def test_only_build_workflows_count(monkeypatch: pytest.MonkeyPatch) -> None:
     stuck_legacy = {**QUEUED, "path": ".github/workflows/old-ci.yml"}
     trigger = {**OK, "path": ".github/workflows/cross-repo-trigger-hpc-atos.yml@refs/heads/x"}
     _payload(monkeypatch, {"workflow_runs": [stuck_legacy, trigger]})
-    assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
+    assert probe_workflow_runs("o/r", "a" * 40, None) == WorkflowRuns("completed", conclusion="success")
     _payload(monkeypatch, {"workflow_runs": [stuck_legacy]})
     assert probe_workflow_runs("o/r", "a" * 40, None).state == "none"
 
@@ -61,6 +62,11 @@ def test_in_progress_run_reports_detail_and_url(monkeypatch: pytest.MonkeyPatch)
     assert runs.detail == "in_progress"
     assert runs.url == "https://gh/run/1"
     assert runs.conclusion is None
+
+
+def test_every_in_progress_run_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    _payload(monkeypatch, {"workflow_runs": [{**RUNNING, "id": 7}, {**OK, "id": 6}, {**QUEUED, "id": 8}]})
+    assert probe_workflow_runs("o/r", "a" * 40, None).run_ids == (7, 8)
 
 
 def test_queued_counts_as_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,7 +82,7 @@ def test_in_progress_beats_a_failed_sibling(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_all_succeeded_is_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _payload(monkeypatch, {"workflow_runs": [OK, OK]})
-    assert probe_workflow_runs("o/r", "a" * 40, None) == ("completed", None, None, "success")
+    assert probe_workflow_runs("o/r", "a" * 40, None) == WorkflowRuns("completed", conclusion="success")
 
 
 @pytest.mark.parametrize("bad", [FAILED, CANCELLED, {**OK, "conclusion": "timed_out"}])

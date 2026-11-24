@@ -7,7 +7,8 @@
 """Artifact store: one ``s3://<bucket>/<key-prefix><artifact-name>.tar.gz`` object per package.
 
 Beside it, ``<artifact-name>.deps.json`` records the dep tree the artifact was built against,
-for consumers that accept an artifact built against older upstreams.
+for consumers that accept an artifact built against older upstreams, and an empty
+``<artifact-name>.run-<run-id>`` marks each workflow run that set out to build it.
 
 Configured from the environment only (no default location); boto3 reads
 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
@@ -26,7 +27,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -99,6 +101,7 @@ def _ca_bundle() -> Path:
 
 _TAR: Final = ".tar.gz"
 _SIDECAR: Final = ".deps.json"
+_RUN_MARKER_RE: Final = re.compile(r"^(?P<name>.+)\.run-(?P<run_id>\d+)$")
 
 
 def artifact_key(name: str) -> str:
@@ -107,6 +110,10 @@ def artifact_key(name: str) -> str:
 
 def sidecar_key(name: str) -> str:
     return f"{_key_prefix()}{name}{_SIDECAR}"
+
+
+def run_marker_key(name: str, run_id: int) -> str:
+    return f"{_key_prefix()}{name}.run-{run_id}"
 
 
 def _client(client: _S3Client | None = None) -> _S3Client:
@@ -176,6 +183,33 @@ def list_objects(client: _S3Client | None = None, *, prefix: str = "") -> list[S
         page = {"ContinuationToken": resp["NextContinuationToken"]}
 
 
+def _run_markers(objects: Sequence[StoredObject]) -> dict[str, frozenset[int]]:
+    base = len(_key_prefix())
+    out: dict[str, set[int]] = {}
+    for o in objects:
+        if m := _RUN_MARKER_RE.match(o.key[base:]):
+            out.setdefault(m["name"], set()).add(int(m["run_id"]))
+    return {name: frozenset(ids) for name, ids in out.items()}
+
+
+def run_markers(prefix: str, client: _S3Client | None = None) -> dict[str, frozenset[int]]:
+    """The runs that set out to build each artifact under ``prefix``."""
+    return _run_markers(list_objects(client, prefix=prefix))
+
+
+def mark_building(names: Iterable[str], run_id: int, client: _S3Client | None = None) -> None:
+    s3 = _client(client)
+    for name in names:
+        s3.put_object(Bucket=_bucket(), Key=run_marker_key(name, run_id), Body=b"")
+
+
+def builds_other_variants(name: str, run_ids: Sequence[int], markers: Mapping[str, frozenset[int]]) -> bool:
+    """Whether every run of ``run_ids`` has marked what it builds, and none of them marked ``name``."""
+    live = set(run_ids)
+    marked = {r for ids in markers.values() for r in ids}
+    return bool(live) and live <= marked and not live & markers.get(name, frozenset())
+
+
 @dataclass
 class ArtifactIndex:
     """Which artifacts are stored, from one listing per name prefix instead of one HEAD per artifact."""
@@ -184,6 +218,7 @@ class ArtifactIndex:
     listings: int = 0
     _tars: dict[str, dict[str, datetime]] = field(default_factory=dict)
     _sidecars: dict[str, frozenset[str]] = field(default_factory=dict)
+    _runs: dict[str, dict[str, frozenset[int]]] = field(default_factory=dict)
     _pending: dict[str, tuple[str, Mapping[str, Any]]] = field(default_factory=dict)
     _in_run: dict[str, Mapping[str, Any]] = field(default_factory=dict)
 
@@ -195,12 +230,18 @@ class ArtifactIndex:
         objects = list_objects(self.client, prefix=prefix)
         self._tars[prefix] = {o.key[base : -len(_TAR)]: o.last_modified for o in objects if o.key.endswith(_TAR)}
         self._sidecars[prefix] = frozenset(o.key[base : -len(_SIDECAR)] for o in objects if o.key.endswith(_SIDECAR))
+        self._runs[prefix] = _run_markers(objects)
         self.listings += 1
 
     def exists(self, name: str, prefix: str) -> bool:
         """``prefix`` must be a prefix of ``name``; each distinct one is listed once."""
         self._list(prefix)
         return name in self._tars[prefix]
+
+    def run_markers(self, prefix: str) -> dict[str, frozenset[int]]:
+        """The runs that set out to build each artifact under ``prefix``, as listed."""
+        self._list(prefix)
+        return self._runs[prefix]
 
     def with_sidecar(self, prefix: str) -> list[str]:
         """The artifacts under ``prefix`` that record their dep tree, newest first: this run's, then the stored."""
@@ -269,10 +310,16 @@ def stale_sidecars(
     ]
 
 
+def stale_run_markers(objects: Sequence[StoredObject], now: datetime) -> list[StoredObject]:
+    """Run markers over a day old: no run waits that long for a build."""
+    base = len(_key_prefix())
+    return [o for o in objects if _RUN_MARKER_RE.match(o.key[base:]) and now - o.last_modified >= timedelta(days=1)]
+
+
 def gc(
     *, percent: float, quota: int | None, dryrun: bool, suffix: str = _TAR, client: _S3Client | None = None
 ) -> list[StoredObject]:
-    """Delete down to ``percent`` of ``quota``, or of current usage without one, and the sidecars left behind."""
+    """Delete down to ``percent`` of ``quota``, or of current usage without one, and the sidecars and markers left."""
     s3 = _client(client)
     versioning = s3.get_bucket_versioning(Bucket=_bucket()).get("Status", "never enabled")
     objects = list_objects(s3)
@@ -282,7 +329,8 @@ def gc(
     if versioning != "never enabled":
         print("::warning::bucket versioning is on: a delete leaves the old version behind and frees nothing")
     plan = eviction_plan(objects, target=(quota if quota else used) * percent / 100, suffix=suffix)
-    plan += [o for o in stale_sidecars(objects, plan, datetime.now(UTC)) if o not in plan]
+    now = datetime.now(UTC)
+    plan += [o for o in stale_sidecars(objects, plan, now) + stale_run_markers(objects, now) if o not in plan]
     if not plan:
         print("Nothing to delete.")
         return plan
