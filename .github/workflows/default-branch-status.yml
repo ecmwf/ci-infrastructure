@@ -41,7 +41,7 @@ jobs:
       - id: token
         uses: ./actions/mint-token
         with:
-          client-id: ${{ secrets.CI_READER_APP_CLIENT_ID }}
+          client-id: ${{ vars.CI_READER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_READER_APP_PRIVATE_KEY }}
           repositories: '*'
           permissions: contents:read actions:read pull-requests:read administration:read

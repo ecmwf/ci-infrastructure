@@ -867,7 +867,7 @@ def _reader_mint_step(repos: Sequence[str] | str) -> Step:
         "id": "mint",
         "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
         "with": {
-            "client-id": "${{ secrets.CI_READER_APP_CLIENT_ID }}",
+            "client-id": "${{ vars.CI_READER_APP_CLIENT_ID }}",
             "private-key": "${{ secrets.CI_READER_APP_PRIVATE_KEY }}",
             "repositories": repos if isinstance(repos, str) else ",".join(r.split("/", 1)[1] for r in repos),
             "permissions": "contents:read actions:read",
@@ -903,7 +903,7 @@ def _rebuild_job(repos: Sequence[str], needs: Sequence[str] = ()) -> dict[str, A
             "with": {
                 "dispatch-plans": f"${{{{ {plans} }}}}",
                 "repositories": ",".join(r.split("/", 1)[1] for r in repos),
-                "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
                 "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
             },
         }
@@ -1031,7 +1031,7 @@ def _check_run_jobs(display: str, kind: str, jid: str, kind_filter: str) -> dict
     """The kind's check runs on the dispatcher's commit, from two jobs beside its legs: no reporter key in a leg."""
     start, finish = f"check-start__{jid}", f"check-finish__{jid}"
     report = {
-        "client-id": "${{ secrets.CI_REPORTER_APP_CLIENT_ID }}",
+        "client-id": "${{ vars.CI_REPORTER_APP_CLIENT_ID }}",
         "private-key": "${{ secrets.CI_REPORTER_APP_PRIVATE_KEY }}",
         "head-repo": "${{ inputs.from-repo }}",
         "head-sha": "${{ inputs.from-sha }}",
@@ -1928,7 +1928,7 @@ def _orchestrator_dispatch_job(
                 "id": "mint",
                 "uses": "ecmwf/ci-infrastructure/actions/mint-token@main",
                 "with": {
-                    "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                    "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
                     "private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
                     "repositories": crepo.split("/", 1)[1],
                     "permissions": "actions:write",
@@ -2313,7 +2313,7 @@ def render_hpc_label_workflow(m: Manifest) -> str | None:
     if not any(mk.execution == EXECUTION_HPC_ATOS for mk in m.matrices.values()):
         return None
     with_: dict[str, str] = {
-        "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+        "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
         "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
     }
     if m.fork_pull_requests:
@@ -2364,7 +2364,7 @@ def render_sync_branch_workflow(m: Manifest) -> str:
                     {
                         "uses": "ecmwf/ci-infrastructure/actions/sync-branch-prs@main",
                         "with": {
-                            "client-id": "${{ secrets.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
+                            "client-id": "${{ vars.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
                             "app-private-key": "${{ secrets.CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY }}",
                         },
                     }
@@ -2393,7 +2393,7 @@ def render_retry_nightly_workflow(m: Manifest) -> str:
                     {
                         "uses": "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main",
                         "with": {
-                            "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+                            "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
                             "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
                         },
                     }

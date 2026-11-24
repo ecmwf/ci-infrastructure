@@ -320,7 +320,7 @@ a skipped job would skip every job after it
          with:
            dispatch-plans: ${{ needs.resolve.outputs.dispatch-plans }}
            repositories: ecbuild
-           client-id: ${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}
+           client-id: ${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}
            app-private-key: ${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}
 
    build:
@@ -379,7 +379,7 @@ A ``ci.yml`` does the same before its build step:
    - id: git-read
      uses: ecmwf/ci-infrastructure/actions/mint-token@main
      with:
-       client-id: ${{ secrets.CI_READER_APP_CLIENT_ID }}
+       client-id: ${{ vars.CI_READER_APP_CLIENT_ID }}
        private-key: ${{ secrets.CI_READER_APP_PRIVATE_KEY }}
        repositories: bindman
        permissions: contents:read

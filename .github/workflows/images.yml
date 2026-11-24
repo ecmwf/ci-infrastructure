@@ -19,8 +19,6 @@ on:
         required: false
       SCRATCH_ECCR_ROBOT_TOKEN:
         required: false
-      CI_DISPATCHER_APP_CLIENT_ID:
-        required: false
       CI_DISPATCHER_APP_PRIVATE_KEY:
         required: false
     inputs:
@@ -332,7 +330,7 @@ jobs:
       - id: mint
         uses: ecmwf/ci-infrastructure/actions/mint-token@main
         with:
-          client-id: ${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}
+          client-id: ${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}
           repositories: ci-container-images
           permissions: actions:write

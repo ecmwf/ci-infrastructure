@@ -790,7 +790,7 @@ def test_build_leg_token_is_scoped_and_not_left_for_the_job_script(tmp_path: Pat
         if jid in ("resolve", "rebuild-producers") or jid.startswith("check-"):
             continue
         [mint] = [s for s in steps if s.get("id") == "mint"]
-        assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}", jid
+        assert mint["with"]["client-id"] == "${{ vars.CI_READER_APP_CLIENT_ID }}", jid
         assert mint["with"]["permissions"] == "contents:read actions:read", jid
         assert "CI_REPORTER_APP" not in str(steps), jid
 
@@ -1003,7 +1003,7 @@ def test_check_runs_are_reported_beside_the_legs(tmp_path: Path) -> None:
         (step,) = job["steps"]
         assert step["uses"] == "ecmwf/ci-infrastructure/actions/report-check-runs@main"
         assert step["with"]["phase"] == phase
-        assert step["with"]["client-id"] == "${{ secrets.CI_REPORTER_APP_CLIENT_ID }}"
+        assert step["with"]["client-id"] == "${{ vars.CI_REPORTER_APP_CLIENT_ID }}"
         assert step["with"]["head-repo"] == "${{ inputs.from-repo }}"
     assert start["steps"][0]["with"]["job-name"] == "b/build"
     assert finish["steps"][0]["with"]["job-result"] == "${{ needs.b__build.result }}"
@@ -1962,7 +1962,7 @@ def test_validate_reads_sibling_repos_with_the_reader(tmp_path: Path) -> None:
 
     [mint] = [s for s in job["steps"] if s.get("id") == "mint"]
     assert mint["uses"] == "ecmwf/ci-infrastructure/actions/mint-token@main"
-    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
+    assert mint["with"]["client-id"] == "${{ vars.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "*"
     assert "permissions" not in job
 
@@ -2397,7 +2397,7 @@ def test_every_repo_lists_its_sync_branch_prs(tmp_path: Path, monkeypatch: pytes
         (step,) = job["steps"]
         assert step["uses"] == "ecmwf/ci-infrastructure/actions/sync-branch-prs@main"
         assert step["with"] == {
-            "client-id": "${{ secrets.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
+            "client-id": "${{ vars.CI_SYNCED_PR_LINKS_APP_CLIENT_ID }}",
             "app-private-key": "${{ secrets.CI_SYNCED_PR_LINKS_APP_PRIVATE_KEY }}",
         }
         assert check_ci_approval.check(wf) == []
@@ -2461,7 +2461,7 @@ def test_hpc_legs_come_with_the_hpc_label_workflow(tmp_path: Path, monkeypatch: 
     (step,) = gate["steps"]
     assert step["uses"] == "ecmwf/ci-infrastructure/actions/hpc-label-decision@main"
     assert step["with"] == {
-        "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+        "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
         "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
     }
     assert check_ci_approval.check(path) == []
@@ -2485,7 +2485,7 @@ def test_every_repo_retries_its_failed_nightly_twice(tmp_path: Path, monkeypatch
         (step,) = retry["steps"]
         assert step["uses"] == "ecmwf/ci-infrastructure/actions/retry-scheduled-run@main"
         assert step["with"] == {
-            "client-id": "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}",
+            "client-id": "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}",
             "app-private-key": "${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}",
         }
         assert check_ci_approval.check(path) == []
@@ -2662,7 +2662,7 @@ def test_resolve_holds_the_reader_key_and_the_dispatcher_key_sits_in_its_own_job
     jobs = yaml.safe_load(_consumer(tmp_path, "c"))["jobs"]
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
     assert mint["uses"] == "ecmwf/ci-infrastructure/actions/mint-token@main"
-    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
+    assert mint["with"]["client-id"] == "${{ vars.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "a,b,c"
     [r] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "r"]
     assert r["with"]["rebuild-missing"] == "true"
@@ -2673,14 +2673,14 @@ def test_resolve_holds_the_reader_key_and_the_dispatcher_key_sits_in_its_own_job
     [step] = rebuild["steps"]
     assert step["uses"] == "ecmwf/ci-infrastructure/actions/dispatch-producers@main"
     assert step["with"]["repositories"] == "a,b,c"
-    assert step["with"]["client-id"] == "${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}"
+    assert step["with"]["client-id"] == "${{ vars.CI_DISPATCHER_APP_CLIENT_ID }}"
 
 
 def test_orchestrator_merges_the_plans_and_called_consumers_wait_for_the_rebuilds(tmp_path: Path) -> None:
     _make_chain_abc(tmp_path)
     jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
-    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
+    assert mint["with"]["client-id"] == "${{ vars.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "a,b,c"
     [plans] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "plans"]
     assert "jq -cs 'add // []'" in plans["run"]
