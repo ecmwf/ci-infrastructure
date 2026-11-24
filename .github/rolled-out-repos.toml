@@ -59,3 +59,39 @@ title = "chore: Regenerate downstream-CI workflows"
 mode = "pr"
 labels = ["downstream-ci-not-needed", "hpc-ci-not-needed", "ATS Approval Not Needed", "expensive-tests-not-needed"]
 title = "chore: Regenerate downstream-CI workflows"
+
+[repos.conflator]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.covjsonkit]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-time]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-utils]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.findlibs]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.hyve]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.multiurl]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.thermofeel]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.troika]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
