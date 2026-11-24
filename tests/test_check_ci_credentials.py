@@ -32,7 +32,7 @@ def _mint(app: str, extra: str = "          repositories: eckit\n") -> str:
     return (
         "      - uses: ecmwf/ci-infrastructure/actions/mint-token@main\n"
         "        with:\n"
-        f"          client-id: ${{{{ secrets.CI_{key}_APP_CLIENT_ID }}}}\n"
+        f"          client-id: ${{{{ vars.CI_{key}_APP_CLIENT_ID }}}}\n"
         f"          private-key: ${{{{ secrets.CI_{key}_APP_PRIVATE_KEY }}}}\n{extra}"
     )
 

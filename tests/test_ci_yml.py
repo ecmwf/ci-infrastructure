@@ -123,7 +123,7 @@ def test_the_generated_ci_yml_holds_only_the_reader_key_where_code_runs(tmp_path
     jobs = doc["jobs"]
     assert list(jobs) == ["ci-approval", "pre-commit", "resolve", "rebuild-producers", "build", "ci-result"]
     [mint] = [s for s in jobs["resolve"]["steps"] if s.get("id") == "mint"]
-    assert mint["with"]["client-id"] == "${{ secrets.CI_READER_APP_CLIENT_ID }}"
+    assert mint["with"]["client-id"] == "${{ vars.CI_READER_APP_CLIENT_ID }}"
     assert mint["with"]["repositories"] == "a,b"
     assert jobs["build"]["needs"] == ["ci-approval", "resolve", "rebuild-producers", "pre-commit"]
     # With nothing to rebuild, rebuild-producers passes at once, so the legs keep GitHub's default.

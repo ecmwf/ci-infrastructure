@@ -82,7 +82,7 @@ The build context is the repo root. `docker buildx` is required.
 |---|---|
 | `PUBLIC_ECCR_ROBOT_NAME` / `_TOKEN` | pushing; secrets of the environment `eccr-push` (`main` only), used by the push job alone |
 | `PUBLIC_ECCR_CLEANUP_ROBOT_NAME` / `_TOKEN` | registry cleanup (delete rights, no push); secrets of the environment `eccr-cleanup` (`main` only) |
-| `CI_DISPATCHER_APP_CLIENT_ID` / `_PRIVATE_KEY` | dispatching the private image rebuild |
+| `CI_DISPATCHER_APP_PRIVATE_KEY` | dispatching the private image rebuild, with the variable `CI_DISPATCHER_APP_CLIENT_ID` |
 | `SCRATCH_ECCR_ROBOT_NAME` / `_TOKEN` | handing tested images to the variants and the push job through the scratch registry (push and delete repositories, in that project only) |
 
 The variable `SCRATCH_REGISTRY` (e.g. `eccr.ecmwf.int/ci-scratch`) names that registry project. A build job pushes a tested image there as `run-<run id>/<platform>-<variant>:built` (on pull requests only the bases its variants need) and records the pushed digest as a run artifact. The variants and, on `main`, the push job pull by that digest, never by the tag, because pull requests can write to the scratch project as well. The build jobs never hold the public robot, and the push job runs no Dockerfile. The run's repositories are deleted after it is green or cancelled; the project's retention rule removes the rest after a day, and garbage collection frees the space.

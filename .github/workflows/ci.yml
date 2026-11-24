@@ -75,7 +75,6 @@ jobs:
     secrets:
       SCRATCH_ECCR_ROBOT_NAME: ${{ secrets.SCRATCH_ECCR_ROBOT_NAME }}
       SCRATCH_ECCR_ROBOT_TOKEN: ${{ secrets.SCRATCH_ECCR_ROBOT_TOKEN }}
-      CI_DISPATCHER_APP_CLIENT_ID: ${{ secrets.CI_DISPATCHER_APP_CLIENT_ID }}
       CI_DISPATCHER_APP_PRIVATE_KEY: ${{ secrets.CI_DISPATCHER_APP_PRIVATE_KEY }}
 
   # The one required check of this workflow, so the ruleset never lists matrix legs.

@@ -33,7 +33,7 @@ import yaml
 
 from .check_ci_approval import ALLOWLIST_NAME, _inherited_triggers, _jobs_of, _load, _triggers
 
-READER: Final = ("CI_READER_APP_CLIENT_ID", "CI_READER_APP_PRIVATE_KEY")
+READER: Final = ("CI_READER_APP_PRIVATE_KEY",)
 S3_PREFIXES: Final = ("ARTIFACT_S3_", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "SCCACHE_")
 # The transitional pull of an HPC identity image, and the HPC user; only beside build-on-hpc.
 HPC_PREFIXES: Final = ("ECCR_PULL_", "HPC_CI_")
