@@ -31,13 +31,14 @@ def _check(tmp_path: Path, repositories: str, permissions: str) -> tuple[int, st
 
 
 def test_a_token_names_its_repositories_and_permissions(tmp_path: Path) -> None:
-    code, out, got = _check(tmp_path, "eckit, ecmwf/eccodes\nfdb", "contents:read,actions:write")
+    code, out, got = _check(tmp_path, "eckit, ecmwf/eccodes\nfdb", "contents:read,actions:write issues:write")
     assert code == 0, out
     assert got == {
         "actions": "write",
         "administration": "",
         "checks": "",
         "contents": "read",
+        "issues": "write",
         "pull-requests": "",
         "repositories": "eckit,eccodes,fdb",
     }
