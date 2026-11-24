@@ -95,3 +95,55 @@ labels = ["downstream-ci-not-needed"]
 [repos.troika]
 mode = "pr"
 labels = ["downstream-ci-not-needed"]
+
+[repos.eccodes-python]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.pyodc]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.polytope]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.cfgrib]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.pdbufr]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-data]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-transforms]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-workflows]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-hydro]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-geo]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-meteo]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit-plots]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.earthkit]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
