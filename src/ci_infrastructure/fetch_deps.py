@@ -7,7 +7,8 @@
 """Download each resolved dep (`_resolved.deps`) into its install path.
 
 An uncached dep is re-polled while an upstream run is in flight (ARTIFACT_WAIT_TIMEOUT,
-ARTIFACT_POLL_INTERVAL). The tar.gz stays at $RUNNER_TEMP/<artifact-name>.tar.gz for re-upload.
+ARTIFACT_POLL_INTERVAL), unless the run marked other variants of the commit as the ones it builds.
+The tar.gz stays at $RUNNER_TEMP/<artifact-name>.tar.gz for re-upload.
 """
 
 from __future__ import annotations
@@ -118,6 +119,17 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
 
         run = probe_workflow_runs(repo, sha, token, lane=lane_of_artifact(name))
         state = run.state
+        if state == "running" and _builds_other_variants(name, sha, run):
+            message = (
+                f"{repo}@{sha[:8]} is building, but against other upstream commits than '{name}' needs, "
+                f"so it will not publish it. Run: {run.url}"
+            )
+            print(f"::error::{escape_command_data(message)}", file=sys.stderr)
+            print(
+                "::warning::Use 'Re-run all jobs' on this workflow: resolving again plans a rebuild of this variant.",
+                file=sys.stderr,
+            )
+            return False
         if state == "running":
             remaining = deadline - time.monotonic()
             phase = _run_phase(run.detail)
@@ -148,6 +160,13 @@ def poll_for_artifact(repo: str, sha: str, name: str, token: str | None) -> bool
 
         _diagnose_missing_artifact(name, repo, sha, run, token)
         return False
+
+
+def _builds_other_variants(name: str, sha: str, run: WorkflowRuns) -> bool:
+    if not run.run_ids:
+        return False
+    prefix = name[: name.index(f"-{sha}-") + len(sha) + 2]
+    return s3_store.builds_other_variants(name, run.run_ids, s3_store.run_markers(prefix))
 
 
 def download_from_store(artifact_name: str, install_path: Path) -> Path | None:

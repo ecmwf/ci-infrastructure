@@ -42,6 +42,10 @@ A fork's commit is never rebuilt.
 A consumer under test against an upstream commit passes that pin on with ``rebuild-request``,
 so a producer between the two is rebuilt against the same commit.
 Only a run of the artifact's lane counts as in flight: ``CI``, or the ``cross-repo-trigger`` workflow of that lane.
+A run marks the artifacts it builds in the artifact store (``<artifact-name>.run-<run-id>``) once it has resolved its deps;
+a consumer waits for a run in flight only if the run marked the artifact it needs.
+A run that marked other variants of the commit, resolved against older upstream commits,
+gets the artifact rebuilt on the declared ref or sync branch instead, and stops the wait of a leg that was already waiting.
 An artifact that is not to be had, such as one of a red commit, fails only the legs that need it,
 in their first step, with the errors of the red run and of the runs those link to, up to the first failure.
 A request that no producer leg can ever build fails the whole resolve.

@@ -880,3 +880,59 @@ def test_a_leg_without_the_upstream_fields_uses_its_own(leg: dict[str, str]) -> 
     spec = _dep_spec("cxxmath", compiler_inputs=["upstream-cxx-compiler"], platform_input="upstream-platform")
     [dep], _ = _resolve(_own("top"), [spec], leg, manifest_cache=cache)
     assert "ubuntu-24.04-clang++-18-Release" in dep.artifact_name
+
+
+def _resolve_while_base_builds(
+    monkeypatch: pytest.MonkeyPatch, marked: str | None, pins: dict[Repo, Ref] | None = None
+) -> tuple[ResolvedDep, Plans]:
+    """o/base's run 7 is in flight and marked `marked` ('want', 'other' or nothing) as what it builds."""
+    monkeypatch.setattr(resolve_deps, "resolve_ref_to_sha", lambda repo, ref, token: Sha("c" * 40))
+    monkeypatch.setattr(s3_store.ArtifactIndex, "exists", lambda self, name, prefix: False)
+    monkeypatch.setattr(
+        resolve_deps,
+        "probe_workflow_runs",
+        lambda repo, sha, token, **_: WorkflowRuns("running", "in_progress", "https://gh/run/7", run_ids=(7,)),
+    )
+    monkeypatch.setattr(resolve_deps, "latest_ci_run", lambda repo, sha, token: None)
+
+    names = {"want": f"base-{'c' * 40}-ubuntu-24.04-clang++-18-Release", "other": f"base-{'c' * 40}-ubuntu-24.04-gcc"}
+    markers = {} if marked is None else {names[marked]: frozenset({7})}
+    monkeypatch.setattr(s3_store.ArtifactIndex, "run_markers", lambda self, prefix: markers)
+    plans: Plans = {}
+    deps, _ = resolve_leg(
+        own=_own("top"),
+        own_deps=[_dep_spec("base")],
+        own_sha=Sha("d" * 40),
+        matrix_entry=dict(_LEG),
+        manifest_cache={},
+        sync_branch=None,
+        sync_exists_by_repo={},
+        sha_cache={},
+        artifact_index=s3_store.ArtifactIndex(),
+        run_state_cache={},
+        token=None,
+        can_dispatch=True,
+        lane=EXECUTION_RUNNER,
+        dispatch_plans=plans,
+        pins=pins,
+    )
+    return deps[0], plans
+
+
+@pytest.mark.parametrize("marked", ["want", None], ids=["marked-ours", "not-marked-yet"])
+def test_a_run_in_flight_for_our_variant_is_awaited(monkeypatch: pytest.MonkeyPatch, marked: str | None) -> None:
+    dep, plans = _resolve_while_base_builds(monkeypatch, marked)
+    assert (dep.source, plans) == ("artifact", {})
+
+
+def test_a_run_in_flight_for_another_variant_is_not_awaited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run resolved against older upstreams: it will not publish our deps-hash."""
+    dep, plans = _resolve_while_base_builds(monkeypatch, "other")
+    assert dep.source == "triggered rebuild"
+    assert [(p.repo, p.sha, p.rerun_id) for p in plans.values()] == [("o/base", "c" * 40, None)]
+
+
+def test_a_pinned_dep_waits_for_its_run_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pinned commit is rebuilt by re-running its CI, which a run in flight cannot be."""
+    dep, plans = _resolve_while_base_builds(monkeypatch, "other", pins={Repo("o/base"): Ref("c" * 40)})
+    assert (dep.source, plans) == ("artifact", {})

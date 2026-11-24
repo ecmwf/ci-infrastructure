@@ -245,12 +245,16 @@ _FAILURE_CONCLUSIONS: Final = frozenset({"failure", "cancelled", "timed_out", "a
 
 
 class WorkflowRuns(NamedTuple):
-    """url: the in-progress run (whose status is `detail`), or for 'completed' the run that should have published."""
+    """url: the in-progress run (whose status is `detail`), or for 'completed' the run that should have published.
+
+    run_ids: every in-progress run, to match against the run markers in the artifact store.
+    """
 
     state: Literal["running", "completed", "none"]
     detail: str | None = None
     url: str | None = None
     conclusion: Literal["success", "failure"] | None = None
+    run_ids: tuple[int, ...] = ()
 
     @property
     def in_flight(self) -> bool:
@@ -281,14 +285,15 @@ def probe_workflow_runs(repo: str, sha: str, token: str | None, *, lane: Executi
     runs = [r for r in data.get("workflow_runs") or [] if isinstance(r, dict) and _is_build_workflow(r, lane)]
     if not runs:
         return WorkflowRuns("none")
-    for run in runs:
-        if run.get("status") in IN_PROGRESS_STATUSES:
-            status, html_url = run.get("status"), run.get("html_url")
-            return WorkflowRuns(
-                "running",
-                status if isinstance(status, str) else None,
-                html_url if isinstance(html_url, str) else None,
-            )
+    live = [run for run in runs if run.get("status") in IN_PROGRESS_STATUSES]
+    if live:
+        status, html_url = live[0].get("status"), live[0].get("html_url")
+        return WorkflowRuns(
+            "running",
+            status if isinstance(status, str) else None,
+            html_url if isinstance(html_url, str) else None,
+            run_ids=tuple(run["id"] for run in live if isinstance(run.get("id"), int)),
+        )
     failed = [run for run in runs if run.get("conclusion") in _FAILURE_CONCLUSIONS]
     # Newest first: the rebuild this workflow run dispatched, else the newest failure.
     culprit = next((run for run in runs if _dispatched_by_this_run(run)), (failed or runs)[0])

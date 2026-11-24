@@ -272,3 +272,34 @@ def test_artifact_index_writes_only_the_missing_sidecars(fake: FakeS3) -> None:
     assert index.flush_sidecars() == 1
     assert fake.objects["eckit-abc-x.deps.json"] == b"kept"
     assert json.loads(fake.objects["eckit-abc-y.deps.json"]) == {"direct": []}
+
+
+def test_run_markers_name_the_runs_that_build_each_artifact(monkeypatch: pytest.MonkeyPatch, fake: FakeS3) -> None:
+    monkeypatch.setenv("ARTIFACT_S3_KEY_PREFIX", "ci/")
+    s3_store.mark_building(["eckit-abc-x-opts.geo", "eckit-abc-y"], 7, client=fake)
+    s3_store.mark_building(["eckit-abc-y"], 8, client=fake)
+    fake.put("ci/eckit-abc-y.tar.gz", b"x", NOW)
+    expected = {"eckit-abc-x-opts.geo": frozenset({7}), "eckit-abc-y": frozenset({7, 8})}
+    assert s3_store.run_markers("eckit-abc-", client=fake) == expected
+    assert s3_store.ArtifactIndex(client=fake).run_markers("eckit-abc-") == expected
+
+
+@pytest.mark.parametrize(
+    ("run_ids", "markers", "other"),
+    [
+        ((7,), {"want": frozenset({7})}, False),
+        ((7,), {"other": frozenset({7})}, True),
+        ((7,), {"other": frozenset({6})}, False),
+        ((7, 8), {"other": frozenset({7})}, False),
+        ((7, 8), {"other": frozenset({7}), "want": frozenset({8})}, False),
+        ((), {"other": frozenset({7})}, False),
+    ],
+    ids=["builds-it", "builds-other", "not-marked-yet", "one-not-marked-yet", "one-builds-it", "no-run-ids"],
+)
+def test_builds_other_variants(run_ids: tuple[int, ...], markers: dict[str, frozenset[int]], other: bool) -> None:
+    assert s3_store.builds_other_variants("want", run_ids, markers) is other
+
+
+def test_run_markers_go_after_a_day() -> None:
+    objects = [_obj("a.run-1", 0, 2), _obj("a.run-2", 0, 0.5), _obj("a.tar.gz", 1, 2), _obj("a.deps.json", 1, 2)]
+    assert [o.key for o in s3_store.stale_run_markers(objects, NOW)] == ["a.run-1"]

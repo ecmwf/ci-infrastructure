@@ -53,6 +53,7 @@ from ._github_api import (
     CiRun,
     Execution,
     ManifestSchemaError,
+    WorkflowRuns,
     compute_deps_hash8,
     compute_platform_slug,
     fetch_manifests_layer,
@@ -818,7 +819,7 @@ def resolve_leg(
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
     artifact_index: s3_store.ArtifactIndex,
-    run_state_cache: dict[tuple[Repo, Sha, Execution], bool],
+    run_state_cache: dict[tuple[Repo, Sha, Execution], WorkflowRuns],
     token: str | None,
     can_dispatch: bool,
     lane: Execution,
@@ -1003,8 +1004,23 @@ def resolve_leg(
         else:
             run_key = (spec.repo, sha, lane)
             if run_key not in run_state_cache:
-                run_state_cache[run_key] = probe_workflow_runs(spec.repo, sha, token, lane=lane).in_flight
-            if run_state_cache[run_key]:
+                run_state_cache[run_key] = probe_workflow_runs(spec.repo, sha, token, lane=lane)
+            run = run_state_cache[run_key]
+            elsewhere = (
+                bool(run.run_ids)
+                and can_dispatch
+                and spec.repo not in pins
+                and is_normal_ref(spec, ref, sync_branch, sync_exists_by_repo)
+                and s3_store.builds_other_variants(
+                    artifact_name, run.run_ids, artifact_index.run_markers(f"{spec.package}-{sha}-")
+                )
+            )
+            if elsewhere:
+                print(
+                    f"::notice::{spec.repo}@{sha[:8]} is building, but against other upstream commits than "
+                    f"'{artifact_name}' needs, so it will not publish it: a rebuild is planned. Run: {run.url}"
+                )
+            if run.in_flight and not elsewhere:
                 source = "artifact"
             else:
                 ci_run = latest_ci_run(spec.repo, sha, token)
@@ -1175,7 +1191,7 @@ def resolve_packages(
     sync_exists_by_repo: Mapping[Repo, bool],
     sha_cache: dict[tuple[Repo, Ref], Sha],
     artifact_index: s3_store.ArtifactIndex,
-    run_state_cache: dict[tuple[Repo, Sha, Execution], bool],
+    run_state_cache: dict[tuple[Repo, Sha, Execution], WorkflowRuns],
     token: str | None,
     can_dispatch: bool,
     lane: Execution,
@@ -1536,7 +1552,7 @@ def _run(
         and all(r == own_repo for r in pins)
     )
     stale = StaleFallback(token) if allow_stale else None
-    run_state_cache: dict[tuple[Repo, Sha, Execution], bool] = {}
+    run_state_cache: dict[tuple[Repo, Sha, Execution], WorkflowRuns] = {}
 
     # Without rebuild_missing, orphan pins hard-fail.
     can_dispatch = rebuild_missing
@@ -1648,6 +1664,14 @@ def _run(
         print(f"Dep trees not recorded beside the artifacts: {e}")
     else:
         print(f"Recorded the dep trees of {written} artifact(s) beside them.")
+    published = _published_artifacts(local_manifest, matrices_out)
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if run_id.isdigit():
+        # Consumers wait on this run only for these; for other variants of the commit they plan a rebuild.
+        try:
+            s3_store.mark_building(sorted(published), int(run_id))
+        except (CIError, ClientError, BotoCoreError) as e:
+            print(f"Run not marked beside the artifacts it builds: {e}")
     # After all legs, so a producer flagged by several legs is planned once.
     branch = current_branch or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME") or "main"
     plans_out = [plan_record(p, from_sha=own_sha, branch=branch, pin=pin) for p in dispatch_plans.values()]
@@ -1671,7 +1695,7 @@ def _run(
     outputs["json"] = json.dumps(matrices_out, separators=(",", ":"))
     outputs["own-sha"] = own_sha
     outputs["pins"] = format_pins(_used_pins(pins, own_repo, own_sha, matrices_out))
-    outputs["artifacts"] = " ".join(sorted(_published_artifacts(local_manifest, matrices_out)))
+    outputs["artifacts"] = " ".join(sorted(published))
     outputs["dispatch-plans"] = json.dumps(plans_out, separators=(",", ":"))
     write_outputs(outputs)
 
