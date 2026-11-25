@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Consumers whose failure does not fail an upstream's downstream/<lane> status.
+# They still run in the fan-out and show their result; read on every fan-out from main,
+# so an entry applies at once, to every upstream. Remove it once the consumer is green again.
+#
+# [repos.<name>]
+# reason = "One sentence: why it is red, and what turns it green."
+# since = 2026-11-25

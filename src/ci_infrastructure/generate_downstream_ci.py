@@ -1352,13 +1352,13 @@ def render_orchestrator_workflow(
         "report-start": _report_start_job(lane),
         "report-ci-failure": _report_ci_failure_job(lane),
     }
-    consumer_job_ids: list[str] = []
+    consumer_jobs: dict[str, str] = {}
     for cpkg in all_consumers:
         cmanifest = by_pkg[cpkg]
         crepo = cmanifest.repo
         cref = consumer_refs[crepo]
         jid = _orchestrator_job_id(cpkg)
-        consumer_job_ids.append(jid)
+        consumer_jobs[jid] = crepo
         dep_ids = sorted(_orchestrator_job_id(p) for p in consumer_deps.get(cpkg, set()))
         from_jobs = sorted(origins[cpkg])
         if cpkg in called:
@@ -1366,7 +1366,7 @@ def render_orchestrator_workflow(
         else:
             jobs[jid] = _orchestrator_dispatch_job(cpkg, crepo, cref, from_jobs, dep_ids, lane=lane)
 
-    jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
+    jobs["report-result"] = _report_result_job(lane, consumer_jobs)
 
     jobs = _apply_label_gate(
         jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers}, lane=lane, default_level=m.downstream_default
@@ -1469,33 +1469,33 @@ def _report_ci_failure_job(lane: Execution) -> dict[str, Any]:
     )
 
 
-def _report_result_job(lane: Execution, consumer_job_ids: Sequence[str]) -> dict[str, Any]:
-    """`failure` if validate or any consumer failed or was cancelled, else `success`."""
-    needs = ["validate", *consumer_job_ids]
-    results = " ".join(f"${{{{ needs.{jid}.result }}}}" for jid in needs)
-    return _status_job(
-        needs=needs,
-        when=f"${{{{ always() && {_CI_CONCLUSION} == 'success' }}}}",
-        step_name="Post final downstream status",
-        script=_post_status_script(
-            preamble=(
-                "state=success\n"
-                f"for r in {results}; do\n"
-                '  if [ "$r" = failure ] || [ "$r" = cancelled ]; then\n'
-                "    state=failure\n"
-                "  fi\n"
-                "done\n"
-                # should-downstream-run only ever outputs `all` or digits here.
-                f'depth="${{{{ {_GATE_DEPTH} }}}}"\n'
-                'scope=""\n'
-                'if [ "$depth" != all ]; then scope=" (up to level $depth)"; fi\n'
-            ),
-            state='"$state"',
-            context=_status_context(lane),
-            target_url=_RUN_URL,
-            description=f'"Downstream {_lane_label(lane)} tests $state$scope"',
-        ),
-    )
+def _report_result_job(lane: Execution, consumer_jobs: Mapping[str, str]) -> dict[str, Any]:
+    """`failure` if validate or any consumer failed or was cancelled, else `success`.
+
+    The action reads the quarantine from ci-infrastructure's main, so its consumers' failures are ignored.
+    """
+    judged: dict[str, str | None] = {"validate": None, **consumer_jobs}
+    return {
+        "needs": list(judged),
+        "if": f"${{{{ always() && {_CI_CONCLUSION} == 'success' }}}}",
+        "runs-on": SLIM_RUNNER,
+        "permissions": {"statuses": "write"},
+        "steps": [
+            {
+                "name": "Post final downstream status",
+                "uses": "ecmwf/ci-infrastructure/actions/report-downstream-result@main",
+                "with": {
+                    "results": "${{ toJSON(needs) }}",
+                    "jobs": json.dumps(judged, separators=(",", ":")),
+                    "context": _status_context(lane),
+                    "sha": _HEAD_SHA,
+                    "description": f"Downstream {_lane_label(lane)} tests",
+                    # should-downstream-run only ever outputs `all` or digits here.
+                    "scope": f"${{{{ {_GATE_DEPTH} }}}}",
+                },
+            }
+        ],
+    }
 
 
 def _orchestrator_job_id(consumer_pkg: str) -> str:

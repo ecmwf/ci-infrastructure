@@ -104,6 +104,7 @@ ghactions_groups = [
             "post-downstream-decision",
             "dispatch-downstream",
             "should-downstream-run",
+            "report-downstream-result",
             "check-pr-declaration",
         ],
     ),

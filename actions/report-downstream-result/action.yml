@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 European Centre for Medium-Range Weather Forecasts (ECMWF)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Report the downstream result
+description: >
+  Post a fan-out's final downstream/<lane> commit status: failure if a judged job
+  failed or was cancelled, else success. A failure of a consumer listed in
+  ci-infrastructure's .github/downstream-quarantine.toml, as this action's ref
+  holds it, is ignored and named in the job summary.
+
+inputs:
+  results:
+    description: 'toJSON(needs) of the calling job.'
+    required: true
+  jobs:
+    description: 'JSON object: each judged job id to its consumer repo (owner/name), or null for a job that is no consumer.'
+    required: true
+  context:
+    description: 'The status context, e.g. downstream/runner.'
+    required: true
+  sha:
+    description: 'Commit to post the status on.'
+    required: true
+  description:
+    description: 'Status description; the state is appended.'
+    required: true
+  scope:
+    description: "The label gate's depth: 'all', or the highest level run, named in the description."
+    required: false
+    default: 'all'
+  token:
+    description: 'Token with statuses:write. Defaults to github.token.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: ecmwf/ci-infrastructure/actions/_ensure-python-ci-infrastructure@main
+
+    - id: judge
+      shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+        JOBS: ${{ inputs.jobs }}
+        QUARANTINE: ${{ github.action_path }}/../../.github/downstream-quarantine.toml
+      run: |
+        set -euo pipefail
+        "$CI_INFRASTRUCTURE_PYTHON" -I -m ci_infrastructure.downstream_quarantine \
+          --results "$RESULTS" --jobs "$JOBS" --quarantine "$QUARANTINE"
+
+    - id: post
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || github.token }}
+        STATE: ${{ steps.judge.outputs.state }}
+        IGNORED: ${{ steps.judge.outputs.ignored }}
+        CONTEXT: ${{ inputs.context }}
+        SHA: ${{ inputs.sha }}
+        DESCRIPTION: ${{ inputs.description }}
+        SCOPE: ${{ inputs.scope }}
+        TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        description="$DESCRIPTION $STATE"
+        if [ "$SCOPE" != all ]; then description+=" (up to level $SCOPE)"; fi
+        if [ -n "$IGNORED" ]; then description+="; quarantined: ${IGNORED// /, }"; fi
+        gh api -X POST "/repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
+          -f state="$STATE" \
+          -f context="$CONTEXT" \
+          -f target_url="$TARGET_URL" \
+          -f description="${description:0:140}"

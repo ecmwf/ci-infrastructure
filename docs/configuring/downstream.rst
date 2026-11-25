@@ -253,3 +253,22 @@ This is done in the :doc:`../reference/manifest` via
 
 Every consumer that depends on an excluded one is left out as well.
 For example, excluding ``earthkit-data`` and ``earthkit-utils`` would also drop every package built on them.
+
+Quarantine
+----------
+
+A consumer that is red on its own, e.g. after a broken dependency it does not control,
+would block every upstream's pull request that reaches it.
+Instead of excluding it from each upstream, ``.github/downstream-quarantine.toml`` in ci-infrastructure quarantines it for all of them:
+
+.. code:: toml
+
+   [repos.earthkit-geo]
+   reason = "32 gridspec tests fail against every released eckit and mir."
+   since = 2026-11-25
+
+A quarantined consumer still runs and shows its result in the fan-out,
+but its failure, and the skipping of its dependents after it, no longer fails ``downstream/<lane>``.
+The job summary and the status description name what was ignored.
+The list is read from ``main`` by :action:`report-downstream-result` whenever a fan-out reports,
+so an entry applies at once and needs no regeneration; remove it once the consumer is green again.

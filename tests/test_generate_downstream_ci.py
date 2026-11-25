@@ -1435,11 +1435,12 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
         result["if"] == "${{ (always() && needs.context.outputs.ci-conclusion == 'success') && "
         "needs['label-gate'].outputs.run == 'true' }}"
     )
-    run = result["steps"][-1]["run"]
-    assert "${{ needs.validate.result }}" in run
-    assert "${{ needs.b.result }}" in run
-    assert "state=failure" in run
-    assert "downstream/runner" in run
+    (step,) = result["steps"]
+    assert step["uses"] == "ecmwf/ci-infrastructure/actions/report-downstream-result@main"
+    assert step["with"]["results"] == "${{ toJSON(needs) }}"
+    assert json.loads(step["with"]["jobs"]) == {"validate": None, "b": "org/b"}
+    assert step["with"]["context"] == "downstream/runner"
+    assert step["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
 
     orch_hpc = _orch(tmp_path, EXECUTION_HPC_ATOS)
     assert "downstream/hpc-atos" in orch_hpc
@@ -1953,7 +1954,10 @@ def test_status_jobs_post_to_their_own_repo_with_the_plain_token(tmp_path: Path,
     assert job["permissions"] == {"statuses": "write"}
     assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
     (step,) = job["steps"]
-    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    if "uses" in step:
+        assert "token" not in step["with"]
+    else:
+        assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
 
 
 def test_validate_reads_sibling_repos_with_the_reader(tmp_path: Path) -> None:
@@ -2330,9 +2334,8 @@ def test_consumer_jobs_run_up_to_the_labelled_level(tmp_path: Path) -> None:
 
 def test_the_final_status_names_a_partial_run(tmp_path: Path) -> None:
     _diamond(tmp_path)
-    run = yaml.safe_load(_orch(tmp_path))["jobs"]["report-result"]["steps"][0]["run"]
-    assert "depth=\"${{ needs['label-gate'].outputs.depth }}\"" in run
-    assert 'scope=" (up to level $depth)"' in run
+    step = yaml.safe_load(_orch(tmp_path))["jobs"]["report-result"]["steps"][0]
+    assert step["with"]["scope"] == "${{ needs['label-gate'].outputs.depth }}"
 
 
 @pytest.mark.parametrize(
