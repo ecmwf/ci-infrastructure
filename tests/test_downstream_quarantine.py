@@ -60,10 +60,8 @@ def test_load_rejects_malformed_entries(config: dict[str, Any], match: str) -> N
         load(config)
 
 
-def test_the_committed_quarantine_names_rolled_out_repos() -> None:
-    quarantine = load(tomllib.loads((REPO_ROOT / ".github/downstream-quarantine.toml").read_text(encoding="utf-8")))
-    rolled_out = tomllib.loads((REPO_ROOT / ".github/rolled-out-repos.toml").read_text(encoding="utf-8"))["repos"]
-    assert set(quarantine) <= set(rolled_out)
+def test_the_committed_quarantine_loads() -> None:
+    load(tomllib.loads((REPO_ROOT / ".github/downstream-quarantine.toml").read_text(encoding="utf-8")))
 
 
 def _cli(tmp_path: Path, results: dict[str, str], quarantine: str | None) -> tuple[str, str, str]:

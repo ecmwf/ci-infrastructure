@@ -9,3 +9,15 @@
 # [repos.<name>]
 # reason = "One sentence: why it is red, and what turns it green."
 # since = 2026-11-25
+
+[repos.earthkit-geo]
+reason = "32 new gridspec tests fail against the released eckit and mir; unverified against their develop builds."
+since = 2026-11-25
+
+[repos.earthkit-workflows]
+reason = "It pins earthkit-data<1, so it cannot install against earthkit-data's develop."
+since = 2026-11-25
+
+[repos.earthkit]
+reason = "earthkit-transforms' develop builds as 1.0.0rc7.devN, which fails earthkit's earthkit-transforms~=1.0."
+since = 2026-11-25
