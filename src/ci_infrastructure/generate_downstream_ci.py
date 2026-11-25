@@ -1369,7 +1369,11 @@ def render_orchestrator_workflow(
     jobs["report-result"] = _report_result_job(lane, consumer_job_ids)
 
     jobs = _apply_label_gate(
-        jobs, {_orchestrator_job_id(p): levels[p] for p in all_consumers}, lane=lane, default_level=m.downstream_default
+        jobs,
+        {_orchestrator_job_id(p): levels[p] for p in all_consumers},
+        {_orchestrator_job_id(p): by_pkg[p].repo.rpartition("/")[2] for p in all_consumers},
+        lane=lane,
+        default_level=m.downstream_default,
     )
     jobs = _require_approval(_require_context(jobs, fork_pull_requests=m.fork_pull_requests))
 
@@ -1562,6 +1566,7 @@ HPC_OPT_OUT_LABEL: Final = "hpc-ci-not-needed"
 # Index syntax, not `needs.label-gate`: a hyphen in a context path parses as minus.
 _GATE_PASSED: Final = f"needs['{_GATE_JOB_ID}'].outputs.run == 'true'"
 _GATE_DEPTH: Final = f"needs['{_GATE_JOB_ID}'].outputs.depth"
+_GATE_QUARANTINED: Final = f"needs['{_GATE_JOB_ID}'].outputs.quarantined"
 
 
 def _prepend_need(job: dict[str, Any], jid: str) -> None:
@@ -1570,9 +1575,17 @@ def _prepend_need(job: dict[str, Any], jid: str) -> None:
 
 
 def _apply_label_gate(
-    jobs: dict[str, Any], levels: Mapping[str, int], *, lane: Execution, default_level: str = ""
+    jobs: dict[str, Any],
+    levels: Mapping[str, int],
+    repos: Mapping[str, str],
+    *,
+    lane: Execution,
+    default_level: str = "",
 ) -> dict[str, Any]:
-    """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes."""
+    """Gate every job, and a consumer job by its level too; `>=` compares numbers, so `all` never passes.
+
+    A consumer of a quarantined repository is skipped too, and so, as it needs that job, every consumer below it.
+    """
     gated: dict[str, Any] = {_GATE_JOB_ID: _label_gate_job(lane, default_level=default_level)}
     for jid, job in jobs.items():
         _prepend_need(job, _GATE_JOB_ID)
@@ -1581,6 +1594,7 @@ def _apply_label_gate(
         gate = _GATE_PASSED
         if jid in levels:
             gate += f" && ({_GATE_DEPTH} == 'all' || {_GATE_DEPTH} >= {levels[jid]})"
+            gate += f" && !contains({_GATE_QUARANTINED}, ',{repos[jid]},')"
         job["if"] = f"${{{{ ({inner}) && {gate} }}}}" if inner else f"${{{{ {gate} }}}}"
         gated[jid] = job
     return gated
@@ -1679,7 +1693,11 @@ def _label_gate_job(lane: Execution, *, default_level: str = "") -> dict[str, An
     return job | {
         "runs-on": SLIM_RUNNER,
         "permissions": {"pull-requests": "read"},
-        "outputs": {"run": "${{ steps.gate.outputs.run }}", "depth": "${{ steps.gate.outputs.depth }}"},
+        "outputs": {
+            "run": "${{ steps.gate.outputs.run }}",
+            "depth": "${{ steps.gate.outputs.depth }}",
+            "quarantined": "${{ steps.gate.outputs.quarantined }}",
+        },
         "steps": [
             {
                 "name": "Check the downstream-CI label",
