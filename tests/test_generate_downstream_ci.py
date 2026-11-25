@@ -1435,12 +1435,11 @@ def test_orchestrator_posts_commit_status(tmp_path: Path) -> None:
         result["if"] == "${{ (always() && needs.context.outputs.ci-conclusion == 'success') && "
         "needs['label-gate'].outputs.run == 'true' }}"
     )
-    (step,) = result["steps"]
-    assert step["uses"] == "ecmwf/ci-infrastructure/actions/report-downstream-result@main"
-    assert step["with"]["results"] == "${{ toJSON(needs) }}"
-    assert json.loads(step["with"]["jobs"]) == {"validate": None, "b": "org/b"}
-    assert step["with"]["context"] == "downstream/runner"
-    assert step["with"]["sha"] == "${{ needs.context.outputs.head-sha }}"
+    run = result["steps"][-1]["run"]
+    assert "${{ needs.validate.result }}" in run
+    assert "${{ needs.b.result }}" in run
+    assert "state=failure" in run
+    assert "downstream/runner" in run
 
     orch_hpc = _orch(tmp_path, EXECUTION_HPC_ATOS)
     assert "downstream/hpc-atos" in orch_hpc
@@ -1899,6 +1898,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     assert doc["jobs"]["label-gate"]["outputs"] == {
         "run": "${{ steps.gate.outputs.run }}",
         "depth": "${{ steps.gate.outputs.depth }}",
+        "quarantined": "${{ steps.gate.outputs.quarantined }}",
     }
     assert doc["jobs"]["label-gate"]["if"] == "needs.context.outputs.hpc-only != 'true'", (
         "no CI-success condition: report-ci-failure needs the gate on the failure path"
@@ -1954,10 +1954,7 @@ def test_status_jobs_post_to_their_own_repo_with_the_plain_token(tmp_path: Path,
     assert job["permissions"] == {"statuses": "write"}
     assert not any("create-github-app-token" in s.get("uses", "") for s in job["steps"])
     (step,) = job["steps"]
-    if "uses" in step:
-        assert "token" not in step["with"]
-    else:
-        assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
 
 
 def test_validate_reads_sibling_repos_with_the_reader(tmp_path: Path) -> None:
@@ -2321,6 +2318,16 @@ def _diamond(tmp_path: Path, exclude: str = "") -> None:
     write_repo(tmp_path, "c", dep.format("a") + dep.format("b") + kind.format(needs='["a/build", "b/build"]'))
 
 
+def test_a_quarantined_consumer_is_skipped_with_everything_below_it(tmp_path: Path) -> None:
+    """b's job is gated on the quarantine; c needs b's job to succeed, so it is skipped with it."""
+    _diamond(tmp_path)
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    for jid in ("b", "c"):
+        assert f"!contains(needs['label-gate'].outputs.quarantined, ',{jid},')" in jobs[jid]["if"]
+    assert "needs['b'].result == 'success'" in jobs["c"]["if"]
+    assert "quarantined" not in jobs["validate"]["if"]
+
+
 def test_consumer_jobs_run_up_to_the_labelled_level(tmp_path: Path) -> None:
     _diamond(tmp_path)
     jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
@@ -2334,8 +2341,9 @@ def test_consumer_jobs_run_up_to_the_labelled_level(tmp_path: Path) -> None:
 
 def test_the_final_status_names_a_partial_run(tmp_path: Path) -> None:
     _diamond(tmp_path)
-    step = yaml.safe_load(_orch(tmp_path))["jobs"]["report-result"]["steps"][0]
-    assert step["with"]["scope"] == "${{ needs['label-gate'].outputs.depth }}"
+    run = yaml.safe_load(_orch(tmp_path))["jobs"]["report-result"]["steps"][0]["run"]
+    assert "depth=\"${{ needs['label-gate'].outputs.depth }}\"" in run
+    assert 'scope=" (up to level $depth)"' in run
 
 
 @pytest.mark.parametrize(

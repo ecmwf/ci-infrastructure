@@ -6,14 +6,17 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import re
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Final
 
 import pytest
-from conftest import action_run_body, stub_gh
+from conftest import REPO_ROOT, action_run_body, stub_gh
 
 LABEL: Final = "run-downstream-ci"
 
@@ -152,3 +155,40 @@ def test_a_default_level_must_be_a_level(tmp_path: Path) -> None:
     code, _, err = _run_gate(tmp_path, [], DEFAULT_LEVEL_INPUT="0")
     assert code == 1
     assert "default-level must be 'all' or a level from 1" in err
+
+
+def _gate_with_quarantine(tmp_path: Path, toml: str | None) -> tuple[int, dict[str, str], str]:
+    action = tmp_path / "ci" / "actions" / "should-downstream-run"
+    action.mkdir(parents=True)
+    if toml is not None:
+        (tmp_path / "ci" / ".github").mkdir()
+        (tmp_path / "ci" / ".github" / "downstream-quarantine.toml").write_text(toml)
+    return _run_gate(tmp_path, [_pull("abc123", [f"{LABEL}:all"])], GITHUB_ACTION_PATH=str(action))
+
+
+@pytest.mark.parametrize(
+    ("toml", "quarantined"),
+    [
+        (None, ","),
+        ("# nothing\n", ","),
+        (
+            '[repos.earthkit]\nreason = "x"\n\n[repos.earthkit-geo]\nreason = "y"\n',
+            ",earthkit,earthkit-geo,",
+        ),
+    ],
+    ids=["no-file", "empty", "two"],
+)
+def test_the_quarantine_is_listed_comma_enclosed(tmp_path: Path, toml: str | None, quarantined: str) -> None:
+    code, out, _ = _gate_with_quarantine(tmp_path, toml)
+    assert code == 0
+    assert out["quarantined"] == quarantined
+    assert out["run"] == "true"
+
+
+def test_the_committed_quarantine_has_a_reason_and_date_per_repo() -> None:
+    raw = (REPO_ROOT / ".github" / "downstream-quarantine.toml").read_text(encoding="utf-8")
+    repos = tomllib.loads(raw).get("repos", {})
+    assert re.findall(r"^\[repos\.([A-Za-z0-9_.-]+)\]$", raw, re.M) == list(repos)
+    for name, entry in repos.items():
+        assert set(entry) == {"reason", "since"}, name
+        assert isinstance(entry["reason"], str) and isinstance(entry["since"], datetime.date), name

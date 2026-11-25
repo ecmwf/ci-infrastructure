@@ -2,17 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Consumers whose failure does not fail an upstream's downstream/<lane> status.
-# They still run in the fan-out and show their result; read on every fan-out from main,
-# so an entry applies at once, to every upstream. Remove it once the consumer is green again.
+# Consumers that every upstream's downstream CI skips, together with every consumer below them.
+# Read from main whenever a fan-out starts, so an entry applies at once, to every upstream.
+# Remove it once the consumer is green again.
 #
 # [repos.<name>]
 # reason = "One sentence: why it is red, and what turns it green."
 # since = 2026-11-25
-
-[repos.earthkit-geo]
-reason = "32 new gridspec tests fail against the released eckit and mir; unverified against their develop builds."
-since = 2026-11-25
 
 [repos.earthkit-workflows]
 reason = "It pins earthkit-data<1, so it cannot install against earthkit-data's develop."

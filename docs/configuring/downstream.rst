@@ -263,12 +263,12 @@ Instead of excluding it from each upstream, ``.github/downstream-quarantine.toml
 
 .. code:: toml
 
-   [repos.earthkit-geo]
-   reason = "32 gridspec tests fail against every released eckit and mir."
+   [repos.earthkit-workflows]
+   reason = "It pins earthkit-data<1, so it cannot install against earthkit-data's develop."
    since = 2026-11-25
 
-A quarantined consumer still runs and shows its result in the fan-out,
-but its failure, and the skipping of its dependents after it, no longer fails ``downstream/<lane>``.
-The job summary and the status description name what was ignored.
-The list is read from ``main`` by :action:`report-downstream-result` whenever a fan-out reports,
+The downstream CI of every upstream then skips the quarantined repository, and with it every consumer below it,
+like ``[downstream] exclude`` would, and a notice on the run names them.
+The list is read from ``main`` by :action:`should-downstream-run` whenever a fan-out starts,
 so an entry applies at once and needs no regeneration; remove it once the consumer is green again.
+A quarantined repository's own CI, and the downstream CI of its own pull requests, still run.
