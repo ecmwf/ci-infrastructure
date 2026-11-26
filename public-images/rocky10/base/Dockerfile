@@ -25,6 +25,7 @@ RUN dnf -y install dnf-plugins-core \
     ninja-build \
     jq \
     unzip \
+    bzip2 \
     zstd \
     make \
     redhat-rpm-config \

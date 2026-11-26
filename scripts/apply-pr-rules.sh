@@ -4,40 +4,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Apply the PR rules to develop, main, master and the default branch: no deletion or force-push,
-# one approval (from a code owner where CODEOWNERS covers a changed file), and the required CI checks;
-# creates the downstream-CI and HPC-CI labels where missing.
-# Needs admin on each repo. Re-runnable: rulesets are updated by name.
+# Require the CI checks on develop, main, master and the default branch, and create the downstream-CI
+# and HPC-CI labels where missing; the organisation rulesets (apply-org-rules.sh) cover the rest.
+# Deletes the default-branch-integrity and default-branch-approval rulesets of earlier versions.
+# Needs admin on each repo. Re-runnable: the ruleset is updated by name.
 #
-#   scripts/apply-pr-rules.sh [--dry-run] [--admin-role <id>]... [--bot-app-id <id>] [--delete-existing] ecmwf/eckit ecmwf/fdb ...
+#   scripts/apply-pr-rules.sh [--dry-run] [--admin-role <id>]... [--delete-existing] ecmwf/eckit ecmwf/fdb ...
 #
 # --admin-role: a custom repository role treated like maintainers and admins (e.g. GateKeeper); repeatable.
-# --bot-app-id: a GitHub App whose own PRs need no review (e.g. the workflow
-# regenerator, so it can auto-merge). CI still has to pass.
 # --delete-existing: also delete the repo's other branch rulesets and the classic
 # protection on those branches. Tag and organization rulesets are never touched.
 set -euo pipefail
 
 dry=false
-bot_app_id=""
 admin_roles=(2 5)
 delete_existing=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry=true; shift ;;
     --admin-role) admin_roles+=("${2:?--admin-role needs a role id}"); shift 2 ;;
-    --bot-app-id) bot_app_id="${2:?--bot-app-id needs an App id}"; shift 2 ;;
     --delete-existing) delete_existing=true; shift ;;
     --*) echo "unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
 done
 [ $# -gt 0 ] ||
-  { echo "usage: $0 [--dry-run] [--admin-role <id>]... [--bot-app-id <id>] [--delete-existing] owner/repo..." >&2; exit 2; }
+  { echo "usage: $0 [--dry-run] [--admin-role <id>]... [--delete-existing] owner/repo..." >&2; exit 2; }
 for id in "${admin_roles[@]}"; do
   [[ "$id" =~ ^[0-9]+$ ]] || { echo "role ids must be numeric: $id" >&2; exit 2; }
 done
-[[ -z "$bot_app_id" || "$bot_app_id" =~ ^[0-9]+$ ]] || { echo "--bot-app-id must be numeric" >&2; exit 2; }
 
 # gh with a JSON body on stdin; in a dry run, only print it.
 call() {
@@ -68,20 +63,6 @@ raw() { gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/content
 roles() {
   jq -n --arg m "$1" --argjson ids "$(printf '%s\n' "${admin_roles[@]}" | jq -s .)" \
     '$ids | map({actor_type: "RepositoryRole", actor_id: ., bypass_mode: $m})'
-}
-# The roles, plus the bot App. Exempt, not pull_request: auto-merge never takes a bypass, it waits for the review.
-approval_bypass() {
-  if [ -n "$bot_app_id" ]; then
-    jq --argjson id "$bot_app_id" '. + [{actor_type: "Integration", actor_id: $id, bypass_mode: "exempt"}]' <<< "$(roles exempt)"
-  else
-    roles exempt
-  fi
-}
-pull_request() {
-  jq -n --argjson n "$1" --argjson owners "$2" '{type: "pull_request", parameters: {
-    required_approving_review_count: $n, dismiss_stale_reviews_on_push: false,
-    require_code_owner_review: $owners, require_last_push_approval: false,
-    required_review_thread_resolution: false, allowed_merge_methods: ["merge", "squash", "rebase"]}}'
 }
 ruleset() {
   jq -n --arg name "$1" --argjson rules "$2" --argjson bypass "$3" '{name: $name, target: "branch",
@@ -146,26 +127,26 @@ for repo in "$@"; do
     strict_required_status_checks_policy: false, do_not_enforce_on_create: true,
     required_status_checks: ($c | map({context: ., integration_id: 15368}))}}')
 
-  bodies=(
-    "$(ruleset default-branch-integrity "$(jq -n --argjson p "$(pull_request 0 false)" '[{type: "deletion"}, {type: "non_fast_forward"}, $p]')" '[]')"
-    "$(ruleset default-branch-approval "[$(pull_request 1 true)]" "$(approval_bypass)")"
-    "$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")"
-  )
-
+  body=$(ruleset default-branch-ci "[$status_checks]" "$(roles pull_request)")
   existing=$(gh api "repos/$repo/rulesets?includes_parents=false" --jq '[.[] | select(.source_type == "Repository" and .target == "branch") | {(.name): .id}] | add // {}')
-  for body in "${bodies[@]}"; do
-    name=$(jq -r .name <<< "$body")
-    id=$(jq -r --arg n "$name" '.[$n] // empty' <<< "$existing")
-    if [ -n "$id" ]; then
-      show_diff "$name" "$(current_ruleset "$id" "$body")" "$body"
-      call api -X PUT "repos/$repo/rulesets/$id" --input - <<< "$body"
-      echo "  updated $name"
-    else
-      show_diff "$name" '{}' "$body"
-      call api -X POST "repos/$repo/rulesets" --input - <<< "$body"
-      echo "  created $name"
-    fi
-  done
+  id=$(jq -r '.["default-branch-ci"] // empty' <<< "$existing")
+  if [ -n "$id" ]; then
+    show_diff default-branch-ci "$(current_ruleset "$id" "$body")" "$body"
+    call api -X PUT "repos/$repo/rulesets/$id" --input - <<< "$body"
+    echo "  updated default-branch-ci"
+  else
+    show_diff default-branch-ci '{}' "$body"
+    call api -X POST "repos/$repo/rulesets" --input - <<< "$body"
+    echo "  created default-branch-ci"
+  fi
+
+  # Superseded by the organisation rulesets.
+  while read -r id name; do
+    [ -n "$id" ] || continue
+    show_diff "$name" "$(gh api "repos/$repo/rulesets/$id" --jq '{name, target, enforcement, conditions, rules, bypass_actors}')" '{}'
+    call api -X DELETE "repos/$repo/rulesets/$id" < /dev/null
+    echo "  deleted $name"
+  done < <(jq -r 'to_entries[] | select(.key | IN("default-branch-integrity", "default-branch-approval")) | "\(.value) \(.key)"' <<< "$existing")
 
   others=$(jq -r 'to_entries[] | select(.key | IN("default-branch-integrity", "default-branch-approval", "default-branch-ci") | not) | "\(.value) \(.key)"' <<< "$existing")
   if $delete_existing; then

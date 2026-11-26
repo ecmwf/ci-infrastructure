@@ -253,3 +253,22 @@ This is done in the :doc:`../reference/manifest` via
 
 Every consumer that depends on an excluded one is left out as well.
 For example, excluding ``earthkit-data`` and ``earthkit-utils`` would also drop every package built on them.
+
+Quarantine
+----------
+
+A consumer that is red on its own, e.g. after a broken dependency it does not control,
+would block every upstream's pull request that reaches it.
+Instead of excluding it from each upstream, ``.github/downstream-quarantine.toml`` in ci-infrastructure quarantines it for all of them:
+
+.. code:: toml
+
+   [repos.earthkit-workflows]
+   reason = "It pins earthkit-data<1, so it cannot install against earthkit-data's develop."
+   since = 2026-11-25
+
+The downstream CI of every upstream then skips the quarantined repository, and with it every consumer below it,
+like ``[downstream] exclude`` would, and a notice on the run names them.
+The list is read from ``main`` by :action:`should-downstream-run` whenever a fan-out starts,
+so an entry applies at once and needs no regeneration; remove it once the consumer is green again.
+A quarantined repository's own CI, and the downstream CI of its own pull requests, still run.

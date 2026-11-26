@@ -96,6 +96,10 @@ labels = ["downstream-ci-not-needed"]
 mode = "pr"
 labels = ["downstream-ci-not-needed"]
 
+[repos.atlas-orca]
+mode = "pr"
+labels = []
+
 [repos.eccodes-python]
 mode = "pr"
 labels = ["downstream-ci-not-needed"]

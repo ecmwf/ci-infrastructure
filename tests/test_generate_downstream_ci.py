@@ -1898,6 +1898,7 @@ def test_downstream_gate_fronts_every_job(tmp_path: Path) -> None:
     assert doc["jobs"]["label-gate"]["outputs"] == {
         "run": "${{ steps.gate.outputs.run }}",
         "depth": "${{ steps.gate.outputs.depth }}",
+        "quarantined": "${{ steps.gate.outputs.quarantined }}",
     }
     assert doc["jobs"]["label-gate"]["if"] == "needs.context.outputs.hpc-only != 'true'", (
         "no CI-success condition: report-ci-failure needs the gate on the failure path"
@@ -2315,6 +2316,16 @@ def _diamond(tmp_path: Path, exclude: str = "") -> None:
     write_repo(tmp_path, "a", trigger.format("b") + trigger.format("c") + exclude + kind.format(needs="[]"))
     write_repo(tmp_path, "b", dep.format("a") + trigger.format("c") + kind.format(needs='["a/build"]'))
     write_repo(tmp_path, "c", dep.format("a") + dep.format("b") + kind.format(needs='["a/build", "b/build"]'))
+
+
+def test_a_quarantined_consumer_is_skipped_with_everything_below_it(tmp_path: Path) -> None:
+    """b's job is gated on the quarantine; c needs b's job to succeed, so it is skipped with it."""
+    _diamond(tmp_path)
+    jobs = yaml.safe_load(_orch(tmp_path))["jobs"]
+    for jid in ("b", "c"):
+        assert f"!contains(needs['label-gate'].outputs.quarantined, ',{jid},')" in jobs[jid]["if"]
+    assert "needs['b'].result == 'success'" in jobs["c"]["if"]
+    assert "quarantined" not in jobs["validate"]["if"]
 
 
 def test_consumer_jobs_run_up_to_the_labelled_level(tmp_path: Path) -> None:

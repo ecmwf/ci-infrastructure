@@ -270,11 +270,9 @@ def discover(
         # one query per repo: all of them in one exceeds what GitHub answers (HTTP 502)
         result = gh_api_graphql(query([repo]), token)
         data = result.get("data") if isinstance(result, dict) else None
-        if not isinstance(data, dict):
-            raise CIError(f"{repo}: the GraphQL query for the default branch failed")
-        node = data.get(f"r_{_alias(repo)}")
+        node = data.get(f"r_{_alias(repo)}") if isinstance(data, dict) else None
         if not node or not node.get("defaultBranchRef"):
-            print(f"::warning::{repo}: not readable with this token; skipped", file=sys.stderr)
+            print(f"::warning::{repo}: no answer or not readable with this token; skipped", file=sys.stderr)
             continue
         text = (node.get("manifest") or {}).get("text")
         if text is None:

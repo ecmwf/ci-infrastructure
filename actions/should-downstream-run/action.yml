@@ -14,6 +14,9 @@ description: >
   e.g. the HPC lane without run-hpc-ci, whose CI built no HPC artifacts.
   With `default-level`, a pull request with neither a level label nor
   `opt-out-label` runs at that level.
+  `quarantined` lists the repositories in ci-infrastructure's
+  .github/downstream-quarantine.toml, as this action's ref holds it, for the
+  orchestrator to skip with every consumer below them.
 
 inputs:
   label:
@@ -55,6 +58,9 @@ outputs:
   depth:
     description: "'all', or the highest consumer level to run; empty when `run` is 'false'."
     value: ${{ steps.gate.outputs.depth }}
+  quarantined:
+    description: "The quarantined repositories, comma-separated and comma-enclosed (e.g. ',a,b,'), so `contains` matches whole names; ',' for none."
+    value: ${{ steps.gate.outputs.quarantined }}
 
 runs:
   using: composite
@@ -91,6 +97,19 @@ runs:
             exit 1
           fi
         done
+
+        quarantined=","
+        quarantine="${GITHUB_ACTION_PATH:-}/../../.github/downstream-quarantine.toml"
+        if [ -f "$quarantine" ]; then
+          while IFS= read -r name; do
+            quarantined+="$name,"
+          done < <(sed -n 's/^\[repos\.\([A-Za-z0-9_.-]*\)\][[:space:]]*$/\1/p' "$quarantine")
+        fi
+        echo "quarantined=$quarantined" >> "$GITHUB_OUTPUT"
+        if [ "$quarantined" != , ]; then
+          names="${quarantined:1:${#quarantined}-2}"
+          echo "::notice title=Downstream quarantine::${names//,/, } and every consumer below them are skipped; see ci-infrastructure's .github/downstream-quarantine.toml."
+        fi
 
         # Every repository has its own nightly; a fan-out would build each consumer again.
         if [ "${GITHUB_EVENT_NAME:-}" = workflow_run ] &&
