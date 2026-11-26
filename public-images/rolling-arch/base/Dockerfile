@@ -28,6 +28,7 @@ RUN pacman -Syu --noconfirm --disable-sandbox \
     ninja \
     jq \
     unzip \
+    bzip2 \
     zstd \
     make \
     patch \

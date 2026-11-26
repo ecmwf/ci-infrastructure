@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --allow-remove-essential \
     ninja-build \
     jq \
     unzip \
+    bzip2 \
     zstd \
     lsb-release \
     software-properties-common \
