@@ -2028,8 +2028,9 @@ def _fetch_sibling_manifests(
 ) -> list[Manifest]:
     """`local` first, then every manifest reachable via deps and triggers.
 
-    From GitHub a missing one is skipped (it may not be on that ref yet); under `sibling_root` it is an
-    error, since a missing clone would silently drop consumers from the orchestrator.
+    A missing trigger target is skipped with a warning: it may not be on that ref yet, or, under
+    `sibling_root` (the regenerator's clones of the rolled-out repos), not rolled out yet, so it has no
+    jobs to contribute. A missing dep under `sibling_root` is an error.
     """
 
     def neighbours(m: Manifest) -> list[tuple[str, str]]:
@@ -2037,6 +2038,7 @@ def _fetch_sibling_manifests(
 
     seen: dict[str, Manifest] = {local.repo: local}
     missing: set[str] = set()
+    dep_repos: set[str] = {d.repo for d in local.deps}
     queue = neighbours(local)
 
     for _ in range(_FETCH_DEPTH_CAP):
@@ -2054,27 +2056,32 @@ def _fetch_sibling_manifests(
                 continue
             m = parse_manifest_text(text, Path(f"github://{repo}@{ref}/{manifest_path}"))
             seen[repo] = m
+            dep_repos.update(d.repo for d in m.deps)
             next_q.extend(neighbours(m))
         queue = next_q
 
-    if sibling_root is not None and missing:
+    missing_deps = sorted(missing & dep_repos)
+    if sibling_root is not None and missing_deps:
         raise CIError(
-            f"no {manifest_path} under {sibling_root} for: {', '.join(sorted(missing))}. "
-            "--sibling-root must hold a clone of every repo reachable via deps and trigger-downstream."
+            f"no {manifest_path} under {sibling_root} for: {', '.join(missing_deps)}. "
+            "--sibling-root must hold a clone of every repo reachable via deps."
         )
 
     # An unreadable trigger target silently shrinks the fan-out; warn.
-    unresolved = sorted({t.repo for t in local.triggers if t.repo not in seen})
-    if unresolved:
-        for repo in unresolved:
-            print(
-                f"::warning::[[trigger-downstream]] target {repo} has no readable "
-                f"{manifest_path} at the ref it declares, so it contributes no jobs to this repo's "
-                "orchestrator. Check the repo name; if the manifest simply is not on "
-                "that ref yet (a coordinated change still on branches), pass "
-                "--sibling-root <dir> to read the sibling clones instead.",
-                file=sys.stderr,
-            )
+    unresolved = sorted(missing - dep_repos)
+    if sibling_root is not None:
+        hint = f"Check the repo name; otherwise it is not rolled out yet (no clone under {sibling_root})."
+    else:
+        hint = (
+            "Check the repo name; if the manifest simply is not on that ref yet (a coordinated change "
+            "still on branches), pass --sibling-root <dir> to read the sibling clones instead."
+        )
+    for repo in unresolved:
+        print(
+            f"::warning::[[trigger-downstream]] target {repo} has no readable {manifest_path} at the ref "
+            f"it declares, so it contributes no jobs to this repo's orchestrator. {hint}",
+            file=sys.stderr,
+        )
 
     return [local] + sorted((m for m in seen.values() if m.repo != local.repo), key=lambda m: m.repo)
 
