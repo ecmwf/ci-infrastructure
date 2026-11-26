@@ -99,3 +99,23 @@ labels = ["downstream-ci-not-needed"]
 [repos.atlas-orca]
 mode = "pr"
 labels = []
+
+[repos.eccodes-python]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.pyodc]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.polytope]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.cfgrib]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
+
+[repos.pdbufr]
+mode = "pr"
+labels = ["downstream-ci-not-needed"]
