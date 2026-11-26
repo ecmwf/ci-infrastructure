@@ -19,6 +19,7 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 - Every variant `FROM`s its platform's `base` directly. Variants never build on each other.
 - The name is the whole toolchain. `gcc<N>`, `clang<N>` and `gfortran<N>` each promise that compiler with working OpenMP, `openmpi` a working `mpicc`/`mpirun`, and `rust<X.Y>` that Rust toolchain with `clippy` and `rustfmt`, linking with the named gcc. Nothing else is installed, except the libraries a name lists (`boost-qt6`).
 - A `rolling-*` platform tracks upstream and is rebuilt nightly.
+- `release` promises what release builds link and package with; see [Release images](#release-images).
 
 [`verify-environment.sh`](verify-environment.sh) checks this contract.
 
@@ -36,6 +37,17 @@ The private images live in [ecmwf/ci-container-images](https://github.com/ecmwf/
 | `fedora43` | 15 | 6 | 1.83 | 3.31 | 3.14 |
 | `fedora44` | 16 | 6 | 1.90 | 4.3 | 3.14 |
 | `rolling-arch` | newest | 6 | newest | newest | newest |
+
+## Release images
+
+`<platform>/gcc<N>-gfortran<N>-release` adds what a release build (CD v3) links and packages
+with, so nothing is installed at build time: the platform's packager (`rpm-build`, or `dpkg-dev`
+and `file`) and libaec, bzip2, lz4, BLAS/LAPACK and Eigen with headers. Versions are the
+distribution's, except libaec: where that is below eckit's 1.1.4 or broken,
+[`build-libaec.sh`](build-libaec.sh) builds a pinned libaec from source, static only, into
+`/usr/local`, so packages embed it. A library a project needs is added to every release image in
+one change. Release builds use `:latest` and record `CI_IMAGE_TAG`, since cleanup keeps only the
+two newest tags.
 
 ## Tags and rebuilds
 

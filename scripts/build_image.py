@@ -59,6 +59,7 @@ EXTRA_TAG_PATHS: Final = (
     "pyproject.toml",
     "LICENSE",
     f"{IMAGES_DIR}/announce-image.sh",
+    f"{IMAGES_DIR}/build-libaec.sh",
     f"{IMAGES_DIR}/distrust-emudhra.sh",
 )
 
