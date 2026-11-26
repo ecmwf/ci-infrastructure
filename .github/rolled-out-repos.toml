@@ -95,3 +95,7 @@ labels = ["downstream-ci-not-needed"]
 [repos.troika]
 mode = "pr"
 labels = ["downstream-ci-not-needed"]
+
+[repos.atlas-orca]
+mode = "pr"
+labels = []
