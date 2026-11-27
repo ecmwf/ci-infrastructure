@@ -60,6 +60,14 @@ env:
   DOCKER_BUILDKIT: "1"
 
 jobs:
+  # Called by CI on a push to main, every other job skips, and an all-skipped called
+  # workflow reports `skipped`, which CI's collect results counts as a failure.
+  handed-over:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Images builds and pushes in its own run after this CI is green (workflow_run)."
+
   discover:
     # Anonymous reads, so no secrets. Every other job needs this one, so its `if` gates the run.
     # Called by CI on a push to main (event `push`), the run skips: the workflow_run after a green
