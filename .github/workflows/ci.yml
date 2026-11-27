@@ -65,8 +65,8 @@ jobs:
           labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
           echo "dependents=$(grep -qx test-dependent-images <<< "$labels" && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-  # Gated on the tests, so a red commit never touches the registry. On a push to main every
-  # job in images.yml skips; it runs again after a green CI (workflow_run), top-level, as its push needs.
+  # Gated on the tests, so a red commit never touches the registry. On a push to main images.yml
+  # only hands over: it runs again after a green CI (workflow_run), top-level, as its push needs.
   images:
     needs: [mypy_and_tests, image-label]
     if: ${{ !cancelled() && needs.mypy_and_tests.result == 'success' && needs.image-label.result != 'failure' }}
