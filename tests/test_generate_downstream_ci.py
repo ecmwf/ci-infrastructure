@@ -1813,16 +1813,36 @@ def test_warns_when_a_trigger_target_manifest_is_unreadable_on_github(
     assert "--sibling-root" in err
 
 
-@pytest.mark.parametrize("missing", ["trigger", "dep"])
-def test_a_missing_clone_under_sibling_root_is_an_error(tmp_path: Path, missing: str) -> None:
-    """A missing consumer would drop its jobs from the orchestrator, or delete it outright."""
-    text = _trigger_manifest("up", "ecmwf/up", ["ecmwf/absent"] if missing == "trigger" else [])
-    if missing == "dep":
-        text += '\n[[deps]]\nrepo = "ecmwf/absent"\npackage = "absent"\nref = "main"\ncompiler-inputs = []\n'
+def test_a_missing_dep_clone_under_sibling_root_is_an_error(tmp_path: Path) -> None:
+    text = _trigger_manifest("up", "ecmwf/up", [])
+    text += '\n[[deps]]\nrepo = "ecmwf/absent"\npackage = "absent"\nref = "main"\ncompiler-inputs = []\n'
     local = parse_manifest_text(text, tmp_path / ".ci/manifest.toml")
 
     with pytest.raises(CIError, match="ecmwf/absent"):
         _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
+
+
+@pytest.mark.parametrize("direct", [True, False])
+def test_a_trigger_target_not_rolled_out_is_skipped_with_a_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], direct: bool
+) -> None:
+    """The regenerator clones only the rolled-out repos; a target outside them has no jobs yet."""
+    if direct:
+        local = parse_manifest_text(
+            _trigger_manifest("up", "ecmwf/up", ["ecmwf/absent"]), tmp_path / ".ci/manifest.toml"
+        )
+    else:
+        (tmp_path / "mid" / ".ci").mkdir(parents=True)
+        (tmp_path / "mid" / ".ci" / "manifest.toml").write_text(_trigger_manifest("mid", "ecmwf/mid", ["ecmwf/absent"]))
+        local = parse_manifest_text(_trigger_manifest("up", "ecmwf/up", ["ecmwf/mid"]), tmp_path / ".ci/manifest.toml")
+
+    got = _fetch_sibling_manifests(local, None, ".ci/manifest.toml", sibling_root=tmp_path)
+
+    assert "ecmwf/absent" not in {m.repo for m in got}
+    err = capsys.readouterr().err
+    assert "::warning::" in err
+    assert "ecmwf/absent" in err
+    assert "not rolled out yet" in err
 
 
 def test_no_warning_when_every_trigger_target_resolves(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
