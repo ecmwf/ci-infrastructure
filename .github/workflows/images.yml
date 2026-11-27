@@ -9,7 +9,8 @@ name: Images
 # from the registry, so there is no `paths:` filter or image list here. Pull
 # requests push nothing: the build jobs only reach the scratch registry, and the
 # push job, which runs no Dockerfile, holds the public robot in the `main`-only
-# environment `eccr-push`.
+# environment `eccr-push`. On main this runs after a green CI (workflow_run),
+# top-level: a called workflow never gets an environment's secrets.
 on:
   workflow_call:
     # Named, not `secrets: inherit`: this workflow runs PR-authored Dockerfiles
@@ -31,6 +32,10 @@ on:
   # settle, and off the hour.
   schedule:
     - cron: '17 3 * * *'
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       rebuild:
@@ -56,7 +61,18 @@ env:
 
 jobs:
   discover:
-    # Anonymous reads, so no secrets.
+    # Anonymous reads, so no secrets. Every other job needs this one, so its `if` gates the run.
+    # Called by CI on a push to main (event `push`), the run skips: the workflow_run after a green
+    # CI builds and pushes instead. workflow_run gets this repo's secrets whatever started CI, a
+    # fork's pull request included; only a green CI on a push to our own main qualifies.
+    if: ${{ github.event_name == 'pull_request'
+            || github.event_name == 'schedule'
+            || github.event_name == 'workflow_dispatch'
+            || (github.event_name == 'workflow_run'
+                && github.event.workflow_run.conclusion == 'success'
+                && github.event.workflow_run.event == 'push'
+                && github.event.workflow_run.head_branch == 'main'
+                && github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-latest
     outputs:
       base-matrix: ${{ steps.d.outputs.base-matrix }}
@@ -65,6 +81,8 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          # The commit CI tested; empty (the event's commit) for other triggers.
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0          # the tag is `git log` over the build inputs
           # PR-authored Dockerfiles build over the repo root, and .dockerignore
           # is editable by the PR: keep the token out of .git/config.
@@ -92,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Build ${{ matrix.name }}
@@ -149,6 +168,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
       - if: ${{ matrix.base_ref != '' }}
@@ -285,8 +305,9 @@ jobs:
 
   # For pinning by digest, e.g. in an org variable read with fromJSON.
   latest-digests:
-    needs: [build-base, build-dependents]
+    needs: [discover, build-base, build-dependents]
     if: ${{ !cancelled()
+            && needs.discover.result == 'success'
             && !startsWith(github.event_name, 'pull_request')
             && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
